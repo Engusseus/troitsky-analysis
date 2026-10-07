@@ -1,0 +1,2 @@
+test,bridge_file,load_kgf,midspan_deflection_mm,event,notes
+C01,examples/warren_2027.yaml,0,0,start,example row: replace with your data
