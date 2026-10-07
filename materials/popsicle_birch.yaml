@@ -1,0 +1,66 @@
+# Popsicle-stick material model.
+#
+# EVERY VALUE BELOW IS A PLACEHOLDER (source: assumed). They are typical textbook-order
+# numbers for small birch sticks, NOT test data. Replace them with your own measurements
+# and change `source` to `measured`. See README "Measuring your own material".
+#
+# Units: MPa = N/mm^2, density in kg/m^3, lengths in mm.
+name: Birch popsicle stick (placeholder)
+description: >-
+  Placeholder properties for commercial birch craft sticks (~115 x 10 x 2 mm).
+  Not data. Measure E with a three-point bending test, E = F L^3 / (48 delta I),
+  and strengths by testing sticks and glued joints to failure.
+stick:
+  length_mm: 115
+  width_mm: 10
+  thickness_mm: 2
+E_MPa:
+  value: 10000
+  source: assumed
+  note: Longitudinal modulus. Measure with 3-point bending, E = F L^3 / (48 delta I).
+G_MPa:
+  value: 625
+  source: assumed
+  note: Shear modulus, taken as E/16 (typical E/G ratio for wood along the grain).
+nu:
+  value: 0.3
+  source: assumed
+  note: Poisson's ratio (only used by the solver's material definition).
+f_t_MPa:
+  value: 40
+  source: assumed
+  note: Tensile strength parallel to grain. Reduce for splices and knots.
+f_c_MPa:
+  value: 30
+  source: assumed
+  note: Compressive (crushing) strength parallel to grain.
+f_b_MPa:
+  value: 50
+  source: assumed
+  note: Bending strength (modulus of rupture).
+f_v_MPa:
+  value: 6
+  source: assumed
+  note: Shear strength parallel to grain (member shear check, tau = 1.5 V / A).
+density_kg_m3:
+  value: 650
+  source: assumed
+  note: Weigh 100 sticks and divide by their volume.
+glue:
+  tau_g_MPa:
+    value: 2.0
+    source: assumed
+    note: Average shear strength of a white-glue lap joint. Test single-lap joints.
+  mass_fraction:
+    value: 0.10
+    source: assumed
+    note: Glue mass as a fraction of wood mass. Weigh a test joint before/after gluing.
+  overlap_mm:
+    value: 20
+    source: assumed
+    note: Glued overlap length at each member end.
+  faces:
+    value: 2
+    source: assumed
+    note: Number of glued faces per member end (e.g. gusset on both sides = 2).
+  exclude_groups: [top_chord, bottom_chord]
