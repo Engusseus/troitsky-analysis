@@ -72,10 +72,6 @@ class MemberResult:
     def mode(self) -> str:
         return self.util.mode
 
-    @property
-    def load_at_failure_N(self) -> float:
-        return math.inf if self.U == 0 else 1.0 / self.U  # multiply by P_ref
-
 
 @dataclass
 class Reaction:

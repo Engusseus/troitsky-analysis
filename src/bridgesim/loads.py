@@ -32,7 +32,7 @@ class PlatePlacement:
 
 
 def mid_span_x(bridge: Bridge) -> float:
-    """Mid-span = midpoint between the mean X of the two support groups."""
+    """Mid-span = midpoint between the outermost support nodes along X."""
     nodes = bridge.node_map()
     xs = sorted(nodes[n].x_mm for n in bridge.support_nodes())
     if not xs:

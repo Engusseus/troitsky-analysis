@@ -17,6 +17,7 @@ except ImportError:  # running from a source checkout without `uv sync`
 
 import pandas as pd
 import streamlit as st
+import yaml
 from pydantic import ValidationError
 
 from bridgesim import PYNITE_VERSION, __version__, report, viz
@@ -84,6 +85,17 @@ def _init_state() -> None:
     ss.setdefault("result", None)
     ss.setdefault("rules_report", None)
     ss.setdefault("error", None)
+    ss.setdefault("form_ver", 0)  # bumped when inputs are replaced from outside the form
+    ss.setdefault("rules_key", None)
+    ss.setdefault("upload_key", None)
+
+
+BAD_FILE = (ValidationError, ValueError, yaml.YAMLError, UnicodeDecodeError)
+
+
+def _replace_inputs() -> None:
+    """Give the form widgets fresh keys so they show newly loaded values."""
+    st.session_state.form_ver += 1
 
 
 def _current_bridge() -> Bridge:
@@ -101,7 +113,7 @@ def _run_analysis(ruleset: RuleSet) -> None:
                             ruleset.crushing.get("deflection_limit_mm", 50.0))
         ss.rules_report = evaluate(bridge, ss.material, ruleset)
         ss.error = None
-    except (ValidationError, ValueError, ZeroDivisionError, Exception) as exc:  # noqa: B014
+    except Exception as exc:  # show any failure in the UI rather than crashing
         ss.result, ss.rules_report = None, None
         ss.error = f"{type(exc).__name__}: {exc}"
 
@@ -121,7 +133,7 @@ def _rules_picker() -> RuleSet:
     try:
         if up is not None:
             return RuleSet.from_yaml_str(up.getvalue().decode("utf-8"))
-    except (ValidationError, ValueError) as exc:
+    except BAD_FILE as exc:
         st.sidebar.error(f"Rules file not valid: {exc}")
     return RuleSet.load(files[choice])
 
@@ -135,16 +147,20 @@ def _design_panel(ruleset: RuleSet) -> None:
                          help="Upload a bridge.yaml exported from this app or written by hand.")
     if ss.source == "Upload bridge YAML":
         up = sb.file_uploader("bridge.yaml", type=["yaml", "yml"], key="bridge_up")
-        if up is not None:
+        if up is not None and ss.upload_key != (up.name, up.size):
+            ss.upload_key = (up.name, up.size)
             try:
                 ss.uploaded_bridge = Bridge.from_yaml_str(up.getvalue().decode("utf-8"))
                 if isinstance(ss.uploaded_bridge.material, Material):
                     ss.material = ss.uploaded_bridge.material
-                sb.success(f"Loaded “{ss.uploaded_bridge.name}”: {len(ss.uploaded_bridge.nodes)}"
-                           f" nodes, {len(ss.uploaded_bridge.members)} members")
-            except (ValidationError, ValueError) as exc:
+                    _replace_inputs()
+                ss.result = None  # re-analyse with the new geometry
+            except BAD_FILE as exc:
                 sb.error(f"Could not read the bridge file:\n\n{exc}")
                 ss.uploaded_bridge = None
+        if ss.uploaded_bridge is not None:
+            sb.success(f"Loaded “{ss.uploaded_bridge.name}”: {len(ss.uploaded_bridge.nodes)}"
+                       f" nodes, {len(ss.uploaded_bridge.members)} members")
         if ss.uploaded_bridge is None:
             sb.info("No bridge uploaded yet; showing the parametric design.")
 
@@ -153,11 +169,14 @@ def _design_panel(ruleset: RuleSet) -> None:
         if mup is not None and st.button("Use this material file"):
             try:
                 ss.material = material_from_yaml_str(mup.getvalue().decode("utf-8"))
+                _replace_inputs()
+                ss.result = None
                 st.success(f"Material “{ss.material.name}” loaded")
-            except (ValidationError, ValueError) as exc:
+            except BAD_FILE as exc:
                 st.error(f"Material file not valid: {exc}")
 
     p = ss.params
+    v = ss.form_ver
     parametric = ss.source == "Parametric Warren truss" or ss.uploaded_bridge is None
     with sb.form("design"):
         if parametric:
@@ -199,10 +218,10 @@ def _design_panel(ruleset: RuleSet) -> None:
                 for g, spec in p["sections"].items():
                     a, b = st.columns([1, 1.3])
                     spec["sticks"] = int(a.number_input(GROUP_LABELS.get(g, g), 1, 60,
-                                                        int(spec["sticks"]), 1, key=f"n_{g}"))
+                                                        int(spec["sticks"]), 1, key=f"n_{v}_{g}"))
                     lay = ["flat", "on_edge"]
                     spec["layout"] = b.selectbox("layout", lay, lay.index(spec["layout"]),
-                                                 key=f"l_{g}", label_visibility="hidden")
+                                                 key=f"l_{v}_{g}", label_visibility="hidden")
         else:
             st.caption(f"Using uploaded bridge “{ss.uploaded_bridge.name}”. Geometry and "
                        "sections come from the file; material values below still apply.")
@@ -214,9 +233,9 @@ def _design_panel(ruleset: RuleSet) -> None:
             label, unit = PROP_LABELS.get(key, (key, ""))
             a, b = st.columns([1.6, 1])
             val = a.number_input(f"{label} ({unit})" if unit and unit != "–" else label,
-                                 value=float(prop.value), format="%g", key=f"mv_{key}",
+                                 value=float(prop.value), format="%g", key=f"mv_{v}_{key}",
                                  help=prop.note or None)
-            meas = b.checkbox("measured", prop.source == "measured", key=f"ms_{key}")
+            meas = b.checkbox("measured", prop.source == "measured", key=f"ms_{v}_{key}")
             b.markdown(":green[● measured]" if meas else ":orange[○ assumed]")
             new_vals[key] = (val, "measured" if meas else "assumed")
         submitted = st.form_submit_button("Analyze", type="primary", **_wide_button())
@@ -390,6 +409,7 @@ def _compare(r: AnalysisResult, rep: RulesReport, bridge: Bridge) -> None:
                 ss.uploaded_bridge = Bridge.from_yaml_str(snap["bridge_yaml"])
             ss.source = snap["source"]
             ss.result = None
+            _replace_inputs()
             st.rerun()
         if c5.button("Delete", **_wide_button()):
             ss.saved.pop(pick, None)
@@ -462,6 +482,9 @@ def main() -> None:
     _init_state()
     ss = st.session_state
     ruleset = _rules_picker()
+    rules_key = ruleset.model_dump_json()
+    if rules_key != ss.rules_key:  # rules file changed: re-evaluate
+        ss.rules_key, ss.result, ss.error = rules_key, None, None
     _design_panel(ruleset)
     if ss.result is None and ss.error is None:
         _run_analysis(ruleset)

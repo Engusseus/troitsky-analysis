@@ -111,11 +111,22 @@ class Material(_Strict):
 # --------------------------------------------------------------------------- geometry
 
 
+#: Node coordinates are snapped to this many decimals (1e-6 mm) so that float noise such as
+#: 0.1 + 0.2 - 0.3 cannot make bridgesim and Pynite disagree on whether a member is
+#: vertical or horizontal (which decides its section orientation).
+COORD_DECIMALS = 6
+
+
 class Node(_Strict):
     id: str
     x_mm: float
     y_mm: float
     z_mm: float
+
+    @field_validator("x_mm", "y_mm", "z_mm")
+    @classmethod
+    def _snap(cls, v: float) -> float:
+        return round(v, COORD_DECIMALS) + 0.0  # + 0.0 turns -0.0 into 0.0
 
     @property
     def xyz(self) -> tuple[float, float, float]:

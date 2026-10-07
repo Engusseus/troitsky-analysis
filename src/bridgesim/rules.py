@@ -197,6 +197,14 @@ def evaluate(
     meas = measurements or measure(bridge, material, rs.constants)
     values = dict(meas.values)
     values["mass_kg"] = bridge_mass(bridge, material).total_kg
+    for rule in rs.rules:
+        needed = list(rule.measures) + ([rule.measure] if rule.measure else []) + rule.show
+        unknown = [k for k in needed if k not in values]
+        if unknown:
+            raise ValueError(
+                f"Rule {rule.key!r} (§{rule.section}) uses unknown measurement(s) {unknown}. "
+                f"Available: {sorted(values)}"
+            )
     step_len = rs.rounding.get("length_mm", 1.0)
     step_mass = rs.rounding.get("mass_kg", 0.01)
 
