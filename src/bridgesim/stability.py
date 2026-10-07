@@ -1,0 +1,98 @@
+"""Global elastic buckling (linear eigenvalue) analysis: the "instability" failure mode.
+
+With K the elastic stiffness and K_g the geometric stiffness built from the member axial
+forces at P_ref, the structure becomes unstable at the load factor lambda where
+
+    (K + lambda K_g) phi = 0    ->    -K_g phi = (1/lambda) K phi
+
+which is a symmetric generalised eigenproblem with K positive definite (stable structure).
+The critical load is F_cr = lambda_cr P_ref, with lambda_cr the smallest positive root.
+Source: e.g. McGuire, Gallagher & Ziemian, *Matrix Structural Analysis*, 2nd ed., Ch. 9.
+
+This captures system modes that single-member checks miss: sway of legs, lateral buckling
+of an unbraced top chord, and so on. Each member is one cubic element, so the buckling of
+a single member between joints is over-estimated (about 20 %); that case is covered by the
+member Euler check instead. F_cr is an *elastic, perfect-geometry* upper bound: real
+crooked sticks buckle earlier (imperfections are planned for v0.2).
+
+Boundary conditions: during buckling the pier bases are assumed held in X by friction at
+both ends (no horizontal force is needed at the onset of buckling). The roller used in the
+static analysis exists only so the bridge is not artificially tied by the table.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+
+import numpy as np
+import scipy.linalg as sla
+
+from bridgesim.model import COMBO
+from bridgesim.schema import Bridge
+
+_DOFS = ("DX", "DY", "DZ", "RX", "RY", "RZ")
+
+
+@dataclass
+class BucklingResult:
+    lambda_cr: float  # critical load factor on P_ref (inf if no compression-driven mode)
+    lambdas: list[float] = field(default_factory=list)  # first few positive factors
+    mode_mm: dict[str, tuple[float, float, float]] = field(default_factory=dict)
+    member_energy: dict[str, float] = field(default_factory=dict)  # normalised, max = 1
+    key_member: str | None = None
+    note: str = ""
+
+
+def _free_dofs(model, bridge: Bridge) -> list[int]:
+    held = {model.nodes[n].ID * 6 for n in bridge.supports.roller}  # friction holds DX
+    free = []
+    for node in model.nodes.values():
+        for k, dof in enumerate(_DOFS):
+            idx = node.ID * 6 + k
+            if not getattr(node, f"support_{dof}") and idx not in held:
+                free.append(idx)
+    return free
+
+
+def global_buckling(model, bridge: Bridge, n_modes: int = 3) -> BucklingResult:
+    """Solve the buckling eigenproblem on an already analysed Pynite model."""
+    free = _free_dofs(model, bridge)
+    K = np.asarray(model.Ke(COMBO, sparse=False, check_stability=False))
+    G = np.asarray(model.Kg(COMBO, sparse=False, first_step=False))
+    K11 = K[np.ix_(free, free)]
+    G11 = G[np.ix_(free, free)]
+    K11 = 0.5 * (K11 + K11.T)
+    G11 = 0.5 * (G11 + G11.T)
+    if not np.any(G11):
+        return BucklingResult(math.inf, note="No axial forces: no buckling mode.")
+    try:
+        mu, vecs = sla.eigh(-G11, K11)
+    except np.linalg.LinAlgError:
+        return BucklingResult(math.nan, note="Stiffness matrix not positive definite; "
+                                             "global buckling not evaluated.")
+    tol = 1e-12 * max(1.0, float(np.max(np.abs(mu))))
+    pos = np.where(mu > tol)[0]
+    if pos.size == 0:
+        return BucklingResult(math.inf, note="No compression-driven buckling mode.")
+    order = pos[np.argsort(-mu[pos])]
+    lambdas = [float(1.0 / mu[k]) for k in order[:n_modes]]
+
+    phi = np.zeros(K.shape[0])
+    phi[free] = vecs[:, order[0]]
+    tr = phi.reshape(-1, 6)[:, :3]
+    scale = float(np.max(np.linalg.norm(tr, axis=1))) or 1.0
+    phi /= scale
+    by_id = {n.ID: nid for nid, n in model.nodes.items()}
+    mode = {by_id[i]: tuple(float(v) for v in phi[i * 6:i * 6 + 3]) for i in by_id}
+
+    energy = {}
+    for mem in bridge.members:
+        pm = model.members[mem.id]
+        idx = np.r_[pm.i_node.ID * 6:pm.i_node.ID * 6 + 6, pm.j_node.ID * 6:pm.j_node.ID * 6 + 6]
+        v = phi[idx]
+        energy[mem.id] = float(v @ np.asarray(pm.Ke()) @ v)
+    emax = max(energy.values(), default=0.0) or 1.0
+    energy = {k: e / emax for k, e in energy.items()}
+    key = max(energy, key=energy.get) if energy else None
+    return BucklingResult(lambdas[0], lambdas, mode, energy, key)
