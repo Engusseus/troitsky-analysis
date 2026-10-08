@@ -120,14 +120,15 @@ def measure(
     v["total_height_mm"] = ymax - ymin
     # The bridge rests on the base platform, so no node and no deck can be lower than its
     # supports. Report it rather than clip it away: it is a modelling error.
-    # A member with an end resting on the table is cut flush there (its section may dip
-    # below the centreline end); any other member must stay clear of the table entirely.
+    # A leg standing on the table (exactly one end on it) is cut flush there, so its section
+    # may dip below the centreline end; any other member, including one lying along the
+    # table, must stay clear of it entirely.
     low = [n.id for n in bridge.nodes if n.y_mm < table_y - 1e-6]
     deck_bottom = deck.top_elevation_mm - deck.thickness_mm
     lowest = min([n.y_mm for n in bridge.nodes] + [deck_bottom])
     through = []
     for s in S:
-        if s.pts[[0, -1], 1].min() <= table_y + 1e-6:
+        if int((s.pts[[0, -1], 1] <= table_y + 1e-6).sum()) == 1:
             continue
         bottom = float((s.pts[:, 1] - s.h[1]).min())
         if bottom < table_y - 1e-6:
@@ -227,10 +228,12 @@ def measure(
     d["mid_span_x_mm"] = xc
 
     # ---- piers vertical (§8.1) --------------------------------------------------------
-    piers = [m for m in bridge.members if m.group == "pier"]
-    if not piers:
-        ids = {s.member for s in supporting if s.group not in ("pier_brace",)}
-        piers = [m for m in bridge.members if m.id in ids]
+    # Every leg the bridge stands on counts, whatever its group: members grouped as piers
+    # plus any non-bracing member with exactly one end on the table.
+    legs = {s.member for s in S
+            if s.group not in ("pier_brace", "top_brace", "bottom_brace")
+            and int((s.pts[[0, -1], 1] <= table_y + _TOL).sum()) == 1}
+    piers = [m for m in bridge.members if m.group == "pier" or m.id in legs]
     incl = [
         inclination_from_vertical_deg(nodes[m.i].xyz, nodes[m.j].xyz) for m in piers
     ]

@@ -143,7 +143,7 @@ INVALID: dict[str, tuple[Callable[[dict[str, Any]], None], str]] = {
     "unknown load node": (_set(["load", "deck_support_nodes"], ["Q"]), "Unknown node"),
     "no supports": (_set(["supports", "pinned"], []), "At least one pinned"),
     "bad release": (_set(["members", 0, "releases"], ["Rzz"]), "releases"),
-    "zero K": (_set(["members", 0, "K"], 0.0), "greater than 0"),
+    "zero K": (_set(["members", 0, "K"], 0.0), "greater than or equal to 0.1"),
     "unknown group": (_set(["members", 0, "group"], "cable"), "group"),
     "negative P_ref": (_set(["load", "P_ref_N"], -1.0), "greater than or equal to 0.001"),
     "bad joint fixity": (_set(["joint_fixity"], "glued"), "joint_fixity"),

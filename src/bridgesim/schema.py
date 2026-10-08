@@ -257,7 +257,7 @@ class Member(_Strict):
     j: str
     section: str
     group: MemberGroup = "other"
-    K: float = Field(1.0, gt=0, le=10, description="Effective-length factor for buckling")
+    K: float = Field(1.0, ge=0.1, le=10, description="Effective-length factor for buckling")
     releases: list[Release] = Field(default_factory=list)
 
     _id = field_validator("id", "i", "j", "section")(lambda cls, v: _identifier(v))

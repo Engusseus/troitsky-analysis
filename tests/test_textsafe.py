@@ -1092,3 +1092,39 @@ def test_rule_labels_must_be_single_line_but_notes_may_wrap() -> None:
     data = RuleSet.load().model_dump()
     data["rules"][0]["note"] = "first line\nsecond line"
     RuleSet.model_validate(data)
+
+
+# ------------------------------------------------------------------------ fourteenth review round
+
+
+def test_member_lying_along_the_table_fails_the_platform_rule() -> None:
+    """A tie between two pier bases at table level has half its section below the table."""
+    from bridgesim.materials import load_material
+    from bridgesim.rules import evaluate
+
+    b = generate_warren()
+    n = b.metadata["params"]["n_panels"]
+    data = b.model_dump(mode="json")
+    data["members"].append({"id": "base_tie", "i": "P0n", "j": f"P{n}n", "section": "pier"})
+    rep = evaluate(Bridge.model_validate(data), load_material("popsicle_birch"))
+    assert next(r for r in rep.results if r.key == "above_platform").passed is False
+
+
+def test_inclined_leg_outside_the_pier_group_is_checked() -> None:
+    from bridgesim.materials import load_material
+    from bridgesim.rules import evaluate
+
+    b = generate_warren()
+    data = b.model_dump(mode="json")
+    b1 = b.node_map()["B1n"]
+    data["nodes"].append({"id": "Q", "x_mm": b1.x_mm - 50, "y_mm": 0.0, "z_mm": b1.z_mm})
+    data["members"].append({"id": "leg", "i": "Q", "j": "B1n", "section": "pier"})
+    rep = evaluate(Bridge.model_validate(data), load_material("popsicle_birch"))
+    assert next(r for r in rep.results if r.key == "piers_vertical").passed is False
+
+
+def test_tiny_effective_length_factor_is_rejected() -> None:
+    data = generate_warren().model_dump(mode="json")
+    data["members"][0]["K"] = 5e-324
+    with pytest.raises(ValidationError):
+        Bridge.model_validate(data)
