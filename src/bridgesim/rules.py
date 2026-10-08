@@ -112,8 +112,8 @@ class Crushing(BaseModel):
     """The competition's crushing test (§12.5)."""
 
     model_config = ConfigDict(extra="forbid")
-    plate_length_mm: float = Field(200.0, gt=0, le=MAX_SIZE_MM, allow_inf_nan=False)
-    plate_width_mm: float = Field(90.0, gt=0, le=MAX_SIZE_MM, allow_inf_nan=False)
+    plate_length_mm: float = Field(200.0, ge=1e-3, le=MAX_SIZE_MM, allow_inf_nan=False)
+    plate_width_mm: float = Field(90.0, ge=1e-3, le=MAX_SIZE_MM, allow_inf_nan=False)
     deflection_limit_mm: float = Field(50.0, gt=0, le=MAX_SIZE_MM, allow_inf_nan=False)
 
 
@@ -137,9 +137,10 @@ class RuleSet(BaseModel):
         unknown = sorted(set(v) - set(known))
         if unknown:  # a typo would otherwise silently fall back to the default
             raise ValueError(f"unknown keys {unknown}; expected some of {list(known)}")
-        bad = {k: x for k, x in v.items() if not (math.isfinite(x) and 0 < x <= 1e6)}
+        lo = 1e-6 if info.field_name == "rounding" else 0.0  # Decimal needs a sane step
+        bad = {k: x for k, x in v.items() if not (math.isfinite(x) and lo < x <= 1e6)}
         if bad:
-            raise ValueError(f"values must be positive and at most 1e6: {bad}")
+            raise ValueError(f"values must be greater than {lo:g} and at most 1e6: {bad}")
         return v
 
     @classmethod

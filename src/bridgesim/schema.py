@@ -52,6 +52,11 @@ MAX_COORD_MM = 100_000.0
 #: Largest cross-section, stick or plate dimension accepted (10 m). Every numeric input has
 #: a finite upper bound so that products such as areas, volumes and masses cannot overflow.
 MAX_SIZE_MM = 10_000.0
+#: Smallest stick or section dimension accepted (so volumes and areas cannot underflow).
+MIN_SIZE_MM = 0.01
+#: Total length of all members (a Troitsky bridge has about 20 to 40 m). Bounds the work of
+#: the geometric rule checks, which sample every member at 2 mm.
+MAX_TOTAL_MEMBER_LENGTH_MM = 500_000.0
 
 
 class _Strict(BaseModel):
@@ -84,9 +89,9 @@ class Prop(_Strict):
 
 
 class Stick(_Strict):
-    length_mm: float = Field(115.0, gt=0, le=MAX_SIZE_MM)
-    width_mm: float = Field(10.0, gt=0, le=MAX_SIZE_MM)
-    thickness_mm: float = Field(2.0, gt=0, le=MAX_SIZE_MM)
+    length_mm: float = Field(115.0, ge=MIN_SIZE_MM, le=MAX_SIZE_MM)
+    width_mm: float = Field(10.0, ge=MIN_SIZE_MM, le=MAX_SIZE_MM)
+    thickness_mm: float = Field(2.0, ge=MIN_SIZE_MM, le=MAX_SIZE_MM)
 
     @property
     def volume_mm3(self) -> float:
@@ -199,8 +204,8 @@ class Section(_Strict):
     id: str
     sticks: int | None = Field(None, ge=1, le=60)
     layout: Literal["flat", "on_edge"] | None = None
-    b_mm: float | None = Field(None, gt=0, le=MAX_SIZE_MM)
-    d_mm: float | None = Field(None, gt=0, le=MAX_SIZE_MM)
+    b_mm: float | None = Field(None, ge=MIN_SIZE_MM, le=MAX_SIZE_MM)
+    d_mm: float | None = Field(None, ge=MIN_SIZE_MM, le=MAX_SIZE_MM)
 
     _id = field_validator("id")(lambda cls, v: _identifier(v))
 
@@ -291,8 +296,8 @@ class PlateLoad(_Strict):
     """Crusher plate (rulebook §12.5): uniform over plate_length along X, centred on x."""
 
     P_ref_N: float = Field(1000.0, gt=0, le=1e7)
-    plate_length_mm: float = Field(200.0, gt=0, le=MAX_SIZE_MM)
-    plate_width_mm: float = Field(90.0, gt=0, le=MAX_SIZE_MM)
+    plate_length_mm: float = Field(200.0, ge=1e-3, le=MAX_SIZE_MM)
+    plate_width_mm: float = Field(90.0, ge=1e-3, le=MAX_SIZE_MM)
     x_center_mm: float | None = Field(
         None, ge=-MAX_COORD_MM, le=MAX_COORD_MM,
         description="Plate centre along X; default = mid-span between supports",
@@ -341,6 +346,12 @@ class Bridge(_Strict):
             a, b = nodes[m.i], nodes[m.j]
             if (a.x_mm, a.y_mm, a.z_mm) == (b.x_mm, b.y_mm, b.z_mm):
                 raise ValueError(f"Member {m.id!r} has zero length")
+        total = sum(math.dist(nodes[m.i].xyz, nodes[m.j].xyz) for m in self.members)
+        if total > MAX_TOTAL_MEMBER_LENGTH_MM:
+            raise ValueError(
+                f"Members add up to {total / 1000:,.0f} m; the limit is "
+                f"{MAX_TOTAL_MEMBER_LENGTH_MM / 1000:,.0f} m (a Troitsky bridge has 20 to 40 m)."
+            )
         support_nodes = (
             self.supports.pinned + self.supports.roller + list(self.supports.extra_restraints)
         )

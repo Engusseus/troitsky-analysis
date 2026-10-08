@@ -19,10 +19,9 @@ from bridgesim.loads import mid_span_x
 from bridgesim.schema import Bridge, Material
 
 SAMPLE_MM = 2.0
-#: Upper bound on samples per member (a 10 m member at 2 mm spacing), whatever its length.
-MAX_SAMPLES = 5001
-#: Upper bound on samples over the whole bridge (about 10 MB of points). A real bridge has
-#: well under 20 m of members (10,000 samples); larger models are sampled more coarsely.
+#: Upper bound on samples over the whole bridge (about 10 MB of points). The schema limits
+#: the total member length (``MAX_TOTAL_MEMBER_LENGTH_MM``) so that every member is always
+#: sampled at SAMPLE_MM; sampling more coarsely could let a member slip through a clearance.
 MAX_TOTAL_SAMPLES = 400_000
 _TOL = 0.5  # mm
 
@@ -55,12 +54,10 @@ class Measurements:
 
 
 def _sample_counts(lengths: list[float]) -> list[int]:
-    """Samples per member: every SAMPLE_MM, within MAX_SAMPLES and MAX_TOTAL_SAMPLES."""
-    ks = [min(MAX_SAMPLES, max(2, int(math.ceil(L / SAMPLE_MM)) + 1)) for L in lengths]
-    total = sum(ks)
-    if total > MAX_TOTAL_SAMPLES:
-        f = MAX_TOTAL_SAMPLES / total
-        ks = [max(2, int(k * f)) for k in ks]
+    """Samples per member, every SAMPLE_MM (never coarser, so no rule outcome changes)."""
+    ks = [max(2, int(math.ceil(L / SAMPLE_MM)) + 1) for L in lengths]
+    if sum(ks) > MAX_TOTAL_SAMPLES:  # unreachable for a schema-valid bridge
+        raise ValueError(f"Model too large for the geometric rule checks ({sum(ks)} samples)")
     return ks
 
 
@@ -123,11 +120,22 @@ def measure(
     v["total_height_mm"] = ymax - ymin
     # The bridge rests on the base platform, so no node and no deck can be lower than its
     # supports. Report it rather than clip it away: it is a modelling error.
+    # A member with an end resting on the table is cut flush there (its section may dip
+    # below the centreline end); any other member must stay clear of the table entirely.
     low = [n.id for n in bridge.nodes if n.y_mm < table_y - 1e-6]
     lowest = min([n.y_mm for n in bridge.nodes] + [deck.top_elevation_mm])
+    through = []
+    for s in S:
+        if s.pts[[0, -1], 1].min() <= table_y + 1e-6:
+            continue
+        bottom = float((s.pts[:, 1] - s.h[1]).min())
+        if bottom < table_y - 1e-6:
+            through.append(s.member)
+            lowest = min(lowest, bottom)
     v["below_table_mm"] = max(0.0, table_y - lowest)
-    v["above_table_ok"] = float(not low and deck.top_elevation_mm >= table_y)
+    v["above_table_ok"] = float(not low and not through and deck.top_elevation_mm >= table_y)
     d["below_table_nodes"] = low
+    d["below_table_members"] = through
 
     # ---- widths (§8.2.3) --------------------------------------------------------------
     zmin = min([float((s.pts[:, 2] - s.h[2]).min()) for s in S] + [zc - deck.clear_width_mm / 2])

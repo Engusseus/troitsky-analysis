@@ -194,11 +194,12 @@ def _design_panel(ruleset: RuleSet) -> None:
                 ss.result, ss.error = None, None  # re-analyse with the new geometry
             except BAD_FILE as exc:
                 sb.error("Could not read the bridge file:  \n" + _lines_md(friendly_error(exc)))
-                ss.uploaded_bridge, ss.result = None, None  # fall back to the parametric design
+                # fall back to the parametric design, without an error from the old bridge
+                ss.uploaded_bridge, ss.result, ss.error = None, None, None
         elif up is None and ss.seen_digest is not None:  # the file was removed
             ss.seen_digest = None
             if ss.bridge_from_uploader:  # a restored snapshot is not tied to the uploader
-                ss.uploaded_bridge, ss.result = None, None
+                ss.uploaded_bridge, ss.result, ss.error = None, None, None
         if ss.uploaded_bridge is not None:
             sb.success(f"Loaded “{md(ss.uploaded_bridge.name)}”: {len(ss.uploaded_bridge.nodes)}"
                        f" nodes, {len(ss.uploaded_bridge.members)} members")

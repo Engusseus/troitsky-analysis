@@ -366,16 +366,19 @@ def test_absurd_coordinates_are_rejected() -> None:
         Bridge.model_validate(data)
 
 
-def test_samples_per_member_are_capped() -> None:
+def test_long_members_keep_the_2_mm_sample_spacing() -> None:
+    """A 90 m member is still sampled every 2 mm (coarser sampling could hide a clash)."""
+    import numpy as np
+
     from bridgesim.materials import load_material
-    from bridgesim.measure import MAX_SAMPLES, _samples
+    from bridgesim.measure import SAMPLE_MM, _samples
 
     data = generate_warren().model_dump(mode="json")
     data["nodes"].append({"id": "far", "x_mm": 90_000.0, "y_mm": 300.0, "z_mm": 0.0})
     data["members"].append({"id": "long", "i": "C0", "j": "far", "section": "pier"})
     b = Bridge.model_validate(data)
-    samples = _samples(b, load_material("popsicle_birch"), 0.0)
-    assert max(len(s.pts) for s in samples) <= MAX_SAMPLES
+    s = next(x for x in _samples(b, load_material("popsicle_birch"), 0.0) if x.member == "long")
+    assert np.linalg.norm(np.diff(s.pts, axis=0), axis=1).max() <= SAMPLE_MM + 1e-9
 
 
 @pytest.mark.parametrize("penalty", [-5.0, float("nan"), float("inf")])
@@ -482,15 +485,21 @@ def test_only_connected_chains_are_offered_as_group_diagrams() -> None:
 # --------------------------------------------------------------------------- eighth review round
 
 
-def test_samples_over_the_whole_bridge_are_capped() -> None:
-    """Thousands of long members must not allocate hundreds of MB of sample points."""
-    from bridgesim.measure import MAX_SAMPLES, MAX_TOTAL_SAMPLES, _sample_counts
+def test_total_member_length_is_bounded() -> None:
+    """Thousands of long members are rejected up front instead of being sampled coarsely."""
+    from bridgesim.measure import MAX_TOTAL_SAMPLES, _sample_counts
 
-    counts = _sample_counts([10_000.0] * 6000)
-    assert max(counts) <= MAX_SAMPLES
-    assert sum(counts) <= MAX_TOTAL_SAMPLES + 2 * 6000
-    assert min(counts) >= 2
-    assert _sample_counts([100.0, 3.0]) == [51, 3]  # normal bridges keep 2 mm spacing
+    data = generate_warren().model_dump(mode="json")
+    for k in range(60):
+        data["nodes"].append({"id": f"far{k}", "x_mm": 90_000.0, "y_mm": 300.0 + k,
+                              "z_mm": 0.0})
+        data["members"].append({"id": f"long{k}", "i": "C0", "j": f"far{k}",
+                                "section": "pier"})
+    with pytest.raises(ValidationError, match="the limit is 500 m"):
+        Bridge.model_validate(data)
+    with pytest.raises(ValueError):
+        _sample_counts([10_000.0] * 6000)
+    assert sum(_sample_counts([500_000.0 / 6000] * 6000)) <= MAX_TOTAL_SAMPLES
 
 
 def test_deflection_governing_label_uses_the_active_limit() -> None:
@@ -758,3 +767,58 @@ def test_member_diagrams_plot_sagging_positive_with_v_equal_dm_dx() -> None:
     x, _, V, M, _ = viz.member_chain_diagrams(r, ["fb4n"], r.P_ref_N)
     assert M.max() > 0 and M[-1] == pytest.approx(M.max())  # sagging at the deck centre
     np.testing.assert_allclose(V[1:-1], np.gradient(M, x)[1:-1], rtol=1e-6)
+
+
+# --------------------------------------------------------------------------- tenth review round
+
+
+def test_member_surface_through_the_platform_fails_the_rule() -> None:
+    """A member not resting on the table whose section dips below it is reported."""
+    from bridgesim.materials import load_material
+    from bridgesim.rules import evaluate
+
+    b = generate_warren()
+    data = b.model_dump(mode="json")
+    p0, pn = b.node_map()["P0n"], b.node_map()[f"P{b.metadata['params']['n_panels']}n"]
+    data["nodes"] += [{"id": "lo1", "x_mm": p0.x_mm + 100, "y_mm": 1.0, "z_mm": p0.z_mm},
+                      {"id": "lo2", "x_mm": pn.x_mm - 100, "y_mm": 1.0, "z_mm": pn.z_mm}]
+    data["members"].append({"id": "low_tie", "i": "lo1", "j": "lo2", "section": "pier"})
+    rep = evaluate(Bridge.model_validate(data), load_material("popsicle_birch"))
+    r = next(r for r in rep.results if r.key == "above_platform")
+    assert r.passed is False
+
+
+def test_branching_group_is_not_a_chain() -> None:
+    from bridgesim import viz
+
+    b = generate_warren()
+    nodes = b.node_map()
+    data = b.model_dump(mode="json")
+    t = nodes["T1n"]
+    data["nodes"].append({"id": "spur", "x_mm": t.x_mm, "y_mm": t.y_mm + 50, "z_mm": t.z_mm})
+    data["members"].append({"id": "branch", "i": "T1n", "j": "spur", "section": "top_chord",
+                            "group": "top_chord"})
+    b2 = Bridge.model_validate(data)
+    chord = viz.chain_for_group(b, "top_chord", "n")
+    assert viz.is_connected_chain(b2, chord)
+    mm = {m.id: m for m in b.members}
+    k = next(i for i, mid in enumerate(chord) if mm[mid].j == "T1n")
+    # T0-T1, T1-spur, T1-T2: every neighbour pair shares a node, but it is a branch
+    assert not viz.is_connected_chain(b2, chord[:k + 1] + ["branch"] + chord[k + 1:])
+
+
+@pytest.mark.parametrize("step", [1e-30, 1e-7])
+def test_tiny_rounding_steps_are_rejected(step: float) -> None:
+    data = RuleSet.load().model_dump()
+    data["rounding"]["length_mm"] = step
+    with pytest.raises(ValidationError, match="greater than"):
+        RuleSet.model_validate(data)
+
+
+def test_stick_dimensions_that_underflow_are_rejected() -> None:
+    from bridgesim.materials import load_material
+
+    data = load_material("popsicle_birch").model_dump(mode="json")
+    data["stick"] = {"length_mm": 1e-300, "width_mm": 1e-300, "thickness_mm": 1e-300}
+    with pytest.raises(ValidationError):
+        Material.model_validate(data)

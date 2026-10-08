@@ -439,13 +439,17 @@ def _chain_reversed(bridge: Bridge, member_ids: list[str]) -> list[bool]:
 
 
 def is_connected_chain(bridge: Bridge, member_ids: list[str]) -> bool:
-    """True if each member shares a node with the next one (a continuous chain)."""
+    """True if the members can be walked end to end in order: each one starts at the node
+    where the previous one ended (no gaps, no branches such as A-B, B-C, B-D)."""
     if not member_ids:
         return False
     mm = {m.id: m for m in bridge.members}
-    for a, b in zip(member_ids[:-1], member_ids[1:], strict=True):
-        if not {mm[a].i, mm[a].j} & {mm[b].i, mm[b].j}:
+    end = None
+    for mid, rev in zip(member_ids, _chain_reversed(bridge, member_ids), strict=True):
+        start, stop = (mm[mid].j, mm[mid].i) if rev else (mm[mid].i, mm[mid].j)
+        if end is not None and start != end:
             return False
+        end = stop
     return True
 
 
