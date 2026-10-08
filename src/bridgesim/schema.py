@@ -45,8 +45,13 @@ Release = Literal["Rxi", "Ryi", "Rzi", "Rxj", "Ryj", "Rzj"]
 DOF = Literal["DX", "DY", "DZ", "RX", "RY", "RZ"]
 
 
+#: Coordinates beyond +/-100 m are certainly a units mistake (bridges are ~1.4 m long) and
+#: would make geometric sampling allocate huge arrays.
+MAX_COORD_MM = 100_000.0
+
+
 class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 def _plain_text(v: str) -> str:
@@ -156,9 +161,9 @@ COORD_DECIMALS = 6
 
 class Node(_Strict):
     id: str
-    x_mm: float
-    y_mm: float
-    z_mm: float
+    x_mm: float = Field(ge=-MAX_COORD_MM, le=MAX_COORD_MM)
+    y_mm: float = Field(ge=-MAX_COORD_MM, le=MAX_COORD_MM)
+    z_mm: float = Field(ge=-MAX_COORD_MM, le=MAX_COORD_MM)
 
     _id = field_validator("id")(lambda cls, v: _plain_text(v))
 
@@ -344,7 +349,9 @@ class Bridge(_Strict):
         return ((b.x_mm - a.x_mm) ** 2 + (b.y_mm - a.y_mm) ** 2 + (b.z_mm - a.z_mm) ** 2) ** 0.5
 
     def support_nodes(self) -> list[str]:
-        return list(dict.fromkeys(self.supports.pinned + self.supports.roller))
+        """Nodes the bridge stands on: pinned, roller, and any extra restraint in DY."""
+        vertical = [n for n, dofs in self.supports.extra_restraints.items() if "DY" in dofs]
+        return list(dict.fromkeys(self.supports.pinned + self.supports.roller + vertical))
 
     def reaction_nodes(self) -> list[str]:
         """Supports plus any node restrained in translation through extra_restraints."""

@@ -91,10 +91,15 @@ def _init_state() -> None:
     ss.setdefault("error", None)
     ss.setdefault("form_ver", 0)  # bumped when inputs are replaced from outside the form
     ss.setdefault("rules_key", None)
-    ss.setdefault("upload_key", None)
+    ss.setdefault("seen_digest", None)  # uploader content already processed (or ignored)
+    ss.setdefault("bridge_from_uploader", False)
 
 
 BAD_FILE = (ValidationError, ValueError, yaml.YAMLError, UnicodeDecodeError)
+
+
+def _digest(uploaded) -> str | None:
+    return hashlib.sha256(uploaded.getvalue()).hexdigest() if uploaded is not None else None
 
 
 def _replace_inputs() -> None:
@@ -157,11 +162,12 @@ def _design_panel(ruleset: RuleSet) -> None:
         ss.source, ss.result, ss.error = source, None, None
     if ss.source == "Upload bridge YAML":
         up = sb.file_uploader("bridge.yaml", type=["yaml", "yml"], key="bridge_up")
-        digest = hashlib.sha256(up.getvalue()).hexdigest() if up is not None else None
-        if up is not None and ss.upload_key != digest:
+        digest = _digest(up)
+        if up is not None and digest != ss.seen_digest:
             try:
                 ss.uploaded_bridge = Bridge.from_yaml_str(up.getvalue().decode("utf-8"))
-                ss.upload_key = digest  # only after it parsed, so a fixed file is re-read
+                ss.seen_digest = digest  # only after it parsed, so a fixed file is re-read
+                ss.bridge_from_uploader = True
                 if isinstance(ss.uploaded_bridge.material, Material):
                     ss.material = ss.uploaded_bridge.material
                     _replace_inputs()
@@ -169,8 +175,10 @@ def _design_panel(ruleset: RuleSet) -> None:
             except BAD_FILE as exc:
                 sb.error(f"Could not read the bridge file:\n\n{exc}")
                 ss.uploaded_bridge, ss.result = None, None  # fall back to the parametric design
-        elif up is None and ss.upload_key is not None:  # the file was removed
-            ss.uploaded_bridge, ss.upload_key, ss.result = None, None, None
+        elif up is None and ss.seen_digest is not None:  # the file was removed
+            ss.seen_digest = None
+            if ss.bridge_from_uploader:  # a restored snapshot is not tied to the uploader
+                ss.uploaded_bridge, ss.result = None, None
         if ss.uploaded_bridge is not None:
             sb.success(f"Loaded “{md(ss.uploaded_bridge.name)}”: {len(ss.uploaded_bridge.nodes)}"
                        f" nodes, {len(ss.uploaded_bridge.members)} members")
@@ -400,7 +408,23 @@ def _diagrams(bridge: Bridge, r: AnalysisResult) -> None:
     st.download_button("Download PNG", png, file_name=name, mime="image/png")
 
 
-def _compare(r: AnalysisResult, rep: RulesReport, bridge: Bridge) -> None:
+def _snapshot_metrics(snap: dict, ruleset: RuleSet, rules_key: str) -> dict:
+    """Metrics of a saved design under the active rules (recomputed if the rules changed)."""
+    if snap.get("rules_key") != rules_key:
+        try:
+            material = Material.model_validate(snap["material"])
+            b = Bridge.from_yaml_str(snap["bridge_yaml"]).model_copy(
+                update={"material": material})
+            b = apply_crushing(b, ruleset)
+            res = analyze(b, material, ruleset.crushing.deflection_limit_mm)
+            snap["metrics"] = _metrics(res, evaluate(b, material, ruleset))
+        except Exception as exc:  # show why instead of stale numbers
+            snap["metrics"] = {"F_u,p (kgf)": f"not recomputed: {type(exc).__name__}"}
+        snap["rules_key"] = rules_key
+    return snap["metrics"]
+
+
+def _compare(r: AnalysisResult, rep: RulesReport, bridge: Bridge, ruleset: RuleSet) -> None:
     ss = st.session_state
     c1, c2 = st.columns([2, 1])
     name = c1.text_input("Save the current design as", value=f"Design {chr(65 + len(ss.saved))}")
@@ -408,9 +432,11 @@ def _compare(r: AnalysisResult, rep: RulesReport, bridge: Bridge) -> None:
         ss.saved[name] = {
             "bridge_yaml": bridge.to_yaml(), "material": ss.material.model_dump(),
             "params": copy.deepcopy(ss.params), "source": ss.source,
-            "metrics": _metrics(r, rep),
+            "metrics": _metrics(r, rep), "rules_key": ss.rules_key,
         }
-    rows = {"Current": _metrics(r, rep)} | {k: v["metrics"] for k, v in ss.saved.items()}
+    rows = {"Current": _metrics(r, rep)} | {
+        k: _snapshot_metrics(v, ruleset, ss.rules_key) for k, v in ss.saved.items()}
+    st.caption(f"All rows evaluated with the active rules ({md(ruleset.name)}).")
     st.dataframe(pd.DataFrame(rows).astype(str), **_stretch())
     if ss.saved:
         c3, c4, c5 = st.columns([2, 1, 1])
@@ -421,7 +447,9 @@ def _compare(r: AnalysisResult, rep: RulesReport, bridge: Bridge) -> None:
             ss.params = copy.deepcopy(snap["params"])
             if snap["source"] == "Upload bridge YAML":
                 ss.uploaded_bridge = Bridge.from_yaml_str(snap["bridge_yaml"])
-                ss.upload_key = None  # not from the uploader: don't clear it on rerun
+                ss.bridge_from_uploader = False
+                # A file still sitting in the uploader must not replace the restored design.
+                ss.seen_digest = _digest(ss.get("bridge_up"))
             ss.source = snap["source"]
             ss.result = None
             _replace_inputs()
@@ -540,7 +568,7 @@ def main() -> None:
     with tabs[2]:
         _diagrams(bridge, r)
     with tabs[3]:
-        _compare(r, rep, bridge)
+        _compare(r, rep, bridge, ruleset)
     with tabs[4]:
         _export(bridge, r, rep)
     with tabs[5]:

@@ -19,6 +19,8 @@ from bridgesim.loads import mid_span_x
 from bridgesim.schema import Bridge, Material
 
 SAMPLE_MM = 2.0
+#: Upper bound on samples per member (a 10 m member at 2 mm spacing), whatever its length.
+MAX_SAMPLES = 5001
 _TOL = 0.5  # mm
 
 DEFAULT_CONSTANTS: dict[str, float] = {
@@ -56,7 +58,7 @@ def _samples(bridge: Bridge, material: Material, table_y: float) -> list[_Sample
     for m in bridge.members:
         a, b = np.array(nodes[m.i].xyz), np.array(nodes[m.j].xyz)
         L = float(np.linalg.norm(b - a))
-        k = max(2, int(math.ceil(L / SAMPLE_MM)) + 1)
+        k = min(MAX_SAMPLES, max(2, int(math.ceil(L / SAMPLE_MM)) + 1))
         t = np.linspace(0.0, 1.0, k)[:, None]
         bm, dm = secs[m.section].dims(material.stick)
         touches = min(a[1], b[1]) <= table_y + _TOL

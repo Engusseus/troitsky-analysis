@@ -30,10 +30,10 @@ def _plain_text(v: str) -> str:
 
 
 class Band(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     min: float | None = None
     max: float | None = None
-    penalty: float = 0
+    penalty: float = Field(0, ge=0)
     bans: list[str] = Field(default_factory=list)
 
     _bans = field_validator("bans")(lambda cls, v: [_plain_text(b) for b in v])
@@ -43,8 +43,8 @@ class Band(BaseModel):
 
 
 class Consequence(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    penalty: float = 0
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    penalty: float = Field(0, ge=0)
     bans: list[str] = Field(default_factory=list)
     disqualification: bool = False
 

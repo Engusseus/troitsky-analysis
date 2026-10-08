@@ -108,7 +108,7 @@ def test_material_rejects_nonphysical_values(key: str, value: float) -> None:
 
     data = load_material("popsicle_birch").model_dump()
     data[key]["value"] = value
-    with pytest.raises(ValidationError, match="not physical"):
+    with pytest.raises(ValidationError, match="not physical|finite number"):
         Material.model_validate(data)
 
 
@@ -341,3 +341,64 @@ def test_dollar_signs_in_names_do_not_break_png_export() -> None:
     r = analyze(b)
     assert viz.figure_png(viz.global_sfd_bmd_figure(r))[:4] == b"\x89PNG"
     assert viz.figure_png(viz.member_diagrams_figure(r, ["bc0n"], r"$bad$"))[:4] == b"\x89PNG"
+
+
+# --------------------------------------------------------------------------- sixth review round
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("nan")])
+def test_non_finite_member_and_geometry_values_are_rejected(value: float) -> None:
+    data = generate_warren().model_dump(mode="json")
+    data["members"][0]["K"] = value
+    with pytest.raises(ValidationError):
+        Bridge.model_validate(data)
+    data = generate_warren().model_dump(mode="json")
+    data["deck"]["thickness_mm"] = value
+    with pytest.raises(ValidationError):
+        Bridge.model_validate(data)
+
+
+def test_absurd_coordinates_are_rejected() -> None:
+    """A 1e9 mm member would make geometric sampling allocate ~500 million points."""
+    data = generate_warren().model_dump(mode="json")
+    data["nodes"][0]["x_mm"] = 1e9
+    with pytest.raises(ValidationError):
+        Bridge.model_validate(data)
+
+
+def test_samples_per_member_are_capped() -> None:
+    from bridgesim.materials import load_material
+    from bridgesim.measure import MAX_SAMPLES, _samples
+
+    data = generate_warren().model_dump(mode="json")
+    data["nodes"].append({"id": "far", "x_mm": 90_000.0, "y_mm": 300.0, "z_mm": 0.0})
+    data["members"].append({"id": "long", "i": "C0", "j": "far", "section": "pier"})
+    b = Bridge.model_validate(data)
+    samples = _samples(b, load_material("popsicle_birch"), 0.0)
+    assert max(len(s.pts) for s in samples) <= MAX_SAMPLES
+
+
+@pytest.mark.parametrize("penalty", [-5.0, float("nan"), float("inf")])
+def test_band_penalties_must_be_finite_and_nonnegative(penalty: float) -> None:
+    data = RuleSet.load().model_dump()
+    span = next(r for r in data["rules"] if r["key"] == "span_length")
+    span["bands"][1]["penalty"] = penalty
+    with pytest.raises(ValidationError):
+        RuleSet.model_validate(data)
+
+
+def test_vertical_extra_restraints_count_as_supports_for_geometry() -> None:
+    """Supports given only via extra_restraints (DY) define mid-span and the table level."""
+    from bridgesim.loads import mid_span_x
+    from bridgesim.materials import load_material
+    from bridgesim.measure import measure
+    from bridgesim.schema import Supports
+
+    b = generate_warren()
+    n = b.metadata["params"]["n_panels"]
+    sup = Supports(pinned=["P0n"], roller=[],
+                   extra_restraints={"P0f": ["DX", "DY", "DZ"], f"P{n}n": ["DY", "DZ"],
+                                     f"P{n}f": ["DY", "DZ"]})
+    b2 = b.model_copy(update={"supports": sup})
+    assert mid_span_x(b2) == pytest.approx(mid_span_x(b))
+    assert measure(b2, load_material("popsicle_birch"))["span_cc_mm"] == pytest.approx(1150.0)
