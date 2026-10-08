@@ -941,7 +941,7 @@ def test_report_states_the_buckling_mesh_used(monkeypatch) -> None:
     monkeypatch.setattr(analysis_mod, "REFINE_MAX_MEMBERS", 10)
     r1 = analyze(generate_warren())
     assert any("one element per member" in a for a in model_assumptions(r1))
-    assert any("one element per member" in w for w in r1.warnings)
+    assert any("one element for every member" in w for w in r1.warnings)
     assert not r1.fe_model.members["bc0n"].sub_members or len(
         r1.fe_model.members["bc0n"].sub_members) == 1
 
@@ -1006,3 +1006,89 @@ def test_glued_faces_must_be_whole() -> None:
     data["glue"]["faces"]["value"] = 1.5
     with pytest.raises(ValidationError, match="whole number"):
         Material.model_validate(data)
+
+
+# ------------------------------------------------------------------------ thirteenth review round
+
+
+def test_members_that_cannot_be_split_are_reported() -> None:
+    """Two coincident members lie on each other at every split point: both stay single
+    elements, and the report and warnings say so."""
+    from bridgesim.report import model_assumptions
+
+    data = generate_warren().model_dump(mode="json")
+    bc = next(m for m in data["members"] if m["id"] == "bc0n")
+    data["members"].append({**bc, "id": "bc0n_twin"})
+    r = analyze(Bridge.model_validate(data))
+    assert sorted(r.buckling_unsplit_members) == ["bc0n", "bc0n_twin"]
+    assert any("except 2 member(s)" in a for a in model_assumptions(r))
+
+
+def test_dense_fallback_stays_within_a_modest_memory_budget() -> None:
+    from bridgesim.stability import DENSE_FALLBACK_MAX_DOF
+
+    assert 2 * DENSE_FALLBACK_MAX_DOF**2 * 8 <= 100e6  # two dense float64 matrices
+
+
+@pytest.mark.parametrize("key, value", [("density_kg_m3", 5e-324), ("E_MPa", 1e-300),
+                                        ("f_b_MPa", 1e-9)])
+def test_material_values_that_would_underflow_are_rejected(key: str, value: float) -> None:
+    from bridgesim.materials import load_material
+
+    data = load_material("popsicle_birch").model_dump(mode="json")
+    data[key]["value"] = value
+    with pytest.raises(ValidationError, match="not physical"):
+        Material.model_validate(data)
+
+
+def test_band_endpoints_are_bounded() -> None:
+    data = RuleSet.load().model_dump()
+    data["rounding"]["length_mm"] = 2e-6
+    for rule in data["rules"]:  # gap-free at any step, but 1e308 / 2e-6 overflows
+        if rule["type"] == "bands":
+            rule["bands"] = [{"max": 1e308}, {"min": 1e308}]
+    with pytest.raises(ValidationError):
+        RuleSet.model_validate(data)
+
+
+def test_a_support_above_the_platform_fails_the_rule() -> None:
+    from bridgesim.materials import load_material
+    from bridgesim.rules import evaluate
+
+    data = generate_warren().model_dump(mode="json")
+    next(n for n in data["nodes"] if n["id"] == "P0n")["y_mm"] = 10.0
+    rep = evaluate(Bridge.model_validate(data), load_material("popsicle_birch"))
+    assert next(r for r in rep.results if r.key == "above_platform").passed is False
+
+
+def test_horizontal_reaction_without_vertical_reaction_warns() -> None:
+    """A node restrained only in DX carries thrust with no normal force, so no friction."""
+    b = generate_warren()
+    sup = b.supports.model_copy(update={"extra_restraints": {"B1n": ["DX"]}})
+    r = analyze(b.model_copy(update={"supports": sup}))
+    assert any("Support B1n needs a horizontal reaction" in w for w in r.warnings)
+
+
+def test_duplicate_rule_keys_are_rejected() -> None:
+    data = RuleSet.load().model_dump()
+    data["rules"].append(dict(next(r for r in data["rules"] if r["key"] == "mass")))
+    with pytest.raises(ValidationError, match="duplicate rule keys"):
+        RuleSet.model_validate(data)
+
+
+@pytest.mark.parametrize("keep", ["none", "info"])
+def test_rules_files_must_check_something(keep: str) -> None:
+    data = RuleSet.load().model_dump()
+    data["rules"] = [] if keep == "none" else [r for r in data["rules"] if r["type"] == "info"]
+    with pytest.raises(ValidationError, match="no rule the tool can check"):
+        RuleSet.model_validate(data)
+
+
+def test_rule_labels_must_be_single_line_but_notes_may_wrap() -> None:
+    data = RuleSet.load().model_dump()
+    data["rules"][0]["title"] = "Span\n  [PASS] forged result"
+    with pytest.raises(ValidationError, match="line breaks"):
+        RuleSet.model_validate(data)
+    data = RuleSet.load().model_dump()
+    data["rules"][0]["note"] = "first line\nsecond line"
+    RuleSet.model_validate(data)

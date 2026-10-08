@@ -46,7 +46,8 @@ INTERIOR_PREFIX = "~mid "
 #: Above this many members the split is skipped: Pynite's member subdivision scans every
 #: node for every member, and the extra nodes would make very large uploads slow.
 REFINE_MAX_MEMBERS = 1500
-_SPLIT_AT = (0.5, 0.45, 0.55, 0.4, 0.6, 0.35, 0.65)
+_SPLIT_AT = tuple(sorted((0.5 + k * d for k in range(13) for d in (0.025, -0.025)),
+                         key=lambda t: abs(t - 0.5)))  # 0.5, 0.475, 0.525, ... 0.2, 0.8
 
 
 def _interior_points(bridge: Bridge) -> dict[str, tuple[float, float, float]]:
@@ -97,12 +98,16 @@ def build_model(bridge: Bridge, material: Material, P_N: float | None = None) ->
         rel = member_releases(bridge, mem)
         if rel:
             m.def_releases(mem.id, **{r: True for r in rel})
+    split: dict[str, tuple[float, float, float]] = {}
     if len(bridge.members) <= REFINE_MAX_MEMBERS:
         prefix = INTERIOR_PREFIX
         while any(n.id.startswith(prefix) for n in bridge.nodes):
             prefix = "~" + prefix
-        for mid, (x, y, z) in _interior_points(bridge).items():
+        split = _interior_points(bridge)
+        for mid, (x, y, z) in split.items():
             m.add_node(prefix + mid, x, y, z)
+    #: Members left as one element (model too large, or crossed at every split point).
+    m.unsplit_members = [mem.id for mem in bridge.members if mem.id not in split]
 
     for nid in bridge.supports.pinned:
         m.def_support(nid, support_DX=True, support_DY=True, support_DZ=True)

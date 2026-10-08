@@ -139,13 +139,15 @@ class Material(_Strict):
         """Reject values that cannot describe wood and glue (and would corrupt results)."""
         # Upper bounds are far above any real material (steel: E = 2e5 MPa, 7850 kg/m3) and
         # only stop finite but absurd values from overflowing capacities and masses.
+        # Lower bounds are far below any real material and keep products such as mass and
+        # capacities from underflowing to zero.
         limits = {  # name: (lower, upper, lower bound inclusive?)
-            "E_MPa": (0, 1e6, False), "G_MPa": (0, 1e6, False), "nu": (-1, 0.5, False),
-            "f_t_MPa": (0, 1e5, False), "f_c_MPa": (0, 1e5, False),
-            "f_b_MPa": (0, 1e5, False), "f_v_MPa": (0, 1e5, False),
-            "density_kg_m3": (0, 1e5, False), "glue.tau_g_MPa": (0, 1e5, False),
-            "glue.mass_fraction": (0, 1, True), "glue.overlap_mm": (0, MAX_SIZE_MM, False),
-            "glue.faces": (0, 100, False),
+            "E_MPa": (1, 1e6, True), "G_MPa": (1, 1e6, True), "nu": (-1, 0.5, False),
+            "f_t_MPa": (1e-3, 1e5, True), "f_c_MPa": (1e-3, 1e5, True),
+            "f_b_MPa": (1e-3, 1e5, True), "f_v_MPa": (1e-3, 1e5, True),
+            "density_kg_m3": (1, 1e5, True), "glue.tau_g_MPa": (1e-3, 1e5, True),
+            "glue.mass_fraction": (0, 1, True),
+            "glue.overlap_mm": (MIN_SIZE_MM, MAX_SIZE_MM, True), "glue.faces": (1, 100, True),
         }
         for key, prop in self.props().items():
             v = prop.value

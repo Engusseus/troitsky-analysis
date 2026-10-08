@@ -38,8 +38,9 @@ _DOFS = ("DX", "DY", "DZ", "RX", "RY", "RZ")
 #: Above this many free degrees of freedom the sparse (ARPACK) solver is used instead of a
 #: dense one, so memory stays proportional to the number of members.
 DENSE_MAX_DOF = 1500
-#: If the sparse solver fails to converge, retry densely up to this size (~0.5 GB).
-DENSE_FALLBACK_MAX_DOF = 6000
+#: If the sparse solver fails to converge, retry densely up to this size (two ~50 MB
+#: matrices); larger failures are reported as "not evaluated".
+DENSE_FALLBACK_MAX_DOF = 2500
 
 
 @dataclass

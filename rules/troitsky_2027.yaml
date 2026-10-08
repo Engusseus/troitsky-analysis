@@ -115,16 +115,17 @@ rules:
 
   - key: above_platform
     section: "8.2.2"
-    title: Whole bridge above the base platform
+    title: Whole bridge on and above the base platform
     type: check
     measure: above_table_ok
     show: [below_table_mm]
-    limit: no node and no deck below the lowest support
+    limit: every support on the platform; no node, member or deck below it
     fail: {penalty: 0}
     note: >-
       The bridge rests on the base platform (heights are measured from the ground,
-      §8.2.2.1), so nothing can be lower than its supports. A failure is a modelling error:
-      check the y coordinates. Height and clear-span results are not meaningful until fixed.
+      §8.2.2.1), so every support sits at the same elevation and nothing can be lower. A
+      failure is a modelling error: check the y coordinates. Height and clear-span results
+      are not meaningful until fixed.
 
   - key: clearance_above_deck
     section: "8.2.2.2"

@@ -23,16 +23,18 @@ from bridgesim.schema import MAX_SIZE_MM, Bridge, Material
 from bridgesim.textsafe import has_control_chars
 
 
-def _plain_text(v: str) -> str:
-    if has_control_chars(v, allow="\n"):
-        raise ValueError("must not contain control characters")
+def _plain_text(v: str, multiline: bool = False) -> str:
+    """Labels are printed one per line (CLI, tables): only notes may span lines."""
+    if has_control_chars(v, allow="\n" if multiline else ""):
+        raise ValueError("must not contain control characters" + (
+            "" if multiline else " or line breaks"))
     return v
 
 
 class Band(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
-    min: float | None = None
-    max: float | None = None
+    min: float | None = Field(None, ge=-1e9, le=1e9)  # far beyond any measurement
+    max: float | None = Field(None, ge=-1e9, le=1e9)
     penalty: float = Field(0, ge=0)
     bans: list[str] = Field(default_factory=list)
 
@@ -91,8 +93,9 @@ class Rule(BaseModel):
     ambiguous: bool = False
     note: str = ""
 
-    _text = field_validator("key", "section", "title", "unit", "limit", "note")(
+    _text = field_validator("key", "section", "title", "unit", "limit")(
         lambda cls, v: _plain_text(v))
+    _note = field_validator("note")(lambda cls, v: _plain_text(v, multiline=True))
 
     @model_validator(mode="after")
     def _fields_for_type(self) -> Rule:
@@ -133,6 +136,17 @@ class RuleSet(BaseModel):
     rules: list[Rule] = Field(max_length=500)
 
     _text = field_validator("name", "rulebook")(lambda cls, v: _plain_text(v))
+
+    @field_validator("rules")
+    @classmethod
+    def _unique_and_checkable(cls, rules: list[Rule]) -> list[Rule]:
+        keys = [r.key for r in rules]
+        dupes = sorted({k for k in keys if keys.count(k) > 1})
+        if dupes:  # a duplicate would be evaluated (and penalised) twice
+            raise ValueError(f"duplicate rule keys: {dupes}")
+        if not any(r.type != "info" for r in rules):
+            raise ValueError("the rules file has no rule the tool can check")
+        return rules
 
     @field_validator("rounding", "constants")
     @classmethod

@@ -110,8 +110,9 @@ class AnalysisResult:
     mass: MassReport
     deflection_limit_mm: float = DEFLECTION_LIMIT_MM
     buckling: BucklingResult | None = None
-    #: Elements per member in the global buckling analysis (1 above REFINE_MAX_MEMBERS).
-    buckling_elements_per_member: int = 2
+    #: Members modelled as one element in the global buckling analysis (all of them above
+    #: REFINE_MAX_MEMBERS; otherwise any member crossed at every candidate split point).
+    buckling_unsplit_members: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     fe_model: Any = field(default=None, repr=False)
 
@@ -272,10 +273,11 @@ def analyze(
                 f"and the model is unconservative."
             )
         H = math.hypot(r.FX_N, r.FZ_N)
-        if r.FY_N > 0 and H > FRICTION_COEFF * r.FY_N:
+        friction = FRICTION_COEFF * max(r.FY_N, 0.0)
+        if H > friction + 1e-6 * P_ref:
             warnings.append(
                 f"Support {nid} needs a horizontal reaction of {H:.1f} N at P_ref, more than "
-                f"friction (mu = {FRICTION_COEFF}) can supply ({FRICTION_COEFF * r.FY_N:.1f} N)."
+                f"friction (mu = {FRICTION_COEFF}) can supply ({friction:.1f} N)."
                 f" Unanchored supports may slide (§8.3), e.g. arch thrust."
             )
     if not math.isfinite(Fu):
@@ -285,12 +287,13 @@ def analyze(
         )
     if buck is not None and buck.note and not math.isinf(buck.lambda_cr):
         warnings.append(f"Global buckling: {buck.note}")
-    n_el = 2 if len(bridge.members) <= REFINE_MAX_MEMBERS else 1
-    if buck is not None and n_el == 1 and math.isfinite(Fu_buck):
-        warnings.append(
-            f"Global buckling used one element per member (the model has more than "
-            f"{REFINE_MAX_MEMBERS} members), so F_cr may be a few percent too high."
-        )
+    unsplit = list(getattr(model, "unsplit_members", []))
+    if buck is not None and unsplit and math.isfinite(Fu_buck):
+        which = ("every member (the model has more than "
+                 f"{REFINE_MAX_MEMBERS} members)" if len(unsplit) == len(bridge.members)
+                 else f"{len(unsplit)} member(s) that could not be split")
+        warnings.append(f"Global buckling used one element for {which}, so F_cr may be a "
+                        f"few percent too high.")
     if math.isfinite(Fu_buck) and Fu < Fu_buck and Fu / Fu_buck > NEAR_BUCKLING_RATIO:
         ratio = Fu / Fu_buck
         warnings.append(
@@ -307,5 +310,5 @@ def analyze(
         Fu_strength_N=Fu_strength, Fu_deflection_N=Fu_delta, Fu_buckling_N=Fu_buck, Fu_pred_N=Fu,
         governing_member=gov_member, governing_mode=gov_mode,
         mass=bridge_mass(bridge, material), deflection_limit_mm=deflection_limit_mm,
-        buckling=buck, buckling_elements_per_member=n_el, warnings=warnings, fe_model=model,
+        buckling=buck, buckling_unsplit_members=unsplit, warnings=warnings, fe_model=model,
     )

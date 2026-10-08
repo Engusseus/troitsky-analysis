@@ -236,10 +236,16 @@ def model_assumptions(result: AnalysisResult) -> list[str]:
         shown = ", ".join(custom[:12]) + (f", … ({len(custom)} in total)" if len(custom) > 12
                                           else "")
         k_line = f"Effective-length factor K = 1 except: {shown}."
-    mesh = ("Global buckling mesh: two elements per member."
-            if result.buckling_elements_per_member >= 2 else
-            "Global buckling mesh: one element per member (the model is too large to refine), "
-            "so F_cr may be a few percent too high.")
+    unsplit = result.buckling_unsplit_members
+    if not unsplit:
+        mesh = "Global buckling mesh: two elements per member."
+    elif len(unsplit) == len(result.bridge.members):
+        mesh = ("Global buckling mesh: one element per member (the model is too large to "
+                "refine), so F_cr may be a few percent too high.")
+    else:
+        mesh = (f"Global buckling mesh: two elements per member, except {len(unsplit)} "
+                f"member(s) crossed by others at every split point ({', '.join(unsplit[:8])}"
+                f"{', …' if len(unsplit) > 8 else ''}), so F_cr may be slightly too high.")
     return [f"Material “{m.name}”: {vals}. {src}.", crusher, k_line, mesh, *MODEL_ASSUMPTIONS]
 
 

@@ -133,10 +133,15 @@ def measure(
         if bottom < table_y - 1e-6:
             through.append(s.member)
             lowest = min(lowest, bottom)
+    # All supports stand on the one flat platform; a higher one would be a reaction from
+    # nowhere (the table is taken at the lowest support).
+    floating = [n for n in sup if nodes[n].y_mm > table_y + 1e-6]
     v["below_table_mm"] = max(0.0, table_y - lowest)
-    v["above_table_ok"] = float(not low and not through and deck_bottom >= table_y - 1e-6)
+    v["above_table_ok"] = float(not low and not through and not floating
+                                and deck_bottom >= table_y - 1e-6)
     d["below_table_nodes"] = low
     d["below_table_members"] = through
+    d["floating_supports"] = floating
 
     # ---- widths (§8.2.3) --------------------------------------------------------------
     zmin = min([float((s.pts[:, 2] - s.h[2]).min()) for s in S] + [zc - deck.clear_width_mm / 2])
