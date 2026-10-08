@@ -224,11 +224,13 @@ def analyze(
     Fu_strength = P_ref / U_max if U_max > 0 else math.inf
     Fu_delta = P_ref * deflection_limit_mm / delta_ref if delta_ref > 0 else math.inf
     buck = global_buckling(model, bridge) if include_buckling else None
-    Fu_buck = (
-        buck.lambda_cr * P_ref if buck is not None and math.isfinite(buck.lambda_cr)
-        and buck.lambda_cr > 0 else math.inf
-    )
-    Fu = min(Fu_strength, Fu_delta, Fu_buck)
+    if buck is None or math.isinf(buck.lambda_cr):
+        Fu_buck = math.inf  # not requested, or no compression-driven mode exists
+    elif math.isnan(buck.lambda_cr) or buck.lambda_cr <= 0:
+        Fu_buck = math.nan  # solver failed: NOT evaluated (reported, never treated as inf)
+    else:
+        Fu_buck = buck.lambda_cr * P_ref
+    Fu = min(f for f in (Fu_strength, Fu_delta, Fu_buck) if not math.isnan(f))
     if Fu == Fu_strength:
         gov_member = U_max_member.id if U_max_member else None
         gov_mode = U_max_member.mode if U_max_member else "deflection"
@@ -258,7 +260,7 @@ def analyze(
             )
     if not math.isfinite(Fu):
         warnings.append("No member is stressed and nothing deflects: check the load path.")
-    if buck is not None and buck.note:
+    if buck is not None and buck.note and not math.isinf(buck.lambda_cr):
         warnings.append(f"Global buckling: {buck.note}")
 
     return AnalysisResult(

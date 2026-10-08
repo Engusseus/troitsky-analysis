@@ -123,9 +123,9 @@ def bridge_figure(
     crit_x, crit_y, crit_z, crit_ids = [], [], [], []
     for m in bridge.members:
         a, b = pos[m.i], pos[m.j]
-        u = res[m.id].U * lf if m.id in res else 0.0
-        if view == "buckling" and buck is not None:
-            u = buck.member_energy.get(m.id, 0.0)
+        u = res[m.id].U * lf if m.id in res else 0.0  # utilisation at F_u,p
+        energy = buck.member_energy.get(m.id, 0.0) if buck is not None else 0.0
+        cval = energy if view == "buckling" else u  # what the colour scale shows
         if result is None or view in ("buckling", "undeformed"):
             is_crit = False
         elif result.governing_mode == "global_buckling":
@@ -140,14 +140,14 @@ def bridge_figure(
             x, y, z = _plot_xyz(p)
             target[0].append(x), target[1].append(y), target[2].append(z)
             if target[0] is lx:
-                lc.append(u)
+                lc.append(cval)
         target[0].append(None), target[1].append(None), target[2].append(None)
         if target[0] is lx:
-            lc.append(u)
+            lc.append(cval)
         if is_crit:
             crit_ids.append(m.id)
         mid = _plot_xyz((a + b) / 2)
-        hx.append(mid[0]), hy.append(mid[1]), hz.append(mid[2]), hc.append(u)
+        hx.append(mid[0]), hy.append(mid[1]), hz.append(mid[2]), hc.append(cval)
         if m.id in res:
             r = res[m.id]
             ht.append(
@@ -157,7 +157,10 @@ def bridge_figure(
                 f"<br>M_z = {r.Mz_Nmm:.0f} N·mm, M_y = {r.My_Nmm:.0f} N·mm"
                 f"<br>U at P_ref = {r.U:.3f}; at F_u,p = {u:.2f}"
                 f"<br>Governing check: {r.util.mode_label}"
-                f"<br>Fails alone at {n_to_kgf(result.P_ref_N / r.U):.0f} kgf" if r.U > 0 else ""
+                + (f"<br>Fails alone at {n_to_kgf(result.P_ref_N / r.U):.0f} kgf"
+                   if r.U > 0 else "")
+                + (f"<br>Share of buckling-mode energy: {energy:.2f}"
+                   if view == "buckling" else "")
             )
         else:
             ht.append(f"<b>{html.escape(m.id)}</b> ({m.group})")

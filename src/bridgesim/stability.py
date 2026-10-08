@@ -37,6 +37,8 @@ _DOFS = ("DX", "DY", "DZ", "RX", "RY", "RZ")
 #: Above this many free degrees of freedom the sparse (ARPACK) solver is used instead of a
 #: dense one, so memory stays proportional to the number of members.
 DENSE_MAX_DOF = 1500
+#: If the sparse solver fails to converge, retry densely up to this size (~0.5 GB).
+DENSE_FALLBACK_MAX_DOF = 6000
 
 
 @dataclass
@@ -80,16 +82,22 @@ def global_buckling(
     G11 = 0.5 * (G11 + G11.T)
     if (G11.count_nonzero() if sparse else np.count_nonzero(G11)) == 0:
         return BucklingResult(math.inf, note="No axial forces: no buckling mode.")
+    failed = BucklingResult(
+        math.nan, note="The eigen-solver failed, so global buckling (instability) was NOT "
+                       "evaluated. The predicted load ignores it and may be too high.")
     try:
         if sparse:
-            k = max(1, min(n_modes, len(free) - 2))
-            mu, vecs = spla.eigsh(-G11, k=k, M=K11, which="LA")
+            try:
+                k = max(1, min(n_modes, len(free) - 2))
+                mu, vecs = spla.eigsh(-G11, k=k, M=K11, which="LA")
+            except (RuntimeError, spla.ArpackError):
+                if len(free) > DENSE_FALLBACK_MAX_DOF:
+                    return failed
+                mu, vecs = sla.eigh(-G11.toarray(), K11.toarray())
         else:
             mu, vecs = sla.eigh(-G11, K11)
-    except (np.linalg.LinAlgError, RuntimeError, spla.ArpackError):
-        return BucklingResult(math.nan, note="Stiffness matrix not positive definite or the "
-                                             "eigen-solver did not converge; global "
-                                             "buckling not evaluated.")
+    except (np.linalg.LinAlgError, ValueError):
+        return failed
     tol = 1e-12 * max(1.0, float(np.max(np.abs(mu))))
     pos = np.where(mu > tol)[0]
     if pos.size == 0:

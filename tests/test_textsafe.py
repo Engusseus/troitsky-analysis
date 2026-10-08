@@ -166,8 +166,76 @@ def test_report_states_the_material_actually_used() -> None:
     data = load_material("popsicle_birch").model_dump()
     data["E_MPa"] = {"value": 12345.0, "source": "measured", "note": ""}
     mat = Material.model_validate(data)
-    lines = model_assumptions(mat)
+    result = analyze(generate_warren(), mat)
+    lines = model_assumptions(result)
     assert "E = 12345" in lines[0] and "11 of 12 values are ASSUMED" in lines[0]
     assert "E = 10 GPa" not in "\n".join(lines)
-    md_text = to_markdown(analyze(generate_warren(), mat))
-    assert "E = 12345" in md_text
+    assert "E = 12345" in to_markdown(result)
+
+
+def test_report_states_the_crusher_actually_used() -> None:
+    """Assumptions quote the analysed plate size and deflection limit, not 2027 defaults."""
+    from bridgesim.materials import load_material
+    from bridgesim.report import model_assumptions
+    from bridgesim.rules import apply_crushing
+
+    rs = RuleSet.load()
+    rs.crushing.plate_length_mm, rs.crushing.plate_width_mm = 150.0, 80.0
+    bridge = apply_crushing(generate_warren(), rs)
+    result = analyze(bridge, load_material("popsicle_birch"), deflection_limit_mm=40.0)
+    text = "\n".join(model_assumptions(result))
+    assert "150 mm x 80 mm" in text and "40 mm mid-span deflection" in text
+    assert "200 mm x 90 mm" not in text and "at 50 mm" not in text
+
+
+def test_ban_labels_reject_control_characters() -> None:
+    data = RuleSet.load().model_dump()
+    span = next(r for r in data["rules"] if r["key"] == "span_length")
+    span["bands"][-1]["bans"] = [OSC52]
+    with pytest.raises(ValidationError):
+        RuleSet.model_validate(data)
+
+
+def test_unsupported_schema_version_is_rejected() -> None:
+    data = generate_warren().model_dump(mode="json")
+    data["schema_version"] = 2
+    with pytest.raises(ValidationError):
+        Bridge.model_validate(data)
+
+
+def test_node_cannot_be_both_pinned_and_roller() -> None:
+    data = generate_warren().model_dump(mode="json")
+    data["supports"]["roller"].append(data["supports"]["pinned"][0])
+    with pytest.raises(ValidationError, match="both pinned and roller"):
+        Bridge.model_validate(data)
+
+
+def test_failed_buckling_solve_is_reported_not_infinite(monkeypatch) -> None:
+    """If the eigen-solver fails, F_cr is NaN ('not evaluated') with a warning, never inf."""
+    import math
+
+    import bridgesim.analysis as analysis_mod
+    from bridgesim.stability import BucklingResult
+
+    monkeypatch.setattr(analysis_mod, "global_buckling",
+                        lambda model, bridge: BucklingResult(math.nan, note="solver failed"))
+    r = analysis_mod.analyze(generate_warren())
+    assert math.isnan(r.Fu_buckling_N)
+    assert math.isfinite(r.Fu_pred_N) and r.Fu_pred_N > 0
+    assert any("solver failed" in w for w in r.warnings)
+    from bridgesim.report import to_markdown
+
+    assert "NOT EVALUATED" in to_markdown(r)
+
+
+def test_buckling_view_hover_shows_utilisation_not_energy() -> None:
+    from bridgesim import viz
+
+    r = analyze(generate_warren())
+    fig = viz.bridge_figure(r.bridge, r, "buckling")
+    hover = next(t for t in fig.data if getattr(t, "hovertext", None) is not None
+                 and any("Governing check" in h for h in t.hovertext))
+    m = r.critical_members(1)[0]
+    text = next(h for h in hover.hovertext if f"<b>{m.id}</b>" in h)
+    assert f"at F_u,p = {m.U * r.load_factor:.2f}" in text
+    assert "Share of buckling-mode energy" in text

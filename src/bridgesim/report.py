@@ -24,8 +24,8 @@ if TYPE_CHECKING:
 MODEL_ASSUMPTIONS: list[str] = [
     "Linear-elastic, small-displacement 3D frame analysis (no P-Delta, no initial "
     "imperfections, no joint slip). The predicted load is the load at which the FIRST "
-    "member, joint or the 50 mm deflection limit is reached; load redistribution after "
-    "first failure is ignored.",
+    "member, joint, global buckling or the deflection limit is reached; load "
+    "redistribution after first failure is ignored.",
     "Every member is a prismatic Euler-Bernoulli frame element on its centre line. "
     "Laminated sticks act as one solid rectangle (perfect glue lines); splices along "
     "members longer than one stick (115 mm) are not weakened.",
@@ -42,8 +42,6 @@ MODEL_ASSUMPTIONS: list[str] = [
     "checked against the resultant member-end force. Chords are treated as continuous.",
     "The deck is non-structural: it only transfers the crusher-plate load to the "
     "floor-beam centre nodes as simply supported strips. Its stiffness is ignored.",
-    "Crusher plate: 200 mm x 90 mm uniform load centred at mid-span (§12.5). It is "
-    "applied at the floor-beam centre (z = 0), which over-estimates floor-beam bending.",
     "Supports rest on the platform without anchorage (§8.3): one end restrains DX, DY, DZ, "
     "the other DY, DZ; rotations free. Hold-down or large horizontal reactions are "
     "reported as warnings, never hidden.",
@@ -54,6 +52,8 @@ MODEL_ASSUMPTIONS: list[str] = [
 
 
 def _fmt_load(N: float) -> str:
+    if math.isnan(N):
+        return "NOT EVALUATED (see warnings)"
     if not math.isfinite(N):
         return "∞"
     return f"{N:,.0f} N ({n_to_kgf(N):,.1f} kgf)"
@@ -124,7 +124,7 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
         ("p", f"Material: **{mat.name}**. Stick {mat.stick.length_mm:g} × "
               f"{mat.stick.width_mm:g} × {mat.stick.thickness_mm:g} mm."),
         ("table", ["Property", "Value", "Source", "Note"], mrows),
-        ("ul", model_assumptions(mat)),
+        ("ul", model_assumptions(r)),
     ]
 
     loads = ", ".join(f"{nid}: {F:.1f} N" for nid, F in r.nodal_loads_N.items())
@@ -200,9 +200,10 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
     ]
 
 
-def model_assumptions(material) -> list[str]:
-    """MODEL_ASSUMPTIONS plus a line describing the material values actually used."""
-    m = material
+def model_assumptions(result: AnalysisResult) -> list[str]:
+    """MODEL_ASSUMPTIONS plus lines stating the material and crushing inputs actually used."""
+    m = result.material
+    load = result.bridge.load
     vals = (f"E = {m.E_MPa.value:g}, f_t = {m.f_t_MPa.value:g}, f_c = {m.f_c_MPa.value:g}, "
             f"f_b = {m.f_b_MPa.value:g}, f_v = {m.f_v_MPa.value:g} MPa; density "
             f"{m.density_kg_m3.value:g} kg/m^3; glue shear {m.glue.tau_g_MPa.value:g} MPa")
@@ -212,7 +213,13 @@ def model_assumptions(material) -> list[str]:
                f"data ({', '.join(assumed)})")
     else:
         src = "all values are marked as measured by the team"
-    return [f"Material “{m.name}”: {vals}. {src}.", *MODEL_ASSUMPTIONS]
+    crusher = (
+        f"Crusher plate {load.plate_length_mm:g} mm x {load.plate_width_mm:g} mm, uniform, "
+        f"centred at x = {result.plate.x_center_mm:.0f} mm (§12.5); failure at "
+        f"{result.deflection_limit_mm:g} mm mid-span deflection. The load is applied at the "
+        "floor-beam centres (z = 0), which over-estimates floor-beam bending."
+    )
+    return [f"Material “{m.name}”: {vals}. {src}.", crusher, *MODEL_ASSUMPTIONS]
 
 
 # --------------------------------------------------------------------------- renderers

@@ -285,6 +285,8 @@ def _results_card(r: AnalysisResult) -> None:
     st.markdown(f"**δ at F_u,p:** {r.delta_at_Fu_mm:.1f} / {r.deflection_limit_mm:g} mm")
     st.progress(min(1.0, pct))
     def lim(N: float) -> str:
+        if math.isnan(N):
+            return "NOT EVALUATED"
         return f"{n_to_kgf(N):,.0f} kgf" if math.isfinite(N) else "∞"
 
     st.caption(f"Limits: strength {lim(r.Fu_strength_N)} · deflection "
@@ -437,7 +439,8 @@ def _metrics(r: AnalysisResult, rep: RulesReport) -> dict:
         "Governs": r.governing_label + (f" ({r.governing_member})" if r.governing_member else ""),
         "δ at F_u,p (mm)": round(r.delta_at_Fu_mm, 1),
         "Global buckling (kgf)": round(n_to_kgf(r.Fu_buckling_N), 0)
-        if math.isfinite(r.Fu_buckling_N) else "∞",
+        if math.isfinite(r.Fu_buckling_N)
+        else ("not evaluated" if math.isnan(r.Fu_buckling_N) else "∞"),
         "Penalty (pts)": -rep.total_penalty or 0,
         "Bans": ", ".join(rep.bans) or "–",
         "Sticks (est.)": r.mass.stick_count,
@@ -476,7 +479,7 @@ def _export(bridge: Bridge, r: AnalysisResult, rep: RulesReport) -> None:
 
 def _method(r: AnalysisResult) -> None:
     st.markdown("**Modelling assumptions** (also in ASSUMPTIONS.md and the report)")
-    for a in report.model_assumptions(r.material):
+    for a in report.model_assumptions(r):
         st.markdown(f"- {a}")
     st.markdown("**Method: load-factor approach**")
     st.latex(r"U_i = \frac{|N|}{N_R} + \frac{|M_y|}{M_{R,y}} + \frac{|M_z|}{M_{R,z}},\qquad "

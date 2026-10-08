@@ -261,6 +261,13 @@ class Supports(_Strict):
     roller: list[str] = Field(default_factory=list)
     extra_restraints: dict[str, list[DOF]] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _no_overlap(self) -> Supports:
+        both = sorted(set(self.pinned) & set(self.roller))
+        if both:
+            raise ValueError(f"Nodes cannot be both pinned and roller supports: {both}")
+        return self
+
 
 class PlateLoad(_Strict):
     """Crusher plate (rulebook §12.5): uniform over plate_length along X, centred on x."""
@@ -277,7 +284,7 @@ class PlateLoad(_Strict):
 
 
 class Bridge(_Strict):
-    schema_version: int = SCHEMA_VERSION
+    schema_version: Literal[1] = SCHEMA_VERSION  # bump with a migration when fields change
     name: str = "Untitled bridge"
     material: str | Material = "popsicle_birch"
     joint_fixity: Literal["rigid", "pinned"] = "rigid"

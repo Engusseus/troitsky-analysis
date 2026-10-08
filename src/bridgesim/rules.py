@@ -36,6 +36,8 @@ class Band(BaseModel):
     penalty: float = 0
     bans: list[str] = Field(default_factory=list)
 
+    _bans = field_validator("bans")(lambda cls, v: [_plain_text(b) for b in v])
+
     def matches(self, v: float) -> bool:
         return (self.min is None or v >= self.min) and (self.max is None or v <= self.max)
 
@@ -45,6 +47,8 @@ class Consequence(BaseModel):
     penalty: float = 0
     bans: list[str] = Field(default_factory=list)
     disqualification: bool = False
+
+    _bans = field_validator("bans")(lambda cls, v: [_plain_text(b) for b in v])
 
 
 class Steps(BaseModel):
@@ -131,6 +135,8 @@ class RuleResult(BaseModel):
     penalty: float = 0
     bans: list[str] = Field(default_factory=list)
     disqualification: bool = False
+
+    _bans = field_validator("bans")(lambda cls, v: [_plain_text(b) for b in v])
     ambiguous: bool = False
     note: str = ""
 

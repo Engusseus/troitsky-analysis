@@ -27,6 +27,8 @@ RulesOpt = Annotated[str, typer.Option("--rules", "-r", help="Rules YAML path or
 
 
 def _kgf(N: float) -> str:
+    if math.isnan(N):
+        return "NOT EVALUATED"
     return f"{n_to_kgf(N):.1f} kgf" if math.isfinite(N) else "none"
 
 
@@ -42,8 +44,8 @@ def _print_rules(rep: RulesReport) -> None:
         amb = " (ambiguous rule, stricter reading)" if r.ambiguous else ""
         typer.echo(printable(f"  [{mark}] §{r.section:<9} {r.title}: {r.measured_text}"
                              f"{extra}{amb}"))
-    typer.echo(f"  Total penalty: {-rep.total_penalty or 0:g} pts; bans: "
-               f"{', '.join('§' + b for b in rep.bans) or 'none'}")
+    typer.echo(printable(f"  Total penalty: {-rep.total_penalty or 0:g} pts; bans: "
+                         f"{', '.join('§' + b for b in rep.bans) or 'none'}"))
     typer.echo(printable(f"  Not checked by the tool: {', '.join(r.title for r in rep.info)}"))
 
 
