@@ -14,6 +14,7 @@ from bridgesim.analysis import analyze
 from bridgesim.materials import bridge_material, load_material
 from bridgesim.rules import RuleSet, RulesReport, evaluate
 from bridgesim.schema import Bridge
+from bridgesim.textsafe import csv_row, printable
 from bridgesim.units import n_to_kgf
 
 app = typer.Typer(help="Troitsky popsicle-stick bridge analysis (bridgesim).",
@@ -30,7 +31,7 @@ def _kgf(N: float) -> str:
 
 
 def _print_rules(rep: RulesReport) -> None:
-    typer.echo(f"\nRule check ({rep.ruleset}):")
+    typer.echo(f"\nRule check ({printable(rep.ruleset)}):")
     for r in rep.results:
         if r.passed is None:
             continue
@@ -39,10 +40,11 @@ def _print_rules(rep: RulesReport) -> None:
         extra += f"  BANS {', '.join('§' + b for b in r.bans)}" if r.bans else ""
         extra += "  DISQUALIFICATION RISK" if r.disqualification else ""
         amb = " (ambiguous rule, stricter reading)" if r.ambiguous else ""
-        typer.echo(f"  [{mark}] §{r.section:<9} {r.title}: {r.measured_text}{extra}{amb}")
+        typer.echo(printable(f"  [{mark}] §{r.section:<9} {r.title}: {r.measured_text}"
+                             f"{extra}{amb}"))
     typer.echo(f"  Total penalty: {-rep.total_penalty or 0:g} pts; bans: "
                f"{', '.join('§' + b for b in rep.bans) or 'none'}")
-    typer.echo(f"  Not checked by the tool: {', '.join(r.title for r in rep.info)}")
+    typer.echo(printable(f"  Not checked by the tool: {', '.join(r.title for r in rep.info)}"))
 
 
 @app.command()
@@ -64,10 +66,10 @@ def run(
         typer.secho(f"WARNING: {len(assumed)} material values are ASSUMED placeholders "
                     f"({', '.join(assumed)}). Results are illustrative only.",
                     fg=typer.colors.YELLOW)
-    typer.echo(f"\n{bridge.name}  (bridgesim {__version__})")
+    typer.echo(f"\n{printable(bridge.name)}  (bridgesim {__version__})")
     typer.echo(f"  Predicted ultimate load F_u,p : {n_to_kgf(res.Fu_pred_N):8.1f} kgf "
                f"({res.Fu_pred_N:.0f} N)")
-    gov = f" in {res.governing_member}" if res.governing_member else ""
+    gov = f" in {printable(res.governing_member)}" if res.governing_member else ""
     typer.echo(f"  Governing                     : {res.governing_label}{gov}")
     typer.echo(f"  Limits: strength {_kgf(res.Fu_strength_N)}, deflection "
                f"{_kgf(res.Fu_deflection_N)}, global buckling {_kgf(res.Fu_buckling_N)}")
@@ -78,10 +80,10 @@ def run(
     typer.echo(f"  Efficiency eta_s              : {res.efficiency:.1f} kgf/kg")
     typer.echo("\n  Most critical members (utilisation at F_u,p):")
     for m in res.critical_members(5):
-        typer.echo(f"    {m.id:<10} {m.group:<13} U = {m.U * res.load_factor:5.2f}  "
+        typer.echo(f"    {printable(m.id):<10} {m.group:<13} U = {m.U * res.load_factor:5.2f}  "
                    f"{m.util.mode_label}")
     for w in res.warnings:
-        typer.secho(f"  WARNING: {w}", fg=typer.colors.YELLOW)
+        typer.secho(f"  WARNING: {printable(w)}", fg=typer.colors.YELLOW)
     _print_rules(rep)
 
     if out:
@@ -94,7 +96,7 @@ def run(
         with (out / "members.csv").open("w", newline="", encoding="utf-8") as fh:
             w = csv.DictWriter(fh, fieldnames=list(rows[0]))
             w.writeheader()
-            w.writerows(rows)
+            w.writerows(csv_row(r) for r in rows)
         (out / "sfd_bmd_global.png").write_bytes(
             viz.figure_png(viz.global_sfd_bmd_figure(res)))
         typer.echo(f"\nWrote report.md, report.html, members.csv, sfd_bmd_global.png to {out}")

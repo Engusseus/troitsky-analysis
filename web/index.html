@@ -30,8 +30,10 @@
     mount(
       {
         entrypoint: "web/stlite_entry.py",
+        // numpy..pyyaml come from the fixed Pyodide 0.29.3 lock; the two PyPI packages are
+        // pinned to the versions tested in docs/web-spike.md.
         requirements: ["numpy", "scipy", "matplotlib", "pandas", "pydantic", "pyyaml",
-                       "plotly", "prettytable"],
+                       "plotly==7.1.0", "prettytable==3.18.0"],
         files,
       },
       document.getElementById("root"),

@@ -4,6 +4,7 @@ the browser via stlite. Do not import PyVista or sectionproperties here (Pyodide
 from __future__ import annotations
 
 import csv
+import html
 import inspect
 import io
 import math
@@ -27,6 +28,7 @@ from bridgesim.materials import load_material, material_from_yaml_str
 from bridgesim.paths import list_yaml
 from bridgesim.rules import RuleSet, RulesReport, evaluate
 from bridgesim.schema import MEMBER_GROUPS, Bridge, Material
+from bridgesim.textsafe import csv_cell, csv_row, md
 from bridgesim.units import N_PER_KGF, n_to_kgf
 
 st.set_page_config(page_title="bridgesim: Troitsky bridge analysis", page_icon="🌉",
@@ -159,7 +161,7 @@ def _design_panel(ruleset: RuleSet) -> None:
                 sb.error(f"Could not read the bridge file:\n\n{exc}")
                 ss.uploaded_bridge = None
         if ss.uploaded_bridge is not None:
-            sb.success(f"Loaded “{ss.uploaded_bridge.name}”: {len(ss.uploaded_bridge.nodes)}"
+            sb.success(f"Loaded “{md(ss.uploaded_bridge.name)}”: {len(ss.uploaded_bridge.nodes)}"
                        f" nodes, {len(ss.uploaded_bridge.members)} members")
         if ss.uploaded_bridge is None:
             sb.info("No bridge uploaded yet; showing the parametric design.")
@@ -171,7 +173,7 @@ def _design_panel(ruleset: RuleSet) -> None:
                 ss.material = material_from_yaml_str(mup.getvalue().decode("utf-8"))
                 _replace_inputs()
                 ss.result = None
-                st.success(f"Material “{ss.material.name}” loaded")
+                st.success(f"Material “{md(ss.material.name)}” loaded")
             except BAD_FILE as exc:
                 st.error(f"Material file not valid: {exc}")
 
@@ -223,7 +225,7 @@ def _design_panel(ruleset: RuleSet) -> None:
                     spec["layout"] = b.selectbox("layout", lay, lay.index(spec["layout"]),
                                                  key=f"l_{v}_{g}", label_visibility="hidden")
         else:
-            st.caption(f"Using uploaded bridge “{ss.uploaded_bridge.name}”. Geometry and "
+            st.caption(f"Using uploaded bridge “{md(ss.uploaded_bridge.name)}”. Geometry and "
                        "sections come from the file; material values below still apply.")
 
         st.markdown("**Material** · tick *measured* once a value comes from your own tests")
@@ -234,7 +236,7 @@ def _design_panel(ruleset: RuleSet) -> None:
             a, b = st.columns([1.6, 1])
             val = a.number_input(f"{label} ({unit})" if unit and unit != "–" else label,
                                  value=float(prop.value), format="%g", key=f"mv_{v}_{key}",
-                                 help=prop.note or None)
+                                 help=md(prop.note) if prop.note else None)
             meas = b.checkbox("measured", prop.source == "measured", key=f"ms_{v}_{key}")
             b.markdown(":green[● measured]" if meas else ":orange[○ assumed]")
             new_vals[key] = (val, "measured" if meas else "assumed")
@@ -266,7 +268,7 @@ def _results_card(r: AnalysisResult) -> None:
     c1, c2 = st.columns(2)
     c1.metric("Mass", f"{r.mass.total_kg:.2f} kg", help=f"≈ {r.mass.stick_count} sticks")
     c2.metric("η_s = F_u/m", f"{r.efficiency:,.0f}", help="kgf per kg (rulebook §12.6)")
-    gov = r.governing_label + (f" in **{r.governing_member}**" if r.governing_member else "")
+    gov = r.governing_label + (f" in **{md(r.governing_member)}**" if r.governing_member else "")
     st.markdown(f"**Governs:** {gov}")
     pct = r.delta_at_Fu_mm / r.deflection_limit_mm
     st.markdown(f"**δ at F_u,p:** {r.delta_at_Fu_mm:.1f} / {r.deflection_limit_mm:g} mm")
@@ -277,7 +279,7 @@ def _results_card(r: AnalysisResult) -> None:
     st.caption(f"Limits: strength {lim(r.Fu_strength_N)} · deflection "
                f"{lim(r.Fu_deflection_N)} · global buckling {lim(r.Fu_buckling_N)}")
     for w in r.warnings:
-        st.warning(w, icon="⚠️")
+        st.warning(md(w), icon="⚠️")
 
 
 def _rules_card(rep: RulesReport) -> None:
@@ -285,27 +287,26 @@ def _rules_card(rep: RulesReport) -> None:
     if rep.bans or rep.total_penalty or rep.disqualification_risks:
         msg = f"**Penalty: {_pts(rep.total_penalty)} pts**"
         if rep.bans:
-            msg += f"  \n**BANNED from §{', §'.join(rep.bans)}**"
+            msg += f"  \n**BANNED from §{', §'.join(md(b) for b in rep.bans)}**"
         if rep.disqualification_risks:
             msg += "  \n**Disqualification risk:** " + ", ".join(
-                r.title for r in rep.disqualification_risks)
+                md(r.title) for r in rep.disqualification_risks)
         st.error(msg, icon="🚫")
     else:
         st.success("All checked rules pass · 0 pts", icon="✅")
     for r in rep.checked:
         icon = "✓" if r.passed else "✗"
-        line = f"{icon} {r.title} · {r.measured_text}"
+        line = f"{icon} {md(r.title)} · {md(r.measured_text)}"
         if not r.passed:
             line = f":red[{line}]"
             extra = f" · {_pts(r.penalty)} pts" if r.penalty else ""
-            extra += f" · bans §{', §'.join(r.bans)}" if r.bans else ""
+            extra += f" · bans §{', §'.join(md(b) for b in r.bans)}" if r.bans else ""
             extra += " · DQ risk" if r.disqualification else ""
             line += f" :red[{extra}]"
-        st.markdown(f"{line} <span style='opacity:.6'>§{r.section}</span>",
-                    unsafe_allow_html=True, help=(r.note or None))
+        st.markdown(f"{line} · §{md(r.section)}", help=(md(r.note) if r.note else None))
     with st.expander(f"Not checked by the tool ({len(rep.info)})"):
         for r in rep.info:
-            st.markdown(f"· **{r.title}** (§{r.section}): {r.note}")
+            st.markdown(f"· **{md(r.title)}** (§{md(r.section)}): {md(r.note)}")
 
 
 def _viewport(bridge: Bridge, r: AnalysisResult | None) -> None:
@@ -445,14 +446,14 @@ def _export(bridge: Bridge, r: AnalysisResult, rep: RulesReport) -> None:
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=list(rows[0]))
     w.writeheader()
-    w.writerows(rows)
+    w.writerows(csv_row(r) for r in rows)
     c2.download_button("Results CSV (members)", buf.getvalue(), "members.csv", "text/csv")
     rbuf = io.StringIO()
     rw = csv.writer(rbuf)
     rw.writerow(["section", "rule", "measured", "limit", "passed", "penalty", "bans", "note"])
     for x in rep.results:
-        rw.writerow([x.section, x.title, x.measured_text, x.limit, x.passed, x.penalty,
-                     " ".join(x.bans), x.note])
+        rw.writerow([csv_cell(v) for v in (x.section, x.title, x.measured_text, x.limit,
+                                           x.passed, x.penalty, " ".join(x.bans), x.note)])
     c2.download_button("Rule check CSV", rbuf.getvalue(), "rules.csv", "text/csv")
     c3.download_button("Report (HTML)", report.to_html(r, rep), "design_validation.html",
                        "text/html", help="Assumptions, Method, Results (§10.2). Print to PDF.")
@@ -490,7 +491,7 @@ def main() -> None:
         _run_analysis(ruleset)
 
     st.markdown(f"## 🌉 bridgesim <span style='font-size:.55em;opacity:.6'>v{__version__} · "
-                f"rules: {ruleset.name}</span>", unsafe_allow_html=True)
+                f"rules: {html.escape(ruleset.name)}</span>", unsafe_allow_html=True)
     assumed = ss.material.assumed_keys()
     if assumed:
         st.warning(f"**{len(assumed)} of {len(ss.material.props())} material values are "

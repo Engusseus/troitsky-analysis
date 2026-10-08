@@ -14,12 +14,19 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bridgesim.mass import bridge_mass
 from bridgesim.measure import Measurements, measure
 from bridgesim.paths import data_dir
 from bridgesim.schema import Bridge, Material
+from bridgesim.textsafe import has_control_chars
+
+
+def _plain_text(v: str) -> str:
+    if has_control_chars(v, allow="\n"):
+        raise ValueError("must not contain control characters")
+    return v
 
 
 class Band(BaseModel):
@@ -67,6 +74,9 @@ class Rule(BaseModel):
     ambiguous: bool = False
     note: str = ""
 
+    _text = field_validator("key", "section", "title", "unit", "limit", "note")(
+        lambda cls, v: _plain_text(v))
+
 
 class RuleSet(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -77,7 +87,9 @@ class RuleSet(BaseModel):
     constants: dict[str, float] = Field(default_factory=dict)
     crushing: dict[str, float] = Field(default_factory=dict)
     bans_meaning: dict[str, str] = Field(default_factory=dict)
-    rules: list[Rule]
+    rules: list[Rule] = Field(max_length=500)
+
+    _text = field_validator("name", "rulebook")(lambda cls, v: _plain_text(v))
 
     @classmethod
     def from_yaml_str(cls, text: str) -> RuleSet:

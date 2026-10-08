@@ -27,11 +27,16 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import scipy.linalg as sla
+import scipy.sparse.linalg as spla
 
 from bridgesim.model import COMBO
 from bridgesim.schema import Bridge
 
 _DOFS = ("DX", "DY", "DZ", "RX", "RY", "RZ")
+
+#: Above this many free degrees of freedom the sparse (ARPACK) solver is used instead of a
+#: dense one, so memory stays proportional to the number of members.
+DENSE_MAX_DOF = 1500
 
 
 @dataclass
@@ -55,22 +60,36 @@ def _free_dofs(model, bridge: Bridge) -> list[int]:
     return free
 
 
-def global_buckling(model, bridge: Bridge, n_modes: int = 3) -> BucklingResult:
+def global_buckling(
+    model, bridge: Bridge, n_modes: int = 3, dense_max_dof: int = DENSE_MAX_DOF
+) -> BucklingResult:
     """Solve the buckling eigenproblem on an already analysed Pynite model."""
     free = _free_dofs(model, bridge)
-    K = np.asarray(model.Ke(COMBO, sparse=False, check_stability=False))
-    G = np.asarray(model.Kg(COMBO, sparse=False, first_step=False))
-    K11 = K[np.ix_(free, free)]
-    G11 = G[np.ix_(free, free)]
+    sparse = len(free) > dense_max_dof
+    K = model.Ke(COMBO, sparse=sparse, check_stability=False)
+    G = model.Kg(COMBO, sparse=sparse, first_step=False)
+    if sparse:
+        K, G = K.tocsr(), G.tocsr()
+        K11 = K[free][:, free].tocsc()
+        G11 = G[free][:, free].tocsc()
+    else:
+        K, G = np.asarray(K), np.asarray(G)
+        K11 = K[np.ix_(free, free)]
+        G11 = G[np.ix_(free, free)]
     K11 = 0.5 * (K11 + K11.T)
     G11 = 0.5 * (G11 + G11.T)
-    if not np.any(G11):
+    if (G11.count_nonzero() if sparse else np.count_nonzero(G11)) == 0:
         return BucklingResult(math.inf, note="No axial forces: no buckling mode.")
     try:
-        mu, vecs = sla.eigh(-G11, K11)
-    except np.linalg.LinAlgError:
-        return BucklingResult(math.nan, note="Stiffness matrix not positive definite; "
-                                             "global buckling not evaluated.")
+        if sparse:
+            k = max(1, min(n_modes, len(free) - 2))
+            mu, vecs = spla.eigsh(-G11, k=k, M=K11, which="LA")
+        else:
+            mu, vecs = sla.eigh(-G11, K11)
+    except (np.linalg.LinAlgError, RuntimeError, spla.ArpackError):
+        return BucklingResult(math.nan, note="Stiffness matrix not positive definite or the "
+                                             "eigen-solver did not converge; global "
+                                             "buckling not evaluated.")
     tol = 1e-12 * max(1.0, float(np.max(np.abs(mu))))
     pos = np.where(mu > tol)[0]
     if pos.size == 0:

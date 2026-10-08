@@ -8,6 +8,7 @@ must stay importable in the browser (Pyodide).
 
 from __future__ import annotations
 
+import html
 import io
 import math
 from typing import TYPE_CHECKING
@@ -81,7 +82,7 @@ def bridge_figure(
         raise ValueError(f"view must be one of {VIEWS}")
     nodes = {n.id: np.array(n.xyz, float) for n in bridge.nodes}
     traces: list[go.BaseTraceType] = []
-    title = bridge.name
+    title = html.escape(bridge.name)
 
     pos = dict(nodes)
     buck = result.buckling if result is not None else None
@@ -150,7 +151,8 @@ def bridge_figure(
         if m.id in res:
             r = res[m.id]
             ht.append(
-                f"<b>{m.id}</b> ({m.group})<br>{r.section_label}, L = {r.L_mm:.0f} mm"
+                f"<b>{html.escape(m.id)}</b> ({m.group})<br>{html.escape(r.section_label)}, "
+                f"L = {r.L_mm:.0f} mm"
                 f"<br>N at P_ref = {r.N_N:+.1f} N ({'tension' if r.N_N >= 0 else 'compression'})"
                 f"<br>M_z = {r.Mz_Nmm:.0f} N·mm, M_y = {r.My_Nmm:.0f} N·mm"
                 f"<br>U at P_ref = {r.U:.3f}; at F_u,p = {u:.2f}"
@@ -158,7 +160,7 @@ def bridge_figure(
                 f"<br>Fails alone at {n_to_kgf(result.P_ref_N / r.U):.0f} kgf" if r.U > 0 else ""
             )
         else:
-            ht.append(f"<b>{m.id}</b> ({m.group})")
+            ht.append(f"<b>{html.escape(m.id)}</b> ({m.group})")
 
     line_kw: dict = dict(width=5)
     if color_by_u:
@@ -179,7 +181,8 @@ def bridge_figure(
         # Label at table level under the member, where the clear-span box keeps space free.
         traces.append(go.Scatter3d(
             x=[lab[0]], y=[lab[1]], z=[15.0], mode="text",
-            text=[f"governs: {', '.join(crit_ids[:2])}{'…' if len(crit_ids) > 2 else ''}"],
+            text=[html.escape(f"governs: {', '.join(crit_ids[:2])}"
+                              f"{'…' if len(crit_ids) > 2 else ''}")],
             textfont=dict(color=CRITICAL, size=13), hoverinfo="skip", showlegend=False))
     traces.append(go.Scatter3d(
         x=hx, y=hy, z=hz, mode="markers", hovertext=ht, hoverinfo="text", name="",
@@ -193,7 +196,7 @@ def bridge_figure(
         x, y, z = _plot_xyz(pos[nid])
         sx.append(x), sy.append(y), sz.append(z)
         kind = "pinned (DX, DY, DZ)" if nid in bridge.supports.pinned else "roller (DY, DZ)"
-        st.append(f"{nid}: {kind}")
+        st.append(f"{html.escape(nid)}: {kind}")
     traces.append(go.Scatter3d(x=sx, y=sy, z=sz, mode="markers", hovertext=st, hoverinfo="text",
                                marker=dict(size=7, symbol="diamond", color=INK),
                                showlegend=False, name="supports"))

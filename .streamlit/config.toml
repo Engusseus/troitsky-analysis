@@ -1,0 +1,7 @@
+# Bridge, material and rules files are small; cap uploads so a shared server cannot be
+# flooded with huge files.
+[server]
+maxUploadSize = 5
+
+[browser]
+gatherUsageStats = false

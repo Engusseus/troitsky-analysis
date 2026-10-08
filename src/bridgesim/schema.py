@@ -12,8 +12,15 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from bridgesim.sections import RectProps, rectangle, stick_stack_dims
+from bridgesim.textsafe import has_control_chars
 
 SCHEMA_VERSION = 1
+
+#: Size limits for a bridge model. A detailed popsicle-stick bridge needs a few hundred
+#: nodes; the limits stop a malicious or mistaken file from exhausting a shared server.
+MAX_NODES = 2000
+MAX_MEMBERS = 6000
+MAX_SECTIONS = 200
 
 Source = Literal["assumed", "measured"]
 
@@ -39,6 +46,13 @@ DOF = Literal["DX", "DY", "DZ", "RX", "RY", "RZ"]
 
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+def _plain_text(v: str) -> str:
+    """Names and ids are shown in terminals and web pages: no control characters."""
+    if has_control_chars(v):
+        raise ValueError("must not contain control characters")
+    return v
 
 
 # --------------------------------------------------------------------------- material
@@ -78,6 +92,8 @@ class Glue(_Strict):
 class Material(_Strict):
     name: str
     description: str = ""
+
+    _text = field_validator("name", "description")(lambda cls, v: _plain_text(v))
     stick: Stick = Field(default_factory=Stick)
     E_MPa: Prop
     G_MPa: Prop
@@ -123,6 +139,8 @@ class Node(_Strict):
     y_mm: float
     z_mm: float
 
+    _id = field_validator("id")(lambda cls, v: _plain_text(v))
+
     @field_validator("x_mm", "y_mm", "z_mm")
     @classmethod
     def _snap(cls, v: float) -> float:
@@ -145,6 +163,8 @@ class Section(_Strict):
     layout: Literal["flat", "on_edge"] | None = None
     b_mm: float | None = Field(None, gt=0)
     d_mm: float | None = Field(None, gt=0)
+
+    _id = field_validator("id")(lambda cls, v: _plain_text(v))
 
     @model_validator(mode="after")
     def _one_definition(self) -> Section:
@@ -184,6 +204,8 @@ class Member(_Strict):
     group: MemberGroup = "other"
     K: float = Field(1.0, gt=0, description="Effective-length factor for buckling")
     releases: list[Release] = Field(default_factory=list)
+
+    _id = field_validator("id", "i", "j", "section")(lambda cls, v: _plain_text(v))
 
 
 class Deck(_Strict):
@@ -238,13 +260,15 @@ class Bridge(_Strict):
     name: str = "Untitled bridge"
     material: str | Material = "popsicle_birch"
     joint_fixity: Literal["rigid", "pinned"] = "rigid"
-    nodes: list[Node]
-    sections: list[Section]
-    members: list[Member]
+    nodes: list[Node] = Field(max_length=MAX_NODES)
+    sections: list[Section] = Field(max_length=MAX_SECTIONS)
+    members: list[Member] = Field(max_length=MAX_MEMBERS)
     deck: Deck
     supports: Supports
     load: PlateLoad
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    _name = field_validator("name")(lambda cls, v: _plain_text(v))
 
     @field_validator("nodes", "sections", "members")
     @classmethod
