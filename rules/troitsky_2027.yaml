@@ -1,0 +1,243 @@
+# Troitsky Bridge Building Competition 2027: machine-readable design rules.
+#
+# Source: Official Troitsky Rulebook 2027 (ECA, Concordia University), Section 8.
+# THE RULEBOOK IS AUTHORITATIVE. If anything here disagrees with it, the rulebook wins;
+# please open an issue. Next year's team: copy this file to troitsky_2028.yaml, edit the
+# numbers and section references, and keep `measure` keys unchanged (they map to
+# src/bridgesim/measure.py). See CONTRIBUTING.md.
+#
+# Rule types:
+#   bands  - numeric value rounded per `rounding`; bands are inclusive ranges, first
+#            match wins. `measures` with `combine: worst` evaluates every listed
+#            measurement and keeps the worst outcome (stricter reading).
+#   check  - pass/fail measurement (1 = pass); `fail` gives the consequence.
+#   steps  - stepped penalty (mass, §8.8).
+#   info   - rule the tool cannot evaluate; listed so it is not forgotten.
+
+name: Troitsky 2027
+rulebook: Official Troitsky Rulebook 2027 (ECA Concordia)
+year: 2027
+
+rounding:
+  length_mm: 1      # judges measure to the nearest mm
+  mass_kg: 0.01     # and weigh to the nearest 0.01 kg
+
+# Geometry used by the measurements (all in mm unless stated).
+constants:
+  cart_width_mm: 150             # §8.5 moving-load cart, max width
+  cart_height_mm: 200            # §8.5 moving-load cart, max height
+  clear_box_length_mm: 1000      # §8.6 clear span box
+  clear_box_height_mm: 150       # §8.6
+  clear_opening_mm: 100          # §8.9 square opening above mid-span
+  pier_max_inclination_deg: 1.0  # §8.1 tool tolerance for "vertical"
+
+# Crushing test (§12.5), used by the analysis defaults.
+crushing:
+  plate_length_mm: 200
+  plate_width_mm: 90
+  deflection_limit_mm: 50
+
+bans_meaning:
+  "12.5": Ultimate Load Carrying Capacity (30 pts)
+  "12.6": Structural Efficiency (35 pts)
+  "12.7": Predicted Ultimate Load Carrying Capacity (9 pts)
+  "8.5": Moving Load Test points
+
+rules:
+  - key: span_length
+    section: "8.2.1.1"
+    title: Span length
+    type: bands
+    measures: [clear_span_mm, span_cc_mm]
+    combine: worst
+    unit: mm
+    limit: clear span 1000-1200 mm
+    bands:
+      - {min: 1000, max: 1200, penalty: 0}
+      - {min: 1201, penalty: 5}
+      - {min: 950, max: 999, penalty: 5}
+      - {max: 949, penalty: 10, bans: ["12.5", "12.6", "12.7"]}
+    ambiguous: true
+    note: >-
+      §8.2.1.1 says the span is measured from the middle of the piers, while the glossary
+      and Figure 2 define the clear span between the inner faces of the supports. Stricter
+      reading: both the centre-to-centre span and the inner-face clear span must be in band.
+
+  - key: deck_length
+    section: "8.2.1.2"
+    title: Deck length
+    type: bands
+    measures: [deck_length_mm]
+    unit: mm
+    limit: 1000-1350 mm
+    bands:
+      - {min: 1000, max: 1350, penalty: 0}
+      - {min: 1351, penalty: 5}
+      - {min: 950, max: 999, penalty: 5}
+      - {max: 949, penalty: 10, bans: ["8.5"]}
+
+  - key: total_length
+    section: "8.2.1.3"
+    title: Total length
+    type: bands
+    measures: [total_length_mm]
+    unit: mm
+    limit: <= 1350 mm
+    bands:
+      - {max: 1350, penalty: 0}
+      - {min: 1351, penalty: 5}
+
+  - key: fits_crusher
+    section: "8.2.1.3"
+    title: Fits the hydraulic press
+    type: bands
+    measures: [total_length_mm]
+    unit: mm
+    limit: <= 1420 mm
+    bands:
+      - {max: 1420, penalty: 0}
+      - {min: 1421, penalty: 10, bans: ["12.5", "12.6", "12.7"]}
+    ambiguous: true
+    note: >-
+      Unclear whether this -10 stacks with the -5 for exceeding 1350 mm. Stricter reading:
+      both apply. Appendix B also shows a 137 cm dimension on the crusher; ask organizers.
+
+  - key: deck_height
+    section: "8.2.2.1"
+    title: Deck height
+    type: bands
+    measures: [deck_height_mm]
+    unit: mm
+    limit: <= 450 mm (table to top of deck)
+    bands:
+      - {max: 450, penalty: 0}
+      - {min: 451, penalty: 5}
+
+  - key: above_platform
+    section: "8.2.2"
+    title: Whole bridge on and above the base platform
+    type: check
+    measure: above_table_ok
+    show: [below_table_mm]
+    limit: every support on the platform; no node, member or deck below it
+    fail: {penalty: 0}
+    note: >-
+      The bridge rests on the base platform (heights are measured from the ground,
+      §8.2.2.1), so every support sits at the same elevation and nothing can be lower. A
+      failure is a modelling error: check the y coordinates. Height and clear-span results
+      are not meaningful until fixed.
+
+  - key: clearance_above_deck
+    section: "8.2.2.2"
+    title: Height clearance above deck (cart 150 W x 200 H)
+    type: check
+    measure: cart_envelope_ok
+    show: [clearance_above_deck_mm, cart_clear_width_mm]
+    limit: ">= 200 mm clear height over a >= 150 mm wide path"
+    fail: {penalty: 5}
+    note: Cart path assumed centred on the deck centreline.
+
+  - key: total_height
+    section: "8.2.2.3"
+    title: Total height
+    type: bands
+    measures: [total_height_mm]
+    unit: mm
+    limit: <= 550 mm (lowest to highest point)
+    bands:
+      - {max: 550, penalty: 0}
+      - {min: 551, penalty: 5}
+
+  - key: deck_width
+    section: "8.2.3.1"
+    title: Deck width
+    type: bands
+    measures: [deck_width_mm]
+    unit: mm
+    limit: ">= 150 mm clear flat width"
+    bands:
+      - {min: 150, penalty: 0}
+      - {min: 91, max: 149, penalty: 5}
+      - {max: 90, penalty: 10, bans: ["12.5", "12.6", "12.7"]}
+
+  - key: total_width
+    section: "8.2.3.2"
+    title: Total width
+    type: bands
+    measures: [total_width_mm]
+    unit: mm
+    limit: <= 350 mm
+    bands:
+      - {max: 350, penalty: 0}
+      - {min: 351, penalty: 5}
+
+  - key: clear_span_box
+    section: "8.6"
+    title: Clear span test (1000 L x 150 H box)
+    type: bands
+    measures: [clear_box_free_length_mm]
+    unit: mm
+    limit: ">= 1000 mm free length below 150 mm height"
+    bands:
+      - {min: 1000, penalty: 0}
+      - {max: 999, penalty: 5}
+    note: The -2 "slight resistance" case (fallen floss, glue lumps) cannot be modelled.
+
+  - key: clear_opening
+    section: "8.9"
+    title: Clear opening 100 x 100 mm above mid-span
+    type: check
+    measure: clear_opening_ok
+    show: [clear_opening_margin_mm]
+    limit: no member above the deck within the 100 x 100 mm square over mid-span
+    fail: {penalty: 0, bans: ["12.5", "12.6", "12.7"]}
+
+  - key: mass
+    section: "8.8"
+    title: Mass
+    type: steps
+    measure: mass_kg
+    unit: kg
+    limit: <= 6.00 kg
+    steps:
+      free_up_to: 6.00
+      step: 0.50
+      points_per_step: 2
+      cap: 15.00
+      over_cap_penalty: 50
+    note: Estimated from member volumes, density and glue fraction; weigh your bridge.
+
+  - key: piers_vertical
+    section: "8.1"
+    title: Piers vertical (no A-frame)
+    type: check
+    measure: piers_vertical_ok
+    show: [pier_max_inclination_deg]
+    limit: every pier within 1 deg of vertical
+    fail: {penalty: 0, disqualification: true}
+    ambiguous: true
+    note: >-
+      §8.1 bans legs "at an angle of more than 90 degrees" (A-frames) and disqualifies them.
+      Any inclined pier is flagged as an A-frame risk; confirm with the organizers.
+
+  # ---- not computable in v0.1: listed so they are not forgotten -------------------
+  - {key: level, section: "8.4.3", title: Deck level (< 5 deg slope), type: info,
+     note: "-5 if visibly not level. The generator builds a level deck."}
+  - {key: warping, section: "8.4.4", title: Deck not warped laterally, type: info,
+     note: "-5 if visibly warped. Build quality, not modelled."}
+  - {key: smoothness, section: "8.4.1", title: Deck continuity and smoothness, type: info,
+     note: "-5 to -20 by number of deviations recorded by the cart."}
+  - {key: moving_load, section: "8.5", title: Moving load test (10 kg cart), type: info,
+     note: "-2 minor resistance, -10 obstruction. Only the cart envelope is checked."}
+  - {key: glue_use, section: "8.4.2", title: Glue only at contact interfaces, type: info,
+     note: "Excessive or coating glue = disqualification."}
+  - {key: floss, section: "8.4.5", title: Floss not used to bind joints, type: info,
+     note: "-5. Floss may be used as tension cables."}
+  - {key: prefab, section: "7.1.2", title: "Pre-fab pieces fit 500 x 400 x 300 mm box", type: info,
+     note: "Pieces that do not fit are confiscated. Segmentation check planned for v0.2."}
+  - {key: anchorage, section: "8.3", title: No external anchorage, type: info,
+     note: "Disqualification. The model reports any support needing hold-down or large thrust."}
+  - {key: assembly, section: "7.2", title: Assembly within 3 hours, type: info,
+     note: "Assembly or repairs outside the 3 hours = disqualification."}
+  - {key: materials, section: "7.1", title: Permitted materials only, type: info,
+     note: "Popsicle sticks, toothpicks, white glue, dental floss. Others = disqualification."}

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>bridgesim: Troitsky bridge analysis (in your browser)</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@stlite/browser@1.9.2/build/stlite.css" />
+  <style>
+    #loading { font-family: system-ui, sans-serif; max-width: 640px; margin: 4rem auto;
+               padding: 0 16px; color: #52514e; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div id="loading">
+      <h2>bridgesim is loading…</h2>
+      <p>Everything runs in your browser (Python via Pyodide). The first visit downloads
+         about 60 MB and takes 25–40 s; later visits are faster. If it never loads, your
+         network may block cdn.jsdelivr.net. Run it locally instead:
+         <code>uv run streamlit run app/streamlit_app.py</code>.</p>
+    </div>
+  </div>
+  <script type="module">
+    // stlite 1.9.2 pins Pyodide 0.29.3 (numpy 2.2.5). Re-check docs/web-spike.md before
+    // upgrading.
+    import { mount } from "https://cdn.jsdelivr.net/npm/@stlite/browser@1.9.2/build/stlite.js";
+    const abs = (p) => new URL(p, location.href).href;
+    const paths = await (await fetch(abs("files.json"))).json();
+    const files = Object.fromEntries(paths.map((p) => [p, { url: abs(p) }]));
+    mount(
+      {
+        entrypoint: "web/stlite_entry.py",
+        // numpy..pyyaml come from the fixed Pyodide 0.29.3 lock; the two PyPI packages are
+        // pinned to the versions tested in docs/web-spike.md.
+        requirements: ["numpy", "scipy", "matplotlib", "pandas", "pydantic", "pyyaml",
+                       "plotly==7.1.0", "prettytable==3.18.0"],
+        files,
+      },
+      document.getElementById("root"),
+    );
+  </script>
+</body>
+</html>
