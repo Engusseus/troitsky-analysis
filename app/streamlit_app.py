@@ -30,7 +30,7 @@ from bridgesim.materials import load_material, material_from_yaml_str
 from bridgesim.paths import list_yaml
 from bridgesim.rules import RuleSet, RulesReport, apply_crushing, evaluate
 from bridgesim.schema import MEMBER_GROUPS, Bridge, Material
-from bridgesim.textsafe import csv_cell, csv_row, md
+from bridgesim.textsafe import csv_cell, csv_row, md, md_keep_bold
 from bridgesim.units import N_PER_KGF, n_to_kgf
 
 st.set_page_config(page_title="bridgesim: Troitsky bridge analysis", page_icon="🌉",
@@ -171,7 +171,7 @@ def _design_panel(ruleset: RuleSet) -> None:
                 if isinstance(ss.uploaded_bridge.material, Material):
                     ss.material = ss.uploaded_bridge.material
                     _replace_inputs()
-                ss.result = None  # re-analyse with the new geometry
+                ss.result, ss.error = None, None  # re-analyse with the new geometry
             except BAD_FILE as exc:
                 sb.error(f"Could not read the bridge file:\n\n{exc}")
                 ss.uploaded_bridge, ss.result = None, None  # fall back to the parametric design
@@ -376,9 +376,15 @@ def _diagrams(bridge: Bridge, r: AnalysisResult) -> None:
     st.caption("Shear and bending-moment diagrams for the Technical Poster (§12.4). Values "
                "scale linearly with load.")
     c1, c2, c3 = st.columns([1.4, 1, 1])
-    groups_present = [g for g in MEMBER_GROUPS if any(m.group == g for m in bridge.members)]
-    what = c1.selectbox("Diagram", ["Whole bridge (beam analogy)", "Member group (one truss plane)",
-                                    "Single member"])
+    # Only groups whose members form a connected chain in a truss plane (e.g. chords) can be
+    # drawn end to end; others would show unrelated members as one continuous beam.
+    groups_present = [g for g in MEMBER_GROUPS
+                      if any(viz.is_connected_chain(bridge, viz.chain_for_group(bridge, g, s))
+                             for s in ("n", "f"))]
+    options = ["Whole bridge (beam analogy)", "Member group (one truss plane)", "Single member"]
+    if not groups_present:
+        options.remove("Member group (one truss plane)")
+    what = c1.selectbox("Diagram", options)
     load_choice = c2.radio("At load", ["F_u,p", "P_ref", "custom"], horizontal=True)
     load_N = {"F_u,p": r.Fu_pred_N, "P_ref": r.P_ref_N}.get(load_choice)
     if load_N is None:
@@ -391,8 +397,9 @@ def _diagrams(bridge: Bridge, r: AnalysisResult) -> None:
         side = st.radio("Truss plane", ["n", "f"], horizontal=True,
                         format_func=lambda s: "−Z plane" if s == "n" else "+Z plane")
         ids = viz.chain_for_group(bridge, g, side)
-        if not ids:
-            st.info("No members of this group in that plane.")
+        if not viz.is_connected_chain(bridge, ids):
+            st.info("This group does not form a connected chain in that plane; use "
+                    "Single member instead.")
             return
         fig = viz.member_diagrams_figure(r, ids, f"{GROUP_LABELS.get(g, g)} ({side} plane)",
                                          load_N)
@@ -508,7 +515,7 @@ def _export(bridge: Bridge, r: AnalysisResult, rep: RulesReport) -> None:
 def _method(r: AnalysisResult) -> None:
     st.markdown("**Modelling assumptions** (also in ASSUMPTIONS.md and the report)")
     for a in report.model_assumptions(r):
-        st.markdown(f"- {a}")
+        st.markdown(f"- {md_keep_bold(a)}")
     st.markdown("**Method: load-factor approach**")
     st.latex(r"U_i = \frac{|N|}{N_R} + \frac{|M_y|}{M_{R,y}} + \frac{|M_z|}{M_{R,z}},\qquad "
              r"N_{c,R} = \min\!\left(f_c A,\ \frac{\pi^2 E I_{min}}{(KL)^2}\right)")

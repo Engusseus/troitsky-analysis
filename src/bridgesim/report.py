@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from bridgesim import PYNITE_VERSION, __version__
 from bridgesim.checks import MODE_LABELS
+from bridgesim.textsafe import md, md_keep_bold
 from bridgesim.units import N_PER_KGF, n_to_kgf
 
 if TYPE_CHECKING:
@@ -238,7 +239,7 @@ def model_assumptions(result: AnalysisResult) -> list[str]:
 
 def _md_table(headers, rows) -> str:
     def esc(x):
-        return str(x).replace("|", "\\|").replace("\n", " ")
+        return md_keep_bold(str(x).replace("\n", " "))
     out = ["| " + " | ".join(esc(h) for h in headers) + " |",
            "|" + "---|" * len(headers)]
     out += ["| " + " | ".join(esc(c) for c in row) + " |" for row in rows]
@@ -246,16 +247,16 @@ def _md_table(headers, rows) -> str:
 
 
 def to_markdown(result: AnalysisResult, rules: RulesReport | None = None) -> str:
-    parts = [f"# Design validation: {result.bridge.name}",
+    parts = [f"# Design validation: {md(result.bridge.name)}",
              "_Assumptions, Method, Results (Troitsky rulebook §10.2)_"]
     for heading, blocks in _sections(result, rules):
         parts.append(f"## {heading}")
         for blk in blocks:
             kind = blk[0]
             if kind == "p":
-                parts.append(blk[1])
+                parts.append(md_keep_bold(blk[1]))
             elif kind == "ul":
-                parts.append("\n".join(f"- {it}" for it in blk[1]))
+                parts.append("\n".join(f"- {md_keep_bold(it)}" for it in blk[1]))
             elif kind == "table":
                 parts.append(_md_table(blk[1], blk[2]))
             elif kind == "math":

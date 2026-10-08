@@ -52,7 +52,8 @@ class BucklingResult:
 
 
 def _free_dofs(model, bridge: Bridge) -> list[int]:
-    held = {model.nodes[n].ID * 6 for n in bridge.supports.roller}  # friction holds DX
+    # Friction holds DX at every base the bridge stands on, however the support is written.
+    held = {model.nodes[n].ID * 6 for n in bridge.support_nodes()}
     free = []
     for node in model.nodes.values():
         for k, dof in enumerate(_DOFS):

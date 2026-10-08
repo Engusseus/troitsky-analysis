@@ -295,15 +295,17 @@ def test_clear_opening_fails_with_dense_panels(material: Material) -> None:
 
 def test_clear_opening_fails_with_midspan_strut(default_bridge: Bridge,
                                                 material: Material) -> None:
-    """Add a top strut exactly at mid-span, at the top-chord level and across the two
-    truss planes (copied from the T0 nodes). It crosses the centre of the 100 x 100 square:
+    """Add a top strut exactly at mid-span, 20 mm above the top-chord level (so its end nodes
+    do not sit on the chords, which the schema rejects as hidden joints) and across the two
+    truss planes. It crosses the centre of the 100 x 100 square:
     margin = max(|dx| - b/2, |dz|) - 50 ~ -50 (to within the 2 mm sampling step).
     """
     nodes = default_bridge.node_map()
     x_mid = 0.5 * (nodes["P0n"].x_mm + nodes[default_bridge.supports.roller[0]].x_mm)
     data = default_bridge.model_dump()
     data["nodes"] += [
-        {"id": f"M{s}", "x_mm": x_mid, "y_mm": nodes[f"T0{s}"].y_mm, "z_mm": nodes[f"T0{s}"].z_mm}
+        {"id": f"M{s}", "x_mm": x_mid, "y_mm": nodes[f"T0{s}"].y_mm + 20.0,
+         "z_mm": nodes[f"T0{s}"].z_mm}
         for s in "nf"
     ]
     data["members"].append({"id": "ts_mid", "i": "Mn", "j": "Mf", "section": "top_strut",

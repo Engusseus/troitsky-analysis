@@ -394,6 +394,17 @@ def figure_png(fig: Figure) -> bytes:
     return buf.getvalue()
 
 
+def is_connected_chain(bridge: Bridge, member_ids: list[str]) -> bool:
+    """True if each member shares a node with the next one (a continuous chain)."""
+    if not member_ids:
+        return False
+    mm = {m.id: m for m in bridge.members}
+    for a, b in zip(member_ids[:-1], member_ids[1:], strict=True):
+        if not {mm[a].i, mm[a].j} & {mm[b].i, mm[b].j}:
+            return False
+    return True
+
+
 def chain_for_group(bridge: Bridge, group: str, side: str = "n") -> list[str]:
     """Members of a chord-like ``group`` in one truss plane, ordered along X.
 

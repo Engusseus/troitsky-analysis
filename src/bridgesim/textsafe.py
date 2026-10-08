@@ -30,6 +30,11 @@ def md(text: object) -> str:
     return _MD_SPECIAL.sub(r"\\\1", html.escape(printable(text), quote=False))
 
 
+def md_keep_bold(text: object) -> str:
+    """Like :func:`md`, but keeps ``**bold**`` markers (they cannot carry links or HTML)."""
+    return md(text).replace(r"\*\*", "**")
+
+
 def csv_cell(value: object) -> object:
     """Neutralise spreadsheet formulas: prefix text starting with = + - @ (or tab/CR) by '."""
     if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):

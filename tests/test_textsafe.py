@@ -260,7 +260,7 @@ def test_report_formula_uses_the_analysed_deflection_limit() -> None:
     from bridgesim.report import to_markdown
 
     md_text = to_markdown(analyze(generate_warren(), deflection_limit_mm=40.0))
-    assert r"\frac{40\ \text{mm}}" in md_text and "F_u,δ (40 mm)" in md_text
+    assert r"\frac{40\ \text{mm}}" in md_text and r"F\_u,δ \(40 mm\)" in md_text
     assert r"\frac{50" not in md_text
 
 
@@ -402,3 +402,78 @@ def test_vertical_extra_restraints_count_as_supports_for_geometry() -> None:
     b2 = b.model_copy(update={"supports": sup})
     assert mid_span_x(b2) == pytest.approx(mid_span_x(b))
     assert measure(b2, load_material("popsicle_birch"))["span_cc_mm"] == pytest.approx(1150.0)
+
+
+# --------------------------------------------------------------------------- seventh review round
+
+
+def test_markdown_report_neutralises_links_and_images() -> None:
+    from bridgesim.report import to_markdown
+
+    b = generate_warren().model_copy(
+        update={"name": "Pixel ![x](https://example.invalid/p.png) [click](http://evil)"})
+    text = to_markdown(analyze(b))
+    assert "![x](" not in text and "[click](" not in text
+    assert r"\!\[x\]\(" in text
+    assert "**F_u,p" in text or "**" in text  # intentional bold survives
+
+
+def test_blank_identifiers_are_rejected() -> None:
+    data = generate_warren().model_dump(mode="json")
+    data["nodes"][0]["id"] = "   "
+    with pytest.raises(ValidationError, match="blank"):
+        Bridge.model_validate(data)
+
+
+def test_deck_support_nodes_must_not_be_empty() -> None:
+    data = generate_warren().model_dump(mode="json")
+    data["load"]["deck_support_nodes"] = []
+    with pytest.raises(ValidationError):
+        Bridge.model_validate(data)
+
+
+@pytest.mark.parametrize("rule_type, drop", [("bands", "measures"), ("bands", "bands"),
+                                             ("check", "measure"), ("steps", "steps")])
+def test_rules_need_the_fields_of_their_type(rule_type: str, drop: str) -> None:
+    data = RuleSet.load().model_dump()
+    rule = next(r for r in data["rules"] if r["type"] == rule_type)
+    rule[drop] = [] if drop in ("measures", "bands") else None
+    with pytest.raises(ValidationError, match="needs"):
+        RuleSet.model_validate(data)
+
+
+def test_node_inside_a_member_is_rejected_as_a_hidden_joint() -> None:
+    """Pynite would silently split the member there; the file must say so explicitly."""
+    b = generate_warren()
+    data = b.model_dump(mode="json")
+    t0, t1 = b.node_map()["T0n"], b.node_map()["T1n"]
+    data["nodes"].append({"id": "mid", "x_mm": (t0.x_mm + t1.x_mm) / 2, "y_mm": t0.y_mm,
+                          "z_mm": t0.z_mm})
+    data["members"].append({"id": "post", "i": "mid", "j": "C0", "section": "pier"})
+    with pytest.raises(ValidationError, match="lies on member 'tc0n'"):
+        Bridge.model_validate(data)
+
+
+def test_extra_restraint_roller_gets_the_same_buckling_load() -> None:
+    """A roller written as extra_restraints [DY, DZ] is held by friction during buckling,
+    exactly like an entry in supports.roller."""
+    from bridgesim.schema import Supports
+
+    b = generate_warren()
+    n = b.metadata["params"]["n_panels"]
+    alt = Supports(pinned=b.supports.pinned, roller=[],
+                   extra_restraints={f"P{n}n": ["DY", "DZ"], f"P{n}f": ["DY", "DZ"]})
+    r1 = analyze(b)
+    r2 = analyze(b.model_copy(update={"supports": alt}))
+    assert r2.Fu_buckling_N == pytest.approx(r1.Fu_buckling_N, rel=1e-9)
+
+
+def test_only_connected_chains_are_offered_as_group_diagrams() -> None:
+    from bridgesim import viz
+
+    b = generate_warren()
+    assert viz.is_connected_chain(b, viz.chain_for_group(b, "bottom_chord", "n"))
+    assert viz.is_connected_chain(b, viz.chain_for_group(b, "top_chord", "f"))
+    assert not viz.is_connected_chain(b, viz.chain_for_group(b, "floor_beam", "n"))
+    assert not viz.is_connected_chain(b, viz.chain_for_group(b, "pier", "n"))
+    assert not viz.is_connected_chain(b, [])

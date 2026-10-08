@@ -89,6 +89,19 @@ class Rule(BaseModel):
     _text = field_validator("key", "section", "title", "unit", "limit", "note")(
         lambda cls, v: _plain_text(v))
 
+    @model_validator(mode="after")
+    def _fields_for_type(self) -> Rule:
+        missing = {
+            "bands": [n for n, ok in (("measures", self.measures), ("bands", self.bands))
+                      if not ok],
+            "check": [] if self.measure else ["measure"],
+            "steps": [n for n, ok in (("measure", self.measure), ("steps", self.steps)) if not ok],
+            "info": [],
+        }[self.type]
+        if missing:
+            raise ValueError(f"Rule {self.key!r} of type {self.type!r} needs: {missing}")
+        return self
+
 
 class Crushing(BaseModel):
     """The competition's crushing test (§12.5)."""

@@ -9,6 +9,7 @@ import math
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -59,6 +60,13 @@ def _plain_text(v: str) -> str:
     if has_control_chars(v):
         raise ValueError("must not contain control characters")
     return v
+
+
+def _identifier(v: str) -> str:
+    """Node, section and member ids: non-blank plain text (Pynite renames blank ids)."""
+    if not v.strip():
+        raise ValueError("must not be blank")
+    return _plain_text(v)
 
 
 # --------------------------------------------------------------------------- material
@@ -165,7 +173,7 @@ class Node(_Strict):
     y_mm: float = Field(ge=-MAX_COORD_MM, le=MAX_COORD_MM)
     z_mm: float = Field(ge=-MAX_COORD_MM, le=MAX_COORD_MM)
 
-    _id = field_validator("id")(lambda cls, v: _plain_text(v))
+    _id = field_validator("id")(lambda cls, v: _identifier(v))
 
     @field_validator("x_mm", "y_mm", "z_mm")
     @classmethod
@@ -190,7 +198,7 @@ class Section(_Strict):
     b_mm: float | None = Field(None, gt=0)
     d_mm: float | None = Field(None, gt=0)
 
-    _id = field_validator("id")(lambda cls, v: _plain_text(v))
+    _id = field_validator("id")(lambda cls, v: _identifier(v))
 
     @model_validator(mode="after")
     def _one_definition(self) -> Section:
@@ -231,7 +239,7 @@ class Member(_Strict):
     K: float = Field(1.0, gt=0, description="Effective-length factor for buckling")
     releases: list[Release] = Field(default_factory=list)
 
-    _id = field_validator("id", "i", "j", "section")(lambda cls, v: _plain_text(v))
+    _id = field_validator("id", "i", "j", "section")(lambda cls, v: _identifier(v))
 
 
 class Deck(_Strict):
@@ -284,7 +292,8 @@ class PlateLoad(_Strict):
         None, description="Plate centre along X; default = mid-span between supports"
     )
     deck_support_nodes: list[str] = Field(
-        description="Nodes the deck bears on along its centreline (e.g. floor-beam centres)"
+        min_length=1,
+        description="Nodes the deck bears on along its centreline (e.g. floor-beam centres)",
     )
 
 
@@ -334,7 +343,37 @@ class Bridge(_Strict):
                 raise ValueError(f"Unknown node {nid!r} in supports/load")
         if not self.supports.pinned and not self.supports.extra_restraints:
             raise ValueError("At least one pinned support is required")
+        self._check_no_hidden_joints(nodes)
         return self
+
+    def _check_no_hidden_joints(self, nodes: dict[str, Node]) -> None:
+        """Reject nodes lying inside a member that does not connect to them.
+
+        Pynite splits a member at every model node on its line, which would silently add a
+        rigid joint the file never declared. Split the member at that node explicitly.
+        """
+        if not self.members:
+            return
+        ids = list(nodes)
+        P = np.array([nodes[n].xyz for n in ids])
+        for m in self.members:
+            a, b = np.array(nodes[m.i].xyz), np.array(nodes[m.j].xyz)
+            v = b - a
+            L = float(np.linalg.norm(v))
+            lo, hi = np.minimum(a, b) - 1e-6, np.maximum(a, b) + 1e-6
+            near = np.all((P >= lo) & (P <= hi), axis=1)
+            if not near.any():
+                continue
+            d = P[near] - a
+            t = d @ v / L
+            perp = np.linalg.norm(d - np.outer(t, v / L), axis=1)
+            inside = (t > 1e-6) & (t < L - 1e-6) & (perp < 1e-6 + 1e-9 * L)
+            for k in np.flatnonzero(inside):
+                nid = [n for n, keep in zip(ids, near, strict=True) if keep][k]
+                raise ValueError(
+                    f"Node {nid!r} lies on member {m.id!r} but the member does not connect to "
+                    f"it. Split {m.id!r} at {nid!r} into two members, or move the node."
+                )
 
     # ------------------------------------------------------------------ helpers
     def node_map(self) -> dict[str, Node]:
