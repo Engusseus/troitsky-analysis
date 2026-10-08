@@ -91,7 +91,10 @@ def run(
     except AnalysisError as exc:
         typer.secho(f"ERROR: {printable(exc)}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from exc
-    rep = evaluate(bridge, mat, rs)
+    try:
+        rep = evaluate(bridge, mat, rs)
+    except ValueError as exc:
+        _fail(f"rules {rules!r}", exc)
 
     assumed = mat.assumed_keys()
     if assumed:
@@ -143,7 +146,10 @@ def check(
     """Check the competition rules only. Exit code 1 if any checked rule fails, 2 if a file
     cannot be read."""
     bridge, mat, rs = _inputs(file, material, rules)
-    rep = evaluate(bridge, mat, rs)
+    try:
+        rep = evaluate(bridge, mat, rs)
+    except ValueError as exc:
+        _fail(f"rules {rules!r}", exc)
     _print_rules(rep)
     if rep.total_penalty or rep.bans or rep.disqualification_risks or not rep.all_passed:
         raise typer.Exit(code=1)

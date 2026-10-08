@@ -183,7 +183,13 @@ def analyze(
     material = material or bridge_material(bridge)
     P_ref = bridge.load.P_ref_N
     model = build_model(bridge, material, P_ref)
-    model.analyze_linear(check_stability=True)
+    try:
+        model.analyze_linear(check_stability=True)
+    except Exception as exc:  # Pynite raises a bare Exception for a mechanism
+        raise AnalysisError(
+            f"The structure is unstable (a mechanism): {exc} Check that the supports and "
+            "member releases hold every part of the bridge in place."
+        ) from exc
 
     nodes = bridge.node_map()
     secs = bridge.section_map()

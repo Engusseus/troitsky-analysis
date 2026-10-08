@@ -64,6 +64,10 @@ class Steps(BaseModel):
     def _ordered(self) -> Steps:
         if self.cap <= self.free_up_to:
             raise ValueError("steps.cap must be greater than steps.free_up_to")
+        for name in ("free_up_to", "step", "cap"):  # mass_penalty() works in centigrams
+            cg = getattr(self, name) * 100
+            if abs(cg - round(cg)) > 1e-6:
+                raise ValueError(f"steps.{name} must be a whole number of 0.01 kg")
         if round(self.step * 100) < 1:
             raise ValueError("steps.step must be at least 0.01 (penalties use centigrams)")
         return self
@@ -142,6 +146,30 @@ class RuleSet(BaseModel):
         if bad:
             raise ValueError(f"values must be greater than {lo:g} and at most 1e6: {bad}")
         return v
+
+    @model_validator(mode="after")
+    def _bands_cover_every_value(self) -> RuleSet:
+        """Every rounded measurement must fall in some band, or evaluation would fail."""
+        step = self.rounding.get("length_mm", 1.0)
+        for rule in self.rules:
+            if rule.type != "bands":
+                continue
+            spans = sorted((-math.inf if b.min is None else b.min,
+                            math.inf if b.max is None else b.max) for b in rule.bands)
+            reach = -math.inf
+            for lo, hi in spans:
+                # the smallest rounded value above everything covered so far
+                nxt = -math.inf if reach == -math.inf else (
+                    math.floor(reach / step + 1e-9) + 1) * step
+                if lo > nxt + 1e-9 * step:
+                    gap = "below" if reach == -math.inf else "after"
+                    where = lo if reach == -math.inf else reach
+                    raise ValueError(f"Rule {rule.key!r}: no band covers values {gap} "
+                                     f"{where:g} (bands must leave no gaps)")
+                reach = max(reach, hi)
+            if reach != math.inf:
+                raise ValueError(f"Rule {rule.key!r}: no band covers values above {reach:g}")
+        return self
 
     @classmethod
     def from_yaml_str(cls, text: str) -> RuleSet:

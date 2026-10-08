@@ -40,8 +40,12 @@ PINNED_RELEASES: dict[str, tuple[str, ...]] = {
 
 _MATERIAL = "wood"
 
-#: Prefix of the interior nodes added to split members (not part of the bridge).
+#: Prefix of the interior nodes added to split members (not part of the bridge). Extra "~"
+#: are prepended if a bridge node already uses the prefix, so names never collide.
 INTERIOR_PREFIX = "~mid "
+#: Above this many members the split is skipped: Pynite's member subdivision scans every
+#: node for every member, and the extra nodes would make very large uploads slow.
+REFINE_MAX_MEMBERS = 1500
 _SPLIT_AT = (0.5, 0.45, 0.55, 0.4, 0.6, 0.35, 0.65)
 
 
@@ -93,8 +97,12 @@ def build_model(bridge: Bridge, material: Material, P_N: float | None = None) ->
         rel = member_releases(bridge, mem)
         if rel:
             m.def_releases(mem.id, **{r: True for r in rel})
-    for mid, (x, y, z) in _interior_points(bridge).items():
-        m.add_node(INTERIOR_PREFIX + mid, x, y, z)
+    if len(bridge.members) <= REFINE_MAX_MEMBERS:
+        prefix = INTERIOR_PREFIX
+        while any(n.id.startswith(prefix) for n in bridge.nodes):
+            prefix = "~" + prefix
+        for mid, (x, y, z) in _interior_points(bridge).items():
+            m.add_node(prefix + mid, x, y, z)
 
     for nid in bridge.supports.pinned:
         m.def_support(nid, support_DX=True, support_DY=True, support_DZ=True)

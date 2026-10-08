@@ -69,7 +69,9 @@ def global_buckling(
 ) -> BucklingResult:
     """Solve the buckling eigenproblem on an already analysed Pynite model."""
     free = _free_dofs(model, bridge)
-    sparse = len(free) > dense_max_dof
+    # K and K_g are assembled over every DOF before the free ones are sliced out, so the
+    # full size decides whether a dense matrix fits in memory.
+    sparse = 6 * len(model.nodes) > dense_max_dof
     K = model.Ke(COMBO, sparse=sparse, check_stability=False)
     G = model.Kg(COMBO, sparse=sparse, first_step=False)
     if sparse:

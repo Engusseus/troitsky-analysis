@@ -822,3 +822,106 @@ def test_stick_dimensions_that_underflow_are_rejected() -> None:
     data["stick"] = {"length_mm": 1e-300, "width_mm": 1e-300, "thickness_mm": 1e-300}
     with pytest.raises(ValidationError):
         Material.model_validate(data)
+
+
+# --------------------------------------------------------------------------- eleventh review round
+
+
+def _mechanism() -> Bridge:
+    """One member pinned at one end only: free to rotate, so the stiffness is singular."""
+    from bridgesim.schema import Deck, Member, Node, PlateLoad, Section, Supports
+
+    return Bridge(
+        name="mechanism", nodes=[Node(id="A", x_mm=0, y_mm=0, z_mm=0),
+                                 Node(id="B", x_mm=100, y_mm=0, z_mm=0)],
+        members=[Member(id="M", i="A", j="B", section="s")],
+        sections=[Section(id="s", b_mm=10, d_mm=10)],
+        deck=Deck(x_start_mm=0, x_end_mm=100, top_elevation_mm=5, clear_width_mm=10),
+        supports=Supports(pinned=["A"]),
+        load=PlateLoad(P_ref_N=1, plate_length_mm=1, x_center_mm=100,
+                       deck_support_nodes=["B"]))
+
+
+def test_unstable_structure_is_an_analysis_error(tmp_path) -> None:
+    from typer.testing import CliRunner
+
+    from bridgesim.analysis import AnalysisError
+    from bridgesim.cli import app
+
+    with pytest.raises(AnalysisError, match="unstable"):
+        analyze(_mechanism())
+    path = tmp_path / "mech.yaml"
+    _mechanism().save(path)
+    res = CliRunner().invoke(app, ["run", str(path)])
+    assert res.exit_code == 2 and "unstable" in res.output and "Traceback" not in res.output
+
+
+def test_user_node_named_like_an_interior_node_is_fine() -> None:
+    from bridgesim.schema import Deck, Member, Node, PlateLoad, Section, Supports
+
+    col = Bridge(
+        name="column", nodes=[Node(id="~mid M", x_mm=0, y_mm=0, z_mm=0),
+                              Node(id="T", x_mm=0, y_mm=115, z_mm=0)],
+        members=[Member(id="M", i="~mid M", j="T", section="s")],
+        sections=[Section(id="s", b_mm=10, d_mm=2)],
+        deck=Deck(x_start_mm=-1, x_end_mm=1, top_elevation_mm=115, clear_width_mm=10),
+        supports=Supports(pinned=["~mid M"], extra_restraints={"~mid M": ["RY"],
+                                                               "T": ["DX", "DZ"]}),
+        load=PlateLoad(P_ref_N=1, plate_length_mm=1e-3, x_center_mm=0,
+                       deck_support_nodes=["T"]))
+    r = analyze(col)
+    assert r.buckling.lambda_cr == pytest.approx(49.75, rel=0.01)
+
+
+def test_deck_underside_below_the_platform_fails_the_rule() -> None:
+    from bridgesim.materials import load_material
+    from bridgesim.rules import evaluate
+
+    b = generate_warren()
+    deck = b.deck.model_copy(update={"top_elevation_mm": 1.0, "thickness_mm": 2.0})
+    rep = evaluate(b.model_copy(update={"deck": deck}), load_material("popsicle_birch"))
+    assert next(r for r in rep.results if r.key == "above_platform").passed is False
+
+
+@pytest.mark.parametrize("bands, msg", [
+    ([{"max": 1350}], "above 1350"),
+    ([{"min": 0, "max": 1350}, {"min": 1351}], "below 0"),
+    ([{"max": 1350.2}, {"min": 1351.1, "penalty": 5}], "after 1350.2"),
+])
+def test_band_rules_must_leave_no_gaps(bands: list, msg: str) -> None:
+    data = RuleSet.load().model_dump()
+    rule = next(r for r in data["rules"] if r["key"] == "total_length")
+    rule["bands"] = bands
+    with pytest.raises(ValidationError, match=msg):
+        RuleSet.model_validate(data)
+
+
+@pytest.mark.parametrize("field, value", [("step", 0.006), ("step", 0.015),
+                                          ("free_up_to", 6.005), ("cap", 15.001)])
+def test_mass_steps_must_be_whole_centigrams(field: str, value: float) -> None:
+    data = RuleSet.load().model_dump()
+    mass = next(r for r in data["rules"] if r["type"] == "steps")
+    mass["steps"][field] = value
+    with pytest.raises(ValidationError, match="whole number of 0.01 kg"):
+        RuleSet.model_validate(data)
+
+
+def test_dense_buckling_is_chosen_from_the_full_matrix_size(monkeypatch) -> None:
+    from bridgesim.materials import load_material
+    from bridgesim.model import build_model
+    from bridgesim.stability import _free_dofs, global_buckling
+
+    b = generate_warren()
+    m = build_model(b, load_material("popsicle_birch"))
+    m.analyze_linear()
+    n_free, n_all = len(_free_dofs(m, b)), 6 * len(m.nodes)
+    seen = {}
+    original = m.Ke
+
+    def spy(*args, **kwargs):
+        seen["sparse"] = kwargs.get("sparse")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(m, "Ke", spy)
+    global_buckling(m, b, dense_max_dof=(n_free + n_all) // 2)  # free DOFs alone would fit
+    assert seen["sparse"] is True

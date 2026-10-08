@@ -123,7 +123,8 @@ def measure(
     # A member with an end resting on the table is cut flush there (its section may dip
     # below the centreline end); any other member must stay clear of the table entirely.
     low = [n.id for n in bridge.nodes if n.y_mm < table_y - 1e-6]
-    lowest = min([n.y_mm for n in bridge.nodes] + [deck.top_elevation_mm])
+    deck_bottom = deck.top_elevation_mm - deck.thickness_mm
+    lowest = min([n.y_mm for n in bridge.nodes] + [deck_bottom])
     through = []
     for s in S:
         if s.pts[[0, -1], 1].min() <= table_y + 1e-6:
@@ -133,7 +134,7 @@ def measure(
             through.append(s.member)
             lowest = min(lowest, bottom)
     v["below_table_mm"] = max(0.0, table_y - lowest)
-    v["above_table_ok"] = float(not low and not through and deck.top_elevation_mm >= table_y)
+    v["above_table_ok"] = float(not low and not through and deck_bottom >= table_y - 1e-6)
     d["below_table_nodes"] = low
     d["below_table_members"] = through
 
