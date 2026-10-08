@@ -609,3 +609,108 @@ def test_rule_banner_does_not_claim_success_over_a_failed_check() -> None:
     assert not at.exception, [e.value for e in at.exception]
     assert not any("All checked rules pass" in s.value for s in at.success)
     assert any("fail" in w.value for w in at.warning)
+
+
+# --------------------------------------------------------------------------- ninth review round
+
+
+def _hanging_post() -> Bridge:
+    """Default bridge plus a post hanging 30 mm below the table (y = 0)."""
+    b = generate_warren()
+    data = b.model_dump(mode="json")
+    b3 = b.node_map()["B3n"]
+    data["nodes"].append({"id": "low", "x_mm": b3.x_mm, "y_mm": -30.0, "z_mm": b3.z_mm})
+    data["members"].append({"id": "hang", "i": "B3n", "j": "low", "section": "pier"})
+    return Bridge.model_validate(data)
+
+
+def test_geometry_below_the_table_fails_a_rule_instead_of_being_clipped() -> None:
+    from bridgesim.materials import load_material
+    from bridgesim.rules import evaluate
+
+    rep = evaluate(_hanging_post(), load_material("popsicle_birch"))
+    r = next(r for r in rep.results if r.key == "above_platform")
+    assert r.passed is False and "30" in r.measured_text
+    assert not rep.all_passed
+
+
+def _raised_supports() -> Bridge:
+    """Default bridge lifted 300 mm, deck top left at 200 mm: the deck is below the table."""
+    data = generate_warren().model_dump(mode="json")
+    for n in data["nodes"]:
+        n["y_mm"] += 300.0
+    return Bridge.model_validate(data)
+
+
+def test_deck_below_raised_supports_fails_the_platform_rule() -> None:
+    from bridgesim.materials import load_material
+    from bridgesim.rules import evaluate
+
+    rep = evaluate(_raised_supports(), load_material("popsicle_birch"))
+    assert next(r for r in rep.results if r.key == "above_platform").passed is False
+
+
+def test_cli_check_fails_on_a_failed_rule_without_penalty(tmp_path) -> None:
+    from typer.testing import CliRunner
+
+    from bridgesim.cli import app
+    from bridgesim.materials import load_material
+    from bridgesim.rules import evaluate
+
+    b = generate_warren()  # plus a 5 mm stub poking through the table under a pier base
+    data = b.model_dump(mode="json")
+    p0 = b.node_map()["P0n"]
+    data["nodes"].append({"id": "foot", "x_mm": p0.x_mm, "y_mm": -5.0, "z_mm": p0.z_mm})
+    data["members"].append({"id": "stub", "i": "P0n", "j": "foot", "section": "pier"})
+    stub = Bridge.model_validate(data)
+    rep = evaluate(stub, load_material("popsicle_birch"))
+    assert [r.key for r in rep.checked if not r.passed] == ["above_platform"]
+    assert rep.total_penalty == 0 and not rep.bans and not rep.disqualification_risks
+    path = tmp_path / "stub.yaml"
+    stub.save(path)
+    res = CliRunner().invoke(app, ["check", str(path)])
+    assert res.exit_code == 1, res.output
+
+
+def test_non_mapping_generator_metadata_does_not_break_reports() -> None:
+    from bridgesim.report import to_html, to_markdown
+
+    b = generate_warren().model_copy(update={"metadata": {"params": 1, "generator": [1]}})
+    r = analyze(b)
+    assert "Generator" in to_markdown(r) and "Generator" in to_html(r)
+
+
+@pytest.mark.parametrize("path, value", [
+    (("deck", "clear_width_mm"), 1e308),
+    (("deck", "x_end_mm"), 1e308),
+    (("load", "P_ref_N"), 1e308),
+    (("load", "plate_length_mm"), 1e308),
+    (("sections", 0, "b_mm"), 1e308),
+])
+def test_finite_but_absurd_bridge_values_are_rejected(path: tuple, value: float) -> None:
+    data = generate_warren().model_dump(mode="json")
+    if path[0] == "sections":
+        data["sections"][0] = {"id": data["sections"][0]["id"], "b_mm": value, "d_mm": 10.0}
+    else:
+        data[path[0]][path[1]] = value
+    with pytest.raises(ValidationError):
+        Bridge.model_validate(data)
+
+
+@pytest.mark.parametrize("key", ["density_kg_m3", "E_MPa", "f_t_MPa"])
+def test_finite_but_absurd_material_values_are_rejected(key: str) -> None:
+    from bridgesim.materials import load_material
+
+    data = load_material("popsicle_birch").model_dump(mode="json")
+    data[key]["value"] = 1e308
+    with pytest.raises(ValidationError, match="not physical"):
+        Material.model_validate(data)
+
+
+@pytest.mark.parametrize("field", ["cap", "free_up_to", "step"])
+def test_absurd_mass_steps_are_rejected(field: str) -> None:
+    data = RuleSet.load().model_dump()
+    mass = next(r for r in data["rules"] if r["type"] == "steps")
+    mass["steps"][field] = 1e308
+    with pytest.raises(ValidationError):
+        RuleSet.model_validate(data)

@@ -115,12 +115,12 @@ def check(
     material: MaterialOpt = None,
     rules: RulesOpt = "troitsky_2027",
 ) -> None:
-    """Check the competition rules only. Exit code 1 if any penalty or ban applies."""
+    """Check the competition rules only. Exit code 1 if any checked rule fails."""
     bridge = Bridge.from_file(file)
     mat = load_material(material) if material else bridge_material(bridge)
     rep = evaluate(bridge, mat, RuleSet.load(rules))
     _print_rules(rep)
-    if rep.total_penalty or rep.bans or rep.disqualification_risks:
+    if rep.total_penalty or rep.bans or rep.disqualification_risks or not rep.all_passed:
         raise typer.Exit(code=1)
 
 

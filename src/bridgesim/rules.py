@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from bridgesim.mass import bridge_mass
 from bridgesim.measure import DEFAULT_CONSTANTS, Measurements, measure
 from bridgesim.paths import data_dir
-from bridgesim.schema import Bridge, Material
+from bridgesim.schema import MAX_SIZE_MM, Bridge, Material
 from bridgesim.textsafe import has_control_chars
 
 
@@ -53,11 +53,12 @@ class Consequence(BaseModel):
 
 class Steps(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    free_up_to: float = Field(ge=0, allow_inf_nan=False)
-    step: float = Field(gt=0, allow_inf_nan=False)
-    points_per_step: float = Field(ge=0, allow_inf_nan=False)
-    cap: float = Field(gt=0, allow_inf_nan=False)
-    over_cap_penalty: float = Field(ge=0, allow_inf_nan=False)
+    # Masses in kg; bounded so the centigram arithmetic in mass_penalty() cannot overflow.
+    free_up_to: float = Field(ge=0, le=1e6, allow_inf_nan=False)
+    step: float = Field(gt=0, le=1e6, allow_inf_nan=False)
+    points_per_step: float = Field(ge=0, le=1e6, allow_inf_nan=False)
+    cap: float = Field(gt=0, le=1e6, allow_inf_nan=False)
+    over_cap_penalty: float = Field(ge=0, le=1e6, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _ordered(self) -> Steps:
@@ -111,9 +112,9 @@ class Crushing(BaseModel):
     """The competition's crushing test (§12.5)."""
 
     model_config = ConfigDict(extra="forbid")
-    plate_length_mm: float = Field(200.0, gt=0, allow_inf_nan=False)
-    plate_width_mm: float = Field(90.0, gt=0, allow_inf_nan=False)
-    deflection_limit_mm: float = Field(50.0, gt=0, allow_inf_nan=False)
+    plate_length_mm: float = Field(200.0, gt=0, le=MAX_SIZE_MM, allow_inf_nan=False)
+    plate_width_mm: float = Field(90.0, gt=0, le=MAX_SIZE_MM, allow_inf_nan=False)
+    deflection_limit_mm: float = Field(50.0, gt=0, le=MAX_SIZE_MM, allow_inf_nan=False)
 
 
 class RuleSet(BaseModel):
@@ -136,9 +137,9 @@ class RuleSet(BaseModel):
         unknown = sorted(set(v) - set(known))
         if unknown:  # a typo would otherwise silently fall back to the default
             raise ValueError(f"unknown keys {unknown}; expected some of {list(known)}")
-        bad = {k: x for k, x in v.items() if not (math.isfinite(x) and x > 0)}
+        bad = {k: x for k, x in v.items() if not (math.isfinite(x) and 0 < x <= 1e6)}
         if bad:
-            raise ValueError(f"values must be positive and finite: {bad}")
+            raise ValueError(f"values must be positive and at most 1e6: {bad}")
         return v
 
     @classmethod

@@ -49,6 +49,9 @@ DOF = Literal["DX", "DY", "DZ", "RX", "RY", "RZ"]
 #: Coordinates beyond +/-100 m are certainly a units mistake (bridges are ~1.4 m long) and
 #: would make geometric sampling allocate huge arrays.
 MAX_COORD_MM = 100_000.0
+#: Largest cross-section, stick or plate dimension accepted (10 m). Every numeric input has
+#: a finite upper bound so that products such as areas, volumes and masses cannot overflow.
+MAX_SIZE_MM = 10_000.0
 
 
 class _Strict(BaseModel):
@@ -81,9 +84,9 @@ class Prop(_Strict):
 
 
 class Stick(_Strict):
-    length_mm: float = Field(115.0, gt=0)
-    width_mm: float = Field(10.0, gt=0)
-    thickness_mm: float = Field(2.0, gt=0)
+    length_mm: float = Field(115.0, gt=0, le=MAX_SIZE_MM)
+    width_mm: float = Field(10.0, gt=0, le=MAX_SIZE_MM)
+    thickness_mm: float = Field(2.0, gt=0, le=MAX_SIZE_MM)
 
     @property
     def volume_mm3(self) -> float:
@@ -122,20 +125,21 @@ class Material(_Strict):
     @model_validator(mode="after")
     def _physical(self) -> Material:
         """Reject values that cannot describe wood and glue (and would corrupt results)."""
+        # Upper bounds are far above any real material (steel: E = 2e5 MPa, 7850 kg/m3) and
+        # only stop finite but absurd values from overflowing capacities and masses.
         limits = {  # name: (lower, upper, lower bound inclusive?)
-            "E_MPa": (0, None, False), "G_MPa": (0, None, False), "nu": (-1, 0.5, False),
-            "f_t_MPa": (0, None, False), "f_c_MPa": (0, None, False),
-            "f_b_MPa": (0, None, False), "f_v_MPa": (0, None, False),
-            "density_kg_m3": (0, None, False), "glue.tau_g_MPa": (0, None, False),
-            "glue.mass_fraction": (0, 1, True), "glue.overlap_mm": (0, None, False),
-            "glue.faces": (0, None, False),
+            "E_MPa": (0, 1e6, False), "G_MPa": (0, 1e6, False), "nu": (-1, 0.5, False),
+            "f_t_MPa": (0, 1e5, False), "f_c_MPa": (0, 1e5, False),
+            "f_b_MPa": (0, 1e5, False), "f_v_MPa": (0, 1e5, False),
+            "density_kg_m3": (0, 1e5, False), "glue.tau_g_MPa": (0, 1e5, False),
+            "glue.mass_fraction": (0, 1, True), "glue.overlap_mm": (0, MAX_SIZE_MM, False),
+            "glue.faces": (0, 100, False),
         }
         for key, prop in self.props().items():
             v = prop.value
             lo, hi, incl = limits[key]
-            if not math.isfinite(v) or (v < lo if incl else v <= lo) or (hi is not None
-                                                                       and v >= hi):
-                rng = f"{'>=' if incl else '>'} {lo}" + (f" and < {hi}" if hi is not None else "")
+            if not math.isfinite(v) or (v < lo if incl else v <= lo) or v >= hi:
+                rng = f"{'>=' if incl else '>'} {lo} and < {hi:g}"
                 raise ValueError(f"Material value {key} = {v} is not physical (must be {rng})")
         return self
 
@@ -195,8 +199,8 @@ class Section(_Strict):
     id: str
     sticks: int | None = Field(None, ge=1, le=60)
     layout: Literal["flat", "on_edge"] | None = None
-    b_mm: float | None = Field(None, gt=0)
-    d_mm: float | None = Field(None, gt=0)
+    b_mm: float | None = Field(None, gt=0, le=MAX_SIZE_MM)
+    d_mm: float | None = Field(None, gt=0, le=MAX_SIZE_MM)
 
     _id = field_validator("id")(lambda cls, v: _identifier(v))
 
@@ -236,7 +240,7 @@ class Member(_Strict):
     j: str
     section: str
     group: MemberGroup = "other"
-    K: float = Field(1.0, gt=0, description="Effective-length factor for buckling")
+    K: float = Field(1.0, gt=0, le=10, description="Effective-length factor for buckling")
     releases: list[Release] = Field(default_factory=list)
 
     _id = field_validator("id", "i", "j", "section")(lambda cls, v: _identifier(v))
@@ -245,12 +249,12 @@ class Member(_Strict):
 class Deck(_Strict):
     """Non-structural deck surface. Used for load placement, measurements and mass."""
 
-    x_start_mm: float
-    x_end_mm: float
-    top_elevation_mm: float = Field(gt=0)
-    clear_width_mm: float = Field(gt=0)
-    thickness_mm: float = Field(2.0, gt=0)
-    z_center_mm: float = 0.0
+    x_start_mm: float = Field(ge=-MAX_COORD_MM, le=MAX_COORD_MM)
+    x_end_mm: float = Field(ge=-MAX_COORD_MM, le=MAX_COORD_MM)
+    top_elevation_mm: float = Field(gt=0, le=MAX_COORD_MM)
+    clear_width_mm: float = Field(gt=0, le=MAX_COORD_MM)
+    thickness_mm: float = Field(2.0, gt=0, le=MAX_SIZE_MM)
+    z_center_mm: float = Field(0.0, ge=-MAX_COORD_MM, le=MAX_COORD_MM)
 
     @model_validator(mode="after")
     def _ordered(self) -> Deck:
@@ -286,11 +290,12 @@ class Supports(_Strict):
 class PlateLoad(_Strict):
     """Crusher plate (rulebook §12.5): uniform over plate_length along X, centred on x."""
 
-    P_ref_N: float = Field(1000.0, gt=0)
-    plate_length_mm: float = Field(200.0, gt=0)
-    plate_width_mm: float = Field(90.0, gt=0)
+    P_ref_N: float = Field(1000.0, gt=0, le=1e7)
+    plate_length_mm: float = Field(200.0, gt=0, le=MAX_SIZE_MM)
+    plate_width_mm: float = Field(90.0, gt=0, le=MAX_SIZE_MM)
     x_center_mm: float | None = Field(
-        None, description="Plate centre along X; default = mid-span between supports"
+        None, ge=-MAX_COORD_MM, le=MAX_COORD_MM,
+        description="Plate centre along X; default = mid-span between supports",
     )
     deck_support_nodes: list[str] = Field(
         min_length=1,

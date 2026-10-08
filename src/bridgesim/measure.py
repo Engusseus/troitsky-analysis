@@ -121,6 +121,13 @@ def measure(
     ymax = max([float((s.pts[:, 1] + s.h[1]).max()) for s in S] + [deck.top_elevation_mm])
     v["deck_height_mm"] = deck.top_elevation_mm - table_y
     v["total_height_mm"] = ymax - ymin
+    # The bridge rests on the base platform, so no node and no deck can be lower than its
+    # supports. Report it rather than clip it away: it is a modelling error.
+    low = [n.id for n in bridge.nodes if n.y_mm < table_y - 1e-6]
+    lowest = min([n.y_mm for n in bridge.nodes] + [deck.top_elevation_mm])
+    v["below_table_mm"] = max(0.0, table_y - lowest)
+    v["above_table_ok"] = float(not low and deck.top_elevation_mm >= table_y)
+    d["below_table_nodes"] = low
 
     # ---- widths (§8.2.3) --------------------------------------------------------------
     zmin = min([float((s.pts[:, 2] - s.h[2]).min()) for s in S] + [zc - deck.clear_width_mm / 2])

@@ -38,7 +38,7 @@ Command line:
 
 ```bash
 uv run bridgesim run examples/warren_2027.yaml --out results/   # report, CSV, SFD/BMD PNG
-uv run bridgesim check my_bridge.yaml                           # rules only (exit 1 if penalised)
+uv run bridgesim check my_bridge.yaml                           # rules only (exit 1 if any rule fails)
 uv run bridgesim generate warren --span-mm 1100 --out my_bridge.yaml
 ```
 

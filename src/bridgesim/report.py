@@ -65,7 +65,9 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
     """Yield (heading, blocks) where a block is ('p', text) | ('ul', items) |
     ('table', headers, rows) | ('math', tex)."""
     b, mat, r = result.bridge, result.material, result
-    gen = b.metadata.get("params", {})
+    gen = b.metadata.get("params")
+    if not isinstance(gen, dict):  # free-form metadata in an uploaded file
+        gen = {}
     meta = [
         f"Bridge: **{b.name}** ({len(b.nodes)} nodes, {len(b.members)} members, "
         f"joints {b.joint_fixity})",

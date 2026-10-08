@@ -50,7 +50,7 @@ def test_passes_all_computable_rules(request: pytest.FixtureRequest, material: M
     assert rep.total_penalty == 0
     assert rep.bans == []
     assert rep.disqualification_risks == []
-    assert len(rep.checked) == 13
+    assert len(rep.checked) == 14
 
 
 def test_example_analyses_like_generated(example_bridge: Bridge, material: Material,
