@@ -477,3 +477,135 @@ def test_only_connected_chains_are_offered_as_group_diagrams() -> None:
     assert not viz.is_connected_chain(b, viz.chain_for_group(b, "floor_beam", "n"))
     assert not viz.is_connected_chain(b, viz.chain_for_group(b, "pier", "n"))
     assert not viz.is_connected_chain(b, [])
+
+
+# --------------------------------------------------------------------------- eighth review round
+
+
+def test_samples_over_the_whole_bridge_are_capped() -> None:
+    """Thousands of long members must not allocate hundreds of MB of sample points."""
+    from bridgesim.measure import MAX_SAMPLES, MAX_TOTAL_SAMPLES, _sample_counts
+
+    counts = _sample_counts([10_000.0] * 6000)
+    assert max(counts) <= MAX_SAMPLES
+    assert sum(counts) <= MAX_TOTAL_SAMPLES + 2 * 6000
+    assert min(counts) >= 2
+    assert _sample_counts([100.0, 3.0]) == [51, 3]  # normal bridges keep 2 mm spacing
+
+
+def test_deflection_governing_label_uses_the_active_limit() -> None:
+    import dataclasses
+
+    r = analyze(generate_warren(), deflection_limit_mm=2.0)  # 4.5 mm at the strength limit
+    assert r.governing_mode == "deflection"
+    assert r.governing_label == "deflection > 2 mm"
+    assert dataclasses.replace(r, deflection_limit_mm=50.0).governing_label == \
+        "deflection > 50 mm"
+
+
+def test_glue_exclusions_must_be_member_groups() -> None:
+    from bridgesim.materials import load_material
+
+    data = load_material("popsicle_birch").model_dump(mode="json")
+    data["glue"]["exclude_groups"] = ["top_chrod"]
+    with pytest.raises(ValidationError, match="top_chrod"):
+        Material.model_validate(data)
+
+
+@pytest.mark.parametrize("restraints", [{"P0n": []}, {"P0n": ["RX", "RZ"]}])
+def test_empty_or_rotation_only_restraints_are_not_supports(restraints: dict) -> None:
+    data = generate_warren().model_dump(mode="json")
+    data["supports"]["pinned"] = []
+    data["supports"]["extra_restraints"] = restraints
+    with pytest.raises(ValidationError):
+        Bridge.model_validate(data)
+
+
+@pytest.mark.parametrize("field, key", [("constants", "cart_heigth_mm"),
+                                        ("rounding", "lenght_mm")])
+def test_unknown_rule_constants_are_rejected(field: str, key: str) -> None:
+    data = RuleSet.load().model_dump()
+    data[field][key] = 210.0
+    with pytest.raises(ValidationError, match=key):
+        RuleSet.model_validate(data)
+
+
+def test_supports_given_only_as_extra_restraints_are_drawn() -> None:
+    from bridgesim import viz
+    from bridgesim.schema import Supports
+
+    b = generate_warren()
+    n = b.metadata["params"]["n_panels"]
+    sup = Supports(pinned=[], roller=[],
+                   extra_restraints={"P0n": ["DX", "DY", "DZ"], "P0f": ["DX", "DY", "DZ"],
+                                     f"P{n}n": ["DY", "DZ"], f"P{n}f": ["DY", "DZ"]})
+    fig = viz.bridge_figure(b.model_copy(update={"supports": sup}), view="undeformed")
+    markers = next(t for t in fig.data if t.name == "supports")
+    assert len(markers.x) == 4
+    assert "P0n: restrained (DX, DY, DZ)" in markers.hovertext
+
+
+def test_failed_buckling_solve_is_not_shown_as_no_compression(monkeypatch) -> None:
+    import math
+
+    from bridgesim import viz
+    from bridgesim.stability import BucklingResult
+
+    r = analyze(generate_warren())
+    r.buckling = BucklingResult(math.nan, note="solver failed")
+    title = viz.bridge_figure(r.bridge, r, view="buckling").layout.title.text
+    assert "NOT EVALUATED" in title and "nothing in compression" not in title
+
+
+def test_chain_diagrams_do_not_depend_on_member_end_order() -> None:
+    """A chord written as A->B, C->B must plot exactly like A->B, B->C."""
+    import numpy as np
+
+    from bridgesim import viz
+
+    b = generate_warren()
+    for group in ("bottom_chord", "top_chord", "diagonal"):
+        ids = viz.chain_for_group(b, group, "n")
+        flip = set(ids[1::2])
+        mems = [m.model_copy(update={"i": m.j, "j": m.i}) if m.id in flip else m
+                for m in b.members]
+        ref = viz.member_chain_diagrams(analyze(b, include_buckling=False), ids)
+        alt = viz.member_chain_diagrams(
+            analyze(b.model_copy(update={"members": mems}), include_buckling=False), ids)
+        for a, c in zip(ref[:4], alt[:4], strict=True):
+            np.testing.assert_allclose(c, a, atol=1e-6)
+
+
+def _render_rules_card(app_path: str, report_json: str) -> None:
+    """Streamlit script: run the app's _rules_card on a given report."""
+    from pathlib import Path
+
+    from bridgesim.rules import RulesReport
+
+    src = Path(app_path).read_text(encoding="utf-8").rsplit("\nmain()", 1)[0]
+    ns = {"__name__": "bridgesim_app", "__file__": app_path}
+    exec(compile(src, app_path, "exec"), ns)
+    ns["_rules_card"](RulesReport.model_validate_json(report_json))
+
+
+def test_rule_banner_does_not_claim_success_over_a_failed_check() -> None:
+    """A failing check with no penalty, ban or DQ is still not 'All checked rules pass'."""
+    from pathlib import Path
+
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+
+    from bridgesim.materials import load_material
+    from bridgesim.rules import evaluate
+
+    rep = evaluate(generate_warren(), load_material("popsicle_birch"))
+    k = next(i for i, r in enumerate(rep.results) if r.key == "clearance_above_deck")
+    rep.results[k] = rep.results[k].model_copy(
+        update={"passed": False, "penalty": 0, "bans": [], "disqualification": False})
+    app_path = str(Path(__file__).resolve().parents[1] / "app" / "streamlit_app.py")
+    at = AppTest.from_function(_render_rules_card, args=(app_path, rep.model_dump_json()),
+                               default_timeout=60)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert not any("All checked rules pass" in s.value for s in at.success)
+    assert any("fail" in w.value for w in at.warning)

@@ -54,3 +54,17 @@ def test_short_span_is_flagged() -> None:
     app.run()
     assert not app.exception, [e.value for e in app.exception]
     assert any("BANNED" in e.value for e in app.error)
+
+
+def test_validation_errors_are_shown_as_inert_text() -> None:
+    """Pydantic quotes the bad value; a Markdown image in it must not render."""
+    app = AppTest.from_file(APP, default_timeout=120)
+    app.run()
+    name = next(t for t in app.sidebar.text_input if t.label == "Design name")
+    name.set_value("![x](https://example.invalid/p.png)\x07")
+    next(b for b in app.sidebar.button if b.label == "Analyze").click()
+    app.run()
+    assert not app.exception, [e.value for e in app.exception]
+    errors = [e.value for e in app.error]
+    assert errors and all("![x](" not in e for e in errors)
+    assert any(r"\!\[x\]" in e for e in errors)

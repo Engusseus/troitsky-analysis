@@ -147,7 +147,7 @@ def _rules_picker() -> RuleSet:
         if up is not None:
             return RuleSet.from_yaml_str(up.getvalue().decode("utf-8"))
     except BAD_FILE as exc:
-        st.sidebar.error(f"Rules file not valid: {exc}")
+        st.sidebar.error(f"Rules file not valid: {md(exc)}")
     return RuleSet.load(files[choice])
 
 
@@ -173,7 +173,7 @@ def _design_panel(ruleset: RuleSet) -> None:
                     _replace_inputs()
                 ss.result, ss.error = None, None  # re-analyse with the new geometry
             except BAD_FILE as exc:
-                sb.error(f"Could not read the bridge file:\n\n{exc}")
+                sb.error(f"Could not read the bridge file:\n\n{md(exc)}")
                 ss.uploaded_bridge, ss.result = None, None  # fall back to the parametric design
         elif up is None and ss.seen_digest is not None:  # the file was removed
             ss.seen_digest = None
@@ -191,10 +191,10 @@ def _design_panel(ruleset: RuleSet) -> None:
             try:
                 ss.material = material_from_yaml_str(mup.getvalue().decode("utf-8"))
                 _replace_inputs()
-                ss.result = None
+                ss.result, ss.error = None, None  # re-analyse with the new material
                 st.success(f"Material “{md(ss.material.name)}” loaded")
             except BAD_FILE as exc:
-                st.error(f"Material file not valid: {exc}")
+                st.error(f"Material file not valid: {md(exc)}")
 
     p = ss.params
     v = ss.form_ver
@@ -313,6 +313,10 @@ def _rules_card(rep: RulesReport) -> None:
             msg += "  \n**Disqualification risk:** " + ", ".join(
                 md(r.title) for r in rep.disqualification_risks)
         st.error(msg, icon="🚫")
+    elif any(not r.passed for r in rep.checked):
+        n = sum(not r.passed for r in rep.checked)
+        st.warning(f"{n} checked rule(s) fail, but this rules file sets no penalty for them",
+                   icon="⚠️")
     else:
         st.success("All checked rules pass · 0 pts", icon="✅")
     for r in rep.checked:
@@ -550,7 +554,7 @@ def main() -> None:
                    "assumed placeholders, not test data.** Predicted loads are illustrative "
                    "until you enter your own measurements (tick *measured*).", icon="🧪")
     if ss.error:
-        st.error(ss.error)
+        st.error(md(ss.error))  # may quote values from an uploaded file
         return
     r: AnalysisResult = ss.result
     rep: RulesReport = ss.rules_report

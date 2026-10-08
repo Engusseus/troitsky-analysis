@@ -17,7 +17,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from bridgesim.mass import bridge_mass
-from bridgesim.measure import Measurements, measure
+from bridgesim.measure import DEFAULT_CONSTANTS, Measurements, measure
 from bridgesim.paths import data_dir
 from bridgesim.schema import Bridge, Material
 from bridgesim.textsafe import has_control_chars
@@ -103,6 +103,10 @@ class Rule(BaseModel):
         return self
 
 
+#: Rounding steps the evaluator reads (judges' measuring resolution).
+ROUNDING_KEYS = ("length_mm", "mass_kg")
+
+
 class Crushing(BaseModel):
     """The competition's crushing test (§12.5)."""
 
@@ -127,7 +131,11 @@ class RuleSet(BaseModel):
 
     @field_validator("rounding", "constants")
     @classmethod
-    def _positive_finite(cls, v: dict[str, float]) -> dict[str, float]:
+    def _positive_finite(cls, v: dict[str, float], info) -> dict[str, float]:
+        known = ROUNDING_KEYS if info.field_name == "rounding" else tuple(DEFAULT_CONSTANTS)
+        unknown = sorted(set(v) - set(known))
+        if unknown:  # a typo would otherwise silently fall back to the default
+            raise ValueError(f"unknown keys {unknown}; expected some of {list(known)}")
         bad = {k: x for k, x in v.items() if not (math.isfinite(x) and x > 0)}
         if bad:
             raise ValueError(f"values must be positive and finite: {bad}")

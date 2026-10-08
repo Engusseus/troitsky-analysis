@@ -34,7 +34,7 @@ MODE_LABELS = {
     "bending_y": "bending (out of plane)",
     "shear": "member shear",
     "joint": "glued joint shear",
-    "deflection": "deflection > 50 mm",
+    "deflection": "deflection limit",  # AnalysisResult.governing_label adds the limit
     "global_buckling": "global elastic buckling (instability)",
 }
 

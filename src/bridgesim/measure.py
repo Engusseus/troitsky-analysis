@@ -21,6 +21,9 @@ from bridgesim.schema import Bridge, Material
 SAMPLE_MM = 2.0
 #: Upper bound on samples per member (a 10 m member at 2 mm spacing), whatever its length.
 MAX_SAMPLES = 5001
+#: Upper bound on samples over the whole bridge (about 10 MB of points). A real bridge has
+#: well under 20 m of members (10,000 samples); larger models are sampled more coarsely.
+MAX_TOTAL_SAMPLES = 400_000
 _TOL = 0.5  # mm
 
 DEFAULT_CONSTANTS: dict[str, float] = {
@@ -51,14 +54,23 @@ class Measurements:
         return self.values[key]
 
 
+def _sample_counts(lengths: list[float]) -> list[int]:
+    """Samples per member: every SAMPLE_MM, within MAX_SAMPLES and MAX_TOTAL_SAMPLES."""
+    ks = [min(MAX_SAMPLES, max(2, int(math.ceil(L / SAMPLE_MM)) + 1)) for L in lengths]
+    total = sum(ks)
+    if total > MAX_TOTAL_SAMPLES:
+        f = MAX_TOTAL_SAMPLES / total
+        ks = [max(2, int(k * f)) for k in ks]
+    return ks
+
+
 def _samples(bridge: Bridge, material: Material, table_y: float) -> list[_Samples]:
     nodes = bridge.node_map()
     secs = bridge.section_map()
+    ends = [(np.array(nodes[m.i].xyz), np.array(nodes[m.j].xyz)) for m in bridge.members]
+    counts = _sample_counts([float(np.linalg.norm(b - a)) for a, b in ends])
     out = []
-    for m in bridge.members:
-        a, b = np.array(nodes[m.i].xyz), np.array(nodes[m.j].xyz)
-        L = float(np.linalg.norm(b - a))
-        k = min(MAX_SAMPLES, max(2, int(math.ceil(L / SAMPLE_MM)) + 1))
+    for m, (a, b), k in zip(bridge.members, ends, counts, strict=True):
         t = np.linspace(0.0, 1.0, k)[:, None]
         bm, dm = secs[m.section].dims(material.stick)
         touches = min(a[1], b[1]) <= table_y + _TOL

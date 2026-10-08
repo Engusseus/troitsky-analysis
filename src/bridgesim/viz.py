@@ -17,6 +17,7 @@ import numpy as np
 import plotly.graph_objects as go
 from matplotlib.figure import Figure
 
+from bridgesim.geometry import local_axes
 from bridgesim.model import COMBO
 from bridgesim.units import n_to_kgf
 
@@ -88,7 +89,12 @@ def bridge_figure(
     buck = result.buckling if result is not None else None
     if view == "buckling" and (buck is None or not buck.mode_mm):
         view = "undeformed"
-        title += "  ·  no global buckling mode (nothing in compression)"
+        if buck is None:
+            title += "  ·  global buckling was not analysed"
+        elif math.isnan(buck.lambda_cr):
+            title += "  ·  global buckling NOT EVALUATED (the eigen-solver failed, see warnings)"
+        else:
+            title += "  ·  no global buckling mode (nothing in compression)"
     if view == "buckling":
         xs = [n.x_mm for n in bridge.nodes]
         s = deform_scale or 0.06 * ((max(xs) - min(xs)) or 1.0)
@@ -195,11 +201,16 @@ def bridge_figure(
 
     # Supports, deck and crusher plate.
     sx, sy, sz, st = [], [], [], []
-    for nid in bridge.supports.pinned + bridge.supports.roller:
+    for nid in bridge.reaction_nodes():
         x, y, z = _plot_xyz(pos[nid])
         sx.append(x), sy.append(y), sz.append(z)
-        kind = "pinned (DX, DY, DZ)" if nid in bridge.supports.pinned else "roller (DY, DZ)"
-        st.append(f"{html.escape(nid)}: {kind}")
+        dofs = {"DX", "DY", "DZ"} if nid in bridge.supports.pinned else (
+            {"DY", "DZ"} if nid in bridge.supports.roller else set())
+        dofs |= set(bridge.supports.extra_restraints.get(nid, []))
+        kind = ("pinned" if nid in bridge.supports.pinned else
+                "roller" if nid in bridge.supports.roller else "restrained")
+        order = ("DX", "DY", "DZ", "RX", "RY", "RZ")
+        st.append(f"{html.escape(nid)}: {kind} ({', '.join(d for d in order if d in dofs)})")
     traces.append(go.Scatter3d(x=sx, y=sy, z=sz, mode="markers", hovertext=st, hoverinfo="text",
                                marker=dict(size=7, symbol="diamond", color=INK),
                                showlegend=False, name="supports"))
@@ -345,21 +356,32 @@ def member_chain_diagrams(
     """Axial force, shear V_y and moment M_z along a chain of members (or one member).
 
     Values from the solved Pynite model at P_ref, scaled linearly to ``load_N``. Members are
-    laid end to end in the given order; x is the cumulative distance along the chain.
-    Axial force is tension-positive; shear and moment use Pynite's local sign convention.
+    laid end to end in the given order; x is the cumulative distance along the chain. Each
+    member is read in the direction of travel along the chain (from the node it shares with
+    the previous member), whichever way round its i and j ends were written, so the curves
+    join up. Axial force is tension-positive; shear and moment use Pynite's local sign
+    convention for the member taken in that direction.
     """
     load = result.Fu_pred_N if load_N is None else load_N
     k = load / result.P_ref_N
     model = result.fe_model
     xs, N, V, M, bounds = [], [], [], [], [0.0]
     offset = 0.0
-    for mid in member_ids:
+    nodes = result.bridge.node_map()
+    for mid, rev in zip(member_ids, _chain_reversed(result.bridge, member_ids), strict=True):
         pm = model.members[mid]
         L = pm.L()
         xa = np.linspace(0, L, 41)
-        N.append(-pm.axial_array(41, COMBO, x_array=xa)[1] * k)
-        V.append(pm.shear_array("Fy", 41, COMBO, x_array=xa)[1] * k)
-        M.append(pm.moment_array("Mz", 41, COMBO, x_array=xa)[1] * k)
+        sv = sm = 1.0
+        if rev:  # read j -> i: local x flips, and with it the sign of V_y or M_z
+            m = next(m for m in result.bridge.members if m.id == mid)
+            a, b = nodes[m.i].xyz, nodes[m.j].xyz
+            fwd, back = local_axes(a, b), local_axes(b, a)
+            sv, sm = -float(back[1] @ fwd[1]), -float(back[2] @ fwd[2])
+        at = L - xa if rev else xa
+        N.append(-pm.axial_array(41, COMBO, x_array=at)[1] * k)
+        V.append(pm.shear_array("Fy", 41, COMBO, x_array=at)[1] * k * sv)
+        M.append(pm.moment_array("Mz", 41, COMBO, x_array=at)[1] * k * sm)
         xs.append(xa + offset)
         offset += L
         bounds.append(offset)
@@ -392,6 +414,24 @@ def figure_png(fig: Figure) -> bytes:
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=200)
     return buf.getvalue()
+
+
+def _chain_reversed(bridge: Bridge, member_ids: list[str]) -> list[bool]:
+    """For each member of a chain, True if travelling along the chain goes from j to i."""
+    mm = {m.id: m for m in bridge.members}
+    out, prev_end = [], None
+    for idx, mid in enumerate(member_ids):
+        m = mm[mid]
+        if prev_end is not None:
+            rev = m.j == prev_end and m.i != prev_end
+        elif idx + 1 < len(member_ids):
+            nxt = {mm[member_ids[idx + 1]].i, mm[member_ids[idx + 1]].j}
+            rev = m.i in nxt and m.j not in nxt
+        else:
+            rev = False
+        out.append(rev)
+        prev_end = m.i if rev else m.j
+    return out
 
 
 def is_connected_chain(bridge: Bridge, member_ids: list[str]) -> bool:

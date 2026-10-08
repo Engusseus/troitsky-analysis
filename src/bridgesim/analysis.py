@@ -130,6 +130,8 @@ class AnalysisResult:
 
     @property
     def governing_label(self) -> str:
+        if self.governing_mode == "deflection":
+            return f"deflection > {self.deflection_limit_mm:g} mm"
         return MODE_LABELS.get(self.governing_mode, self.governing_mode)
 
     def member(self, mid: str) -> MemberResult:

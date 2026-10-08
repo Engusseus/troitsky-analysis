@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import numpy as np
 import yaml
@@ -97,7 +97,7 @@ class Glue(_Strict):
     mass_fraction: Prop
     overlap_mm: Prop
     faces: Prop
-    exclude_groups: list[str] = Field(
+    exclude_groups: list[MemberGroup] = Field(
         default_factory=lambda: ["top_chord", "bottom_chord"],
         description="Groups treated as continuous through joints (no joint check).",
     )
@@ -272,7 +272,8 @@ class Supports(_Strict):
 
     pinned: list[str]
     roller: list[str] = Field(default_factory=list)
-    extra_restraints: dict[str, list[DOF]] = Field(default_factory=dict)
+    extra_restraints: dict[str, Annotated[list[DOF], Field(min_length=1)]] = Field(
+        default_factory=dict)
 
     @model_validator(mode="after")
     def _no_overlap(self) -> Supports:
@@ -341,8 +342,11 @@ class Bridge(_Strict):
         for nid in support_nodes + self.load.deck_support_nodes:
             if nid not in nodes:
                 raise ValueError(f"Unknown node {nid!r} in supports/load")
-        if not self.supports.pinned and not self.supports.extra_restraints:
-            raise ValueError("At least one pinned support is required")
+        translational = any(d in ("DX", "DY", "DZ")
+                            for dofs in self.supports.extra_restraints.values() for d in dofs)
+        if not self.supports.pinned and not translational:
+            raise ValueError("At least one pinned support (or a translational extra "
+                             "restraint) is required")
         self._check_no_hidden_joints(nodes)
         return self
 
