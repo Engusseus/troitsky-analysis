@@ -87,6 +87,13 @@ class Prop(_Strict):
     source: Source = "assumed"
     note: str = ""
 
+    @field_validator("note")
+    @classmethod
+    def _plain_note(cls, v: str) -> str:
+        if has_control_chars(v, allow="\n"):
+            raise ValueError("must not contain control characters")
+        return v
+
 
 class Stick(_Strict):
     length_mm: float = Field(115.0, ge=MIN_SIZE_MM, le=MAX_SIZE_MM)
@@ -146,6 +153,9 @@ class Material(_Strict):
             if not math.isfinite(v) or (v < lo if incl else v <= lo) or v >= hi:
                 rng = f"{'>=' if incl else '>'} {lo} and < {hi:g}"
                 raise ValueError(f"Material value {key} = {v} is not physical (must be {rng})")
+        if not float(self.glue.faces.value).is_integer():
+            raise ValueError(f"glue.faces must be a whole number of glued faces, not "
+                             f"{self.glue.faces.value:g}")
         return self
 
     def props(self) -> dict[str, Prop]:
@@ -295,7 +305,7 @@ class Supports(_Strict):
 class PlateLoad(_Strict):
     """Crusher plate (rulebook §12.5): uniform over plate_length along X, centred on x."""
 
-    P_ref_N: float = Field(1000.0, gt=0, le=1e7)
+    P_ref_N: float = Field(1000.0, ge=1e-3, le=1e7)
     plate_length_mm: float = Field(200.0, ge=1e-3, le=MAX_SIZE_MM)
     plate_width_mm: float = Field(90.0, ge=1e-3, le=MAX_SIZE_MM)
     x_center_mm: float | None = Field(

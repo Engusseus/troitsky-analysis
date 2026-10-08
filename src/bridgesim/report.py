@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from bridgesim import PYNITE_VERSION, __version__
 from bridgesim.checks import MODE_LABELS
-from bridgesim.textsafe import md, md_keep_bold
+from bridgesim.textsafe import md, md_keep_bold, printable
 from bridgesim.units import N_PER_KGF, n_to_kgf
 
 if TYPE_CHECKING:
@@ -34,7 +34,7 @@ MODEL_ASSUMPTIONS: list[str] = [
     "'pinned' switch releases in-plane moments of web members and bracing for comparison.",
     "Member buckling: Euler load over the full member length about the weaker axis, with "
     "the effective-length factor K stated above. Global (system) buckling: linear "
-    "eigenvalue analysis of the whole frame (two elements per member), with "
+    "eigenvalue analysis of the whole frame, with "
     "pier bases held by friction. Both assume perfectly straight sticks, so they are "
     "unconservative for crooked sticks (imperfections arrive in v0.2); a warning is "
     "given when F_u,p is above half the global buckling load.",
@@ -236,7 +236,11 @@ def model_assumptions(result: AnalysisResult) -> list[str]:
         shown = ", ".join(custom[:12]) + (f", … ({len(custom)} in total)" if len(custom) > 12
                                           else "")
         k_line = f"Effective-length factor K = 1 except: {shown}."
-    return [f"Material “{m.name}”: {vals}. {src}.", crusher, k_line, *MODEL_ASSUMPTIONS]
+    mesh = ("Global buckling mesh: two elements per member."
+            if result.buckling_elements_per_member >= 2 else
+            "Global buckling mesh: one element per member (the model is too large to refine), "
+            "so F_cr may be a few percent too high.")
+    return [f"Material “{m.name}”: {vals}. {src}.", crusher, k_line, mesh, *MODEL_ASSUMPTIONS]
 
 
 # --------------------------------------------------------------------------- renderers
@@ -270,17 +274,23 @@ def to_markdown(result: AnalysisResult, rules: RulesReport | None = None) -> str
 
 
 def _inline(s: str) -> str:
-    s = html.escape(s)
+    s = html.escape(printable(s))
     while "**" in s:
         s = s.replace("**", "<strong>", 1).replace("**", "</strong>", 1)
     return s
 
 
+def _h(text: object) -> str:
+    """HTML-escape text from shared files after dropping control/format characters (bidi
+    overrides could otherwise visually reorder the report)."""
+    return html.escape(printable(str(text)))
+
+
 def to_html(result: AnalysisResult, rules: RulesReport | None = None) -> str:
-    body = [f"<h1>Design validation: {html.escape(result.bridge.name)}</h1>",
+    body = [f"<h1>Design validation: {_h(result.bridge.name)}</h1>",
             "<p class='sub'>Assumptions, Method, Results (Troitsky rulebook §10.2)</p>"]
     for heading, blocks in _sections(result, rules):
-        body.append(f"<h2>{html.escape(heading)}</h2>")
+        body.append(f"<h2>{_h(heading)}</h2>")
         for blk in blocks:
             kind = blk[0]
             if kind == "p":
@@ -288,8 +298,8 @@ def to_html(result: AnalysisResult, rules: RulesReport | None = None) -> str:
             elif kind == "ul":
                 body.append("<ul>" + "".join(f"<li>{_inline(i)}</li>" for i in blk[1]) + "</ul>")
             elif kind == "table":
-                head = "".join(f"<th>{html.escape(str(h))}</th>" for h in blk[1])
-                rows = "".join("<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in r)
+                head = "".join(f"<th>{_h(h)}</th>" for h in blk[1])
+                rows = "".join("<tr>" + "".join(f"<td>{_h(c)}</td>" for c in r)
                                + "</tr>" for r in blk[2])
                 body.append(f"<table><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table>")
             elif kind == "math":
@@ -297,7 +307,7 @@ def to_html(result: AnalysisResult, rules: RulesReport | None = None) -> str:
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Design validation: {html.escape(result.bridge.name)}</title>
+<title>Design validation: {_h(result.bridge.name)}</title>
 <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
 <style>
 body {{ font-family: system-ui, sans-serif; max-width: 980px; margin: 2rem auto;

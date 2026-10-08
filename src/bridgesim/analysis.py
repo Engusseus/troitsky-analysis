@@ -34,7 +34,7 @@ from bridgesim.checks import MODE_LABELS, Capacities, Utilisation, capacities, u
 from bridgesim.loads import PlatePlacement, plate_nodal_loads, plate_placement
 from bridgesim.mass import MassReport, bridge_mass
 from bridgesim.materials import bridge_material
-from bridgesim.model import COMBO, build_model
+from bridgesim.model import COMBO, REFINE_MAX_MEMBERS, build_model
 from bridgesim.schema import Bridge, Material
 from bridgesim.stability import BucklingResult, global_buckling
 from bridgesim.units import n_to_kgf
@@ -110,6 +110,8 @@ class AnalysisResult:
     mass: MassReport
     deflection_limit_mm: float = DEFLECTION_LIMIT_MM
     buckling: BucklingResult | None = None
+    #: Elements per member in the global buckling analysis (1 above REFINE_MAX_MEMBERS).
+    buckling_elements_per_member: int = 2
     warnings: list[str] = field(default_factory=list)
     fe_model: Any = field(default=None, repr=False)
 
@@ -232,6 +234,8 @@ def analyze(
     }
     loads = plate_nodal_loads(bridge, P_ref)
     loaded = [nid for nid, F in loads.items() if F > 0]
+    if not loaded:
+        raise AnalysisError("The crusher load does not reach any deck support node.")
     delta_node = min(loaded, key=lambda nid: disp[nid][1])
     delta_ref = max(0.0, -disp[delta_node][1])
 
@@ -281,6 +285,12 @@ def analyze(
         )
     if buck is not None and buck.note and not math.isinf(buck.lambda_cr):
         warnings.append(f"Global buckling: {buck.note}")
+    n_el = 2 if len(bridge.members) <= REFINE_MAX_MEMBERS else 1
+    if buck is not None and n_el == 1 and math.isfinite(Fu_buck):
+        warnings.append(
+            f"Global buckling used one element per member (the model has more than "
+            f"{REFINE_MAX_MEMBERS} members), so F_cr may be a few percent too high."
+        )
     if math.isfinite(Fu_buck) and Fu < Fu_buck and Fu / Fu_buck > NEAR_BUCKLING_RATIO:
         ratio = Fu / Fu_buck
         warnings.append(
@@ -297,5 +307,5 @@ def analyze(
         Fu_strength_N=Fu_strength, Fu_deflection_N=Fu_delta, Fu_buckling_N=Fu_buck, Fu_pred_N=Fu,
         governing_member=gov_member, governing_mode=gov_mode,
         mass=bridge_mass(bridge, material), deflection_limit_mm=deflection_limit_mm,
-        buckling=buck, warnings=warnings, fe_model=model,
+        buckling=buck, buckling_elements_per_member=n_el, warnings=warnings, fe_model=model,
     )

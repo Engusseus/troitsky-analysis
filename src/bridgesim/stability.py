@@ -82,6 +82,10 @@ def global_buckling(
         K, G = np.asarray(K), np.asarray(G)
         K11 = K[np.ix_(free, free)]
         G11 = G[np.ix_(free, free)]
+    if not free:
+        return BucklingResult(math.inf, note="No free degrees of freedom: no buckling mode.")
+    if sparse and len(free) <= max(n_modes + 2, 50):  # ARPACK needs k < N; tiny is cheap
+        K11, G11, sparse = K11.toarray(), G11.toarray(), False
     K11 = 0.5 * (K11 + K11.T)
     G11 = 0.5 * (G11 + G11.T)
     if (G11.count_nonzero() if sparse else np.count_nonzero(G11)) == 0:

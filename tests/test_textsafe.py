@@ -925,3 +925,84 @@ def test_dense_buckling_is_chosen_from_the_full_matrix_size(monkeypatch) -> None
     monkeypatch.setattr(m, "Ke", spy)
     global_buckling(m, b, dense_max_dof=(n_free + n_all) // 2)  # free DOFs alone would fit
     assert seen["sparse"] is True
+
+
+# --------------------------------------------------------------------------- twelfth review round
+
+
+def test_report_states_the_buckling_mesh_used(monkeypatch) -> None:
+    import bridgesim.analysis as analysis_mod
+    import bridgesim.model as model_mod
+    from bridgesim.report import model_assumptions
+
+    r = analyze(generate_warren())
+    assert any("two elements per member" in a for a in model_assumptions(r))
+    monkeypatch.setattr(model_mod, "REFINE_MAX_MEMBERS", 10)
+    monkeypatch.setattr(analysis_mod, "REFINE_MAX_MEMBERS", 10)
+    r1 = analyze(generate_warren())
+    assert any("one element per member" in a for a in model_assumptions(r1))
+    assert any("one element per member" in w for w in r1.warnings)
+    assert not r1.fe_model.members["bc0n"].sub_members or len(
+        r1.fe_model.members["bc0n"].sub_members) == 1
+
+
+def test_html_report_drops_bidi_controls_from_shared_text() -> None:
+    from bridgesim.report import to_html
+
+    b = generate_warren().model_copy(update={"metadata": {"generator": "warren‮spoof"}})
+    r = analyze(b)
+    assert "‮" not in to_html(r)
+
+
+def test_material_notes_reject_control_characters() -> None:
+    from bridgesim.materials import load_material
+
+    data = load_material("popsicle_birch").model_dump(mode="json")
+    data["E_MPa"]["note"] = "spoof‮txet"
+    with pytest.raises(ValidationError, match="control characters"):
+        Material.model_validate(data)
+
+
+def test_tiny_reference_load_is_rejected() -> None:
+    data = generate_warren().model_dump(mode="json")
+    data["load"]["P_ref_N"] = 5e-324
+    with pytest.raises(ValidationError):
+        Bridge.model_validate(data)
+
+
+def test_one_free_dof_buckling_does_not_crash(monkeypatch) -> None:
+    """An inclined strut whose top can only move vertically: the reduced eigenproblem is
+    1x1 (with axial force and a non-zero K_g), which ARPACK cannot solve (k < N)."""
+    import math
+
+    import bridgesim.model as model_mod
+    from bridgesim.materials import load_material
+    from bridgesim.model import build_model
+    from bridgesim.schema import Deck, Member, Node, PlateLoad, Section, Supports
+    from bridgesim.stability import _free_dofs, global_buckling
+
+    monkeypatch.setattr(model_mod, "REFINE_MAX_MEMBERS", 0)  # no interior split node
+    b = Bridge(
+        name="strut", nodes=[Node(id="A", x_mm=0, y_mm=0, z_mm=0),
+                             Node(id="B", x_mm=100, y_mm=100, z_mm=0)],
+        members=[Member(id="M", i="A", j="B", section="s")],
+        sections=[Section(id="s", b_mm=10, d_mm=10)],
+        deck=Deck(x_start_mm=99, x_end_mm=101, top_elevation_mm=100, clear_width_mm=10),
+        supports=Supports(pinned=["A"], extra_restraints={
+            "A": ["RX", "RY", "RZ"], "B": ["DX", "DZ", "RX", "RY", "RZ"]}),
+        load=PlateLoad(P_ref_N=1, plate_length_mm=1e-3, x_center_mm=100,
+                       deck_support_nodes=["B"]))
+    m = build_model(b, load_material("popsicle_birch"))
+    m.analyze_linear()
+    assert len(_free_dofs(m, b)) == 1
+    res = global_buckling(m, b, dense_max_dof=1)  # full-size rule picks sparse assembly
+    assert math.isinf(res.lambda_cr) or res.lambda_cr > 0
+
+
+def test_glued_faces_must_be_whole() -> None:
+    from bridgesim.materials import load_material
+
+    data = load_material("popsicle_birch").model_dump(mode="json")
+    data["glue"]["faces"]["value"] = 1.5
+    with pytest.raises(ValidationError, match="whole number"):
+        Material.model_validate(data)
