@@ -57,8 +57,9 @@ The app shows a banner and an *assumed* badge on every value until you mark it *
 
 ## 3. Load (rulebook §12.5)
 
-10. **Crusher plate**: uniform load over 200 mm along X, centred at mid-span (midpoint
-    between the support groups), 90 mm wide. Self-aligning hemispherical loading point
+10. **Crusher plate**: size taken from the rules file (`crushing`, 200 × 90 mm for 2027),
+    uniform load over its length along X, centred at mid-span (midpoint
+    between the support groups). Self-aligning hemispherical loading point
     assumed, so no eccentricity.
 11. **Load path**: the deck spans as simply supported strips between floor beams
     (lever rule, see `loads.py`). All load goes to the floor-beam **centre** nodes
@@ -83,7 +84,8 @@ The app shows a banner and an *assumed* badge on every value until you mark it *
     axis. Conservative for chords braced at every node; unconservative for crooked
     sticks (imperfections arrive in v0.2).
 16. **Interaction**: $U = |N|/N_R + |M_y|/M_{R,y} + |M_z|/M_{R,z}$, linear, without moment
-    amplification. Member shear and glued-joint shear are separate checks.
+    amplification. Member shear (resultant of the two local shears, $1.5V/A \le f_v$)
+    and glued-joint shear are separate checks.
 17. **Glued joints (placeholder)**: capacity $\tau_g \times$ overlap $\times w \times$ faces,
     with $w = \max(b, d)$ the broad face of the member, checked against the resultant
     member-end force. Chord groups are treated as continuous (no joint check).

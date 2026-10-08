@@ -161,6 +161,19 @@ class RulesReport(BaseModel):
         ]
 
 
+def apply_crushing(bridge: Bridge, ruleset: RuleSet) -> Bridge:
+    """Copy of ``bridge`` with the crusher plate size from the rules file (§12.5).
+
+    The rules file describes the competition's crusher, so it overrides the plate size
+    stored in the bridge file. Other load settings (P_ref, plate position) are kept.
+    """
+    update = {k: ruleset.crushing[k] for k in ("plate_length_mm", "plate_width_mm")
+              if k in ruleset.crushing}
+    if not update:
+        return bridge
+    return bridge.model_copy(update={"load": bridge.load.model_copy(update=update)})
+
+
 # --------------------------------------------------------------------------- rounding
 
 

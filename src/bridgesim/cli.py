@@ -12,7 +12,7 @@ import typer
 from bridgesim import __version__
 from bridgesim.analysis import analyze
 from bridgesim.materials import bridge_material, load_material
-from bridgesim.rules import RuleSet, RulesReport, evaluate
+from bridgesim.rules import RuleSet, RulesReport, apply_crushing, evaluate
 from bridgesim.schema import Bridge
 from bridgesim.textsafe import csv_row, printable
 from bridgesim.units import n_to_kgf
@@ -58,6 +58,7 @@ def run(
     bridge = Bridge.from_file(file)
     mat = load_material(material) if material else bridge_material(bridge)
     rs = RuleSet.load(rules)
+    bridge = apply_crushing(bridge, rs)
     res = analyze(bridge, mat, deflection_limit_mm=rs.crushing.get("deflection_limit_mm", 50))
     rep = evaluate(bridge, mat, rs)
 

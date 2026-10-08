@@ -3,7 +3,9 @@ the browser via stlite. Do not import PyVista or sectionproperties here (Pyodide
 
 from __future__ import annotations
 
+import copy
 import csv
+import hashlib
 import html
 import inspect
 import io
@@ -26,7 +28,7 @@ from bridgesim.analysis import AnalysisResult, analyze
 from bridgesim.generators.warren import WarrenParams, generate_warren
 from bridgesim.materials import load_material, material_from_yaml_str
 from bridgesim.paths import list_yaml
-from bridgesim.rules import RuleSet, RulesReport, evaluate
+from bridgesim.rules import RuleSet, RulesReport, apply_crushing, evaluate
 from bridgesim.schema import MEMBER_GROUPS, Bridge, Material
 from bridgesim.textsafe import csv_cell, csv_row, md
 from bridgesim.units import N_PER_KGF, n_to_kgf
@@ -100,17 +102,21 @@ def _replace_inputs() -> None:
     st.session_state.form_ver += 1
 
 
-def _current_bridge() -> Bridge:
+def _current_bridge(ruleset: RuleSet) -> Bridge:
+    """The bridge being analysed, carrying the active material and the rules' crusher."""
     ss = st.session_state
     if ss.source == "Upload bridge YAML" and ss.uploaded_bridge is not None:
-        return ss.uploaded_bridge
-    return generate_warren(WarrenParams.model_validate(ss.params), ss.material.stick)
+        bridge = ss.uploaded_bridge
+    else:
+        bridge = generate_warren(WarrenParams.model_validate(ss.params), ss.material.stick)
+    bridge = bridge.model_copy(update={"material": ss.material})
+    return apply_crushing(bridge, ruleset)
 
 
 def _run_analysis(ruleset: RuleSet) -> None:
     ss = st.session_state
     try:
-        bridge = _current_bridge()
+        bridge = _current_bridge(ruleset)
         ss.result = analyze(bridge, ss.material,
                             ruleset.crushing.get("deflection_limit_mm", 50.0))
         ss.rules_report = evaluate(bridge, ss.material, ruleset)
@@ -144,15 +150,18 @@ def _design_panel(ruleset: RuleSet) -> None:
     ss = st.session_state
     sb = st.sidebar
     sb.markdown("### Design")
-    ss.source = sb.radio("Bridge source", ["Parametric Warren truss", "Upload bridge YAML"],
-                         index=0 if ss.source == "Parametric Warren truss" else 1,
-                         help="Upload a bridge.yaml exported from this app or written by hand.")
+    source = sb.radio("Bridge source", ["Parametric Warren truss", "Upload bridge YAML"],
+                      index=0 if ss.source == "Parametric Warren truss" else 1,
+                      help="Upload a bridge.yaml exported from this app or written by hand.")
+    if source != ss.source:  # results on screen belong to the other source
+        ss.source, ss.result, ss.error = source, None, None
     if ss.source == "Upload bridge YAML":
         up = sb.file_uploader("bridge.yaml", type=["yaml", "yml"], key="bridge_up")
-        if up is not None and ss.upload_key != (up.name, up.size):
-            ss.upload_key = (up.name, up.size)
+        digest = hashlib.sha256(up.getvalue()).hexdigest() if up is not None else None
+        if up is not None and ss.upload_key != digest:
             try:
                 ss.uploaded_bridge = Bridge.from_yaml_str(up.getvalue().decode("utf-8"))
+                ss.upload_key = digest  # only after it parsed, so a fixed file is re-read
                 if isinstance(ss.uploaded_bridge.material, Material):
                     ss.material = ss.uploaded_bridge.material
                     _replace_inputs()
@@ -394,7 +403,7 @@ def _compare(r: AnalysisResult, rep: RulesReport, bridge: Bridge) -> None:
     if c2.button("+ Save for comparison", **_wide_button()):
         ss.saved[name] = {
             "bridge_yaml": bridge.to_yaml(), "material": ss.material.model_dump(),
-            "params": dict(ss.params), "source": ss.source,
+            "params": copy.deepcopy(ss.params), "source": ss.source,
             "metrics": _metrics(r, rep),
         }
     rows = {"Current": _metrics(r, rep)} | {k: v["metrics"] for k, v in ss.saved.items()}
@@ -405,7 +414,7 @@ def _compare(r: AnalysisResult, rep: RulesReport, bridge: Bridge) -> None:
         if c4.button("Load", **_wide_button()):
             snap = ss.saved[pick]
             ss.material = Material.model_validate(snap["material"])
-            ss.params = snap["params"]
+            ss.params = copy.deepcopy(snap["params"])
             if snap["source"] == "Upload bridge YAML":
                 ss.uploaded_bridge = Bridge.from_yaml_str(snap["bridge_yaml"])
             ss.source = snap["source"]
@@ -436,7 +445,8 @@ def _metrics(r: AnalysisResult, rep: RulesReport) -> dict:
 def _export(bridge: Bridge, r: AnalysisResult, rep: RulesReport) -> None:
     c1, c2, c3 = st.columns(3)
     c1.download_button("bridge.yaml", bridge.to_yaml(), "bridge.yaml", "text/yaml",
-                       help="Re-load it with Bridge source → Upload bridge YAML")
+                       help="Includes the material values in use. Re-load it with Bridge "
+                            "source → Upload bridge YAML, or run it with the CLI.")
     import yaml
 
     c1.download_button("material.yaml", yaml.safe_dump(st.session_state.material.model_dump(),

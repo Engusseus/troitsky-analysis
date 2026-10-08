@@ -147,7 +147,7 @@ class AnalysisResult:
                 "N_at_Fu_N": round(m.N_N * lf, 1),
                 "My_ref_Nmm": round(m.My_Nmm, 1),
                 "Mz_ref_Nmm": round(m.Mz_Nmm, 1),
-                "V_ref_N": round(max(m.Vy_N, m.Vz_N), 2),
+                "V_ref_N": round(math.hypot(m.Vy_N, m.Vz_N), 2),
                 "N_t_R_N": round(m.cap.N_t_R, 1),
                 "N_c_R_N": round(m.cap.N_c_R, 1),
                 "P_cr_N": round(m.cap.P_cr, 1),
@@ -190,8 +190,11 @@ def analyze(
         N = float(ax[np.argmax(np.abs(ax))])
         My = _max_abs(pm.moment_array("My", N_POINTS, COMBO)[1])
         Mz = _max_abs(pm.moment_array("Mz", N_POINTS, COMBO)[1])
-        Vy = _max_abs(pm.shear_array("Fy", N_POINTS, COMBO)[1])
-        Vz = _max_abs(pm.shear_array("Fz", N_POINTS, COMBO)[1])
+        vy = pm.shear_array("Fy", N_POINTS, COMBO)[1]
+        vz = pm.shear_array("Fz", N_POINTS, COMBO)[1]
+        Vy, Vz = _max_abs(vy), _max_abs(vz)
+        # Both shear stresses peak at the centroid of a rectangle: check their resultant.
+        V = float(np.max(np.hypot(vy, vz))) if vy.size else 0.0
         F_end = 0.0
         for x in (0.0, L):
             f = math.sqrt(
@@ -200,7 +203,7 @@ def analyze(
             )
             F_end = max(F_end, f)
         cap = capacities(sec, material, L, mem.K)
-        util = utilisation(cap, N, My, Mz, max(Vy, Vz), None if mem.group in exclude else F_end)
+        util = utilisation(cap, N, My, Mz, V, None if mem.group in exclude else F_end)
         results.append(MemberResult(
             id=mem.id, group=mem.group, section=mem.section, section_label=sec.label(),
             L_mm=L, b_mm=b, d_mm=d, N_N=N, My_Nmm=My, Mz_Nmm=Mz, Vy_N=Vy, Vz_N=Vz,

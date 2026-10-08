@@ -93,3 +93,50 @@ def test_sparse_and_dense_buckling_solvers_agree() -> None:
     # Symmetric members tie for the largest share of the mode energy, so compare energies
     # rather than which of the mirror-image members wins the tie.
     assert dense.member_energy[sparse.key_member] == pytest.approx(1.0, rel=1e-6)
+
+
+# --------------------------------------------------------------------------- physical inputs
+
+
+@pytest.mark.parametrize("key, value", [
+    ("density_kg_m3", -650.0), ("E_MPa", 0.0), ("f_c_MPa", float("nan")),
+    ("E_MPa", float("inf")), ("nu", 0.5),
+])
+def test_material_rejects_nonphysical_values(key: str, value: float) -> None:
+    """A negative density would give a negative mass that passes the mass rule."""
+    from bridgesim.materials import load_material
+
+    data = load_material("popsicle_birch").model_dump()
+    data[key]["value"] = value
+    with pytest.raises(ValidationError, match="not physical"):
+        Material.model_validate(data)
+
+
+@pytest.mark.parametrize("value", [-0.1, 1.0])
+def test_glue_fraction_must_be_in_unit_interval(value: float) -> None:
+    from bridgesim.materials import load_material
+
+    data = load_material("popsicle_birch").model_dump()
+    data["glue"]["mass_fraction"]["value"] = value
+    with pytest.raises(ValidationError, match="not physical"):
+        Material.model_validate(data)
+
+
+def test_rules_crusher_plate_overrides_bridge_plate() -> None:
+    """The rules file describes the competition's crusher, so its plate size is analysed."""
+    from bridgesim.loads import plate_nodal_loads
+    from bridgesim.rules import apply_crushing
+
+    bridge = generate_warren()
+    rs = RuleSet.load()
+    assert apply_crushing(bridge, rs).load.plate_length_mm == 200.0
+    rs.crushing["plate_length_mm"] = 400.0
+    rs.crushing["plate_width_mm"] = 120.0
+    wide = apply_crushing(bridge, rs)
+    assert (wide.load.plate_length_mm, wide.load.plate_width_mm) == (400.0, 120.0)
+    assert bridge.load.plate_length_mm == 200.0  # original untouched
+    narrow_loads, wide_loads = plate_nodal_loads(bridge), plate_nodal_loads(wide)
+    assert sum(wide_loads.values()) == pytest.approx(sum(narrow_loads.values()))
+    assert len(wide_loads) > len(narrow_loads)  # a longer plate reaches more floor beams
+    rs.crushing.clear()
+    assert apply_crushing(bridge, rs) is bridge

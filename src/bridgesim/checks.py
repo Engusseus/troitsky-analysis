@@ -5,7 +5,8 @@ Capacities (wood parallel to grain, all strengths from the material file):
 * tension            N_t,R = f_t A
 * compression        N_c,R = min(f_c A, P_cr),  P_cr = pi^2 E I_min / (K L)^2
 * bending            M_R,y = f_b S_y,  M_R,z = f_b S_z
-* member shear       V_R = f_v A / 1.5          (max shear stress 1.5 V / A in a rectangle)
+* member shear       V_R = f_v A / 1.5          (max shear stress 1.5 V / A in a rectangle;
+                                               V = resultant of the two local shears)
 * glued joint        F_R = tau_g A_glue,  A_glue = overlap x w x faces,  w = max(b, d)
 
 Utilisation of a member at the reference load (linear interaction, conservative):

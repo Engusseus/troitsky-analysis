@@ -5,6 +5,7 @@ Conventions: mm, N, MPa; X longitudinal, Y vertical (up, table at Y = 0), Z tran
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Literal
 
@@ -104,6 +105,26 @@ class Material(_Strict):
     f_v_MPa: Prop
     density_kg_m3: Prop
     glue: Glue
+
+    @model_validator(mode="after")
+    def _physical(self) -> Material:
+        """Reject values that cannot describe wood and glue (and would corrupt results)."""
+        limits = {  # name: (lower, upper, lower bound inclusive?)
+            "E_MPa": (0, None, False), "G_MPa": (0, None, False), "nu": (-1, 0.5, False),
+            "f_t_MPa": (0, None, False), "f_c_MPa": (0, None, False),
+            "f_b_MPa": (0, None, False), "f_v_MPa": (0, None, False),
+            "density_kg_m3": (0, None, False), "glue.tau_g_MPa": (0, None, False),
+            "glue.mass_fraction": (0, 1, True), "glue.overlap_mm": (0, None, False),
+            "glue.faces": (0, None, False),
+        }
+        for key, prop in self.props().items():
+            v = prop.value
+            lo, hi, incl = limits[key]
+            if not math.isfinite(v) or (v < lo if incl else v <= lo) or (hi is not None
+                                                                       and v >= hi):
+                rng = f"{'>=' if incl else '>'} {lo}" + (f" and < {hi}" if hi is not None else "")
+                raise ValueError(f"Material value {key} = {v} is not physical (must be {rng})")
+        return self
 
     def props(self) -> dict[str, Prop]:
         """All value-carrying properties, keyed by a dotted name (for UI badges)."""
