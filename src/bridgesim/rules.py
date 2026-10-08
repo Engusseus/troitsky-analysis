@@ -78,6 +78,15 @@ class Rule(BaseModel):
         lambda cls, v: _plain_text(v))
 
 
+class Crushing(BaseModel):
+    """The competition's crushing test (§12.5)."""
+
+    model_config = ConfigDict(extra="forbid")
+    plate_length_mm: float = Field(200.0, gt=0, allow_inf_nan=False)
+    plate_width_mm: float = Field(90.0, gt=0, allow_inf_nan=False)
+    deflection_limit_mm: float = Field(50.0, gt=0, allow_inf_nan=False)
+
+
 class RuleSet(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
@@ -85,11 +94,19 @@ class RuleSet(BaseModel):
     year: int
     rounding: dict[str, float]
     constants: dict[str, float] = Field(default_factory=dict)
-    crushing: dict[str, float] = Field(default_factory=dict)
+    crushing: Crushing = Field(default_factory=Crushing)
     bans_meaning: dict[str, str] = Field(default_factory=dict)
     rules: list[Rule] = Field(max_length=500)
 
     _text = field_validator("name", "rulebook")(lambda cls, v: _plain_text(v))
+
+    @field_validator("rounding", "constants")
+    @classmethod
+    def _positive_finite(cls, v: dict[str, float]) -> dict[str, float]:
+        bad = {k: x for k, x in v.items() if not (math.isfinite(x) and x > 0)}
+        if bad:
+            raise ValueError(f"values must be positive and finite: {bad}")
+        return v
 
     @classmethod
     def from_yaml_str(cls, text: str) -> RuleSet:
@@ -167,11 +184,10 @@ def apply_crushing(bridge: Bridge, ruleset: RuleSet) -> Bridge:
     The rules file describes the competition's crusher, so it overrides the plate size
     stored in the bridge file. Other load settings (P_ref, plate position) are kept.
     """
-    update = {k: ruleset.crushing[k] for k in ("plate_length_mm", "plate_width_mm")
-              if k in ruleset.crushing}
-    if not update:
-        return bridge
-    return bridge.model_copy(update={"load": bridge.load.model_copy(update=update)})
+    c = ruleset.crushing
+    load = bridge.load.model_copy(
+        update={"plate_length_mm": c.plate_length_mm, "plate_width_mm": c.plate_width_mm})
+    return bridge.model_copy(update={"load": load})
 
 
 # --------------------------------------------------------------------------- rounding

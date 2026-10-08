@@ -130,13 +130,44 @@ def test_rules_crusher_plate_overrides_bridge_plate() -> None:
     bridge = generate_warren()
     rs = RuleSet.load()
     assert apply_crushing(bridge, rs).load.plate_length_mm == 200.0
-    rs.crushing["plate_length_mm"] = 400.0
-    rs.crushing["plate_width_mm"] = 120.0
+    rs.crushing.plate_length_mm = 400.0
+    rs.crushing.plate_width_mm = 120.0
     wide = apply_crushing(bridge, rs)
     assert (wide.load.plate_length_mm, wide.load.plate_width_mm) == (400.0, 120.0)
     assert bridge.load.plate_length_mm == 200.0  # original untouched
     narrow_loads, wide_loads = plate_nodal_loads(bridge), plate_nodal_loads(wide)
     assert sum(wide_loads.values()) == pytest.approx(sum(narrow_loads.values()))
     assert len(wide_loads) > len(narrow_loads)  # a longer plate reaches more floor beams
-    rs.crushing.clear()
-    assert apply_crushing(bridge, rs) is bridge
+
+
+@pytest.mark.parametrize("field, value", [
+    ("plate_length_mm", -200.0), ("plate_width_mm", 0.0),
+    ("deflection_limit_mm", float("nan")), ("deflection_limit_mm", float("inf")),
+])
+def test_rules_reject_invalid_crusher(field: str, value: float) -> None:
+    """A negative deflection limit would give a negative predicted load."""
+    data = RuleSet.load().model_dump()
+    data["crushing"][field] = value
+    with pytest.raises(ValidationError):
+        RuleSet.model_validate(data)
+
+
+def test_rules_reject_invalid_constants() -> None:
+    data = RuleSet.load().model_dump()
+    data["constants"]["cart_height_mm"] = -1.0
+    with pytest.raises(ValidationError):
+        RuleSet.model_validate(data)
+
+
+def test_report_states_the_material_actually_used() -> None:
+    from bridgesim.materials import load_material
+    from bridgesim.report import model_assumptions, to_markdown
+
+    data = load_material("popsicle_birch").model_dump()
+    data["E_MPa"] = {"value": 12345.0, "source": "measured", "note": ""}
+    mat = Material.model_validate(data)
+    lines = model_assumptions(mat)
+    assert "E = 12345" in lines[0] and "11 of 12 values are ASSUMED" in lines[0]
+    assert "E = 10 GPa" not in "\n".join(lines)
+    md_text = to_markdown(analyze(generate_warren(), mat))
+    assert "E = 12345" in md_text

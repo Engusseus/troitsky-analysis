@@ -390,3 +390,18 @@ def test_report_aggregates(material: Material) -> None:
     assert all(r.passed is None for r in rep.info)
     assert {r.key for r in rep.checked} | {r.key for r in rep.info} == {
         r.key for r in rep.results}
+
+
+def test_table_level_tie_between_piers_blocks_clear_span_box(material: Material) -> None:
+    """§8.6: a tie lying on the table between the pier bases blocks the 1000 x 150 mm box,
+    even though it touches the table like the supports do."""
+    from bridgesim.schema import Member
+
+    b = generate_warren()
+    n = b.metadata["params"]["n_panels"]
+    tie = Member(id="tie", i="P0n", j=f"P{n}n", section="bottom_brace", group="other")
+    b = b.model_copy(update={"members": [*b.members, tie]})
+    m = measure(b, material)
+    assert m["clear_box_free_length_mm"] < 1000
+    rep = evaluate(b, material)
+    assert next(r for r in rep.results if r.key == "clear_span_box").passed is False

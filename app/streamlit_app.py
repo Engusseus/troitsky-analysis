@@ -118,7 +118,7 @@ def _run_analysis(ruleset: RuleSet) -> None:
     try:
         bridge = _current_bridge(ruleset)
         ss.result = analyze(bridge, ss.material,
-                            ruleset.crushing.get("deflection_limit_mm", 50.0))
+                            ruleset.crushing.deflection_limit_mm)
         ss.rules_report = evaluate(bridge, ss.material, ruleset)
         ss.error = None
     except Exception as exc:  # show any failure in the UI rather than crashing
@@ -169,6 +169,8 @@ def _design_panel(ruleset: RuleSet) -> None:
             except BAD_FILE as exc:
                 sb.error(f"Could not read the bridge file:\n\n{exc}")
                 ss.uploaded_bridge = None
+        elif up is None and ss.upload_key is not None:  # the file was removed
+            ss.uploaded_bridge, ss.upload_key, ss.result = None, None, None
         if ss.uploaded_bridge is not None:
             sb.success(f"Loaded “{md(ss.uploaded_bridge.name)}”: {len(ss.uploaded_bridge.nodes)}"
                        f" nodes, {len(ss.uploaded_bridge.members)} members")
@@ -417,6 +419,7 @@ def _compare(r: AnalysisResult, rep: RulesReport, bridge: Bridge) -> None:
             ss.params = copy.deepcopy(snap["params"])
             if snap["source"] == "Upload bridge YAML":
                 ss.uploaded_bridge = Bridge.from_yaml_str(snap["bridge_yaml"])
+                ss.upload_key = None  # not from the uploader: don't clear it on rerun
             ss.source = snap["source"]
             ss.result = None
             _replace_inputs()
@@ -473,7 +476,7 @@ def _export(bridge: Bridge, r: AnalysisResult, rep: RulesReport) -> None:
 
 def _method(r: AnalysisResult) -> None:
     st.markdown("**Modelling assumptions** (also in ASSUMPTIONS.md and the report)")
-    for a in report.MODEL_ASSUMPTIONS:
+    for a in report.model_assumptions(r.material):
         st.markdown(f"- {a}")
     st.markdown("**Method: load-factor approach**")
     st.latex(r"U_i = \frac{|N|}{N_R} + \frac{|M_y|}{M_{R,y}} + \frac{|M_z|}{M_{R,z}},\qquad "

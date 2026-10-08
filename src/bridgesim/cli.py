@@ -59,7 +59,7 @@ def run(
     mat = load_material(material) if material else bridge_material(bridge)
     rs = RuleSet.load(rules)
     bridge = apply_crushing(bridge, rs)
-    res = analyze(bridge, mat, deflection_limit_mm=rs.crushing.get("deflection_limit_mm", 50))
+    res = analyze(bridge, mat, deflection_limit_mm=rs.crushing.deflection_limit_mm)
     rep = evaluate(bridge, mat, rs)
 
     assumed = mat.assumed_keys()

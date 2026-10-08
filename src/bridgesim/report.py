@@ -31,8 +31,6 @@ MODEL_ASSUMPTIONS: list[str] = [
     "members longer than one stick (115 mm) are not weakened.",
     "Joints are rigid by default (glued joints behave closer to rigid than pinned). A "
     "'pinned' switch releases in-plane moments of web members and bracing for comparison.",
-    "Material values are placeholders unless marked 'measured': E = 10 GPa, "
-    "f_t = 40, f_c = 30, f_b = 50, f_v = 6 MPa, density 650 kg/m^3.",
     "Member buckling: Euler load with K = 1 over the full member length about the weaker "
     "axis. Global (system) buckling: linear eigenvalue analysis of the whole frame, with "
     "pier bases held by friction. Both assume perfectly straight sticks, so they are "
@@ -126,7 +124,7 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
         ("p", f"Material: **{mat.name}**. Stick {mat.stick.length_mm:g} × "
               f"{mat.stick.width_mm:g} × {mat.stick.thickness_mm:g} mm."),
         ("table", ["Property", "Value", "Source", "Note"], mrows),
-        ("ul", MODEL_ASSUMPTIONS),
+        ("ul", model_assumptions(mat)),
     ]
 
     loads = ", ".join(f"{nid}: {F:.1f} N" for nid, F in r.nodal_loads_N.items())
@@ -200,6 +198,21 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
             "Report the predicted load as a range informed by material scatter.",
         ]),
     ]
+
+
+def model_assumptions(material) -> list[str]:
+    """MODEL_ASSUMPTIONS plus a line describing the material values actually used."""
+    m = material
+    vals = (f"E = {m.E_MPa.value:g}, f_t = {m.f_t_MPa.value:g}, f_c = {m.f_c_MPa.value:g}, "
+            f"f_b = {m.f_b_MPa.value:g}, f_v = {m.f_v_MPa.value:g} MPa; density "
+            f"{m.density_kg_m3.value:g} kg/m^3; glue shear {m.glue.tau_g_MPa.value:g} MPa")
+    assumed = m.assumed_keys()
+    if assumed:
+        src = (f"{len(assumed)} of {len(m.props())} values are ASSUMED placeholders, not test "
+               f"data ({', '.join(assumed)})")
+    else:
+        src = "all values are marked as measured by the team"
+    return [f"Material “{m.name}”: {vals}. {src}.", *MODEL_ASSUMPTIONS]
 
 
 # --------------------------------------------------------------------------- renderers

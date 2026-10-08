@@ -151,8 +151,9 @@ def measure(
     box_h = table_y + c["clear_box_height_mm"]
     intervals = []
     for s in S:
-        if s.touches_table:
-            continue
+        # Support members lie wholly outside (left_inner, right_inner) by construction, so
+        # the x filter skips them; anything else touching the table there (e.g. a tie
+        # between the pier bases) blocks the box.
         p, h = s.pts, s.h
         low = (p[:, 1] - h[1] < box_h) & (p[:, 0] + h[0] > left_inner) & (
             p[:, 0] - h[0] < right_inner)
