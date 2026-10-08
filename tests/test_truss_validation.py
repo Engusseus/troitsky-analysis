@@ -154,10 +154,16 @@ def test_members_carry_no_bending(truss_result: AnalysisResult) -> None:
 
 
 def test_reactions(truss_result: AnalysisResult) -> None:
-    """Symmetric truss, central load: R_B0 = R_B6 = P/2 = 500 N, no horizontal reaction."""
-    for r in truss_result.reactions:
-        reaction = (r.FX_N, r.FY_N)
-        assert reaction == pytest.approx((0.0, P / 2), abs=1e-6)
+    """Symmetric truss, central load: R_B0 = R_B6 = P/2 = 500 N, no horizontal reaction.
+
+    The out-of-plane restraints on every node are reported too and carry no load.
+    """
+    supports = {"B0", f"B{N_PANELS}"}
+    by_node = {r.node: r for r in truss_result.reactions}
+    assert supports <= set(by_node)
+    for nid, r in by_node.items():
+        expected = (0.0, P / 2, 0.0) if nid in supports else (0.0, 0.0, 0.0)
+        assert (r.FX_N, r.FY_N, r.FZ_N) == pytest.approx(expected, abs=1e-6), nid
 
 
 def test_midspan_deflection_by_unit_load_method(truss_result: AnalysisResult,

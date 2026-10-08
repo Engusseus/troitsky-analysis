@@ -118,7 +118,8 @@ def measure(
     top = deck.top_elevation_mm
     half_cart = c["cart_width_mm"] / 2.0
     clearance = math.inf
-    gap_left = gap_right = math.inf
+    # The deck edges bound the path even where no member stands beside it.
+    gap_left = gap_right = deck.clear_width_mm / 2.0
     blocking = None
     for s in S:
         p, h = s.pts, s.h

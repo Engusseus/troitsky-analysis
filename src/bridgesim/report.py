@@ -31,8 +31,9 @@ MODEL_ASSUMPTIONS: list[str] = [
     "members longer than one stick (115 mm) are not weakened.",
     "Joints are rigid by default (glued joints behave closer to rigid than pinned). A "
     "'pinned' switch releases in-plane moments of web members and bracing for comparison.",
-    "Member buckling: Euler load with K = 1 over the full member length about the weaker "
-    "axis. Global (system) buckling: linear eigenvalue analysis of the whole frame, with "
+    "Member buckling: Euler load over the full member length about the weaker axis, with "
+    "the effective-length factor K stated above. Global (system) buckling: linear "
+    "eigenvalue analysis of the whole frame, with "
     "pier bases held by friction. Both assume perfectly straight sticks, so they are "
     "unconservative for crooked sticks (imperfections arrive in v0.2).",
     "Member utilisation is the linear sum |N|/N_R + |M_y|/M_R,y + |M_z|/M_R,z (no "
@@ -80,7 +81,8 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
             ["Governing", f"{r.governing_label}"
              + (f" in member {r.governing_member}" if r.governing_member else "")],
             ["Strength-based load F_u,strength", _fmt_load(r.Fu_strength_N)],
-            ["Deflection-based load F_u,δ (50 mm)", _fmt_load(r.Fu_deflection_N)],
+            [f"Deflection-based load F_u,δ ({r.deflection_limit_mm:g} mm)",
+             _fmt_load(r.Fu_deflection_N)],
             ["Global elastic buckling load F_cr", _fmt_load(r.Fu_buckling_N)
              + (f", mode led by {r.buckling.key_member}" if r.buckling and r.buckling.key_member
                 else "")],
@@ -146,7 +148,8 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
         ("p", "5. Load-factor method. The analysis is linear, so every demand scales with "
               "load and the predicted ultimate load is the smallest of"),
         ("math", r"F_{u,strength} = \frac{P_{ref}}{\max_i U_i},\qquad "
-                 r"F_{u,\delta} = P_{ref}\,\frac{50\ \text{mm}}{\delta_{ref}},\qquad "
+                 r"F_{u,\delta} = P_{ref}\,\frac{" + f"{r.deflection_limit_mm:g}"
+                 + r"\ \text{mm}}{\delta_{ref}},\qquad "
                  r"F_{u,p} = \min(F_{u,strength},\ F_{u,\delta})"),
         ("p", "6. Global elastic buckling (instability, §12.5): the smallest load factor λ for "
               "which the structure loses stiffness, with K the elastic and K_g the geometric "
@@ -219,7 +222,15 @@ def model_assumptions(result: AnalysisResult) -> list[str]:
         f"{result.deflection_limit_mm:g} mm mid-span deflection. The load is applied at the "
         "floor-beam centres (z = 0), which over-estimates floor-beam bending."
     )
-    return [f"Material “{m.name}”: {vals}. {src}.", crusher, *MODEL_ASSUMPTIONS]
+    ks = sorted({mem.K for mem in result.bridge.members})
+    if ks == [1.0]:
+        k_line = "Effective-length factor K = 1 for every member (pin-ended columns)."
+    else:
+        custom = [f"{mem.id} (K = {mem.K:g})" for mem in result.bridge.members if mem.K != 1.0]
+        shown = ", ".join(custom[:12]) + (f", … ({len(custom)} in total)" if len(custom) > 12
+                                          else "")
+        k_line = f"Effective-length factor K = 1 except: {shown}."
+    return [f"Material “{m.name}”: {vals}. {src}.", crusher, k_line, *MODEL_ASSUMPTIONS]
 
 
 # --------------------------------------------------------------------------- renderers

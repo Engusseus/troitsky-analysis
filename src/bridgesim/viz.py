@@ -298,6 +298,11 @@ def global_shear_moment(result: AnalysisResult, load_N: float | None = None, n: 
     return x, V, M
 
 
+def _mpl_text(text: str) -> str:
+    """Escape '$' so Matplotlib never parses YAML-derived names as MathText."""
+    return text.replace("$", r"\$")
+
+
 def _style_axis(ax, ylabel: str) -> None:
     ax.set_ylabel(ylabel, color=INK)
     ax.grid(True, color="#e4e3df", linewidth=0.6)
@@ -328,7 +333,7 @@ def global_sfd_bmd_figure(result: AnalysisResult, load_N: float | None = None) -
     ax1.text(0.02, 0.88 if V[j] < 0 else 0.06, f"|V|_max = {abs(V[j]):.0f} N",
              transform=ax1.transAxes, fontsize=9, color=INK)
     fig.suptitle(
-        f"{result.bridge.name}: whole-bridge shear and bending moment\n"
+        f"{_mpl_text(result.bridge.name)}: whole-bridge shear and bending moment\n"
         f"at {n_to_kgf(load):.0f} kgf ({load:.0f} N) crusher load, sagging moment positive",
         fontsize=11, color="#0b0b0b")
     return fig
@@ -377,7 +382,8 @@ def member_diagrams_figure(
             ax.axvline(b, color="#e4e3df", linewidth=0.8)
         _style_axis(ax, lab)
     axs[2].set_xlabel("distance along member(s) (mm); thin lines = joints", color=INK)
-    fig.suptitle(f"{title} at {n_to_kgf(load):.0f} kgf crusher load (local member axes)",
+    fig.suptitle(f"{_mpl_text(title)} at {n_to_kgf(load):.0f} kgf crusher load "
+                 "(local member axes)",
                  fontsize=11, color="#0b0b0b")
     return fig
 

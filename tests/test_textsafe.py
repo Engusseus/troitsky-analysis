@@ -239,3 +239,105 @@ def test_buckling_view_hover_shows_utilisation_not_energy() -> None:
     text = next(h for h in hover.hovertext if f"<b>{m.id}</b>" in h)
     assert f"at F_u,p = {m.U * r.load_factor:.2f}" in text
     assert "Share of buckling-mode energy" in text
+
+
+# --------------------------------------------------------------------------- fifth review round
+
+
+def test_report_lists_custom_effective_length_factors() -> None:
+    from bridgesim.report import model_assumptions
+
+    b = generate_warren()
+    members = [m.model_copy(update={"K": 0.7}) if m.group == "top_chord" else m
+               for m in b.members]
+    r = analyze(b.model_copy(update={"members": members}))
+    text = "\n".join(model_assumptions(r))
+    assert "K = 0.7" in text and "K = 1 for every member" not in text
+    assert "K = 1 for every member" in "\n".join(model_assumptions(analyze(generate_warren())))
+
+
+def test_report_formula_uses_the_analysed_deflection_limit() -> None:
+    from bridgesim.report import to_markdown
+
+    md_text = to_markdown(analyze(generate_warren(), deflection_limit_mm=40.0))
+    assert r"\frac{40\ \text{mm}}" in md_text and "F_u,δ (40 mm)" in md_text
+    assert r"\frac{50" not in md_text
+
+
+def test_colocated_deck_stations_share_the_load() -> None:
+    """Two deck-support nodes at each X station (one per truss plane) split its load."""
+    from bridgesim.loads import plate_nodal_loads
+
+    b = generate_warren()
+    n = b.metadata["params"]["n_panels"]
+    nodes_n = [f"B{i}n" for i in range(n + 1)]
+    nodes_f = [f"B{i}f" for i in range(n + 1)]
+    load = b.load.model_copy(update={"deck_support_nodes": nodes_n + nodes_f})
+    loads = plate_nodal_loads(b.model_copy(update={"load": load}))
+    assert sum(loads.values()) == pytest.approx(b.load.P_ref_N)
+    mid = n // 2
+    assert loads[f"B{mid}n"] == pytest.approx(loads[f"B{mid}f"])
+    assert loads[f"B{mid}n"] == pytest.approx(652.1739 / 2, rel=1e-4)
+
+
+def test_cart_path_is_bounded_by_the_deck_edges(material=None) -> None:
+    """With nothing beside the path, a deck narrower than the cart still fails."""
+    from bridgesim.materials import load_material
+    from bridgesim.measure import measure
+
+    b = generate_warren()
+    narrow = b.model_copy(update={"deck": b.deck.model_copy(update={"clear_width_mm": 120.0}),
+                                  "members": [m for m in b.members
+                                              if m.group not in ("diagonal", "top_chord",
+                                                                 "top_strut", "top_brace")]})
+    m = measure(narrow, load_material("popsicle_birch"))
+    assert m["cart_clear_width_mm"] == pytest.approx(120.0)
+    assert m["cart_envelope_ok"] == 0.0
+
+
+def test_extra_restraints_appear_in_reactions() -> None:
+    """A support given only through extra_restraints must still report its reaction."""
+    from bridgesim.schema import Supports
+
+    b = generate_warren()
+    n = b.metadata["params"]["n_panels"]
+    sup = Supports(pinned=["P0n", "P0f"], roller=[f"P{n}n"],
+                   extra_restraints={f"P{n}f": ["DY", "DZ"]})
+    r = analyze(b.model_copy(update={"supports": sup}))
+    nodes = {x.node for x in r.reactions}
+    assert f"P{n}f" in nodes
+    assert sum(x.FY_N for x in r.reactions) == pytest.approx(b.load.P_ref_N, rel=1e-6)
+
+
+@pytest.mark.parametrize("field, value", [
+    ("step", 0.0), ("step", -0.5), ("step", float("nan")), ("cap", 5.0),
+    ("points_per_step", -2.0),
+])
+def test_mass_step_rules_are_validated(field: str, value: float) -> None:
+    data = RuleSet.load().model_dump()
+    mass = next(r for r in data["rules"] if r["key"] == "mass")
+    mass["steps"][field] = value
+    with pytest.raises(ValidationError):
+        RuleSet.model_validate(data)
+
+
+def test_no_load_path_is_an_error_not_infinite_capacity() -> None:
+    from bridgesim.analysis import AnalysisError
+    from bridgesim.schema import Supports
+
+    b = generate_warren()
+    deck_nodes = b.load.deck_support_nodes
+    sup = b.supports.model_copy(update={
+        "extra_restraints": {nid: ["DX", "DY", "DZ"] for nid in deck_nodes}})
+    with pytest.raises(AnalysisError, match="no structural load path"):
+        analyze(b.model_copy(update={"supports": Supports.model_validate(sup.model_dump())}))
+
+
+def test_dollar_signs_in_names_do_not_break_png_export() -> None:
+    from bridgesim import viz
+
+    b = generate_warren()
+    b = b.model_copy(update={"name": r"Team $\notacommand$ bridge"})
+    r = analyze(b)
+    assert viz.figure_png(viz.global_sfd_bmd_figure(r))[:4] == b"\x89PNG"
+    assert viz.figure_png(viz.member_diagrams_figure(r, ["bc0n"], r"$bad$"))[:4] == b"\x89PNG"

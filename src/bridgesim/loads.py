@@ -90,6 +90,17 @@ def plate_nodal_loads(bridge: Bridge, P_N: float | None = None) -> dict[str, flo
     """Downward nodal forces (N, positive = down) for the bridge's crusher plate."""
     P = bridge.load.P_ref_N if P_N is None else P_N
     nodes = bridge.node_map()
-    stations = [(nid, nodes[nid].x_mm) for nid in bridge.load.deck_support_nodes]
+    # Nodes at the same X (e.g. one per truss plane) form one station and share its load.
+    groups: dict[float, list[str]] = {}
+    for nid in dict.fromkeys(bridge.load.deck_support_nodes):
+        groups.setdefault(nodes[nid].x_mm, []).append(nid)
+    stations = [(f"x={x!r}", x) for x in groups]
     pl = plate_placement(bridge)
-    return distribute_plate_load(stations, P, pl.x_start_mm, pl.x_end_mm)
+    per_station = distribute_plate_load(stations, P, pl.x_start_mm, pl.x_end_mm)
+    out: dict[str, float] = {}
+    for x, ids in groups.items():
+        F = per_station.get(f"x={x!r}", 0.0)
+        for nid in ids:
+            if F:
+                out[nid] = F / len(ids)
+    return out

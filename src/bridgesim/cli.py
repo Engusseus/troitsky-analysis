@@ -10,7 +10,7 @@ from typing import Annotated
 import typer
 
 from bridgesim import __version__
-from bridgesim.analysis import analyze
+from bridgesim.analysis import AnalysisError, analyze
 from bridgesim.materials import bridge_material, load_material
 from bridgesim.rules import RuleSet, RulesReport, apply_crushing, evaluate
 from bridgesim.schema import Bridge
@@ -61,7 +61,11 @@ def run(
     mat = load_material(material) if material else bridge_material(bridge)
     rs = RuleSet.load(rules)
     bridge = apply_crushing(bridge, rs)
-    res = analyze(bridge, mat, deflection_limit_mm=rs.crushing.deflection_limit_mm)
+    try:
+        res = analyze(bridge, mat, deflection_limit_mm=rs.crushing.deflection_limit_mm)
+    except AnalysisError as exc:
+        typer.secho(f"ERROR: {printable(exc)}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from exc
     rep = evaluate(bridge, mat, rs)
 
     assumed = mat.assumed_keys()

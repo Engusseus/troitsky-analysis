@@ -346,6 +346,12 @@ class Bridge(_Strict):
     def support_nodes(self) -> list[str]:
         return list(dict.fromkeys(self.supports.pinned + self.supports.roller))
 
+    def reaction_nodes(self) -> list[str]:
+        """Supports plus any node restrained in translation through extra_restraints."""
+        extra = [n for n, dofs in self.supports.extra_restraints.items()
+                 if any(d in ("DX", "DY", "DZ") for d in dofs)]
+        return list(dict.fromkeys(self.support_nodes() + extra))
+
     # ------------------------------------------------------------------ YAML I/O
     def to_yaml(self) -> str:
         """YAML text; nodes, sections and members are written one per line."""

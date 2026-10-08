@@ -168,7 +168,7 @@ def _design_panel(ruleset: RuleSet) -> None:
                 ss.result = None  # re-analyse with the new geometry
             except BAD_FILE as exc:
                 sb.error(f"Could not read the bridge file:\n\n{exc}")
-                ss.uploaded_bridge = None
+                ss.uploaded_bridge, ss.result = None, None  # fall back to the parametric design
         elif up is None and ss.upload_key is not None:  # the file was removed
             ss.uploaded_bridge, ss.upload_key, ss.result = None, None, None
         if ss.uploaded_bridge is not None:
@@ -486,7 +486,8 @@ def _method(r: AnalysisResult) -> None:
              r"N_{c,R} = \min\!\left(f_c A,\ \frac{\pi^2 E I_{min}}{(KL)^2}\right)")
     st.latex(r"(K + \lambda K_g)\,\phi = 0 \;\Rightarrow\; F_{cr} = \lambda_{cr} P_{ref}")
     st.latex(r"F_{u,p} = \min\left(\frac{P_{ref}}{\max_i U_i},\ "
-             r"P_{ref}\frac{50\,\mathrm{mm}}{\delta_{ref}},\ F_{cr}\right),\qquad "
+             r"P_{ref}\frac{" + f"{r.deflection_limit_mm:g}" + r"\,\mathrm{mm}}{\delta_{ref}},"
+             r"\ F_{cr}\right),\qquad "
              r"\eta_s = \frac{F_{u,p}\,[\mathrm{kgf}]}{m\,[\mathrm{kg}]}")
     st.caption(f"Software: bridgesim {__version__} (MIT) with the Pynite {PYNITE_VERSION} "
                "3D frame solver (MIT). Cite both in your Design Validation (§10.2).")

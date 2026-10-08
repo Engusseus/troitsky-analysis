@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from bridgesim.mass import bridge_mass
 from bridgesim.measure import Measurements, measure
@@ -53,11 +53,19 @@ class Consequence(BaseModel):
 
 class Steps(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    free_up_to: float
-    step: float
-    points_per_step: float
-    cap: float
-    over_cap_penalty: float
+    free_up_to: float = Field(ge=0, allow_inf_nan=False)
+    step: float = Field(gt=0, allow_inf_nan=False)
+    points_per_step: float = Field(ge=0, allow_inf_nan=False)
+    cap: float = Field(gt=0, allow_inf_nan=False)
+    over_cap_penalty: float = Field(ge=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _ordered(self) -> Steps:
+        if self.cap <= self.free_up_to:
+            raise ValueError("steps.cap must be greater than steps.free_up_to")
+        if round(self.step * 100) < 1:
+            raise ValueError("steps.step must be at least 0.01 (penalties use centigrams)")
+        return self
 
 
 class Rule(BaseModel):

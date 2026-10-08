@@ -40,6 +40,11 @@ from bridgesim.stability import BucklingResult, global_buckling
 from bridgesim.units import n_to_kgf
 
 DEFLECTION_LIMIT_MM = 50.0
+
+
+class AnalysisError(ValueError):
+    """The model cannot give a meaningful prediction (e.g. no load path)."""
+
 N_POINTS = 11
 #: Assumed static friction coefficient between the bridge and the steel platform, used only
 #: to warn about horizontal support reactions (the bridge is not anchored, §8.3).
@@ -241,7 +246,7 @@ def analyze(
 
     reactions = []
     warnings: list[str] = []
-    for nid in bridge.support_nodes():
+    for nid in bridge.reaction_nodes():
         n = model.nodes[nid]
         r = Reaction(nid, float(n.RxnFX[COMBO]), float(n.RxnFY[COMBO]), float(n.RxnFZ[COMBO]))
         reactions.append(r)
@@ -259,7 +264,10 @@ def analyze(
                 f" Unanchored supports may slide (§8.3), e.g. arch thrust."
             )
     if not math.isfinite(Fu):
-        warnings.append("No member is stressed and nothing deflects: check the load path.")
+        raise AnalysisError(
+            "No member is stressed and no loaded node deflects, so the bridge has no "
+            "structural load path (are the deck support nodes restrained?)."
+        )
     if buck is not None and buck.note and not math.isinf(buck.lambda_cr):
         warnings.append(f"Global buckling: {buck.note}")
 
