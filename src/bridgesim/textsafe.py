@@ -44,3 +44,29 @@ def csv_cell(value: object) -> object:
 
 def csv_row(row: dict) -> dict:
     return {k: csv_cell(v) for k, v in row.items()}
+
+
+def friendly_error(exc: BaseException, limit: int = 8) -> str:
+    """Explain why a file was rejected, one line per problem, for people not programmers.
+
+    Pydantic errors become ``where: what (got value)``, with list positions counted from 1
+    (``nodes #3 › x_mm``) and without links to the Pydantic docs.
+    """
+    from pydantic import ValidationError
+
+    if not isinstance(exc, ValidationError):
+        return str(exc)
+    errors = exc.errors(include_url=False)
+    lines = []
+    for e in errors[:limit]:
+        where = " › ".join(f"#{p + 1}" if isinstance(p, int) else str(p) for p in e["loc"])
+        where = where.replace(" › #", " #")
+        msg = e["msg"].removeprefix("Value error, ")
+        got = e.get("input")
+        if e["type"] != "missing" and isinstance(got, (str, int, float, bool)):
+            shown = repr(got)
+            msg += f" (got {shown if len(shown) <= 40 else shown[:37] + '...'})"
+        lines.append(f"{where}: {msg}" if where else msg)
+    if len(errors) > limit:
+        lines.append(f"... and {len(errors) - limit} more")
+    return "\n".join(lines)

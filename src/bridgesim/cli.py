@@ -8,13 +8,15 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+import yaml
+from pydantic import ValidationError
 
 from bridgesim import __version__
 from bridgesim.analysis import AnalysisError, analyze
 from bridgesim.materials import bridge_material, load_material
 from bridgesim.rules import RuleSet, RulesReport, apply_crushing, evaluate
-from bridgesim.schema import Bridge
-from bridgesim.textsafe import csv_row, printable
+from bridgesim.schema import Bridge, Material
+from bridgesim.textsafe import csv_row, friendly_error, printable
 from bridgesim.units import n_to_kgf
 
 app = typer.Typer(help="Troitsky popsicle-stick bridge analysis (bridgesim).",
@@ -24,6 +26,31 @@ MaterialOpt = Annotated[
     str | None, typer.Option("--material", "-m", help="Material YAML path or bundled name")
 ]
 RulesOpt = Annotated[str, typer.Option("--rules", "-r", help="Rules YAML path or bundled name")]
+
+#: Problems with an input file: reported in one short message, exit code 2.
+BAD_INPUT = (ValidationError, ValueError, yaml.YAMLError, UnicodeDecodeError, OSError)
+
+
+def _fail(what: str, exc: BaseException) -> None:
+    typer.secho(f"ERROR: could not read the {what}:\n{printable(friendly_error(exc))}",
+                fg=typer.colors.RED, err=True)
+    raise typer.Exit(code=2) from exc
+
+
+def _inputs(file: Path, material: str | None, rules: str) -> tuple[Bridge, Material, RuleSet]:
+    try:
+        bridge = Bridge.from_file(file)
+    except BAD_INPUT as exc:
+        _fail(f"bridge file {file}", exc)
+    try:
+        mat = load_material(material) if material else bridge_material(bridge)
+    except BAD_INPUT as exc:
+        _fail("material", exc)
+    try:
+        rs = RuleSet.load(rules)
+    except BAD_INPUT as exc:
+        _fail(f"rules {rules!r}", exc)
+    return bridge, mat, rs
 
 
 def _kgf(N: float) -> str:
@@ -57,9 +84,7 @@ def run(
     out: Annotated[Path | None, typer.Option(help="Write report, CSV and PNGs here")] = None,
 ) -> None:
     """Analyse a bridge: predicted failure load, governing member, mass, rule check."""
-    bridge = Bridge.from_file(file)
-    mat = load_material(material) if material else bridge_material(bridge)
-    rs = RuleSet.load(rules)
+    bridge, mat, rs = _inputs(file, material, rules)
     bridge = apply_crushing(bridge, rs)
     try:
         res = analyze(bridge, mat, deflection_limit_mm=rs.crushing.deflection_limit_mm)
@@ -115,10 +140,10 @@ def check(
     material: MaterialOpt = None,
     rules: RulesOpt = "troitsky_2027",
 ) -> None:
-    """Check the competition rules only. Exit code 1 if any checked rule fails."""
-    bridge = Bridge.from_file(file)
-    mat = load_material(material) if material else bridge_material(bridge)
-    rep = evaluate(bridge, mat, RuleSet.load(rules))
+    """Check the competition rules only. Exit code 1 if any checked rule fails, 2 if a file
+    cannot be read."""
+    bridge, mat, rs = _inputs(file, material, rules)
+    rep = evaluate(bridge, mat, rs)
     _print_rules(rep)
     if rep.total_penalty or rep.bans or rep.disqualification_risks or not rep.all_passed:
         raise typer.Exit(code=1)

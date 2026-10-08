@@ -19,6 +19,7 @@ Geometry (X along the bridge, Y up, Z across, table at Y = 0):
 
 from __future__ import annotations
 
+import math
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -105,7 +106,9 @@ def generate_warren(params: WarrenParams | None = None, stick: Stick | None = No
     y_t = y_b + p_.truss_height_mm
     if y_b <= 1.0:
         raise ValueError(
-            f"Deck too low: bottom chord would sit at y = {y_b:.1f} mm. Raise the deck."
+            f"Deck too low: bottom chord would sit at y = {y_b:.1f} mm. Raise the deck top "
+            f"to at least {math.floor(p_.deck_thickness_mm + d_fb / 2.0 + 1.0) + 1} mm (it sits on "
+            f"{d_fb:g} mm deep floor beams)."
         )
 
     nodes: list[Node] = []

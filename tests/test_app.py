@@ -68,3 +68,51 @@ def test_validation_errors_are_shown_as_inert_text() -> None:
     errors = [e.value for e in app.error]
     assert errors and all("![x](" not in e for e in errors)
     assert any(r"\!\[x\]" in e for e in errors)
+
+
+def _analyze(app: AppTest) -> None:
+    next(b for b in app.sidebar.button if b.label == "Analyze").click()
+    app.run()
+
+
+def _sidebar_number(app: AppTest, label: str):
+    return next(n for n in app.sidebar.number_input if n.label == label)
+
+
+def test_a_field_can_be_fixed_after_a_failed_analysis() -> None:
+    """After an error, the next edit to the same field must not be dropped."""
+    app = AppTest.from_file(APP, default_timeout=120)
+    app.run()
+    _sidebar_number(app, "Deck top (mm)").set_value(20.0)
+    _analyze(app)
+    assert any("Deck too low" in e.value for e in app.error)
+    _sidebar_number(app, "Deck top (mm)").set_value(200.0)
+    _analyze(app)
+    assert not app.exception and not app.error, [e.value for e in app.error]
+    assert _sidebar_number(app, "Deck top (mm)").value == 200.0
+    assert any(m.label.startswith("Predicted") for m in app.metric)
+
+
+def test_loading_a_saved_design_restores_its_inputs() -> None:
+    app = AppTest.from_file(APP, default_timeout=120)
+    app.run()
+    before = next(m.value for m in app.metric if m.label.startswith("Predicted"))
+    next(b for b in app.button if b.label == "+ Save for comparison").click()
+    app.run()
+    _sidebar_number(app, "Span c/c (mm)").set_value(1000.0)
+    _analyze(app)
+    assert next(m.value for m in app.metric if m.label.startswith("Predicted")) != before
+    next(b for b in app.button if b.label == "Load").click()
+    app.run()
+    assert not app.exception, [e.value for e in app.exception]
+    assert _sidebar_number(app, "Span c/c (mm)").value == 1150.0
+    assert next(m.value for m in app.metric if m.label.startswith("Predicted")) == before
+
+
+def test_custom_diagram_load_does_not_crash() -> None:
+    app = AppTest.from_file(APP, default_timeout=120)
+    app.run()
+    next(r for r in app.radio if r.label == "At load").set_value("custom")
+    app.run()
+    assert not app.exception, [e.value for e in app.exception]
+    assert any(n.label == "Load (kgf)" and n.value == 368.0 for n in app.number_input)

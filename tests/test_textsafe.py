@@ -714,3 +714,36 @@ def test_absurd_mass_steps_are_rejected(field: str) -> None:
     mass["steps"][field] = 1e308
     with pytest.raises(ValidationError):
         RuleSet.model_validate(data)
+
+
+# --------------------------------------------------------------------------- hands-on testing
+
+
+def test_friendly_error_names_the_field_and_value() -> None:
+    from bridgesim.textsafe import friendly_error
+
+    data = generate_warren().model_dump(mode="json")
+    data["nodes"][2]["x_mm"] = "abc"
+    with pytest.raises(ValidationError) as info:
+        Bridge.model_validate(data)
+    msg = friendly_error(info.value)
+    assert msg.startswith("nodes #3 › x_mm: Input should be a valid number")
+    assert "(got 'abc')" in msg and "pydantic.dev" not in msg
+
+
+@pytest.mark.parametrize("args", [["run", "{bad}"], ["check", "{bad}"],
+                                  ["run", "{ok}", "--rules", "no_such_rules"],
+                                  ["run", "{ok}", "--material", "no_such_material"]])
+def test_cli_reports_unreadable_inputs_without_a_traceback(tmp_path, args: list) -> None:
+    from pathlib import Path
+
+    from typer.testing import CliRunner
+
+    from bridgesim.cli import app
+
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("name: broken\nnodes: [1, 2\n", encoding="utf-8")
+    ok = Path(__file__).resolve().parents[1] / "examples" / "warren_2027.yaml"
+    res = CliRunner().invoke(app, [a.format(bad=bad, ok=ok) for a in args])
+    assert res.exit_code == 2, res.output
+    assert "ERROR: could not read" in res.output and "Traceback" not in res.output

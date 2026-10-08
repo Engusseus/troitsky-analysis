@@ -30,7 +30,7 @@ from bridgesim.materials import load_material, material_from_yaml_str
 from bridgesim.paths import list_yaml
 from bridgesim.rules import RuleSet, RulesReport, apply_crushing, evaluate
 from bridgesim.schema import MEMBER_GROUPS, Bridge, Material
-from bridgesim.textsafe import csv_cell, csv_row, md, md_keep_bold
+from bridgesim.textsafe import csv_cell, csv_row, friendly_error, md, md_keep_bold
 from bridgesim.units import N_PER_KGF, n_to_kgf
 
 st.set_page_config(page_title="bridgesim: Troitsky bridge analysis", page_icon="🌉",
@@ -98,8 +98,25 @@ def _init_state() -> None:
 BAD_FILE = (ValidationError, ValueError, yaml.YAMLError, UnicodeDecodeError)
 
 
+def _lines_md(text: str) -> str:
+    """Escaped Markdown that keeps one line per problem."""
+    return "  \n".join(md(line) for line in text.splitlines())
+
+
 def _digest(uploaded) -> str | None:
     return hashlib.sha256(uploaded.getvalue()).hexdigest() if uploaded is not None else None
+
+
+def _keyed(widget, label: str, key: str, default, **kwargs):
+    """Create a form widget whose value lives in session state under ``key``, seeded once.
+
+    Passing ``value=`` instead would make the widget's identity depend on it: after a submit
+    changed the default, the next edit to that field would be silently dropped. Keys carry
+    ``form_ver`` so loading a design or material (``_replace_inputs``) re-seeds every field.
+    """
+    if key not in st.session_state:
+        st.session_state[key] = default
+    return widget(label, key=key, **kwargs)
 
 
 def _replace_inputs() -> None:
@@ -128,7 +145,7 @@ def _run_analysis(ruleset: RuleSet) -> None:
         ss.error = None
     except Exception as exc:  # show any failure in the UI rather than crashing
         ss.result, ss.rules_report = None, None
-        ss.error = f"{type(exc).__name__}: {exc}"
+        ss.error = f"{type(exc).__name__}:\n{friendly_error(exc)}"
 
 
 # --------------------------------------------------------------------------- sidebar
@@ -145,9 +162,12 @@ def _rules_picker() -> RuleSet:
         up = st.file_uploader("…or upload a rules YAML", type=["yaml", "yml"], key="rules_up")
     try:
         if up is not None:
-            return RuleSet.from_yaml_str(up.getvalue().decode("utf-8"))
+            rs = RuleSet.from_yaml_str(up.getvalue().decode("utf-8"))
+            st.sidebar.caption(f"Using the uploaded rules “{md(rs.name)}”; the picker above "
+                               "applies once the file is removed.")
+            return rs
     except BAD_FILE as exc:
-        st.sidebar.error(f"Rules file not valid: {md(exc)}")
+        st.sidebar.error("Rules file not valid:  \n" + _lines_md(friendly_error(exc)))
     return RuleSet.load(files[choice])
 
 
@@ -173,7 +193,7 @@ def _design_panel(ruleset: RuleSet) -> None:
                     _replace_inputs()
                 ss.result, ss.error = None, None  # re-analyse with the new geometry
             except BAD_FILE as exc:
-                sb.error(f"Could not read the bridge file:\n\n{md(exc)}")
+                sb.error("Could not read the bridge file:  \n" + _lines_md(friendly_error(exc)))
                 ss.uploaded_bridge, ss.result = None, None  # fall back to the parametric design
         elif up is None and ss.seen_digest is not None:  # the file was removed
             ss.seen_digest = None
@@ -194,55 +214,60 @@ def _design_panel(ruleset: RuleSet) -> None:
                 ss.result, ss.error = None, None  # re-analyse with the new material
                 st.success(f"Material “{md(ss.material.name)}” loaded")
             except BAD_FILE as exc:
-                st.error(f"Material file not valid: {md(exc)}")
+                st.error("Material file not valid:  \n" + _lines_md(friendly_error(exc)))
 
-    p = ss.params
+    p = copy.deepcopy(ss.params)  # edits only reach ss.params when Analyze is pressed
     v = ss.form_ver
     parametric = ss.source == "Parametric Warren truss" or ss.uploaded_bridge is None
     with sb.form("design"):
         if parametric:
             st.caption("Through Warren truss. All lengths in mm.")
-            p["name"] = st.text_input("Design name", p["name"])
+            p["name"] = _keyed(st.text_input, "Design name", f"name_{v}", p["name"])
             c1, c2 = st.columns(2)
-            p["span_mm"] = c1.number_input("Span c/c (mm)", 500.0, 1500.0,
-                                           float(p["span_mm"]), 5.0, format="%.0f",
-                                           help="Pier centre to centre (§8.2.1.1)")
-            p["n_panels"] = int(c2.number_input("Panels (even)", 2, 24, int(p["n_panels"]), 2))
-            p["truss_height_mm"] = c1.number_input("Truss height (mm)", 40.0, 520.0,
-                                                   float(p["truss_height_mm"]), 5.0,
-                                                   format="%.0f", help="Chord centre to centre")
-            p["deck_top_elevation_mm"] = c2.number_input(
-                "Deck top (mm)", 20.0, 500.0, float(p["deck_top_elevation_mm"]), 5.0,
-                format="%.0f", help="Table to top of deck (§8.2.2.1)")
-            p["deck_clear_width_mm"] = c1.number_input(
-                "Deck width (mm)", 50.0, 340.0, float(p["deck_clear_width_mm"]), 5.0,
-                format="%.0f", help="Clear flat width between the trusses (§8.2.3.1)")
-            p["deck_overhang_mm"] = c2.number_input(
-                "Overhang (mm)", 0.0, 250.0, float(p["deck_overhang_mm"]), 5.0, format="%.0f",
-                help="Deck length beyond each pier centreline")
+            mm = dict(step=5.0, format="%.0f")
+            p["span_mm"] = _keyed(c1.number_input, "Span c/c (mm)", f"span_{v}",
+                                  float(p["span_mm"]), min_value=500.0, max_value=1500.0,
+                                  help="Pier centre to centre (§8.2.1.1)", **mm)
+            p["n_panels"] = int(_keyed(c2.number_input, "Panels (even)", f"panels_{v}",
+                                       int(p["n_panels"]), min_value=2, max_value=24, step=2))
+            p["truss_height_mm"] = _keyed(c1.number_input, "Truss height (mm)", f"h_{v}",
+                                          float(p["truss_height_mm"]), min_value=40.0,
+                                          max_value=520.0, help="Chord centre to centre", **mm)
+            p["deck_top_elevation_mm"] = _keyed(
+                c2.number_input, "Deck top (mm)", f"deck_{v}", float(p["deck_top_elevation_mm"]),
+                min_value=20.0, max_value=500.0, help="Table to top of deck (§8.2.2.1)", **mm)
+            p["deck_clear_width_mm"] = _keyed(
+                c1.number_input, "Deck width (mm)", f"width_{v}",
+                float(p["deck_clear_width_mm"]), min_value=50.0, max_value=340.0,
+                help="Clear flat width between the trusses (§8.2.3.1)", **mm)
+            p["deck_overhang_mm"] = _keyed(
+                c2.number_input, "Overhang (mm)", f"over_{v}", float(p["deck_overhang_mm"]),
+                min_value=0.0, max_value=250.0, help="Deck length beyond each pier centreline",
+                **mm)
             st.markdown("X-bracing")
             c3, c4, c5 = st.columns(3)
-            opts = ["x", "none"]
-            p["top_bracing"] = c3.selectbox("Top", opts, opts.index(p["top_bracing"]),
-                                            help="Every top panel except mid-span (§8.9)")
-            p["bottom_bracing"] = c4.selectbox("Bottom", opts, opts.index(p["bottom_bracing"]))
-            p["pier_bracing"] = c5.selectbox("Piers", opts, opts.index(p["pier_bracing"]))
-            fix = ["rigid", "pinned"]
-            p["joint_fixity"] = st.radio("Joints", fix, fix.index(p["joint_fixity"]),
-                                         horizontal=True,
-                                         help="Rigid = glued joints transfer moment (default). "
-                                              "Pinned releases web/bracing moments for comparison.")
+            for col, key, lab, tip in (
+                    (c3, "top_bracing", "Top", "Every top panel except mid-span (§8.9)"),
+                    (c4, "bottom_bracing", "Bottom", "Every bottom (floor) panel"),
+                    (c5, "pier_bracing", "Piers", "Between the two piers at each end")):
+                on = _keyed(col.checkbox, lab, f"br_{v}_{key}", p[key] == "x", help=tip)
+                p[key] = "x" if on else "none"
+            p["joint_fixity"] = _keyed(
+                st.radio, "Joints", f"fix_{v}", p["joint_fixity"], options=["rigid", "pinned"],
+                horizontal=True, help="Rigid = glued joints transfer moment (default). "
+                                      "Pinned releases web/bracing moments for comparison.")
             with st.expander("Sections (sticks per member)"):
                 st.caption("10 × 2 mm sticks glued face to face. *flat*: stack grows in depth "
                            "(b = 10, d = 2n). *on edge*: stack grows in width (b = 2n, d = 10). "
                            "d is the depth in the member's main bending plane.")
                 for g, spec in p["sections"].items():
                     a, b = st.columns([1, 1.3])
-                    spec["sticks"] = int(a.number_input(GROUP_LABELS.get(g, g), 1, 60,
-                                                        int(spec["sticks"]), 1, key=f"n_{v}_{g}"))
-                    lay = ["flat", "on_edge"]
-                    spec["layout"] = b.selectbox("layout", lay, lay.index(spec["layout"]),
-                                                 key=f"l_{v}_{g}", label_visibility="hidden")
+                    spec["sticks"] = int(_keyed(a.number_input, GROUP_LABELS.get(g, g),
+                                                f"n_{v}_{g}", int(spec["sticks"]),
+                                                min_value=1, max_value=60, step=1))
+                    spec["layout"] = _keyed(b.selectbox, "layout", f"l_{v}_{g}", spec["layout"],
+                                            options=["flat", "on_edge"],
+                                            label_visibility="hidden")
         else:
             st.caption(f"Using uploaded bridge “{md(ss.uploaded_bridge.name)}”. Geometry and "
                        "sections come from the file; material values below still apply.")
@@ -252,12 +277,12 @@ def _design_panel(ruleset: RuleSet) -> None:
         new_vals = {}
         for key, prop in mat.props().items():
             label, unit = PROP_LABELS.get(key, (key, ""))
-            a, b = st.columns([1.6, 1])
-            val = a.number_input(f"{label} ({unit})" if unit and unit != "–" else label,
-                                 value=float(prop.value), format="%g", key=f"mv_{v}_{key}",
-                                 help=md(prop.note) if prop.note else None)
-            meas = b.checkbox("measured", prop.source == "measured", key=f"ms_{v}_{key}")
-            b.markdown(":green[● measured]" if meas else ":orange[○ assumed]")
+            val = _keyed(st.number_input, f"{label} ({unit})" if unit and unit != "–" else label,
+                         f"mv_{v}_{key}", float(prop.value), format="%g",
+                         help=md(prop.note) if prop.note else None)
+            meas = _keyed(st.checkbox, ":green[● measured]" if prop.source == "measured"
+                          else ":orange[○ assumed] · tick when measured",
+                          f"ms_{v}_{key}", prop.source == "measured")
             new_vals[key] = (val, "measured" if meas else "assumed")
         submitted = st.form_submit_button("Analyze", type="primary", **_wide_button())
 
@@ -271,7 +296,7 @@ def _design_panel(ruleset: RuleSet) -> None:
             ss.material = Material.model_validate(data)
             ss.params = WarrenParams.model_validate(p).model_dump()
         except ValidationError as exc:
-            ss.error = f"Invalid input: {exc}"
+            ss.error = f"Invalid input:\n{friendly_error(exc)}"
             return
         _run_analysis(ruleset)
 
@@ -335,7 +360,7 @@ def _rules_card(rep: RulesReport) -> None:
 
 
 def _viewport(bridge: Bridge, r: AnalysisResult | None) -> None:
-    views = {"Utilization": "utilization", "Deformed": "deformed",
+    views = {"Utilisation": "utilization", "Deformed": "deformed",
              "Buckling mode": "buckling", "Undeformed": "undeformed"}
     c1, c2 = st.columns([2, 1.2])
     label = c1.radio("View", list(views), horizontal=True, label_visibility="collapsed")
@@ -392,20 +417,22 @@ def _diagrams(bridge: Bridge, r: AnalysisResult) -> None:
     load_choice = c2.radio("At load", ["F_u,p", "P_ref", "custom"], horizontal=True)
     load_N = {"F_u,p": r.Fu_pred_N, "P_ref": r.P_ref_N}.get(load_choice)
     if load_N is None:
-        load_N = c3.number_input("Load (kgf)", 1.0, 5000.0, round(r.Fu_pred_kgf), 1.0) * N_PER_KGF
+        fu = r.Fu_pred_kgf
+        start = float(min(5000.0, max(1.0, round(fu)))) if math.isfinite(fu) else 100.0
+        load_N = c3.number_input("Load (kgf)", 1.0, 5000.0, start, 1.0) * N_PER_KGF
     if what.startswith("Whole"):
         fig = viz.global_sfd_bmd_figure(r, load_N)
         name = "sfd_bmd_whole_bridge.png"
     elif what.startswith("Member group"):
         g = c3.selectbox("Group", groups_present, format_func=lambda x: GROUP_LABELS.get(x, x))
-        side = st.radio("Truss plane", ["n", "f"], horizontal=True,
-                        format_func=lambda s: "−Z plane" if s == "n" else "+Z plane")
+        plane = {"n": "−Z plane", "f": "+Z plane"}
+        side = st.radio("Truss plane", ["n", "f"], horizontal=True, format_func=plane.get)
         ids = viz.chain_for_group(bridge, g, side)
         if not viz.is_connected_chain(bridge, ids):
             st.info("This group does not form a connected chain in that plane; use "
                     "Single member instead.")
             return
-        fig = viz.member_diagrams_figure(r, ids, f"{GROUP_LABELS.get(g, g)} ({side} plane)",
+        fig = viz.member_diagrams_figure(r, ids, f"{GROUP_LABELS.get(g, g)} ({plane[side]})",
                                          load_N)
         name = f"diagram_{g}_{side}.png"
     else:
@@ -475,7 +502,7 @@ def _metrics(r: AnalysisResult, rep: RulesReport) -> dict:
         "F_u,p (kgf)": round(r.Fu_pred_kgf, 1),
         "Mass (kg)": round(r.mass.total_kg, 2),
         "η_s (kgf/kg)": round(r.efficiency, 1),
-        "Governs": r.governing_label + (f" ({r.governing_member})" if r.governing_member else ""),
+        "Governs": r.governing_label + (f" in {r.governing_member}" if r.governing_member else ""),
         "δ at F_u,p (mm)": round(r.delta_at_Fu_mm, 1),
         "Global buckling (kgf)": round(n_to_kgf(r.Fu_buckling_N), 0)
         if math.isfinite(r.Fu_buckling_N)
@@ -554,7 +581,7 @@ def main() -> None:
                    "assumed placeholders, not test data.** Predicted loads are illustrative "
                    "until you enter your own measurements (tick *measured*).", icon="🧪")
     if ss.error:
-        st.error(md(ss.error))  # may quote values from an uploaded file
+        st.error(_lines_md(ss.error))  # may quote values from an uploaded file
         return
     r: AnalysisResult = ss.result
     rep: RulesReport = ss.rules_report

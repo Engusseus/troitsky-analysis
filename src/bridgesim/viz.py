@@ -261,7 +261,7 @@ def load_deflection_figure(result: AnalysisResult, height: int = 300) -> go.Figu
         x=[0, dFu], y=[0, Fu], mode="lines+markers", line=dict(color=SERIES, width=2),
         marker=dict(size=[0, 9], color=SERIES), name="linear estimate",
         hovertemplate="δ = %{x:.2f} mm<br>F = %{y:.1f} kgf<extra>linear estimate</extra>"))
-    fig.add_annotation(x=dFu, y=Fu, text=f"F_u,p = {Fu:.0f} kgf ({result.governing_label})",
+    fig.add_annotation(x=dFu, y=Fu, text=f"F_u,p = {Fu:.0f} kgf: {result.governing_label}",
                        showarrow=False, yshift=14, xanchor="right" if dFu > lim * 0.5 else "left",
                        font=dict(size=12))
     fig.add_vline(x=lim, line=dict(color=INK, dash="dash", width=1))
