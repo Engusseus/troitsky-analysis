@@ -7,7 +7,9 @@ Capacities (wood parallel to grain, all strengths from the material file):
 * bending            M_R,y = f_b S_y,  M_R,z = f_b S_z
 * member shear       V_R = f_v A / 1.5          (max shear stress 1.5 V / A in a rectangle;
                                                V = resultant of the two local shears)
-* glued joint        F_R = tau_g A_glue,  A_glue = overlap x w x faces,  w = max(b, d)
+* glued joint        F_R = tau_g A_glue,  A_glue = overlap x w x faces, with w = d for
+                     truss-plane members (the face in-plane gussets glue to) and
+                     w = max(b, d) for floor beams and bracing
 
 Utilisation of a member at the reference load (linear interaction, conservative):
 
@@ -54,10 +56,18 @@ class Capacities:
         return min(self.N_c_crush, self.P_cr)
 
 
-def capacities(section: Section, material: Material, L_mm: float, K: float) -> Capacities:
+#: Members lying in a truss plane. Gussets in that plane can only glue to the faces normal
+#: to it, whose width is the in-plane depth d (for an on-edge stack, the outer stick's broad
+#: face; the other face is made of stick edges).
+TRUSS_PLANE_GROUPS = frozenset({"top_chord", "bottom_chord", "diagonal", "vertical", "pier"})
+
+
+def capacities(
+    section: Section, material: Material, L_mm: float, K: float, group: str | None = None
+) -> Capacities:
     pr = section.props(material.stick)
     glue = material.glue
-    w = max(pr.b_mm, pr.d_mm)
+    w = pr.d_mm if group in TRUSS_PLANE_GROUPS else max(pr.b_mm, pr.d_mm)
     return Capacities(
         N_t_R=material.f_t_MPa.value * pr.A_mm2,
         N_c_crush=material.f_c_MPa.value * pr.A_mm2,

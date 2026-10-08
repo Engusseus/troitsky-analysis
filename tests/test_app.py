@@ -115,4 +115,5 @@ def test_custom_diagram_load_does_not_crash() -> None:
     next(r for r in app.radio if r.label == "At load").set_value("custom")
     app.run()
     assert not app.exception, [e.value for e in app.exception]
-    assert any(n.label == "Load (kgf)" and n.value == 368.0 for n in app.number_input)
+    fu = float(next(m.value for m in app.metric if m.label.startswith("Predicted")).split()[0])
+    assert any(n.label == "Load (kgf)" and n.value == round(fu) for n in app.number_input)

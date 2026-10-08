@@ -34,14 +34,17 @@ MODEL_ASSUMPTIONS: list[str] = [
     "'pinned' switch releases in-plane moments of web members and bracing for comparison.",
     "Member buckling: Euler load over the full member length about the weaker axis, with "
     "the effective-length factor K stated above. Global (system) buckling: linear "
-    "eigenvalue analysis of the whole frame, with "
+    "eigenvalue analysis of the whole frame (two elements per member), with "
     "pier bases held by friction. Both assume perfectly straight sticks, so they are "
-    "unconservative for crooked sticks (imperfections arrive in v0.2).",
+    "unconservative for crooked sticks (imperfections arrive in v0.2); a warning is "
+    "given when F_u,p is above half the global buckling load.",
     "Member utilisation is the linear sum |N|/N_R + |M_y|/M_R,y + |M_z|/M_R,z (no "
     "amplification). Member shear (1.5 V/A <= f_v) and glued-joint shear are separate "
     "checks. Torsion is ignored.",
-    "Glued joint (placeholder): capacity = tau_g x overlap x member width x faces, "
-    "checked against the resultant member-end force. Chords are treated as continuous.",
+    "Glued joint (placeholder): capacity = tau_g x overlap x glued width x faces, "
+    "checked against the resultant member-end force. The glued width is the in-plane "
+    "depth d for truss members (the face gussets in the truss plane glue to) and the "
+    "broad face max(b, d) for floor beams and bracing. Chords are treated as continuous.",
     "The deck is non-structural: it only transfers the crusher-plate load to the "
     "floor-beam centre nodes as simply supported strips. Its stiffness is ignored.",
     "Supports rest on the platform without anchorage (§8.3): one end restrains DX, DY, DZ, "

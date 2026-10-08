@@ -49,12 +49,12 @@ wide at 200 mm) passes every computable 2027 rule:
 
 | Result | Value |
 |---|---|
-| Predicted ultimate load $F_{u,p}$ | **≈ 368 kgf** (3607 N) |
-| Governs | floor-beam bending under the plate, closely followed by diagonal glued joints and top-chord buckling |
-| Global (system) buckling load | ≈ 438 kgf (the whole bridge swaying lengthwise on its 180 mm piers) |
+| Predicted ultimate load $F_{u,p}$ | **≈ 316 kgf** (3097 N) |
+| Governs | glued joints of the end diagonals, followed by floor-beam bending under the plate (86 % utilised) |
+| Global (system) buckling load | ≈ 430 kgf (the whole bridge swaying lengthwise on its piers); $F_{u,p}$ is 73 % of it, so the app warns that imperfections would be amplified |
 | Mass | 2.11 kg (≈ 1290 sticks) |
-| Efficiency $\eta_s$ | ≈ 174 kgf/kg |
-| Mid-span deflection at $F_{u,p}$ | 4.5 mm (limit 50 mm) |
+| Efficiency $\eta_s$ | ≈ 149 kgf/kg |
+| Mid-span deflection at $F_{u,p}$ | 3.9 mm (limit 50 mm) |
 
 These numbers use **assumed** material strengths and will change once you enter measured
 values.

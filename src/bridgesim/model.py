@@ -12,10 +12,15 @@
 * Supports: ``pinned`` nodes restrain DX, DY, DZ, ``roller`` nodes DY, DZ. Rotations are
   free. The bridge is not anchored (rulebook §8.3): the analysis reports any support
   that would need to pull down (uplift) or resist large horizontal thrust.
+* Every member also gets one interior node (its midpoint, or a nearby point that lies on
+  no other member), which Pynite uses to split it into two elements. Static results are
+  unchanged (cubic frame elements are exact for end loads), but the global buckling
+  analysis gets two elements per member: with one, F_cr is about 2 % too high.
 """
 
 from __future__ import annotations
 
+import numpy as np
 from Pynite import FEModel3D
 
 from bridgesim.loads import plate_nodal_loads
@@ -34,6 +39,33 @@ PINNED_RELEASES: dict[str, tuple[str, ...]] = {
 }
 
 _MATERIAL = "wood"
+
+#: Prefix of the interior nodes added to split members (not part of the bridge).
+INTERIOR_PREFIX = "~mid "
+_SPLIT_AT = (0.5, 0.45, 0.55, 0.4, 0.6, 0.35, 0.65)
+
+
+def _interior_points(bridge: Bridge) -> dict[str, tuple[float, float, float]]:
+    """A point inside each member that lies on no other member (crossing X-braces meet at
+    their midpoints, and a node there would glue them together)."""
+    nodes = bridge.node_map()
+    A = np.array([nodes[m.i].xyz for m in bridge.members], dtype=float)
+    B = np.array([nodes[m.j].xyz for m in bridge.members], dtype=float)
+    D = B - A
+    L = np.linalg.norm(D, axis=1)
+    U = D / L[:, None]
+    out = {}
+    for k, mem in enumerate(bridge.members):
+        others = np.arange(len(L)) != k
+        for t in _SPLIT_AT:
+            pt = A[k] + t * D[k]
+            d = pt - A[others]
+            s = np.einsum("ij,ij->i", d, U[others])
+            perp = np.linalg.norm(d - s[:, None] * U[others], axis=1)
+            if not np.any((s > -1e-6) & (s < L[others] + 1e-6) & (perp < 1e-6)):
+                out[mem.id] = (float(pt[0]), float(pt[1]), float(pt[2]))
+                break
+    return out
 
 
 def member_releases(bridge: Bridge, member) -> set[str]:
@@ -61,6 +93,8 @@ def build_model(bridge: Bridge, material: Material, P_N: float | None = None) ->
         rel = member_releases(bridge, mem)
         if rel:
             m.def_releases(mem.id, **{r: True for r in rel})
+    for mid, (x, y, z) in _interior_points(bridge).items():
+        m.add_node(INTERIOR_PREFIX + mid, x, y, z)
 
     for nid in bridge.supports.pinned:
         m.def_support(nid, support_DX=True, support_DY=True, support_DZ=True)

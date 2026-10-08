@@ -97,3 +97,22 @@ def test_slender_piers_govern_by_sway(material):
     r = analyze(generate_warren(p), material)
     assert r.governing_mode == "global_buckling"
     assert r.Fu_pred_N == pytest.approx(r.Fu_buckling_N)
+
+
+def test_single_member_column_is_split_for_buckling(material):
+    """A column drawn as ONE member is split into two elements internally, so the global
+    eigen-solver is within ~1 % of Euler (one cubic element alone gives 12EI/L^2, +22 %)."""
+    col = _column(Supports(pinned=["N0"], extra_restraints={"N0": ["RY"], "N1": ["DX", "DZ"]}),
+                  n_el=1)
+    r = analyze(col, material)
+    euler = math.pi**2 * E * I_MIN / L**2
+    assert r.buckling.lambda_cr == pytest.approx(euler, rel=0.01)
+    assert set(r.displacements_mm) == {"N0", "N1"}  # interior nodes stay internal
+    assert set(r.buckling.mode_mm) == {"N0", "N1"}
+
+
+def test_crossing_braces_are_not_joined_by_the_split(material):
+    """X-braces cross at their midpoints; the interior split points must avoid that."""
+    r = analyze(generate_warren(), material)
+    for m in r.bridge.members:
+        assert len(r.fe_model.members[m.id].sub_members) == 2, m.id

@@ -245,12 +245,11 @@ def _design_panel(ruleset: RuleSet) -> None:
                 min_value=0.0, max_value=250.0, help="Deck length beyond each pier centreline",
                 **mm)
             st.markdown("X-bracing")
-            c3, c4, c5 = st.columns(3)
-            for col, key, lab, tip in (
-                    (c3, "top_bracing", "Top", "Every top panel except mid-span (§8.9)"),
-                    (c4, "bottom_bracing", "Bottom", "Every bottom (floor) panel"),
-                    (c5, "pier_bracing", "Piers", "Between the two piers at each end")):
-                on = _keyed(col.checkbox, lab, f"br_{v}_{key}", p[key] == "x", help=tip)
+            for key, lab, tip in (
+                    ("top_bracing", "Top bracing", "Every top panel except mid-span (§8.9)"),
+                    ("bottom_bracing", "Bottom (floor) bracing", "Every bottom panel"),
+                    ("pier_bracing", "Pier bracing", "Between the two piers at each end")):
+                on = _keyed(st.checkbox, lab, f"br_{v}_{key}", p[key] == "x", help=tip)
                 p[key] = "x" if on else "none"
             p["joint_fixity"] = _keyed(
                 st.radio, "Joints", f"fix_{v}", p["joint_fixity"], options=["rigid", "pinned"],
@@ -261,12 +260,13 @@ def _design_panel(ruleset: RuleSet) -> None:
                            "(b = 10, d = 2n). *on edge*: stack grows in width (b = 2n, d = 10). "
                            "d is the depth in the member's main bending plane.")
                 for g, spec in p["sections"].items():
-                    a, b = st.columns([1, 1.3])
+                    a, b = st.columns([1, 1.7])
                     spec["sticks"] = int(_keyed(a.number_input, GROUP_LABELS.get(g, g),
                                                 f"n_{v}_{g}", int(spec["sticks"]),
                                                 min_value=1, max_value=60, step=1))
                     spec["layout"] = _keyed(b.selectbox, "layout", f"l_{v}_{g}", spec["layout"],
                                             options=["flat", "on_edge"],
+                                            format_func=lambda x: x.replace("_", " "),
                                             label_visibility="hidden")
         else:
             st.caption(f"Using uploaded bridge “{md(ss.uploaded_bridge.name)}”. Geometry and "

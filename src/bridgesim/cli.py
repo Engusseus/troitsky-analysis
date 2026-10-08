@@ -166,10 +166,16 @@ def generate(
     if kind not in GENERATORS:
         raise typer.BadParameter(f"Unknown generator {kind!r}; choose from {list(GENERATORS)}")
     Params, gen = GENERATORS[kind]
-    p = Params(name=name, span_mm=span_mm, n_panels=n_panels, truss_height_mm=truss_height_mm,
-               deck_top_elevation_mm=deck_top_elevation_mm,
-               deck_clear_width_mm=deck_clear_width_mm)
-    gen(p).save(out)
+    try:
+        p = Params(name=name, span_mm=span_mm, n_panels=n_panels,
+                   truss_height_mm=truss_height_mm, deck_top_elevation_mm=deck_top_elevation_mm,
+                   deck_clear_width_mm=deck_clear_width_mm)
+        bridge = gen(p)
+    except (ValidationError, ValueError) as exc:
+        typer.secho(f"ERROR: cannot generate this bridge:\n{printable(friendly_error(exc))}",
+                    fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from exc
+    bridge.save(out)
     typer.echo(f"Wrote {out}")
 
 

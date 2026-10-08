@@ -87,16 +87,23 @@ The app shows a banner and an *assumed* badge on every value until you mark it *
     amplification. Member shear (resultant of the two local shears, $1.5V/A \le f_v$)
     and glued-joint shear are separate checks.
 17. **Glued joints (placeholder)**: capacity $\tau_g \times$ overlap $\times w \times$ faces,
-    with $w = \max(b, d)$ the broad face of the member, checked against the resultant
-    member-end force. Chord groups are treated as continuous (no joint check).
+    checked against the resultant member-end force. For members in a truss plane
+    (diagonals, verticals, chords, piers) $w = d$, the in-plane depth: gussets lying in the
+    truss plane can only glue to that face (for an on-edge stack it is the outer stick's
+    broad face; the other face is made of stick edges). For floor beams and bracing
+    $w = \max(b, d)$, the broad face of the laminate. Chord groups are treated as continuous
+    (no joint check). Your real joint detail decides the true glue area: test it.
 18. **Global (system) buckling**: linear eigenvalue analysis $(K + \lambda K_g)\phi = 0$ of
     the whole frame, with $K_g$ from the member axial forces at $P_{ref}$. It catches modes
     the member check cannot, such as sway of the legs or lateral buckling of an unbraced top
     chord. During buckling the pier bases at **both** ends are assumed held in X by
     friction (no horizontal force is needed at the onset of buckling). Pier bases have no
-    rotational restraint (conservative). One element per member, so single-member
-    buckling between joints is left to the member check. Perfect geometry: this is an
-    upper bound on the real instability load.
+    rotational restraint (conservative). Each member is split into two elements, which
+    puts system modes within about 0.2 % of a fine mesh; buckling of a single member
+    between joints is left to the member check. Perfect geometry: this is an upper bound
+    on the real instability load. When $F_{u,p}$ exceeds half of $F_{cr}$ the results warn
+    that imperfections would be amplified by about $1/(1 - F_{u,p}/F_{cr})$ (P-Δ is not
+    modelled in v0.1).
 19. **First failure = bridge failure.** $F_{u,p} = \min(P_{ref}/\max U_i,\ P_{ref}\cdot
     50/\delta_{ref},\ F_{cr})$. Redistribution after the first member fails (common for
     bracing) is ignored, and so is "contact with the crusher" failure.
@@ -118,9 +125,9 @@ The app shows a banner and an *assumed* badge on every value until you mark it *
   stiffened (10 sticks flat) as a result.
 * Added a member **shear** check ($f_v$ = 6 MPa, assumed) because the rulebook names
   shear as a failure mode (§12.5).
-* Joint check uses the **resultant** end force (axial and shear) on the member's broad
-  face, $w = \max(b, d)$, rather than axial force on width b. Floor beams load their
-  joints mainly in shear.
+* Joint check uses the **resultant** end force (axial and shear) rather than axial force
+  alone (floor beams load their joints mainly in shear), on the glued face described in
+  item 17.
 * The glue mass fraction is applied to the **deck** as well as the members.
 * The span rule checks both the inner-face clear span and the pier centre-to-centre span
   (stricter reading of §8.2.1.1 vs. Figure 2).

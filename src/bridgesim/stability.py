@@ -10,9 +10,10 @@ The critical load is F_cr = lambda_cr P_ref, with lambda_cr the smallest positiv
 Source: e.g. McGuire, Gallagher & Ziemian, *Matrix Structural Analysis*, 2nd ed., Ch. 9.
 
 This captures system modes that single-member checks miss: sway of legs, lateral buckling
-of an unbraced top chord, and so on. Each member is one cubic element, so the buckling of
-a single member between joints is over-estimated (about 20 %); that case is covered by the
-member Euler check instead. F_cr is an *elastic, perfect-geometry* upper bound: real
+of an unbraced top chord, and so on. Each member is split into two cubic elements
+(``model.py``), so system modes are within about 0.2 % of a fine mesh; buckling of a single
+member between joints is still over-estimated by a few percent, and that case is covered by
+the member Euler check instead. F_cr is an *elastic, perfect-geometry* upper bound: real
 crooked sticks buckle earlier (imperfections are planned for v0.2).
 
 Boundary conditions: during buckling the pier bases are assumed held in X by friction at
@@ -111,15 +112,19 @@ def global_buckling(
     tr = phi.reshape(-1, 6)[:, :3]
     scale = float(np.max(np.linalg.norm(tr, axis=1))) or 1.0
     phi /= scale
-    by_id = {n.ID: nid for nid, n in model.nodes.items()}
-    mode = {by_id[i]: tuple(float(v) for v in phi[i * 6:i * 6 + 3]) for i in by_id}
+    names = {n.id for n in bridge.nodes}
+    mode = {nid: tuple(float(v) for v in phi[n.ID * 6:n.ID * 6 + 3])
+            for nid, n in model.nodes.items() if nid in names}
 
     energy = {}
     for mem in bridge.members:
         pm = model.members[mem.id]
-        idx = np.r_[pm.i_node.ID * 6:pm.i_node.ID * 6 + 6, pm.j_node.ID * 6:pm.j_node.ID * 6 + 6]
-        v = phi[idx]
-        energy[mem.id] = float(v @ np.asarray(pm.Ke()) @ v)
+        e = 0.0
+        for sub in (pm.sub_members or {pm.name: pm}).values():  # the member's elements
+            i, j = sub.i_node.ID * 6, sub.j_node.ID * 6
+            v = phi[np.r_[i:i + 6, j:j + 6]]
+            e += float(v @ np.asarray(sub.Ke()) @ v)
+        energy[mem.id] = e
     emax = max(energy.values(), default=0.0) or 1.0
     energy = {k: e / emax for k, e in energy.items()}
     key = max(energy, key=energy.get) if energy else None

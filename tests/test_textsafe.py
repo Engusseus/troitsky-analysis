@@ -747,3 +747,14 @@ def test_cli_reports_unreadable_inputs_without_a_traceback(tmp_path, args: list)
     res = CliRunner().invoke(app, [a.format(bad=bad, ok=ok) for a in args])
     assert res.exit_code == 2, res.output
     assert "ERROR: could not read" in res.output and "Traceback" not in res.output
+
+
+def test_member_diagrams_plot_sagging_positive_with_v_equal_dm_dx() -> None:
+    import numpy as np
+
+    from bridgesim import viz
+
+    r = analyze(generate_warren(), include_buckling=False)
+    x, _, V, M, _ = viz.member_chain_diagrams(r, ["fb4n"], r.P_ref_N)
+    assert M.max() > 0 and M[-1] == pytest.approx(M.max())  # sagging at the deck centre
+    np.testing.assert_allclose(V[1:-1], np.gradient(M, x)[1:-1], rtol=1e-6)

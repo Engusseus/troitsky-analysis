@@ -100,9 +100,12 @@ def test_predicted_load_and_mass(default_result: AnalysisResult) -> None:
     assert r.efficiency == pytest.approx(r.Fu_pred_kgf / r.mass.total_kg)
 
 
-def test_no_analysis_warnings(default_result: AnalysisResult) -> None:
-    """No uplift, no friction-exceeding thrust, a valid load path."""
-    assert default_result.warnings == []
+def test_no_support_warnings(default_result: AnalysisResult) -> None:
+    """No uplift, no friction-exceeding thrust, a valid load path. The only warning is that
+    F_u,p is close enough to global buckling for P-delta to matter (an honest caveat)."""
+    assert [w for w in default_result.warnings if "Support" in w] == []
+    assert len(default_result.warnings) == 1
+    assert "of the global buckling load" in default_result.warnings[0]
 
 
 def test_vertical_equilibrium(default_result: AnalysisResult) -> None:

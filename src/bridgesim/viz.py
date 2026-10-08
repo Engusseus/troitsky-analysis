@@ -359,8 +359,8 @@ def member_chain_diagrams(
     laid end to end in the given order; x is the cumulative distance along the chain. Each
     member is read in the direction of travel along the chain (from the node it shares with
     the previous member), whichever way round its i and j ends were written, so the curves
-    join up. Axial force is tension-positive; shear and moment use Pynite's local sign
-    convention for the member taken in that direction.
+    join up. Axial force is tension-positive; the moment is positive when it puts the
+    member's local -y face in tension (sagging, for horizontal members), and V_y = dM/dx.
     """
     load = result.Fu_pred_N if load_N is None else load_N
     k = load / result.P_ref_N
@@ -378,10 +378,14 @@ def member_chain_diagrams(
             a, b = nodes[m.i].xyz, nodes[m.j].xyz
             fwd, back = local_axes(a, b), local_axes(b, a)
             sv, sm = -float(back[1] @ fwd[1]), -float(back[2] @ fwd[2])
-        at = L - xa if rev else xa
-        N.append(-pm.axial_array(41, COMBO, x_array=at)[1] * k)
-        V.append(pm.shear_array("Fy", 41, COMBO, x_array=at)[1] * k * sv)
-        M.append(pm.moment_array("Mz", 41, COMBO, x_array=at)[1] * k * sm)
+        # Sampled in ascending x (Pynite needs that across a member's elements), then
+        # reversed for a member read j -> i: its values at L - x.
+        o = slice(None, None, -1 if rev else 1)
+        N.append(-pm.axial_array(41, COMBO, x_array=xa)[1][o] * k)
+        V.append(pm.shear_array("Fy", 41, COMBO, x_array=xa)[1][o] * k * sv)
+        # Pynite reports sagging as negative M_z; plot sagging positive (as the whole-bridge
+        # diagram does). Pynite's V_y then equals dM/dx along the member, as plotted.
+        M.append(-pm.moment_array("Mz", 41, COMBO, x_array=xa)[1][o] * k * sm)
         xs.append(xa + offset)
         offset += L
         bounds.append(offset)
@@ -397,7 +401,7 @@ def member_diagrams_figure(
     fig = Figure(figsize=(8, 6.4), dpi=150, layout="constrained")
     axs = fig.subplots(3, 1, sharex=True)
     for ax, y, lab in ((axs[0], N, "Axial N (N)\n+ tension"), (axs[1], V, "Shear V_y (N)"),
-                       (axs[2], M / 1000, "Moment M_z (N·m)")):
+                       (axs[2], M / 1000, "Moment M_z (N·m)\n+ sagging")):
         ax.plot(x, y, color=SERIES, linewidth=2)
         ax.fill_between(x, y, color=SERIES, alpha=0.12, linewidth=0)
         for b in bounds[1:-1]:

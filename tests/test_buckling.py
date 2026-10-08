@@ -104,3 +104,16 @@ def test_short_stocky_member_crushes(mat_e10k: Material) -> None:
     assert cap.P_cr == pytest.approx(math.pi**2 * E * 1000.0 / 20.0**2, rel=1e-12)
     assert cap.N_c_R == pytest.approx(3600.0)
     assert utilisation(cap, -1800.0, 0, 0, 0, None).mode == "crushing"
+
+
+def test_glue_width_is_the_in_plane_face_for_truss_members(mat_e10k) -> None:
+    """Gussets in the truss plane glue to the d face of a diagonal (10 mm for an on-edge
+    stack, whose 12 mm face is stick edges); floor beams keep their broad face."""
+    diag = Section(id="d", sticks=6, layout="on_edge")  # b = 12, d = 10
+    beam = Section(id="f", sticks=18, layout="flat")  # b = 10, d = 36
+    g = mat_e10k.glue
+    per_mm = g.tau_g_MPa.value * g.overlap_mm.value * g.faces.value
+    assert capacities(diag, mat_e10k, 270.0, 1.0, "diagonal").F_joint_R == pytest.approx(
+        per_mm * 10.0)
+    assert capacities(beam, mat_e10k, 91.0, 1.0, "floor_beam").F_joint_R == pytest.approx(
+        per_mm * 36.0)

@@ -49,6 +49,9 @@ N_POINTS = 11
 #: Assumed static friction coefficient between the bridge and the steel platform, used only
 #: to warn about horizontal support reactions (the bridge is not anchored, §8.3).
 FRICTION_COEFF = 0.4
+#: Above this fraction of the global buckling load, second-order (P-delta) amplification of
+#: imperfections, 1 / (1 - F/F_cr), exceeds 2 and is reported as a warning.
+NEAR_BUCKLING_RATIO = 0.5
 
 
 @dataclass
@@ -209,7 +212,7 @@ def analyze(
                 + pm.shear("Fz", x, COMBO) ** 2
             )
             F_end = max(F_end, f)
-        cap = capacities(sec, material, L, mem.K)
+        cap = capacities(sec, material, L, mem.K, mem.group)
         util = utilisation(cap, N, My, Mz, V, None if mem.group in exclude else F_end)
         results.append(MemberResult(
             id=mem.id, group=mem.group, section=mem.section, section_label=sec.label(),
@@ -219,7 +222,7 @@ def analyze(
 
     disp = {
         nid: (float(n.DX[COMBO]), float(n.DY[COMBO]), float(n.DZ[COMBO]))
-        for nid, n in model.nodes.items()
+        for nid, n in model.nodes.items() if nid in nodes
     }
     loads = plate_nodal_loads(bridge, P_ref)
     loaded = [nid for nid, F in loads.items() if F > 0]
@@ -272,6 +275,14 @@ def analyze(
         )
     if buck is not None and buck.note and not math.isinf(buck.lambda_cr):
         warnings.append(f"Global buckling: {buck.note}")
+    if math.isfinite(Fu_buck) and Fu < Fu_buck and Fu / Fu_buck > NEAR_BUCKLING_RATIO:
+        ratio = Fu / Fu_buck
+        warnings.append(
+            f"F_u,p is {ratio:.0%} of the global buckling load ({n_to_kgf(Fu_buck):,.0f} kgf, "
+            f"mode led by {buck.key_member}). Near that load, sway from crooked sticks or "
+            f"uneven supports grows about {1 / (1 - ratio):.1f}x (P-delta, not modelled in "
+            f"v0.1), so the real failure load may be lower. Stiffening that mode adds margin."
+        )
 
     return AnalysisResult(
         bridge=bridge, material=material, P_ref_N=P_ref, nodal_loads_N=loads,
