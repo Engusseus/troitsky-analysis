@@ -221,8 +221,9 @@ def analyze(
                 + pm.shear("Fz", x, COMBO) ** 2
             )
             F_end = max(F_end, f)
-        cap = capacities(sec, material, L, mem.K, mem.group)
-        util = utilisation(cap, N, My, Mz, V, None if mem.group in exclude else F_end)
+        cap = capacities(sec, material, L, mem.K, mem.group, mem.glue_area_mm2)
+        joint = mem.glue_area_mm2 is not None or mem.group not in exclude
+        util = utilisation(cap, N, My, Mz, V, F_end if joint else None)
         results.append(MemberResult(
             id=mem.id, group=mem.group, section=mem.section, section_label=sec.label(),
             L_mm=L, b_mm=b, d_mm=d, N_N=N, My_Nmm=My, Mz_Nmm=Mz, Vy_N=Vy, Vz_N=Vz,

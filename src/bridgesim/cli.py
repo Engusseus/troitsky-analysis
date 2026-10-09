@@ -110,8 +110,10 @@ def run(
                f"{_kgf(res.Fu_deflection_N)}, global buckling {_kgf(res.Fu_buckling_N)}")
     typer.echo(f"  Deflection at F_u,p           : {res.delta_at_Fu_mm:.1f} mm "
                f"(limit {res.deflection_limit_mm:g})")
+    extra = (f", incl. {res.mass.extra_kg:.2f} kg extra wood"
+             if res.mass.extra_kg >= 0.005 else "")
     typer.echo(f"  Mass                          : {res.mass.total_kg:.2f} kg "
-               f"(~{res.mass.stick_count} sticks)")
+               f"(~{res.mass.stick_count} sticks{extra})")
     typer.echo(f"  Efficiency eta_s              : {res.efficiency:.1f} kgf/kg")
     typer.echo("\n  Most critical members (utilisation at F_u,p):")
     for m in res.critical_members(5):

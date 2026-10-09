@@ -111,6 +111,31 @@ a maintainer enables Pages and runs it. The first visit downloads about 60 MB.
 
 Every assumption is listed in [ASSUMPTIONS.md](ASSUMPTIONS.md).
 
+### Gussets, plates and glued areas
+
+Members are modelled on their centre lines, so wood that is not a member (gusset and
+splice plates, blocks, dowels) would be missing from the mass. List it in the bridge file;
+it adds mass and sticks, but no stiffness:
+
+```yaml
+extra_wood:
+  - {id: end_gusset, volume_mm3: 14400, count: 8}   # 120 x 60 x 2 mm plate, 8 of them
+  - {id: splice_plate, volume_mm3: 4600, count: 24}
+```
+
+The placeholder joint check assumes a glued area of overlap × width × faces per member
+end. Where a gusset or a long lap gives a member much more, add `glue_area_mm2` to that
+member's line: the total glued area at one end, over all its glued faces. For a 10 mm deep
+diagonal lapped 60 mm under gussets on both faces, 60 × 10 × 2 = 1200 mm²:
+
+```yaml
+- {id: d0un, i: B0n, j: T0n, section: diagonal, group: diagonal, glue_area_mm2: 1200}
+```
+
+That area then replaces the default, and the member's joints are checked even if its
+group is otherwise treated as continuous. Base the number on the glued area you actually
+build, and on a joint test if you can.
+
 ## v0.1 limitations
 
 Stated plainly:
@@ -122,7 +147,8 @@ Stated plainly:
   redistribution after a member fails, and no contact-with-crusher failure. Real bridges
   can carry more after a brace buckles, or less if they are crooked or badly glued.
 * **Idealised joints and laminates.** Glue lines are perfect, splices are not weakened,
-  and the joint check is a placeholder.
+  and the joint check is a placeholder (a member under a gusset can state its own glued
+  area, see [Gussets, plates and glued areas](#gussets-plates-and-glued-areas)).
 * **Geometry input** is the parametric Warren generator or a hand-written / exported
   `bridge.yaml`. Direct import from AutoCAD, Revit or SolidWorks is on the roadmap (DXF
   centrelines first).

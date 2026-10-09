@@ -94,7 +94,9 @@ The app shows a banner and an *assumed* badge on every value until you mark it *
     $w = \max(b, d)$, the broad face of the laminate. By default the chord groups are
     treated as continuous (no joint check); `glue.exclude_groups` in the material file sets
     which groups, and the report lists them. Your real joint detail decides the true glue
-    area: test it.
+    area: test it. A member with a gusset or a longer lap can state its own glued area per
+    end (`glue_area_mm2` in the bridge file); it then replaces overlap × w × faces, and
+    that member's joints are checked even if its group is otherwise continuous.
 18. **Global (system) buckling**: linear eigenvalue analysis $(K + \lambda K_g)\phi = 0$ of
     the whole frame, with $K_g$ from the member axial forces at $P_{ref}$. It catches modes
     the member check cannot, such as sway of the legs or lateral buckling of an unbraced top
@@ -113,8 +115,11 @@ The app shows a banner and an *assumed* badge on every value until you mark it *
 ## 6. Mass and measurements
 
 20. Mass = density × (Σ member volumes on centre-line lengths + deck plate of clear width ×
-    length × thickness) × (1 + glue fraction). Centre-line lengths double count the wood
-    inside joints (slightly conservative for §8.8).
+    length × thickness + extra wood) × (1 + glue fraction). Centre-line lengths double count
+    the wood inside joints (slightly conservative for §8.8). Extra wood is everything that
+    is not a modelled member, such as gusset and splice plates or blocks, listed in the
+    bridge file under `extra_wood` (volume and count of each piece). It adds mass but no
+    stiffness or strength.
 21. Rule measurements treat members as solid prisms. Values are rounded like the judges
     do (nearest mm, nearest 0.01 kg) before checking. Ambiguous rules use the stricter
     reading; see `docs/open-questions.md`. A member ending on the table is taken as cut

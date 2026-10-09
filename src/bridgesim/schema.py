@@ -24,6 +24,7 @@ SCHEMA_VERSION = 1
 MAX_NODES = 2000
 MAX_MEMBERS = 6000
 MAX_SECTIONS = 200
+MAX_EXTRA_WOOD = 500
 
 Source = Literal["assumed", "measured"]
 
@@ -58,6 +59,11 @@ MIN_SIZE_MM = 0.01
 #: Total length of all members (a Troitsky bridge has about 20 to 40 m). Bounds the work of
 #: the geometric rule checks, which sample every member at 2 mm.
 MAX_TOTAL_MEMBER_LENGTH_MM = 500_000.0
+#: Largest volume of one extra wood piece (1 m^3, far above any Troitsky bridge).
+MAX_PIECE_VOLUME_MM3 = 1e9
+#: Glued area bounds per member end (mm^2): at least 1 mm^2, at most 1 m^2.
+MIN_GLUE_AREA_MM2 = 1.0
+MAX_GLUE_AREA_MM2 = 1e6
 
 
 class _Strict(BaseModel):
@@ -260,8 +266,28 @@ class Member(_Strict):
     group: MemberGroup = "other"
     K: float = Field(1.0, ge=0.1, le=10, description="Effective-length factor for buckling")
     releases: list[Release] = Field(default_factory=list)
+    glue_area_mm2: float | None = Field(
+        None, ge=MIN_GLUE_AREA_MM2, le=MAX_GLUE_AREA_MM2,
+        description="Glued area at each end (mm^2), e.g. under a gusset. Replaces the "
+                    "material's overlap x width x faces, and the joint is checked even if "
+                    "the member's group is otherwise treated as continuous.")
 
     _id = field_validator("id", "i", "j", "section")(lambda cls, v: _identifier(v))
+
+
+class ExtraWood(_Strict):
+    """Wood that is not a modelled member: gusset plates, splice plates, blocks, dowels.
+
+    It counts towards the mass (with the glue fraction) and the stick count, but carries no
+    load in the analysis.
+    """
+
+    id: str
+    volume_mm3: float = Field(ge=0, le=MAX_PIECE_VOLUME_MM3,
+                              description="Volume of one piece (mm^3)")
+    count: int = Field(1, ge=1, le=10_000)
+
+    _id = field_validator("id")(lambda cls, v: _identifier(v))
 
 
 class Deck(_Strict):
@@ -322,7 +348,9 @@ class PlateLoad(_Strict):
 
 
 class Bridge(_Strict):
-    schema_version: Literal[1] = SCHEMA_VERSION  # bump with a migration when fields change
+    # Bump with a migration when a field changes meaning or is removed. New optional fields
+    # keep version 1 (files that use them need a bridgesim that knows them).
+    schema_version: Literal[1] = SCHEMA_VERSION
     name: str = "Untitled bridge"
     material: str | Material = "popsicle_birch"
     joint_fixity: Literal["rigid", "pinned"] = "rigid"
@@ -332,11 +360,12 @@ class Bridge(_Strict):
     deck: Deck
     supports: Supports
     load: PlateLoad
+    extra_wood: list[ExtraWood] = Field(default_factory=list, max_length=MAX_EXTRA_WOOD)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     _name = field_validator("name")(lambda cls, v: _plain_text(v))
 
-    @field_validator("nodes", "sections", "members")
+    @field_validator("nodes", "sections", "members", "extra_wood")
     @classmethod
     def _unique_ids(cls, items: list[Any]) -> list[Any]:
         seen: set[str] = set()
@@ -435,6 +464,8 @@ class Bridge(_Strict):
     def to_yaml(self) -> str:
         """YAML text; nodes, sections and members are written one per line."""
         data = self.model_dump(mode="json", exclude_none=True)
+        if not data["extra_wood"]:
+            data.pop("extra_wood")
         for m in data["members"]:  # drop defaults so each member stays a flat mapping
             if not m.get("releases"):
                 m.pop("releases", None)

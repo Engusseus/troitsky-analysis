@@ -9,7 +9,8 @@ Capacities (wood parallel to grain, all strengths from the material file):
                                                V = resultant of the two local shears)
 * glued joint        F_R = tau_g A_glue,  A_glue = overlap x w x faces, with w = d for
                      truss-plane members (the face in-plane gussets glue to) and
-                     w = max(b, d) for floor beams and bracing
+                     w = max(b, d) for floor beams and bracing, unless the member
+                     states its own glued area (``Member.glue_area_mm2``)
 
 Utilisation of a member at the reference load (linear interaction, conservative):
 
@@ -63,11 +64,16 @@ TRUSS_PLANE_GROUPS = frozenset({"top_chord", "bottom_chord", "diagonal", "vertic
 
 
 def capacities(
-    section: Section, material: Material, L_mm: float, K: float, group: str | None = None
+    section: Section, material: Material, L_mm: float, K: float, group: str | None = None,
+    glue_area_mm2: float | None = None,
 ) -> Capacities:
+    """Member capacities; ``glue_area_mm2`` (per end) replaces overlap x w x faces."""
     pr = section.props(material.stick)
     glue = material.glue
     w = pr.d_mm if group in TRUSS_PLANE_GROUPS else max(pr.b_mm, pr.d_mm)
+    tau = glue.tau_g_MPa.value
+    F_joint = (tau * glue_area_mm2 if glue_area_mm2 is not None
+               else tau * glue.overlap_mm.value * w * glue.faces.value)
     return Capacities(
         N_t_R=material.f_t_MPa.value * pr.A_mm2,
         N_c_crush=material.f_c_MPa.value * pr.A_mm2,
@@ -75,7 +81,7 @@ def capacities(
         M_R_y=material.f_b_MPa.value * pr.Sy_mm3,
         M_R_z=material.f_b_MPa.value * pr.Sz_mm3,
         V_R=material.f_v_MPa.value * pr.A_mm2 / 1.5,
-        F_joint_R=glue.tau_g_MPa.value * glue.overlap_mm.value * w * glue.faces.value,
+        F_joint_R=F_joint,
     )
 
 
