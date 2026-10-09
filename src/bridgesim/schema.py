@@ -348,7 +348,9 @@ class PlateLoad(_Strict):
 
 
 class Bridge(_Strict):
-    schema_version: Literal[1] = SCHEMA_VERSION  # bump with a migration when fields change
+    # Bump with a migration when a field changes meaning or is removed. New optional fields
+    # keep version 1 (files that use them need a bridgesim that knows them).
+    schema_version: Literal[1] = SCHEMA_VERSION
     name: str = "Untitled bridge"
     material: str | Material = "popsicle_birch"
     joint_fixity: Literal["rigid", "pinned"] = "rigid"

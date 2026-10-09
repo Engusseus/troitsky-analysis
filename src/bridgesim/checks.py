@@ -71,8 +71,9 @@ def capacities(
     pr = section.props(material.stick)
     glue = material.glue
     w = pr.d_mm if group in TRUSS_PLANE_GROUPS else max(pr.b_mm, pr.d_mm)
-    area = (glue_area_mm2 if glue_area_mm2 is not None
-            else glue.overlap_mm.value * w * glue.faces.value)
+    tau = glue.tau_g_MPa.value
+    F_joint = (tau * glue_area_mm2 if glue_area_mm2 is not None
+               else tau * glue.overlap_mm.value * w * glue.faces.value)
     return Capacities(
         N_t_R=material.f_t_MPa.value * pr.A_mm2,
         N_c_crush=material.f_c_MPa.value * pr.A_mm2,
@@ -80,7 +81,7 @@ def capacities(
         M_R_y=material.f_b_MPa.value * pr.Sy_mm3,
         M_R_z=material.f_b_MPa.value * pr.Sz_mm3,
         V_R=material.f_v_MPa.value * pr.A_mm2 / 1.5,
-        F_joint_R=glue.tau_g_MPa.value * area,
+        F_joint_R=F_joint,
     )
 
 

@@ -98,7 +98,7 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
              f"(limit {r.deflection_limit_mm:g} mm)"],
             ["Estimated mass m", f"{r.mass.total_kg:.2f} kg (~{r.mass.stick_count} sticks)"
              + (f", incl. {r.mass.extra_kg:.2f} kg of extra wood (gussets, plates)"
-                if r.mass.extra_kg else "")],
+                if r.mass.extra_kg >= 0.005 else "")],
             ["Structural efficiency η_s = F_u/m", f"{r.efficiency:.1f} kgf/kg"],
             ["Rule penalties", "not evaluated" if rules is None else
              f"{-rules.total_penalty or 0:g} pts; bans: "

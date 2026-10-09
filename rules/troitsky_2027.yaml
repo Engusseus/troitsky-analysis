@@ -207,7 +207,9 @@ rules:
       points_per_step: 2
       cap: 15.00
       over_cap_penalty: 50
-    note: Estimated from member volumes, density and glue fraction; weigh your bridge.
+    note: >-
+      Estimated from member, deck and extra-wood volumes, density and glue fraction;
+      weigh your bridge.
 
   - key: piers_vertical
     section: "8.1"

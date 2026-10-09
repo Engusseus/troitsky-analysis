@@ -124,10 +124,12 @@ extra_wood:
 ```
 
 The placeholder joint check assumes a glued area of overlap × width × faces per member
-end. Where a gusset or a long lap gives a member much more, state it on the member:
+end. Where a gusset or a long lap gives a member much more, add `glue_area_mm2` to that
+member's line: the total glued area at one end, over all its glued faces. For a 10 mm deep
+diagonal lapped 60 mm under gussets on both faces, 60 × 10 × 2 = 1200 mm²:
 
 ```yaml
-- {id: d1n, i: B0n, j: T0n, section: diagonal, group: diagonal, glue_area_mm2: 3600}
+- {id: d0un, i: B0n, j: T0n, section: diagonal, group: diagonal, glue_area_mm2: 1200}
 ```
 
 That area then replaces the default, and the member's joints are checked even if its
@@ -146,7 +148,7 @@ Stated plainly:
   can carry more after a brace buckles, or less if they are crooked or badly glued.
 * **Idealised joints and laminates.** Glue lines are perfect, splices are not weakened,
   and the joint check is a placeholder (a member under a gusset can state its own glued
-  area, see below).
+  area, see [Gussets, plates and glued areas](#gussets-plates-and-glued-areas)).
 * **Geometry input** is the parametric Warren generator or a hand-written / exported
   `bridge.yaml`. Direct import from AutoCAD, Revit or SolidWorks is on the roadmap (DXF
   centrelines first).
