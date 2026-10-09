@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
-
 from bridgesim.paths import data_dir
 from bridgesim.schema import Bridge, Material
+from bridgesim.yamlio import load_yaml
 
 
 def load_material(ref: str | Path | Material) -> Material:
@@ -19,11 +18,11 @@ def load_material(ref: str | Path | Material) -> Material:
         path = data_dir("materials") / f"{ref}.yaml"
     if not path.exists():
         raise FileNotFoundError(f"Material {ref!r} not found (looked for {path})")
-    return Material.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+    return Material.model_validate(load_yaml(path.read_text(encoding="utf-8")))
 
 
 def material_from_yaml_str(text: str) -> Material:
-    return Material.model_validate(yaml.safe_load(text))
+    return Material.model_validate(load_yaml(text))
 
 
 def bridge_material(bridge: Bridge) -> Material:

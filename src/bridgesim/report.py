@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from bridgesim import PYNITE_VERSION, __version__
 from bridgesim.checks import MODE_LABELS
+from bridgesim.schema import MEMBER_GROUPS
 from bridgesim.textsafe import md, md_keep_bold, printable
 from bridgesim.units import N_PER_KGF, n_to_kgf
 
@@ -44,7 +45,7 @@ MODEL_ASSUMPTIONS: list[str] = [
     "Glued joint (placeholder): capacity = tau_g x overlap x glued width x faces, "
     "checked against the resultant member-end force. The glued width is the in-plane "
     "depth d for truss members (the face gussets in the truss plane glue to) and the "
-    "broad face max(b, d) for floor beams and bracing. Chords are treated as continuous.",
+    "broad face max(b, d) for floor beams and bracing.",
     "The deck is non-structural: it only transfers the crusher-plate load to the "
     "floor-beam centre nodes as simply supported strips. Its stiffness is ignored.",
     "Supports rest on the platform without anchorage (§8.3): one end restrains DX, DY, DZ, "
@@ -186,7 +187,7 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
         blocks.append(("ul", [f"⚠ {w}" for w in r.warnings]))
     if rules is not None:
         rows = [[{True: "✓", False: "✗", None: "·"}[x.passed], f"§{x.section}", x.title,
-                 x.measured_text, x.limit, f"{-x.penalty:g}" if x.penalty else "0",
+                 x.measured_detail, x.limit, f"{-x.penalty:g}" if x.penalty else "0",
                  ", ".join(f"§{y}" for y in x.bans) + (" DQ risk" if x.disqualification else ""),
                  x.note] for x in rules.results]
         blocks += [
@@ -246,7 +247,11 @@ def model_assumptions(result: AnalysisResult) -> list[str]:
         mesh = (f"Global buckling mesh: two elements per member, except {len(unsplit)} "
                 f"member(s) crossed by others at every split point ({', '.join(unsplit[:8])}"
                 f"{', …' if len(unsplit) > 8 else ''}), so F_cr may be slightly too high.")
-    return [f"Material “{m.name}”: {vals}. {src}.", crusher, k_line, mesh, *MODEL_ASSUMPTIONS]
+    excluded = [g for g in MEMBER_GROUPS if g in set(m.glue.exclude_groups)]
+    glue = (f"Groups treated as continuous (no joint check): {', '.join(excluded)}."
+            if excluded else "Every member end is checked (no group treated as continuous).")
+    general = [f"{a} {glue}" if a.startswith("Glued joint") else a for a in MODEL_ASSUMPTIONS]
+    return [f"Material “{m.name}”: {vals}. {src}.", crusher, k_line, mesh, *general]
 
 
 # --------------------------------------------------------------------------- renderers

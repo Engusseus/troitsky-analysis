@@ -69,7 +69,7 @@ def _print_rules(rep: RulesReport) -> None:
         extra += f"  BANS {', '.join('§' + b for b in r.bans)}" if r.bans else ""
         extra += "  DISQUALIFICATION RISK" if r.disqualification else ""
         amb = " (ambiguous rule, stricter reading)" if r.ambiguous else ""
-        typer.echo(printable(f"  [{mark}] §{r.section:<9} {r.title}: {r.measured_text}"
+        typer.echo(printable(f"  [{mark}] §{r.section:<9} {r.title}: {r.measured_detail}"
                              f"{extra}{amb}"))
     typer.echo(printable(f"  Total penalty: {-rep.total_penalty or 0:g} pts; bans: "
                          f"{', '.join('§' + b for b in rep.bans) or 'none'}"))

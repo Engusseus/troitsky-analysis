@@ -91,8 +91,10 @@ The app shows a banner and an *assumed* badge on every value until you mark it *
     (diagonals, verticals, chords, piers) $w = d$, the in-plane depth: gussets lying in the
     truss plane can only glue to that face (for an on-edge stack it is the outer stick's
     broad face; the other face is made of stick edges). For floor beams and bracing
-    $w = \max(b, d)$, the broad face of the laminate. Chord groups are treated as continuous
-    (no joint check). Your real joint detail decides the true glue area: test it.
+    $w = \max(b, d)$, the broad face of the laminate. By default the chord groups are
+    treated as continuous (no joint check); `glue.exclude_groups` in the material file sets
+    which groups, and the report lists them. Your real joint detail decides the true glue
+    area: test it.
 18. **Global (system) buckling**: linear eigenvalue analysis $(K + \lambda K_g)\phi = 0$ of
     the whole frame, with $K_g$ from the member axial forces at $P_{ref}$. It catches modes
     the member check cannot, such as sway of the legs or lateral buckling of an unbraced top

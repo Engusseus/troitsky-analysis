@@ -13,7 +13,6 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Literal
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from bridgesim.mass import bridge_mass
@@ -21,6 +20,7 @@ from bridgesim.measure import DEFAULT_CONSTANTS, Measurements, measure
 from bridgesim.paths import data_dir
 from bridgesim.schema import MAX_SIZE_MM, Bridge, Material
 from bridgesim.textsafe import has_control_chars
+from bridgesim.yamlio import load_yaml
 
 
 def _plain_text(v: str, multiline: bool = False) -> str:
@@ -121,7 +121,7 @@ class Crushing(BaseModel):
     model_config = ConfigDict(extra="forbid")
     plate_length_mm: float = Field(200.0, ge=1e-3, le=MAX_SIZE_MM, allow_inf_nan=False)
     plate_width_mm: float = Field(90.0, ge=1e-3, le=MAX_SIZE_MM, allow_inf_nan=False)
-    deflection_limit_mm: float = Field(50.0, gt=0, le=MAX_SIZE_MM, allow_inf_nan=False)
+    deflection_limit_mm: float = Field(50.0, ge=1e-3, le=MAX_SIZE_MM, allow_inf_nan=False)
 
 
 class RuleSet(BaseModel):
@@ -187,7 +187,7 @@ class RuleSet(BaseModel):
 
     @classmethod
     def from_yaml_str(cls, text: str) -> RuleSet:
-        return cls.model_validate(yaml.safe_load(text))
+        return cls.model_validate(load_yaml(text))
 
     @classmethod
     def load(cls, ref: str | Path = "troitsky_2027") -> RuleSet:
@@ -208,10 +208,17 @@ class RuleResult(BaseModel):
     penalty: float = 0
     bans: list[str] = Field(default_factory=list)
     disqualification: bool = False
+    #: What makes a failed rule fail, e.g. the members in a clearance envelope.
+    cause: str = ""
 
     _bans = field_validator("bans")(lambda cls, v: [_plain_text(b) for b in v])
     ambiguous: bool = False
     note: str = ""
+
+    @property
+    def measured_detail(self) -> str:
+        """The measured value, followed by the cause when the rule fails."""
+        return f"{self.measured_text} ({self.cause})" if self.cause else self.measured_text
 
 
 class RulesReport(BaseModel):
@@ -248,7 +255,7 @@ class RulesReport(BaseModel):
                 "ok": {True: "✓", False: "✗", None: "·"}[r.passed],
                 "rule": r.title,
                 "section": f"§{r.section}",
-                "measured": r.measured_text,
+                "measured": r.measured_detail,
                 "limit": r.limit,
                 "penalty": -r.penalty if r.penalty else 0,
                 "bans": ", ".join(f"§{b}" for b in r.bans),
@@ -373,4 +380,9 @@ def evaluate(
             pen = mass_penalty(v, rule.steps)
             out.append(RuleResult(**base, measured=v, measured_text=f"{v:.2f} {rule.unit}",
                                   passed=pen == 0, penalty=pen))
+    culprits = meas.details.get("culprits", {})
+    for res, rule in zip(out, rs.rules, strict=True):
+        if res.passed is False:
+            keys = list(rule.measures) + ([rule.measure] if rule.measure else [])
+            res.cause = "; ".join(dict.fromkeys(culprits[k] for k in keys if culprits.get(k)))
     return RulesReport(ruleset=rs.name, results=out)

@@ -73,7 +73,9 @@ values.
 * **Results**: $F_{u,p}$ in kgf and N, mass, $\eta_s$, governing member and mode, and
   deflection at $F_{u,p}$ against 50 mm.
 * **Rule check**: ✓/✗, penalty and rulebook section for each rule, with total penalty and
-  bans shown prominently. Ambiguous rules are flagged.
+  bans shown prominently. A failed geometric rule names what causes it (the members in
+  the clear-span box or the cart path, the highest member, ...). Ambiguous rules are
+  flagged.
 * **Tabs**: load–deflection, the 10 most critical members, poster-ready SFD/BMD (whole
   bridge, a chord, or one member), A/B design comparison, exports (bridge.yaml, CSV,
   PNG, HTML/Markdown report), and assumptions & method.

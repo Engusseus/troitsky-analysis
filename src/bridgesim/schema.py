@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from bridgesim.sections import RectProps, rectangle, stick_stack_dims
 from bridgesim.textsafe import has_control_chars
+from bridgesim.yamlio import load_yaml
 
 SCHEMA_VERSION = 1
 
@@ -176,7 +177,7 @@ class Material(_Strict):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> Material:
-        return cls.model_validate(yaml.safe_load(Path(path).read_text(encoding="utf-8")))
+        return cls.model_validate(load_yaml(Path(path).read_text(encoding="utf-8")))
 
 
 # --------------------------------------------------------------------------- geometry
@@ -269,8 +270,8 @@ class Deck(_Strict):
     x_start_mm: float = Field(ge=-MAX_COORD_MM, le=MAX_COORD_MM)
     x_end_mm: float = Field(ge=-MAX_COORD_MM, le=MAX_COORD_MM)
     top_elevation_mm: float = Field(gt=0, le=MAX_COORD_MM)
-    clear_width_mm: float = Field(gt=0, le=MAX_COORD_MM)
-    thickness_mm: float = Field(2.0, gt=0, le=MAX_SIZE_MM)
+    clear_width_mm: float = Field(ge=MIN_SIZE_MM, le=MAX_COORD_MM)
+    thickness_mm: float = Field(2.0, ge=MIN_SIZE_MM, le=MAX_SIZE_MM)
     z_center_mm: float = Field(0.0, ge=-MAX_COORD_MM, le=MAX_COORD_MM)
 
     @model_validator(mode="after")
@@ -448,7 +449,7 @@ class Bridge(_Strict):
 
     @classmethod
     def from_yaml_str(cls, text: str) -> Bridge:
-        return cls.model_validate(yaml.safe_load(text))
+        return cls.model_validate(load_yaml(text))
 
     @classmethod
     def from_file(cls, path: str | Path) -> Bridge:
