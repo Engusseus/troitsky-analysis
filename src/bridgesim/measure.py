@@ -134,13 +134,13 @@ def measure(
              [s.member for s in right if abs(float((s.pts[:, 0] - s.h[0]).min()) - right_inner)
               <= 1e-6]]
     culprits["clear_span_mm"] = (f"inner faces of the supports: {_names(faces[0]) or 'none'} "
-                                 f"and {_names(faces[1]) or 'none'}")
+                                 f"/ {_names(faces[1]) or 'none'}")
 
     xmin = min([float((s.pts[:, 0] - s.h[0]).min()) for s in S] + [deck.x_start_mm])
     xmax = max([float((s.pts[:, 0] + s.h[0]).max()) for s in S] + [deck.x_end_mm])
     v["deck_length_mm"] = deck.length_mm
     v["total_length_mm"] = xmax - xmin
-    culprits["total_length_mm"] = (f"ends: {_extreme(S, 0, -1, xmin, deck.x_start_mm)} and "
+    culprits["total_length_mm"] = (f"ends: {_extreme(S, 0, -1, xmin, deck.x_start_mm)} / "
                                    f"{_extreme(S, 0, 1, xmax, deck.x_end_mm)}")
 
     # ---- heights (§8.2.2) -------------------------------------------------------------
@@ -192,7 +192,7 @@ def measure(
     v["deck_width_mm"] = deck.clear_width_mm
     v["total_width_mm"] = zmax - zmin
     culprits["total_width_mm"] = (
-        f"outermost: {_extreme(S, 2, -1, zmin, zc - deck.clear_width_mm / 2)} and "
+        f"outermost: {_extreme(S, 2, -1, zmin, zc - deck.clear_width_mm / 2)} / "
         f"{_extreme(S, 2, 1, zmax, zc + deck.clear_width_mm / 2)}")
 
     # ---- cart envelope above the deck (§8.2.2.2, §8.5) -------------------------------
@@ -237,7 +237,7 @@ def measure(
                  if gap_left + gap_right < c["cart_width_mm"] else [])
     culprits["cart_envelope_ok"] = "; ".join(
         ([f"in the cart path: {_names(in_path)}"] if in_path else [])
-        + ([f"path narrowed by: {_names(narrowing)}"] if narrowing else []))
+        + ([f"path bounded by: {' / '.join(narrowing)}"] if narrowing else []))
 
     # ---- clear span box (§8.6) --------------------------------------------------------
     box_h = table_y + c["clear_box_height_mm"]

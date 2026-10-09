@@ -1298,14 +1298,14 @@ def test_clear_span_failure_names_the_support_faces() -> None:
     b = _with_member([], {"id": "knee", "i": "P0n", "j": "B1n", "section": "pier"})
     for key in ("span_length", "clear_span_box"):
         r = _rule(b, key)
-        assert r.passed is False and "inner faces of the supports: knee and" in r.cause
+        assert r.passed is False and "inner faces of the supports: knee / " in r.cause
 
 
 def test_narrow_deck_names_the_deck_edge_as_the_cart_path_limit() -> None:
     data = generate_warren().model_dump(mode="json")
     data["deck"]["clear_width_mm"] = 140.0
     r = _rule(Bridge.model_validate(data), "clearance_above_deck")
-    assert r.passed is False and r.cause == "path narrowed by: deck edge"
+    assert r.passed is False and r.cause == "path bounded by: deck edge"
 
 
 def test_cause_lists_only_the_failing_measures_of_a_rule() -> None:
