@@ -124,8 +124,10 @@ rules:
     note: >-
       The bridge rests on the base platform (heights are measured from the ground,
       §8.2.2.1), so every support sits at the same elevation and nothing can be lower. A
-      failure is a modelling error: check the y coordinates. Height and clear-span results
-      are not meaningful until fixed.
+      failure is a modelling error: check the y coordinates, or a member that ends on the
+      table at a shallow angle (below about 14 degrees its section can run into the table
+      beyond the flush-cut end). Height and clear-span results are not meaningful until
+      fixed.
 
   - key: clearance_above_deck
     section: "8.2.2.2"

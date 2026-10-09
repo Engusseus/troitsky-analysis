@@ -1128,3 +1128,209 @@ def test_tiny_effective_length_factor_is_rejected() -> None:
     data["members"][0]["K"] = 5e-324
     with pytest.raises(ValidationError):
         Bridge.model_validate(data)
+
+
+# ------------------------------------------------------------------------- fifteenth review round
+
+
+def _dup_text(kind: str) -> tuple[str, object]:
+    from bridgesim.materials import material_from_yaml_str
+    from bridgesim.paths import data_dir
+
+    if kind == "bridge":
+        text = generate_warren().to_yaml().replace("  P_ref_N: 1000.0\n",
+                                                   "  P_ref_N: 1000.0\n  P_ref_N: 5.0\n")
+        return text, Bridge.from_yaml_str
+    if kind == "material":
+        text = (data_dir("materials") / "popsicle_birch.yaml").read_text(encoding="utf-8")
+        return text + "\nname: second name\n", material_from_yaml_str
+    text = (data_dir("rules") / "troitsky_2027.yaml").read_text(encoding="utf-8")
+    return text + "\nname: second name\n", RuleSet.from_yaml_str
+
+
+@pytest.mark.parametrize("kind", ["bridge", "material", "rules"])
+def test_duplicate_yaml_keys_are_rejected(kind: str) -> None:
+    import yaml
+
+    text, parse = _dup_text(kind)
+    with pytest.raises(yaml.YAMLError, match="duplicate key"):
+        parse(text)  # type: ignore[operator]
+
+
+def test_yaml_merge_keys_may_still_override() -> None:
+    from bridgesim.yamlio import load_yaml
+
+    text = "a: &x {p: 1, q: 2}\nb:\n  <<: *x\n  q: 3\n"
+    assert load_yaml(text) == {"a": {"p": 1, "q": 2}, "b": {"p": 1, "q": 3}}
+
+
+@pytest.mark.parametrize("field", ["thickness_mm", "clear_width_mm"])
+def test_deck_dimensions_that_underflow_are_rejected(field: str) -> None:
+    data = generate_warren().model_dump(mode="json")
+    data["deck"][field] = 5e-324
+    with pytest.raises(ValidationError):
+        Bridge.model_validate(data)
+
+
+def test_tiny_deflection_limit_is_rejected() -> None:
+    data = RuleSet.load().model_dump()
+    data["crushing"]["deflection_limit_mm"] = 5e-324
+    with pytest.raises(ValidationError, match="greater than or equal to 0.001"):
+        RuleSet.model_validate(data)
+
+
+@pytest.mark.parametrize(("groups", "expect", "absent"), [
+    (["diagonal"], "continuous (no joint check): diagonal.", "top_chord"),
+    ([], "Every member end is checked", "continuous (no joint check)"),
+])
+def test_report_states_the_glue_exclusions_actually_used(groups, expect, absent) -> None:
+    from bridgesim.materials import load_material
+    from bridgesim.report import model_assumptions
+
+    mat = load_material("popsicle_birch")
+    mat = mat.model_copy(update={"glue": mat.glue.model_copy(update={"exclude_groups": groups})})
+    lines = model_assumptions(analyze(generate_warren(), mat, include_buckling=False))
+    glue = next(a for a in lines if a.startswith("Glued joint"))
+    assert expect in glue and absent not in glue
+
+
+def _with_member(nodes: list[dict], member: dict) -> Bridge:
+    data = generate_warren().model_dump(mode="json")
+    data["nodes"] += nodes
+    data["members"].append(member)
+    return Bridge.model_validate(data)
+
+
+def _rule(bridge: Bridge, key: str):
+    from bridgesim.materials import load_material
+    from bridgesim.rules import evaluate
+
+    rep = evaluate(bridge, load_material("popsicle_birch"))
+    return next(r for r in rep.results if r.key == key)
+
+
+def test_shallow_member_from_the_table_fails_the_platform_rule() -> None:
+    """Only the end zone of a member standing on the table is cut flush, not its length."""
+    b = _with_member([{"id": "S", "x_mm": 300.0, "y_mm": 5.0, "z_mm": -91.0}],
+                     {"id": "skid", "i": "P0n", "j": "S", "section": "pier_brace",
+                      "group": "pier_brace"})
+    r = _rule(b, "above_platform")
+    assert r.passed is False and "skid" in r.cause
+
+
+def test_inclined_brace_standing_on_the_table_passes_the_platform_rule() -> None:
+    b = _with_member([{"id": "S", "x_mm": 173.2, "y_mm": 100.0, "z_mm": -91.0}],
+                     {"id": "strut", "i": "P0n", "j": "S", "section": "pier_brace",
+                      "group": "pier_brace"})
+    assert _rule(b, "above_platform").passed is True
+
+
+# ------------------------------------------------------------- found while checking a real design
+
+
+def test_clear_span_box_failure_names_the_members_in_the_box() -> None:
+    b = _with_member([{"id": "lo1", "x_mm": 300.0, "y_mm": 60.0, "z_mm": -91.0},
+                      {"id": "lo2", "x_mm": 850.0, "y_mm": 60.0, "z_mm": -91.0}],
+                     {"id": "low_tie", "i": "lo1", "j": "lo2", "section": "pier"})
+    r = _rule(b, "clear_span_box")
+    assert r.passed is False and r.cause == "in the box: low_tie"
+    assert r.measured_detail.endswith("(in the box: low_tie)")
+
+
+def test_cart_envelope_failure_names_the_member_in_the_path() -> None:
+    b = _with_member([{"id": "c1", "x_mm": 575.0, "y_mm": 260.0, "z_mm": -91.0},
+                      {"id": "c2", "x_mm": 575.0, "y_mm": 260.0, "z_mm": 91.0}],
+                     {"id": "cross", "i": "c1", "j": "c2", "section": "top_strut"})
+    r = _rule(b, "clearance_above_deck")
+    assert r.passed is False and "in the cart path: cross" in r.cause
+
+
+def test_total_height_failure_names_the_highest_member() -> None:
+    b = _with_member([{"id": "top", "x_mm": 503.125, "y_mm": 700.0, "z_mm": -91.0}],
+                     {"id": "mast", "i": "T3n", "j": "top", "section": "top_strut"})
+    r = _rule(b, "total_height")
+    assert r.passed is False and r.cause == "highest: mast"
+
+
+def test_passing_rules_carry_no_cause() -> None:
+    from bridgesim.materials import load_material
+    from bridgesim.rules import evaluate
+
+    rep = evaluate(generate_warren(), load_material("popsicle_birch"))
+    assert all(r.cause == "" for r in rep.results if r.passed is not False)
+
+
+# ------------------------------------------------------------------ review of the cause messages
+
+
+def test_yaml_merge_source_built_after_its_user_still_loads() -> None:
+    import yaml
+
+    from bridgesim.yamlio import load_yaml
+
+    text = "group:\n  base: &b\n    <<: {p: 1}\n    p: 5\nderived:\n  <<: *b\n"
+    assert load_yaml(text) == yaml.safe_load(text) == {"group": {"base": {"p": 5}},
+                                                       "derived": {"p": 5}}
+
+
+def test_bridge_file_with_section_templates_still_loads() -> None:
+    body = generate_warren().to_yaml()
+    body = body[:body.index("metadata:\n")]  # templates must come before their use
+    text = ("metadata:\n  templates:\n    flat: &flat {sticks: 3, layout: flat}\n"
+            "    pier: &pier {<<: *flat, sticks: 10}\n" + body)
+    text = text.replace("- {id: pier, sticks: 10, layout: flat}", "- {<<: *pier, id: pier}", 1)
+    assert "<<: *pier, id: pier" in text
+    b = Bridge.from_yaml_str(text)
+    assert b.section_map()["pier"].sticks == 10
+
+
+@pytest.mark.parametrize("text", ["&k a: 1\n*k : 2\n", "b: {<<: {p: 1, p: 2}}\n"])
+def test_hidden_duplicate_yaml_keys_are_rejected(text: str) -> None:
+    import yaml
+
+    from bridgesim.yamlio import load_yaml
+
+    with pytest.raises(yaml.YAMLError, match="duplicate key"):
+        load_yaml(text)
+
+
+def test_clear_span_failure_names_the_support_faces() -> None:
+    b = _with_member([], {"id": "knee", "i": "P0n", "j": "B1n", "section": "pier"})
+    for key in ("span_length", "clear_span_box"):
+        r = _rule(b, key)
+        assert r.passed is False and "inner faces of the supports: knee / " in r.cause
+
+
+def test_narrow_deck_names_the_deck_edge_as_the_cart_path_limit() -> None:
+    data = generate_warren().model_dump(mode="json")
+    data["deck"]["clear_width_mm"] = 140.0
+    r = _rule(Bridge.model_validate(data), "clearance_above_deck")
+    assert r.passed is False and r.cause == "path bounded by: deck edge"
+
+
+def test_cause_lists_only_the_failing_measures_of_a_rule() -> None:
+    from bridgesim.materials import load_material
+    from bridgesim.rules import evaluate
+
+    data = RuleSet.load().model_dump()
+    data["rules"].append({
+        "key": "size", "section": "0", "title": "Size", "type": "bands",
+        "measures": ["total_length_mm", "total_height_mm"], "unit": "mm", "limit": "<= 500",
+        "bands": [{"max": 500, "penalty": 0}, {"min": 501, "penalty": 1}]})
+    rep = evaluate(generate_warren(), load_material("popsicle_birch"),
+                   RuleSet.model_validate(data))
+    r = next(r for r in rep.results if r.key == "size")
+    assert r.passed is False and r.cause.startswith("ends: ") and "highest" not in r.cause
+
+
+def test_tied_extremes_are_all_named() -> None:
+    from bridgesim.materials import load_material
+    from bridgesim.rules import evaluate
+
+    data = RuleSet.load().model_dump()
+    rule = next(r for r in data["rules"] if r["key"] == "total_height")
+    rule["bands"] = [{"max": 300, "penalty": 0}, {"min": 301, "penalty": 5}]
+    rep = evaluate(generate_warren(), load_material("popsicle_birch"),
+                   RuleSet.model_validate(data))
+    r = next(r for r in rep.results if r.key == "total_height")
+    assert r.passed is False and r.cause.startswith("highest: ") and ", " in r.cause

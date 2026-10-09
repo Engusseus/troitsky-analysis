@@ -91,8 +91,10 @@ The app shows a banner and an *assumed* badge on every value until you mark it *
     (diagonals, verticals, chords, piers) $w = d$, the in-plane depth: gussets lying in the
     truss plane can only glue to that face (for an on-edge stack it is the outer stick's
     broad face; the other face is made of stick edges). For floor beams and bracing
-    $w = \max(b, d)$, the broad face of the laminate. Chord groups are treated as continuous
-    (no joint check). Your real joint detail decides the true glue area: test it.
+    $w = \max(b, d)$, the broad face of the laminate. By default the chord groups are
+    treated as continuous (no joint check); `glue.exclude_groups` in the material file sets
+    which groups, and the report lists them. Your real joint detail decides the true glue
+    area: test it.
 18. **Global (system) buckling**: linear eigenvalue analysis $(K + \lambda K_g)\phi = 0$ of
     the whole frame, with $K_g$ from the member axial forces at $P_{ref}$. It catches modes
     the member check cannot, such as sway of the legs or lateral buckling of an unbraced top
@@ -115,7 +117,11 @@ The app shows a banner and an *assumed* badge on every value until you mark it *
     inside joints (slightly conservative for §8.8).
 21. Rule measurements treat members as solid prisms. Values are rounded like the judges
     do (nearest mm, nearest 0.01 kg) before checking. Ambiguous rules use the stricter
-    reading; see `docs/open-questions.md`.
+    reading; see `docs/open-questions.md`. A member ending on the table is taken as cut
+    flush there over an end zone of two section sizes (max(b, d)); beyond that its section
+    must stay above the table. A member reaching the table at more than about 14° always
+    passes; a shallower one may fail the platform check, since it would lose much of its
+    section to the cut.
 
 ## Deviations from the original v0.1 specification
 

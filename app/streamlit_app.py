@@ -347,7 +347,7 @@ def _rules_card(rep: RulesReport) -> None:
         st.success("All checked rules pass · 0 pts", icon="✅")
     for r in rep.checked:
         icon = "✓" if r.passed else "✗"
-        line = f"{icon} {md(r.title)} · {md(r.measured_text)}"
+        line = f"{icon} {md(r.title)} · {md(r.measured_detail)}"
         if not r.passed:
             line = f":red[{line}]"
             extra = f" · {_pts(r.penalty)} pts" if r.penalty else ""
@@ -535,7 +535,7 @@ def _export(bridge: Bridge, r: AnalysisResult, rep: RulesReport) -> None:
     rw = csv.writer(rbuf)
     rw.writerow(["section", "rule", "measured", "limit", "passed", "penalty", "bans", "note"])
     for x in rep.results:
-        rw.writerow([csv_cell(v) for v in (x.section, x.title, x.measured_text, x.limit,
+        rw.writerow([csv_cell(v) for v in (x.section, x.title, x.measured_detail, x.limit,
                                            x.passed, x.penalty, " ".join(x.bans), x.note)])
     c2.download_button("Rule check CSV", rbuf.getvalue(), "rules.csv", "text/csv")
     c3.download_button("Report (HTML)", report.to_html(r, rep), "design_validation.html",

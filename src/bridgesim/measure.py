@@ -24,6 +24,10 @@ SAMPLE_MM = 2.0
 #: sampled at SAMPLE_MM; sampling more coarsely could let a member slip through a clearance.
 MAX_TOTAL_SAMPLES = 400_000
 _TOL = 0.5  # mm
+#: A member standing on the table is cut flush there. The cut may run this many section
+#: sizes (max(b, d)) along the member; beyond it the section must clear the table, so a
+#: member lying almost flat on the table is still reported.
+CUT_ZONE_SIZES = 2.0
 
 DEFAULT_CONSTANTS: dict[str, float] = {
     "cart_width_mm": 150.0,
@@ -42,6 +46,7 @@ class _Samples:
     pts: np.ndarray  # (k, 3)
     h: np.ndarray  # (3,) half extents along X, Y, Z
     touches_table: bool
+    size: float  # max(b, d) of the section
 
 
 @dataclass
@@ -51,6 +56,11 @@ class Measurements:
 
     def __getitem__(self, key: str) -> float:
         return self.values[key]
+
+
+def _names(items: list[str], limit: int = 8) -> str:
+    shown = ", ".join(items[:limit])
+    return shown + (f", … ({len(items)} in total)" if len(items) > limit else "")
 
 
 def _sample_counts(lengths: list[float]) -> list[int]:
@@ -72,8 +82,20 @@ def _samples(bridge: Bridge, material: Material, table_y: float) -> list[_Sample
         bm, dm = secs[m.section].dims(material.stick)
         touches = min(a[1], b[1]) <= table_y + _TOL
         out.append(_Samples(m.id, m.group, a + t * (b - a),
-                            half_extents(tuple(a), tuple(b), bm, dm), touches))
+                            half_extents(tuple(a), tuple(b), bm, dm), touches, max(bm, dm)))
     return out
+
+
+def _extreme(S: list[_Samples], axis: int, sign: int, value: float, deck_value: float) -> str:
+    """The members (or the deck) whose surface reaches ``value`` along ``axis``."""
+    hits = []
+    for s in S:
+        reach = s.pts[:, axis] + sign * s.h[axis]
+        if abs(float(reach.max() if sign > 0 else reach.min()) - value) <= 1e-6:
+            hits.append(s.member)
+    if hits:
+        return _names(hits)
+    return "deck" if abs(deck_value - value) <= 1e-6 else "?"
 
 
 def measure(
@@ -89,6 +111,8 @@ def measure(
     S = _samples(bridge, material, table_y)
     out = Measurements()
     v, d = out.values, out.details
+    #: Per measurement, what causes its value (shown when a rule using it fails).
+    culprits: dict[str, str] = d.setdefault("culprits", {})
 
     # ---- lengths (§8.2.1) -------------------------------------------------------------
     sx = sorted(nodes[n].x_mm for n in sup)
@@ -105,11 +129,19 @@ def measure(
     v["clear_span_mm"] = right_inner - left_inner
     d["clear_span_faces_mm"] = (left_inner, right_inner)
     d["supporting_members"] = [s.member for s in supporting]
+    faces = [[s.member for s in left if abs(float((s.pts[:, 0] + s.h[0]).max()) - left_inner)
+              <= 1e-6],
+             [s.member for s in right if abs(float((s.pts[:, 0] - s.h[0]).min()) - right_inner)
+              <= 1e-6]]
+    culprits["clear_span_mm"] = (f"inner faces of the supports: {_names(faces[0]) or 'none'} "
+                                 f"/ {_names(faces[1]) or 'none'}")
 
     xmin = min([float((s.pts[:, 0] - s.h[0]).min()) for s in S] + [deck.x_start_mm])
     xmax = max([float((s.pts[:, 0] + s.h[0]).max()) for s in S] + [deck.x_end_mm])
     v["deck_length_mm"] = deck.length_mm
     v["total_length_mm"] = xmax - xmin
+    culprits["total_length_mm"] = (f"ends: {_extreme(S, 0, -1, xmin, deck.x_start_mm)} / "
+                                   f"{_extreme(S, 0, 1, xmax, deck.x_end_mm)}")
 
     # ---- heights (§8.2.2) -------------------------------------------------------------
     # Nothing can sit below the table: stick ends touching it are cut flush.
@@ -118,22 +150,26 @@ def measure(
     ymax = max([float((s.pts[:, 1] + s.h[1]).max()) for s in S] + [deck.top_elevation_mm])
     v["deck_height_mm"] = deck.top_elevation_mm - table_y
     v["total_height_mm"] = ymax - ymin
+    culprits["total_height_mm"] = (
+        f"highest: {_extreme(S, 1, 1, ymax, deck.top_elevation_mm)}")
     # The bridge rests on the base platform, so no node and no deck can be lower than its
     # supports. Report it rather than clip it away: it is a modelling error.
-    # A leg standing on the table (exactly one end on it) is cut flush there, so its section
-    # may dip below the centreline end; any other member, including one lying along the
-    # table, must stay clear of it entirely.
+    # A leg standing on the table (exactly one end on it) is cut flush there, so near that
+    # end its section may dip below the centreline (for CUT_ZONE_SIZES section sizes); any
+    # other member, including one lying along the table, must stay clear of it entirely.
     low = [n.id for n in bridge.nodes if n.y_mm < table_y - 1e-6]
     deck_bottom = deck.top_elevation_mm - deck.thickness_mm
     lowest = min([n.y_mm for n in bridge.nodes] + [deck_bottom])
     through = []
     for s in S:
-        if int((s.pts[[0, -1], 1] <= table_y + 1e-6).sum()) == 1:
-            continue
-        bottom = float((s.pts[:, 1] - s.h[1]).min())
-        if bottom < table_y - 1e-6:
+        bottom = s.pts[:, 1] - s.h[1]
+        on = s.pts[[0, -1], 1] <= table_y + 1e-6
+        if int(on.sum()) == 1:
+            end = s.pts[0] if on[0] else s.pts[-1]
+            bottom = bottom[np.linalg.norm(s.pts - end, axis=1) > CUT_ZONE_SIZES * s.size]
+        if bottom.size and float(bottom.min()) < table_y - 1e-6:
             through.append(s.member)
-            lowest = min(lowest, bottom)
+            lowest = min(lowest, float(bottom.min()))
     # All supports stand on the one flat platform; a higher one would be a reaction from
     # nowhere (the table is taken at the lowest support).
     floating = [n for n in sup if nodes[n].y_mm > table_y + 1e-6]
@@ -143,12 +179,21 @@ def measure(
     d["below_table_nodes"] = low
     d["below_table_members"] = through
     d["floating_supports"] = floating
+    below = ([f"node {_names(low)}"] if low else []) + (
+        [f"member {_names(through)}"] if through else []) + (
+        ["deck"] if deck_bottom < table_y - 1e-6 else [])
+    culprits["above_table_ok"] = "; ".join(
+        ([f"below the table: {', '.join(below)}"] if below else [])
+        + ([f"support above the lowest one: {_names(floating)}"] if floating else []))
 
     # ---- widths (§8.2.3) --------------------------------------------------------------
     zmin = min([float((s.pts[:, 2] - s.h[2]).min()) for s in S] + [zc - deck.clear_width_mm / 2])
     zmax = max([float((s.pts[:, 2] + s.h[2]).max()) for s in S] + [zc + deck.clear_width_mm / 2])
     v["deck_width_mm"] = deck.clear_width_mm
     v["total_width_mm"] = zmax - zmin
+    culprits["total_width_mm"] = (
+        f"outermost: {_extreme(S, 2, -1, zmin, zc - deck.clear_width_mm / 2)} / "
+        f"{_extreme(S, 2, 1, zmax, zc + deck.clear_width_mm / 2)}")
 
     # ---- cart envelope above the deck (§8.2.2.2, §8.5) -------------------------------
     top = deck.top_elevation_mm
@@ -157,6 +202,8 @@ def measure(
     # The deck edges bound the path even where no member stands beside it.
     gap_left = gap_right = deck.clear_width_mm / 2.0
     blocking = None
+    in_path: list[str] = []
+    side = {"left": "", "right": ""}
     for s in S:
         p, h = s.pts, s.h
         on_deck = (p[:, 0] + h[0] > deck.x_start_mm) & (p[:, 0] - h[0] < deck.x_end_mm)
@@ -170,19 +217,27 @@ def measure(
             cl = float((q[in_band, 1] - h[1]).min() - top)
             if cl < clearance:
                 clearance, blocking = cl, s.member
+            if cl < c["cart_height_mm"]:
+                in_path.append(s.member)
         low = (q[:, 1] - h[1]) < top + c["cart_height_mm"]
         r = low & (dz - h[2] > 0)
         lft = low & (dz + h[2] < 0)
-        if r.any():
-            gap_right = min(gap_right, float((dz[r] - h[2]).min()))
-        if lft.any():
-            gap_left = min(gap_left, float((-dz[lft] - h[2]).min()))
+        if r.any() and float((dz[r] - h[2]).min()) < gap_right:
+            gap_right, side["right"] = float((dz[r] - h[2]).min()), s.member
+        if lft.any() and float((-dz[lft] - h[2]).min()) < gap_left:
+            gap_left, side["left"] = float((-dz[lft] - h[2]).min()), s.member
     v["clearance_above_deck_mm"] = clearance
     v["cart_clear_width_mm"] = gap_left + gap_right
     d["clearance_blocking_member"] = blocking
     v["cart_envelope_ok"] = float(
         clearance >= c["cart_height_mm"] and gap_left + gap_right >= c["cart_width_mm"]
     )
+    # Where no member stands beside the path, the deck edge bounds it.
+    narrowing = (list(dict.fromkeys(side[k] or "deck edge" for k in ("left", "right")))
+                 if gap_left + gap_right < c["cart_width_mm"] else [])
+    culprits["cart_envelope_ok"] = "; ".join(
+        ([f"in the cart path: {_names(in_path)}"] if in_path else [])
+        + ([f"path bounded by: {' / '.join(narrowing)}"] if narrowing else []))
 
     # ---- clear span box (§8.6) --------------------------------------------------------
     box_h = table_y + c["clear_box_height_mm"]
@@ -206,6 +261,10 @@ def measure(
     free = max(free, right_inner - cursor)
     v["clear_box_free_length_mm"] = max(0.0, free)
     d["clear_box_obstructions"] = sorted(set(obstructions))
+    culprits["clear_box_free_length_mm"] = "; ".join(
+        ([f"in the box: {_names(sorted(set(obstructions)))}"] if obstructions else [])
+        + ([culprits["clear_span_mm"]]
+           if right_inner - left_inner < c["clear_box_length_mm"] else []))
 
     # ---- clear opening above mid-span (§8.9) -----------------------------------------
     half_open = c["clear_opening_mm"] / 2.0
@@ -225,6 +284,8 @@ def measure(
     v["clear_opening_margin_mm"] = margin
     v["clear_opening_ok"] = float(margin >= 0)
     d["clear_opening_crossing"] = crossing
+    if crossing:
+        culprits["clear_opening_ok"] = f"crossing the opening: {_names(crossing)}"
     d["mid_span_x_mm"] = xc
 
     # ---- piers vertical (§8.1) --------------------------------------------------------
@@ -241,4 +302,8 @@ def measure(
     v["piers_vertical_ok"] = float(
         v["pier_max_inclination_deg"] <= c["pier_max_inclination_deg"]
     )
+    tilted = [m.id for m, a in zip(piers, incl, strict=True)
+              if a > c["pier_max_inclination_deg"]]
+    if tilted:
+        culprits["piers_vertical_ok"] = f"inclined: {_names(tilted)}"
     return out

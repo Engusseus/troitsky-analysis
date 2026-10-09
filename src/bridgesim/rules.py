@@ -13,7 +13,6 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Literal
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from bridgesim.mass import bridge_mass
@@ -21,6 +20,7 @@ from bridgesim.measure import DEFAULT_CONSTANTS, Measurements, measure
 from bridgesim.paths import data_dir
 from bridgesim.schema import MAX_SIZE_MM, Bridge, Material
 from bridgesim.textsafe import has_control_chars
+from bridgesim.yamlio import load_yaml
 
 
 def _plain_text(v: str, multiline: bool = False) -> str:
@@ -121,7 +121,7 @@ class Crushing(BaseModel):
     model_config = ConfigDict(extra="forbid")
     plate_length_mm: float = Field(200.0, ge=1e-3, le=MAX_SIZE_MM, allow_inf_nan=False)
     plate_width_mm: float = Field(90.0, ge=1e-3, le=MAX_SIZE_MM, allow_inf_nan=False)
-    deflection_limit_mm: float = Field(50.0, gt=0, le=MAX_SIZE_MM, allow_inf_nan=False)
+    deflection_limit_mm: float = Field(50.0, ge=1e-3, le=MAX_SIZE_MM, allow_inf_nan=False)
 
 
 class RuleSet(BaseModel):
@@ -187,7 +187,7 @@ class RuleSet(BaseModel):
 
     @classmethod
     def from_yaml_str(cls, text: str) -> RuleSet:
-        return cls.model_validate(yaml.safe_load(text))
+        return cls.model_validate(load_yaml(text))
 
     @classmethod
     def load(cls, ref: str | Path = "troitsky_2027") -> RuleSet:
@@ -208,10 +208,17 @@ class RuleResult(BaseModel):
     penalty: float = 0
     bans: list[str] = Field(default_factory=list)
     disqualification: bool = False
+    #: What makes a failed rule fail, e.g. the members in a clearance envelope.
+    cause: str = ""
 
     _bans = field_validator("bans")(lambda cls, v: [_plain_text(b) for b in v])
     ambiguous: bool = False
     note: str = ""
+
+    @property
+    def measured_detail(self) -> str:
+        """The measured value, followed by the cause when the rule fails."""
+        return f"{self.measured_text} ({self.cause})" if self.cause else self.measured_text
 
 
 class RulesReport(BaseModel):
@@ -248,7 +255,7 @@ class RulesReport(BaseModel):
                 "ok": {True: "✓", False: "✗", None: "·"}[r.passed],
                 "rule": r.title,
                 "section": f"§{r.section}",
-                "measured": r.measured_text,
+                "measured": r.measured_detail,
                 "limit": r.limit,
                 "penalty": -r.penalty if r.penalty else 0,
                 "bans": ", ".join(f"§{b}" for b in r.bans),
@@ -328,6 +335,11 @@ def evaluate(
     step_len = rs.rounding.get("length_mm", 1.0)
     step_mass = rs.rounding.get("mass_kg", 0.01)
 
+    culprits = meas.details.get("culprits", {})
+
+    def cause(keys: list[str]) -> str:
+        return "; ".join(dict.fromkeys(culprits[k] for k in keys if culprits.get(k)))
+
     out: list[RuleResult] = []
     for rule in rs.rules:
         base = dict(key=rule.key, section=rule.section, title=rule.title, limit=rule.limit,
@@ -338,7 +350,7 @@ def evaluate(
 
         if rule.type == "bands":
             worst: tuple[float, list[str], float, str] | None = None
-            texts = []
+            texts, failing = [], []
             for key in rule.measures:
                 v = round_half_up(values[key], step_len)
                 band = next((b for b in rule.bands if b.matches(v)), None)
@@ -346,6 +358,8 @@ def evaluate(
                     raise ValueError(f"Rule {rule.key}: no band matches {key} = {v}")
                 texts.append(f"{key.removesuffix('_mm').replace('_', ' ')} {_fmt(v, rule.unit)}"
                              if len(rule.measures) > 1 else _fmt(v, rule.unit))
+                if band.penalty or band.bans:
+                    failing.append(key)
                 if worst is None or band.penalty > worst[0] or (
                         band.penalty == worst[0] and len(band.bans) > len(worst[1])):
                     worst = (band.penalty, band.bans, v, key)
@@ -353,7 +367,7 @@ def evaluate(
             penalty, bans, v, _ = worst
             out.append(RuleResult(**base, measured=v, measured_text="; ".join(texts),
                                   passed=(penalty == 0 and not bans), penalty=penalty,
-                                  bans=list(bans)))
+                                  bans=list(bans), cause=cause(failing)))
         elif rule.type == "check":
             ok = bool(values[rule.measure or ""])
             shown = "; ".join(
@@ -366,6 +380,7 @@ def evaluate(
                 **base, measured=float(ok), measured_text=shown or ("ok" if ok else "fails"),
                 passed=ok, penalty=0 if ok else fail.penalty, bans=[] if ok else fail.bans,
                 disqualification=(not ok) and fail.disqualification,
+                cause="" if ok else cause([rule.measure or ""]),
             ))
         elif rule.type == "steps":
             assert rule.steps is not None
