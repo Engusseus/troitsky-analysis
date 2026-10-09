@@ -52,8 +52,9 @@ MODEL_ASSUMPTIONS: list[str] = [
     "the other DY, DZ; rotations free. Hold-down or large horizontal reactions are "
     "reported as warnings, never hidden.",
     "Self-weight is ignored (a few percent of the failure load).",
-    "Mass = density x member volumes (centre-line lengths) + deck plate, plus a glue mass "
-    "fraction. Stick count = wood volume / 2300 mm^3.",
+    "Mass = density x (member volumes on centre-line lengths + deck plate + extra wood "
+    "listed in the bridge file, such as gussets), plus a glue mass fraction. Stick count = "
+    "wood volume / 2300 mm^3.",
 ]
 
 
@@ -95,7 +96,9 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
                 else "")],
             ["Mid-span deflection at F_u,p", f"{r.delta_at_Fu_mm:.1f} mm "
              f"(limit {r.deflection_limit_mm:g} mm)"],
-            ["Estimated mass m", f"{r.mass.total_kg:.2f} kg (~{r.mass.stick_count} sticks)"],
+            ["Estimated mass m", f"{r.mass.total_kg:.2f} kg (~{r.mass.stick_count} sticks)"
+             + (f", incl. {r.mass.extra_kg:.2f} kg of extra wood (gussets, plates)"
+                if r.mass.extra_kg else "")],
             ["Structural efficiency η_s = F_u/m", f"{r.efficiency:.1f} kgf/kg"],
             ["Rule penalties", "not evaluated" if rules is None else
              f"{-rules.total_penalty or 0:g} pts; bans: "
@@ -250,6 +253,11 @@ def model_assumptions(result: AnalysisResult) -> list[str]:
     excluded = [g for g in MEMBER_GROUPS if g in set(m.glue.exclude_groups)]
     glue = (f"Groups treated as continuous (no joint check): {', '.join(excluded)}."
             if excluded else "Every member end is checked (no group treated as continuous).")
+    own = [f"{mem.id} ({mem.glue_area_mm2:g} mm²)" for mem in result.bridge.members
+           if mem.glue_area_mm2 is not None]
+    if own:
+        glue += (f" Members with their own glued area per end, always checked: "
+                 f"{', '.join(own[:12])}{f', … ({len(own)} in total)' if len(own) > 12 else ''}.")
     general = [f"{a} {glue}" if a.startswith("Glued joint") else a for a in MODEL_ASSUMPTIONS]
     return [f"Material “{m.name}”: {vals}. {src}.", crusher, k_line, mesh, *general]
 

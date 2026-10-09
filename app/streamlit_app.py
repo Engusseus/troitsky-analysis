@@ -311,7 +311,9 @@ def _results_card(r: AnalysisResult) -> None:
               help=f"{r.Fu_pred_N:,.0f} N. Linear first-failure estimate (load-factor method).")
     st.caption(f"= {r.Fu_pred_N:,.0f} N · 1 kgf = {N_PER_KGF} N")
     c1, c2 = st.columns(2)
-    c1.metric("Mass", f"{r.mass.total_kg:.2f} kg", help=f"≈ {r.mass.stick_count} sticks")
+    c1.metric("Mass", f"{r.mass.total_kg:.2f} kg", help=f"≈ {r.mass.stick_count} sticks" + (
+        f", incl. {r.mass.extra_kg:.2f} kg of extra wood (gussets, plates)"
+        if r.mass.extra_kg else ""))
     c2.metric("η_s = F_u/m", f"{r.efficiency:,.0f}", help="kgf per kg (rulebook §12.6)")
     gov = r.governing_label + (f" in **{md(r.governing_member)}**" if r.governing_member else "")
     st.markdown(f"**Governs:** {gov}")

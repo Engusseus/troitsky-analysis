@@ -1,9 +1,10 @@
 """Mass estimate.
 
-    m = rho (sum_i A_i L_i + L_deck W_deck t_deck) (1 + g)
+    m = rho (sum_i A_i L_i + L_deck W_deck t_deck + sum_k n_k V_k) (1 + g)
 
 where L_i is the centre-line length of member i, the deck is a solid plate of the clear
-width, and g is the glue mass fraction. Centre-line lengths double-count the wood inside
+width, V_k are the extra wood pieces (gussets, plates; ``Bridge.extra_wood``, n_k of each)
+and g is the glue mass fraction. Centre-line lengths double-count the wood inside
 joints, which slightly over-estimates mass (conservative for the §8.8 limit).
 Deviation from the original spec: the glue fraction is applied to the deck as well,
 because the deck is also glued sticks.
@@ -31,6 +32,7 @@ class MassReport:
     wood_volume_mm3: float
     stick_count: int
     by_group_kg: dict[str, float] = field(default_factory=dict)
+    extra_kg: float = 0.0  # extra wood (gussets, plates), without glue
 
 
 def bridge_mass(bridge: Bridge, material: Material) -> MassReport:
@@ -46,9 +48,12 @@ def bridge_mass(bridge: Bridge, material: Material) -> MassReport:
         by_group[m.group] += volume_mm3_to_mass_kg(v, rho)
     d = bridge.deck
     vol_deck = d.length_mm * d.clear_width_mm * d.thickness_mm
-    vol = vol_members + vol_deck
+    vol_extra = sum(e.volume_mm3 * e.count for e in bridge.extra_wood)
+    vol = vol_members + vol_deck + vol_extra
     wood = volume_mm3_to_mass_kg(vol, rho)
     by_group["deck"] = volume_mm3_to_mass_kg(vol_deck, rho)
+    if bridge.extra_wood:
+        by_group["extra_wood"] = volume_mm3_to_mass_kg(vol_extra, rho)
     return MassReport(
         total_kg=wood * (1.0 + g),
         wood_kg=wood,
@@ -56,6 +61,7 @@ def bridge_mass(bridge: Bridge, material: Material) -> MassReport:
         deck_kg=volume_mm3_to_mass_kg(vol_deck, rho),
         members_kg=volume_mm3_to_mass_kg(vol_members, rho),
         wood_volume_mm3=vol,
+        extra_kg=volume_mm3_to_mass_kg(vol_extra, rho),
         stick_count=math.ceil(vol / material.stick.volume_mm3),
         by_group_kg=dict(by_group),
     )
