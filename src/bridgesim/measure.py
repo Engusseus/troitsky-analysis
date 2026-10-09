@@ -87,11 +87,14 @@ def _samples(bridge: Bridge, material: Material, table_y: float) -> list[_Sample
 
 
 def _extreme(S: list[_Samples], axis: int, sign: int, value: float, deck_value: float) -> str:
-    """The member (or the deck) whose surface reaches ``value`` along ``axis``."""
+    """The members (or the deck) whose surface reaches ``value`` along ``axis``."""
+    hits = []
     for s in S:
         reach = s.pts[:, axis] + sign * s.h[axis]
         if abs(float(reach.max() if sign > 0 else reach.min()) - value) <= 1e-6:
-            return s.member
+            hits.append(s.member)
+    if hits:
+        return _names(hits)
     return "deck" if abs(deck_value - value) <= 1e-6 else "?"
 
 
@@ -126,13 +129,19 @@ def measure(
     v["clear_span_mm"] = right_inner - left_inner
     d["clear_span_faces_mm"] = (left_inner, right_inner)
     d["supporting_members"] = [s.member for s in supporting]
+    faces = [[s.member for s in left if abs(float((s.pts[:, 0] + s.h[0]).max()) - left_inner)
+              <= 1e-6],
+             [s.member for s in right if abs(float((s.pts[:, 0] - s.h[0]).min()) - right_inner)
+              <= 1e-6]]
+    culprits["clear_span_mm"] = (f"inner faces of the supports: {_names(faces[0]) or 'none'} "
+                                 f"and {_names(faces[1]) or 'none'}")
 
     xmin = min([float((s.pts[:, 0] - s.h[0]).min()) for s in S] + [deck.x_start_mm])
     xmax = max([float((s.pts[:, 0] + s.h[0]).max()) for s in S] + [deck.x_end_mm])
     v["deck_length_mm"] = deck.length_mm
     v["total_length_mm"] = xmax - xmin
-    ends = [_extreme(S, 0, -1, xmin, deck.x_start_mm), _extreme(S, 0, 1, xmax, deck.x_end_mm)]
-    culprits["total_length_mm"] = f"ends: {' and '.join(ends)}"
+    culprits["total_length_mm"] = (f"ends: {_extreme(S, 0, -1, xmin, deck.x_start_mm)} and "
+                                   f"{_extreme(S, 0, 1, xmax, deck.x_end_mm)}")
 
     # ---- heights (§8.2.2) -------------------------------------------------------------
     # Nothing can sit below the table: stick ends touching it are cut flush.
@@ -182,9 +191,9 @@ def measure(
     zmax = max([float((s.pts[:, 2] + s.h[2]).max()) for s in S] + [zc + deck.clear_width_mm / 2])
     v["deck_width_mm"] = deck.clear_width_mm
     v["total_width_mm"] = zmax - zmin
-    sides = [_extreme(S, 2, -1, zmin, zc - deck.clear_width_mm / 2),
-             _extreme(S, 2, 1, zmax, zc + deck.clear_width_mm / 2)]
-    culprits["total_width_mm"] = f"outermost: {' and '.join(sides)}"
+    culprits["total_width_mm"] = (
+        f"outermost: {_extreme(S, 2, -1, zmin, zc - deck.clear_width_mm / 2)} and "
+        f"{_extreme(S, 2, 1, zmax, zc + deck.clear_width_mm / 2)}")
 
     # ---- cart envelope above the deck (§8.2.2.2, §8.5) -------------------------------
     top = deck.top_elevation_mm
@@ -223,7 +232,8 @@ def measure(
     v["cart_envelope_ok"] = float(
         clearance >= c["cart_height_mm"] and gap_left + gap_right >= c["cart_width_mm"]
     )
-    narrowing = ([m for m in (side["left"], side["right"]) if m]
+    # Where no member stands beside the path, the deck edge bounds it.
+    narrowing = (list(dict.fromkeys(side[k] or "deck edge" for k in ("left", "right")))
                  if gap_left + gap_right < c["cart_width_mm"] else [])
     culprits["cart_envelope_ok"] = "; ".join(
         ([f"in the cart path: {_names(in_path)}"] if in_path else [])
@@ -251,8 +261,10 @@ def measure(
     free = max(free, right_inner - cursor)
     v["clear_box_free_length_mm"] = max(0.0, free)
     d["clear_box_obstructions"] = sorted(set(obstructions))
-    if obstructions:
-        culprits["clear_box_free_length_mm"] = f"in the box: {_names(sorted(set(obstructions)))}"
+    culprits["clear_box_free_length_mm"] = "; ".join(
+        ([f"in the box: {_names(sorted(set(obstructions)))}"] if obstructions else [])
+        + ([culprits["clear_span_mm"]]
+           if right_inner - left_inner < c["clear_box_length_mm"] else []))
 
     # ---- clear opening above mid-span (§8.9) -----------------------------------------
     half_open = c["clear_opening_mm"] / 2.0

@@ -25,6 +25,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from bridgesim.schema import (
+    MIN_SIZE_MM,
     Bridge,
     Deck,
     Member,
@@ -69,7 +70,7 @@ class WarrenParams(BaseModel):
     deck_top_elevation_mm: float = Field(200.0, ge=20, le=500, description="Table to deck top")
     deck_clear_width_mm: float = Field(170.0, ge=50, le=340)
     deck_overhang_mm: float = Field(50.0, ge=0, le=250, description="Deck beyond each pier")
-    deck_thickness_mm: float = Field(2.0, gt=0, le=20)
+    deck_thickness_mm: float = Field(2.0, ge=MIN_SIZE_MM, le=20)
     top_bracing: Literal["x", "none"] = "x"
     bottom_bracing: Literal["x", "none"] = "x"
     pier_bracing: Literal["x", "none"] = "x"

@@ -335,6 +335,11 @@ def evaluate(
     step_len = rs.rounding.get("length_mm", 1.0)
     step_mass = rs.rounding.get("mass_kg", 0.01)
 
+    culprits = meas.details.get("culprits", {})
+
+    def cause(keys: list[str]) -> str:
+        return "; ".join(dict.fromkeys(culprits[k] for k in keys if culprits.get(k)))
+
     out: list[RuleResult] = []
     for rule in rs.rules:
         base = dict(key=rule.key, section=rule.section, title=rule.title, limit=rule.limit,
@@ -345,7 +350,7 @@ def evaluate(
 
         if rule.type == "bands":
             worst: tuple[float, list[str], float, str] | None = None
-            texts = []
+            texts, failing = [], []
             for key in rule.measures:
                 v = round_half_up(values[key], step_len)
                 band = next((b for b in rule.bands if b.matches(v)), None)
@@ -353,6 +358,8 @@ def evaluate(
                     raise ValueError(f"Rule {rule.key}: no band matches {key} = {v}")
                 texts.append(f"{key.removesuffix('_mm').replace('_', ' ')} {_fmt(v, rule.unit)}"
                              if len(rule.measures) > 1 else _fmt(v, rule.unit))
+                if band.penalty or band.bans:
+                    failing.append(key)
                 if worst is None or band.penalty > worst[0] or (
                         band.penalty == worst[0] and len(band.bans) > len(worst[1])):
                     worst = (band.penalty, band.bans, v, key)
@@ -360,7 +367,7 @@ def evaluate(
             penalty, bans, v, _ = worst
             out.append(RuleResult(**base, measured=v, measured_text="; ".join(texts),
                                   passed=(penalty == 0 and not bans), penalty=penalty,
-                                  bans=list(bans)))
+                                  bans=list(bans), cause=cause(failing)))
         elif rule.type == "check":
             ok = bool(values[rule.measure or ""])
             shown = "; ".join(
@@ -373,6 +380,7 @@ def evaluate(
                 **base, measured=float(ok), measured_text=shown or ("ok" if ok else "fails"),
                 passed=ok, penalty=0 if ok else fail.penalty, bans=[] if ok else fail.bans,
                 disqualification=(not ok) and fail.disqualification,
+                cause="" if ok else cause([rule.measure or ""]),
             ))
         elif rule.type == "steps":
             assert rule.steps is not None
@@ -380,9 +388,4 @@ def evaluate(
             pen = mass_penalty(v, rule.steps)
             out.append(RuleResult(**base, measured=v, measured_text=f"{v:.2f} {rule.unit}",
                                   passed=pen == 0, penalty=pen))
-    culprits = meas.details.get("culprits", {})
-    for res, rule in zip(out, rs.rules, strict=True):
-        if res.passed is False:
-            keys = list(rule.measures) + ([rule.measure] if rule.measure else [])
-            res.cause = "; ".join(dict.fromkeys(culprits[k] for k in keys if culprits.get(k)))
     return RulesReport(ruleset=rs.name, results=out)

@@ -117,7 +117,11 @@ The app shows a banner and an *assumed* badge on every value until you mark it *
     inside joints (slightly conservative for §8.8).
 21. Rule measurements treat members as solid prisms. Values are rounded like the judges
     do (nearest mm, nearest 0.01 kg) before checking. Ambiguous rules use the stricter
-    reading; see `docs/open-questions.md`.
+    reading; see `docs/open-questions.md`. A member ending on the table is taken as cut
+    flush there over an end zone of two section sizes (max(b, d)); beyond that its section
+    must stay above the table. A member reaching the table at more than about 14° always
+    passes; a shallower one may fail the platform check, since it would lose much of its
+    section to the cut.
 
 ## Deviations from the original v0.1 specification
 

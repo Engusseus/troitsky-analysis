@@ -18,23 +18,32 @@ _MERGE_TAG = "tag:yaml.org,2002:merge"
 class _UniqueKeyLoader(yaml.SafeLoader):
     """Safe loader that raises on a mapping key written twice (merge keys ``<<`` excepted)."""
 
-    def construct_mapping(self, node: yaml.Node, deep: bool = False) -> dict[Any, Any]:
-        if isinstance(node, yaml.MappingNode):
+    def __init__(self, stream: str) -> None:
+        super().__init__(stream)
+        self._checked: set[int] = set()
+
+    def flatten_mapping(self, node: yaml.MappingNode) -> None:
+        # Flattening rewrites node.value in place (merged pairs replace ``<<``), and a merge
+        # source may be flattened before its own mapping is built. So check each mapping
+        # once, the first time it is flattened, while its keys are still as written.
+        if id(node) not in self._checked:
+            self._checked.add(id(node))
             seen: dict[Any, yaml.Mark] = {}
             for key_node, _ in node.value:
                 if key_node.tag == _MERGE_TAG:
                     continue
                 key = self.construct_object(key_node, deep=True)
                 try:
-                    first = seen.setdefault(key, key_node.start_mark)
+                    first = seen.get(key)
                 except TypeError:  # unhashable key: the base class reports it
                     continue
-                if first is not key_node.start_mark:
+                if first is not None:
                     raise ConstructorError(
                         "while reading a mapping", node.start_mark,
                         f"found duplicate key {key!r} (first given on line {first.line + 1})",
                         key_node.start_mark)
-        return super().construct_mapping(node, deep=deep)
+                seen[key] = key_node.start_mark
+        super().flatten_mapping(node)
 
 
 def load_yaml(text: str) -> Any:
