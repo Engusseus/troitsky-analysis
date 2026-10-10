@@ -227,9 +227,11 @@ def bridge_figure(
                                showlegend=False, name="supports"))
     d = bridge.deck
     zc = d.z_center_mm
+    kind = ("non-structural" if d.diaphragm is None
+            else f"shear diaphragm, G = {d.diaphragm.G_MPa:g} MPa")
     traces.append(_quad(d.x_start_mm, d.x_end_mm, zc - d.clear_width_mm / 2,
                         zc + d.clear_width_mm / 2, d.top_elevation_mm, DECK, "deck", 0.35,
-                        f"Deck (non-structural): {d.length_mm:.0f} × {d.clear_width_mm:.0f} mm, "
+                        f"Deck ({kind}): {d.length_mm:.0f} × {d.clear_width_mm:.0f} mm, "
                         f"top at {d.top_elevation_mm:.0f} mm"))
     from bridgesim.loads import plate_placement
 

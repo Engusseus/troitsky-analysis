@@ -170,6 +170,42 @@ That area then replaces the default, and the member's joints are checked even if
 group is otherwise treated as continuous. Base the number on the glued area you actually
 build, and on a joint test if you can.
 
+### Plates, decks and other materials
+
+Every member uses the bridge material unless its section says otherwise. A part that is
+not sticks laid along the member, such as a 0/90 or ±45 cross-laminated stick plate, can
+set its own E, G and strengths in MPa. Any value left out comes from the bridge material:
+
+```yaml
+sections:
+  - {id: gusset_plate, b_mm: 60, d_mm: 4, E_MPa: 5000, G_MPa: 150, f_t_MPa: 20}
+```
+
+The deck is non-structural by default. If it is glued to both trusses, it also works as a
+horizontal shear panel (a diaphragm) that stops the trusses moving sideways relative to
+each other. Leaving it out can make the sideways (system) buckling load much lower than
+the real one. To include it, give the deck's in-plane shear modulus and the nodes where
+it is glued, one on each side of the deck at every station along the bridge:
+
+```yaml
+deck:
+  # x_start_mm, x_end_mm, top_elevation_mm, clear_width_mm, ... as before
+  diaphragm:
+    G_MPa: 150                              # in-plane shear modulus of the deck plate
+    connected_to: [B0n, B0f, B1n, B1f, B2n, B2f]   # ... every station along the bridge
+```
+
+Each deck panel between two stations is then modelled by two pin-ended diagonals with the
+panel's shear stiffness $G t b / a$ (panel length $a$, width $b$, thickness $t$ = the deck
+thickness unless `thickness_mm` is given). In-plane shear stiffness depends a lot on how
+the plate is laid up and glued, so measure G if you can, for example with a racking test
+of a square of your deck plate. The deck's own bending and its strength are not modelled.
+
+Members are shear-rigid (Euler-Bernoulli) frame elements, because Pynite has no
+shear-deformable beam. Do not model a wide plate as one wide member: its shear flexibility
+would be missing, and it would come out far too stiff. Use the diaphragm, or sections
+with their own E and G.
+
 ### Slender bracing: tension-only members
 
 Thin X-bracing straps get squeezed whenever the chords shorten under load. The member
@@ -200,6 +236,11 @@ Stated plainly:
   can carry more after a brace buckles (mark slender braces
   [tension-only](#slender-bracing-tension-only-members)), or less if they are crooked or
   badly glued.
+* **Plates only as a deck diaphragm.** Plates are not modelled as plates. A deck glued to
+  both trusses can be a [shear diaphragm](#plates-decks-and-other-materials); other plates
+  are members with their own E and G, or mass only (`extra_wood`). Leaving out a plate
+  that stiffens the bridge makes the global (sideways) buckling result conservative.
+  Members are shear-rigid, so very deep, short members are too stiff.
 * **Idealised joints and laminates.** Glue lines are perfect, splices are not weakened,
   and the joint check is a placeholder (a member under a gusset can state its own glued
   area, see [Gussets, plates and glued areas](#gussets-plates-and-glued-areas)).

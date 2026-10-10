@@ -119,8 +119,10 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
     for s in b.sections:
         pr = s.props(mat.stick)
         n_mem = sum(1 for m in b.members if m.section == s.id)
+        own = ", ".join(f"{k.removesuffix('_MPa')} = {v:g}" for k, v in s.overrides().items())
         sec_rows.append([s.id, s.label(), f"{pr.b_mm:g} × {pr.d_mm:g}", f"{pr.A_mm2:.0f}",
-                         f"{pr.I_min_mm4:.0f}", str(n_mem)])
+                         f"{pr.I_min_mm4:.0f}", str(n_mem),
+                         f"{own} MPa" if own else "bridge material"])
     pl = r.plate
     yield "1. What was analysed", [
         ("p", "A 3D frame model of the whole bridge (both trusses, floor beams, bracing and "
@@ -128,8 +130,8 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
               f"the {b.load.plate_length_mm:g} mm × {b.load.plate_width_mm:g} mm crusher "
               f"plate (§12.5), centred at x = {pl.x_center_mm:.0f} mm."),
         ("table", ["Parameter", "Value"], geo),
-        ("table", ["Section", "Make-up", "b × d (mm)", "A (mm²)", "I_min (mm⁴)", "Members"],
-         sec_rows),
+        ("table", ["Section", "Make-up", "b × d (mm)", "A (mm²)", "I_min (mm⁴)", "Members",
+                   "Material"], sec_rows),
     ]
 
     mrows = [[k, f"{p.value:g}", p.source, p.note] for k, p in mat.props().items()]
@@ -275,7 +277,27 @@ def model_assumptions(result: AnalysisResult) -> list[str]:
         glue += (f" Members with their own glued area per end, always checked: "
                  f"{', '.join(own[:12])}{f', … ({len(own)} in total)' if len(own) > 12 else ''}.")
     general = [f"{a} {glue}" if a.startswith("Glued joint") else a for a in MODEL_ASSUMPTIONS]
+    dia = result.bridge.deck.diaphragm
+    if dia is not None:
+        t = dia.thickness_mm if dia.thickness_mm is not None else result.bridge.deck.thickness_mm
+        n = len(result.bridge.diaphragm_panels())
+        deck = (f"The deck is a shear diaphragm in its own plane (G = {dia.G_MPa:g} MPa, "
+                f"t = {t:g} mm) between {n} pairs of stations of the trusses; each panel of "
+                "length a and width b is two pin-ended equivalent diagonals of area "
+                "A = G t L³ / (2 E a b), which give it the plate's shear stiffness G t b / a. "
+                "They also share a little of the bottom chords' tension. The deck's own "
+                "bending and its strength are not modelled, and it still passes the "
+                "crusher-plate load to the floor-beam centre nodes as simply supported strips.")
+        general = [deck if a.startswith("The deck is non-structural") else a for a in general]
     out = [f"Material “{m.name}”: {vals}. {src}.", crusher, k_line, mesh]
+    own = [s for s in result.bridge.sections if s.overrides()]
+    if own:
+        listed = "; ".join(
+            f"{s.id} ({', '.join(f'{k} = {v:g}' for k, v in s.overrides().items())})"
+            for s in own[:12])
+        out.append(f"Sections with their own material values (MPa), used for their stiffness "
+                   f"and capacities; anything not listed comes from the bridge material: "
+                   f"{listed}{f'; … ({len(own)} in total)' if len(own) > 12 else ''}.")
     t_only = [mem.id for mem in result.bridge.members if mem.tension_only]
     if t_only:
         out.append(

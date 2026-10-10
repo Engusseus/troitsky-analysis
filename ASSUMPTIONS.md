@@ -35,10 +35,14 @@ The app shows a banner and an *assumed* badge on every value until you mark it *
    reference load $P_{ref}$ = 1000 N. No P-Δ, no initial imperfections, no material
    non-linearity, no joint slip, no creep.
 2. **Frame elements on centre lines.** Each member is a prismatic 3D Euler-Bernoulli frame
-   element joining node centres. Joint size (eccentricity, gussets) is ignored.
+   element joining node centres. Joint size (eccentricity, gussets) is ignored. The
+   elements are shear-rigid (Pynite has no shear-deformable beam), so very deep, short
+   members and plates modelled as members come out too stiff.
 3. **Laminated sections act as one solid rectangle.** n sticks glued face to face are a
    single b × d rectangle with perfect glue lines (full composite action). This
-   over-estimates stiffness and strength of poorly glued laminates.
+   over-estimates stiffness and strength of poorly glued laminates. A section may set its
+   own E, G and strengths (`E_MPa`, `G_MPa`, `f_t_MPa`, `f_c_MPa`, `f_b_MPa`, `f_v_MPa`),
+   for example for a cross-laminated plate; the rest come from the bridge material.
 4. **No splice weakening.** Members longer than one stick (115 mm) must be spliced; v0.1
    does not reduce their strength or stiffness at splices.
 5. **Section orientation.** The depth d lies in the member's primary bending plane
@@ -49,8 +53,16 @@ The app shows a banner and an *assumed* badge on every value until you mark it *
    `pinned` switch releases the in-plane moment (Rz) at both ends of diagonals and
    verticals, and both bending moments of bracing members. Chords, floor beams, struts
    and piers remain continuous, otherwise the end portals become a mechanism.
-7. **Deck is non-structural.** It transfers the plate load to the floor beams as simply
-   supported strips and adds mass, but has no stiffness in the model.
+7. **Deck is non-structural** unless the bridge file makes it a shear diaphragm. It
+   transfers the plate load to the floor beams as simply supported strips and adds mass.
+   As a diaphragm (`deck.diaphragm`: in-plane G and the nodes where it is glued to the
+   trusses) each panel of length $a$, width $b$ and thickness $t$ gets two pin-ended
+   equivalent diagonals of area $A_d = G t L_d^3 / (2 E a b)$, so that its shear
+   stiffness is the plate's $G t b / a$. These diagonals also give the deck an axial
+   stiffness of about $G (a/b)^2$ along the bridge, usually less than the real plate's,
+   so it takes a little of the bottom chords' tension. The deck's bending and strength are
+   not modelled. Without a diaphragm, a deck that does brace the trusses is left out,
+   which makes the sideways buckling load conservative.
 8. **Self-weight ignored.** A 2 kg bridge weighs about 20 N, well under 1 % of a typical
    failure load.
 9. **Torsion ignored** in the member checks (it is still in the stiffness model).
