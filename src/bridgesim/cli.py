@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import csv
+import io
 import math
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -29,6 +31,20 @@ RulesOpt = Annotated[str, typer.Option("--rules", "-r", help="Rules YAML path or
 
 #: Problems with an input file: reported in one short message, exit code 2.
 BAD_INPUT = (ValidationError, ValueError, yaml.YAMLError, UnicodeDecodeError, OSError)
+
+
+@app.callback()
+def _utf8_output() -> None:
+    """Write console output as UTF-8, before any command prints.
+
+    When stdout is a pipe or a file, Python on Windows encodes it with the ANSI code page
+    (cp1252), so "§" leaves as the single byte 0xA7, which PowerShell, CI logs and most
+    viewers (all UTF-8) cannot decode. Reconfiguring here, rather than in a wrapper around
+    ``app``, also fixes console scripts installed before this change.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def _fail(what: str, exc: BaseException) -> None:
