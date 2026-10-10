@@ -11,6 +11,7 @@ from __future__ import annotations
 import html
 import io
 import math
+import textwrap
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -195,10 +196,13 @@ def bridge_figure(
         first = bridge.members[[m.id for m in bridge.members].index(crit_ids[0])]
         lab = _plot_xyz((pos[first.i] + pos[first.j]) / 2)
         # Label at table level under the member, where the clear-span box keeps space free.
+        # Global buckling is a mode of the whole bridge; the member only holds most energy.
+        text = (f"global buckling; most mode energy in {crit_ids[0]}"
+                if result.governing_mode == "global_buckling" else
+                f"governs: {', '.join(crit_ids[:2])}{'…' if len(crit_ids) > 2 else ''}")
         traces.append(go.Scatter3d(
             x=[lab[0]], y=[lab[1]], z=[15.0], mode="text",
-            text=[html.escape(f"governs: {', '.join(crit_ids[:2])}"
-                              f"{'…' if len(crit_ids) > 2 else ''}")],
+            text=[html.escape(text)],
             textfont=dict(color=CRITICAL, size=13), hoverinfo="skip", showlegend=False))
     traces.append(go.Scatter3d(
         x=hx, y=hy, z=hz, mode="markers", hovertext=ht, hoverinfo="text", name="",
@@ -418,6 +422,46 @@ def member_diagrams_figure(
     fig.suptitle(f"{_mpl_text(title)} at {n_to_kgf(load):.0f} kgf crusher load "
                  "(local member axes)",
                  fontsize=11, color="#0b0b0b")
+    return fig
+
+
+def buckling_mode_figure(result: AnalysisResult) -> Figure | None:
+    """Plan (X-Z) and elevation (X-Y) of the first global buckling mode, drawn over the
+    undeformed bridge in grey, at the same exaggeration as the 3D view. None if there is
+    no mode (nothing in compression, or the eigen-solver failed)."""
+    buck = result.buckling
+    if buck is None or not buck.mode_mm:
+        return None
+    bridge = result.bridge
+    nodes = {n.id: np.array(n.xyz, float) for n in bridge.nodes}
+    xs = [p[0] for p in nodes.values()]
+    s = 0.06 * ((max(xs) - min(xs)) or 1.0)
+    pos = {k: v + s * np.array(buck.mode_mm.get(k, (0, 0, 0))) for k, v in nodes.items()}
+    active = [m for m in bridge.members if m.id not in set(result.slack_members)]
+    pts = np.array([*nodes.values(), *pos.values()])
+    lo, hi = pts.min(axis=0) - 0.3 * s, pts.max(axis=0) + 0.3 * s
+    # Equal scales on both views, so each panel's height follows the bridge's extent.
+    fig = Figure(figsize=(8, 6.4), dpi=150, layout="constrained")
+    axs = fig.subplots(2, 1, height_ratios=[hi[2] - lo[2], hi[1] - lo[1]])
+    for ax, k, name, label in ((axs[0], 2, "Plan (from above)", "Z across (mm)"),
+                               (axs[1], 1, "Elevation (from the side)", "Y up (mm)")):
+        for members, where, color, lw in ((bridge.members, nodes, GHOST, 0.8),
+                                         (active, pos, SERIES, 1.4)):
+            for m in members:
+                a, b = where[m.i], where[m.j]
+                ax.plot([a[0], b[0]], [a[k], b[k]], color=color, linewidth=lw)
+        ax.set_xlim(lo[0], hi[0])
+        ax.set_ylim(lo[k], hi[k])
+        ax.set_aspect("equal", adjustable="box")
+        _style_axis(ax, label)
+        ax.set_title(name, fontsize=9, color=INK, loc="left")
+    axs[1].set_xlabel("X along bridge (mm)", color=INK)
+    F = result.Fu_buckling_N
+    wrapped = textwrap.fill(f"Mode 1: {buck.description}", 100)
+    fig.suptitle(
+        f"{_mpl_text(bridge.name)}: first global buckling mode, F_cr = {n_to_kgf(F):,.0f} kgf "
+        f"({F:,.0f} N)\n{_mpl_text(wrapped)}\nGrey: undeformed. Blue: mode shape, exaggerated.",
+        fontsize=10, color="#0b0b0b")
     return fig
 
 

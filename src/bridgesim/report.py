@@ -87,13 +87,13 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
         ("ul", meta),
         ("table", ["Quantity", "Value"], [
             ["Predicted ultimate load F_u,p", _fmt_load(r.Fu_pred_N)],
-            ["Governing", f"{r.governing_label}"
-             + (f" in member {r.governing_member}" if r.governing_member else "")],
+            ["Governing", f"{r.governing_label}{r.governing_detail}"],
             ["Strength-based load F_u,strength", _fmt_load(r.Fu_strength_N)],
             [f"Deflection-based load F_u,δ ({r.deflection_limit_mm:g} mm)",
              _fmt_load(r.Fu_deflection_N)],
             ["Global elastic buckling load F_cr", _fmt_load(r.Fu_buckling_N)
-             + (f", mode led by {r.buckling.key_member}" if r.buckling and r.buckling.key_member
+             + (f"; mode 1: {r.buckling.description}"
+                if r.buckling and r.buckling.description and math.isfinite(r.Fu_buckling_N)
                 else "")],
             ["Mid-span deflection at F_u,p", f"{r.delta_at_Fu_mm:.1f} mm "
              f"(limit {r.deflection_limit_mm:g} mm)"],
@@ -177,16 +177,29 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
             for m in r.critical_members(10)]
     reac = [[x.node, f"{x.FX_N * r.load_factor:.1f}", f"{x.FY_N * r.load_factor:.1f}",
              f"{x.FZ_N * r.load_factor:.1f}"] for x in r.reactions]
+    where = (f" ({r.buckling.description})." if r.governing_mode == "global_buckling"
+             and r.buckling and r.buckling.description else
+             f" in member **{r.governing_member}**." if r.governing_member else ".")
+    modes = r.buckling_load_table() if math.isfinite(r.Fu_buckling_N) else []
     blocks = [
         ("p", f"Predicted ultimate load **F_u,p = {_fmt_load(r.Fu_pred_N)}**, governed by "
-              f"**{r.governing_label}**"
-              + (f" in member **{r.governing_member}**." if r.governing_member else ".")),
+              f"**{r.governing_label}**{where}"),
         ("p", "Ten most critical members (values at F_u,p; utilisation 1.00 = fails):"),
         ("table", ["Member", "Group", "Section", "N at F_u,p (N, + tension)", "U at F_u,p",
                    "Governing check", "Fails alone at (kgf)"], crit),
         ("p", "Support reactions at F_u,p (N):"),
         ("table", ["Node", "FX", "FY (up +)", "FZ"], reac),
     ]
+    if modes:
+        blocks += [
+            ("p", "Global elastic buckling modes, lowest first. The shape names the "
+                  "direction and the nodes that move most; the member with the most strain "
+                  "energy alone can mislead (a small member may hold it while the whole span "
+                  "moves)."),
+            ("table", ["Mode", "F_cr (N)", "F_cr (kgf)", "Load factor λ", "Shape"],
+             [[str(m["mode"]), f"{m['F_cr_N']:,.0f}", f"{m['F_cr_kgf']:,.1f}",
+               f"{m['load_factor']:.3f}", m["shape"]] for m in modes]),
+        ]
     if r.slack_members:
         blocks.append(("p", r.slack_note))
     if r.warnings:

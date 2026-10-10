@@ -38,7 +38,7 @@ uv run bridgesim run examples/warren_2027.yaml   # command line
 Command line:
 
 ```bash
-uv run bridgesim run examples/warren_2027.yaml --out results/   # report, CSV, SFD/BMD PNG
+uv run bridgesim run examples/warren_2027.yaml --out results/   # report, CSVs, PNGs
 uv run bridgesim check my_bridge.yaml                           # rules only (exit 1 if any rule fails)
 uv run bridgesim generate warren --span-mm 1100 --out my_bridge.yaml
 ```
@@ -133,6 +133,11 @@ a maintainer enables Pages and runs it. The first visit downloads about 60 MB.
    frame finds system modes that single-member checks miss, such as sway of tall legs or
    sideways buckling of an unbraced top chord:
    $$(K + \lambda K_g)\,\phi = 0, \qquad F_{cr} = \lambda_{cr} P_{ref}$$
+   Each mode is described by its direction and the nodes that move most (for example
+   "sideways (Z) movement, largest at T3n, T3f, T4n, T4f"), with the first three loads.
+   `--out` writes the first mode's node movements (`buckling_mode.csv`), the loads and
+   shapes of the first three modes (`buckling_loads.csv`) and a plan and elevation of
+   the first mode (`buckling_mode.png`).
 5. **Load-factor method.** One linear solve at $P_{ref}$ = 1000 N. Because everything
    scales with load,
    $$F_{u,p} = \min\left(\frac{P_{ref}}{\max_i U_i},\ P_{ref}\frac{50\text{ mm}}{\delta_{ref}},\ F_{cr}\right)$$

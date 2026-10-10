@@ -156,6 +156,16 @@ class AnalysisResult:
         return MODE_LABELS.get(self.governing_mode, self.governing_mode)
 
     @property
+    def governing_detail(self) -> str:
+        """Where the governing limit is reached: " in <member>", or for global buckling the
+        shape of the mode in brackets. The member with the most strain energy alone can
+        mislead: a small rib may hold the most energy while the whole span bows sideways."""
+        if self.governing_mode == "global_buckling" and self.buckling is not None \
+                and self.buckling.description:
+            return f" ({self.buckling.description})"
+        return f" in {self.governing_member}" if self.governing_member else ""
+
+    @property
     def slack_note(self) -> str:
         """One sentence naming the tension-only members left out ("" if none)."""
         if not self.slack_members:
@@ -171,6 +181,29 @@ class AnalysisResult:
 
     def critical_members(self, n: int = 10) -> list[MemberResult]:
         return sorted(self.members, key=lambda m: m.U, reverse=True)[:n]
+
+    def buckling_load_table(self) -> list[dict[str, Any]]:
+        """One row per global buckling mode found: load factor, F_cr and the mode's shape."""
+        b = self.buckling
+        if b is None:
+            return []
+        return [{"mode": k + 1, "load_factor": round(lam, 4),
+                 "F_cr_N": round(lam * self.P_ref_N, 1),
+                 "F_cr_kgf": round(n_to_kgf(lam * self.P_ref_N), 1), "shape": desc}
+                for k, (lam, desc) in enumerate(zip(b.lambdas, b.descriptions, strict=False))]
+
+    def buckling_mode_table(self, mode: int = 1) -> list[dict[str, Any]]:
+        """Node movements in global buckling mode ``mode`` (1 = the first), relative: the
+        largest movement anywhere in the model is 1. Empty if there is no such mode."""
+        b = self.buckling
+        if b is None or not 1 <= mode <= len(b.modes_mm):
+            return []
+        shape = b.modes_mm[mode - 1]
+        return [{"node": n.id, "x_mm": n.x_mm, "y_mm": n.y_mm, "z_mm": n.z_mm,
+                 "dx_rel": round(shape[n.id][0], 4), "dy_rel": round(shape[n.id][1], 4),
+                 "dz_rel": round(shape[n.id][2], 4),
+                 "d_rel": round(math.sqrt(sum(c * c for c in shape[n.id])), 4)}
+                for n in self.bridge.nodes if n.id in shape]
 
     def member_table(self) -> list[dict[str, Any]]:
         """One row per member, values at P_ref and at the predicted failure load."""
@@ -356,8 +389,8 @@ def analyze(
     if math.isfinite(Fu_buck) and Fu < Fu_buck and Fu / Fu_buck > NEAR_BUCKLING_RATIO:
         ratio = Fu / Fu_buck
         warnings.append(
-            f"F_u,p is {ratio:.0%} of the global buckling load ({n_to_kgf(Fu_buck):,.0f} kgf, "
-            f"mode led by {buck.key_member}). Near that load, sway from crooked sticks or "
+            f"F_u,p is {ratio:.0%} of the global buckling load ({n_to_kgf(Fu_buck):,.0f} kgf; "
+            f"mode 1: {buck.description}). Near that load, sway from crooked sticks or "
             f"uneven supports grows about {1 / (1 - ratio):.1f}x (P-delta, not modelled in "
             f"v0.1), so the real failure load may be lower. Stiffening that mode adds margin."
         )
