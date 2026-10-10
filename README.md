@@ -24,7 +24,8 @@ the browser.
 
 ## Quick start
 
-You need [uv](https://docs.astral.sh/uv/) (it installs the right Python for you).
+The quickest route is [uv](https://docs.astral.sh/uv/) (it installs the right Python for
+you). No uv? See [Without uv](#without-uv-plain-python-and-pip) below.
 
 ```bash
 git clone https://github.com/engusseus/troitsky-analysis.git
@@ -37,10 +38,38 @@ uv run bridgesim run examples/warren_2027.yaml   # command line
 Command line:
 
 ```bash
-uv run bridgesim run examples/warren_2027.yaml --out results/   # report, CSV, SFD/BMD PNG
+uv run bridgesim run examples/warren_2027.yaml --out results/   # report, CSVs, PNGs
 uv run bridgesim check my_bridge.yaml                           # rules only (exit 1 if any rule fails)
 uv run bridgesim generate warren --span-mm 1100 --out my_bridge.yaml
 ```
+
+### Without uv (plain Python and pip)
+
+With Python 3.11 or newer (for example from python.org) you can install into a virtual
+environment inside the repository instead. Nothing is installed system-wide.
+
+Windows (PowerShell or Command Prompt):
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -e ".[app]"   # drop [app] for the command line only
+.venv\Scripts\bridgesim.exe run examples\warren_2027.yaml --out results
+.venv\Scripts\python.exe -m streamlit run app\streamlit_app.py
+```
+
+macOS and Linux:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[app]"           # drop [app] for the command line only
+.venv/bin/bridgesim run examples/warren_2027.yaml --out results
+.venv/bin/python -m streamlit run app/streamlit_app.py
+```
+
+The console script is `.venv\Scripts\bridgesim.exe` on Windows and `.venv/bin/bridgesim`
+elsewhere: use it wherever this README says `uv run bridgesim`. pip installs the newest
+versions that `pyproject.toml` allows rather than the exact ones in `uv.lock` (Pynite is
+pinned in both).
 
 ### Default design (placeholder materials, illustrative only)
 
@@ -104,6 +133,11 @@ a maintainer enables Pages and runs it. The first visit downloads about 60 MB.
    frame finds system modes that single-member checks miss, such as sway of tall legs or
    sideways buckling of an unbraced top chord:
    $$(K + \lambda K_g)\,\phi = 0, \qquad F_{cr} = \lambda_{cr} P_{ref}$$
+   Each mode is described by its direction and the nodes that move most (for example
+   "sideways (Z) movement, largest at T3n, T3f, T4n, T4f"), with the first three loads.
+   `--out` writes the first mode's node movements (`buckling_mode.csv`), the loads and
+   shapes of the first three modes (`buckling_loads.csv`) and a plan and elevation of
+   the first mode (`buckling_mode.png`).
 5. **Load-factor method.** One linear solve at $P_{ref}$ = 1000 N. Because everything
    scales with load,
    $$F_{u,p} = \min\left(\frac{P_{ref}}{\max_i U_i},\ P_{ref}\frac{50\text{ mm}}{\delta_{ref}},\ F_{cr}\right)$$
@@ -136,6 +170,60 @@ That area then replaces the default, and the member's joints are checked even if
 group is otherwise treated as continuous. Base the number on the glued area you actually
 build, and on a joint test if you can.
 
+### Plates, decks and other materials
+
+Every member uses the bridge material unless its section says otherwise. A part that is
+not sticks laid along the member, such as a 0/90 or ±45 cross-laminated stick plate, can
+set its own E, G and strengths in MPa. Any value left out comes from the bridge material:
+
+```yaml
+sections:
+  - {id: gusset_plate, b_mm: 60, d_mm: 4, E_MPa: 5000, G_MPa: 150, f_t_MPa: 20}
+```
+
+The deck is non-structural by default. If it is glued to both trusses, it also works as a
+horizontal shear panel (a diaphragm) that stops the trusses moving sideways relative to
+each other. Leaving it out can make the sideways (system) buckling load much lower than
+the real one. To include it, give the deck's in-plane shear modulus and the nodes where
+it is glued, one on each side of the deck at every station along the bridge:
+
+```yaml
+deck:
+  # x_start_mm, x_end_mm, top_elevation_mm, clear_width_mm, ... as before
+  diaphragm:
+    G_MPa: 150                              # in-plane shear modulus of the deck plate
+    connected_to: [B0n, B0f, B1n, B1f, B2n, B2f]   # ... every station along the bridge
+```
+
+Each deck panel between two stations is then modelled by two pin-ended diagonals with the
+panel's shear stiffness $G t b / a$ (panel length $a$, width $b$, thickness $t$ = the deck
+thickness unless `thickness_mm` is given). In-plane shear stiffness depends a lot on how
+the plate is laid up and glued, so measure G if you can, for example with a racking test
+of a square of your deck plate. The deck's own bending and its strength are not modelled.
+
+Members are shear-rigid (Euler-Bernoulli) frame elements, because Pynite has no
+shear-deformable beam. Do not model a wide plate as one wide member: its shear flexibility
+would be missing, and it would come out far too stiff. Use the diaphragm, or sections
+with their own E and G.
+
+### Slender bracing: tension-only members
+
+Thin X-bracing straps get squeezed whenever the chords shorten under load. The member
+check would then report a strap that only bows elastically by a millimetre or two as the
+governing member, and adding bracing would seem to lower the predicted load. Mark such
+members as tension-only:
+
+```yaml
+- {id: tb0a, i: T0n, j: T1f, section: top_brace, group: top_brace, tension_only: true}
+```
+
+A tension-only member that would be in compression is left out, and the bridge is
+re-analysed without it, for the static analysis and the global buckling analysis alike.
+The results list these *slack* members, and the 3D view draws them dashed. In tension the
+member is checked like any other. Use the flag only for members that may bow without the
+bridge failing, not for ones the bridge needs to push (piers, posts, struts). When a
+brace governs by buckling, the results suggest the flag.
+
 ## v0.1 limitations
 
 Stated plainly:
@@ -145,7 +233,14 @@ Stated plainly:
   and batches.
 * **Linear, first-failure.** No P-Δ, no imperfections, no joint slip, no load
   redistribution after a member fails, and no contact-with-crusher failure. Real bridges
-  can carry more after a brace buckles, or less if they are crooked or badly glued.
+  can carry more after a brace buckles (mark slender braces
+  [tension-only](#slender-bracing-tension-only-members)), or less if they are crooked or
+  badly glued.
+* **Plates only as a deck diaphragm.** Plates are not modelled as plates. A deck glued to
+  both trusses can be a [shear diaphragm](#plates-decks-and-other-materials); other plates
+  are members with their own E and G, or mass only (`extra_wood`). Leaving out a plate
+  that stiffens the bridge makes the global (sideways) buckling result conservative.
+  Members are shear-rigid, so very deep, short members are too stiff.
 * **Idealised joints and laminates.** Glue lines are perfect, splices are not weakened,
   and the joint check is a placeholder (a member under a gusset can state its own glued
   area, see [Gussets, plates and glued areas](#gussets-plates-and-glued-areas)).

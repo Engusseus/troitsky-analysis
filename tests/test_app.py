@@ -117,3 +117,13 @@ def test_custom_diagram_load_does_not_crash() -> None:
     assert not app.exception, [e.value for e in app.exception]
     fu = float(next(m.value for m in app.metric if m.label.startswith("Predicted")).split()[0])
     assert any(n.label == "Load (kgf)" and n.value == round(fu) for n in app.number_input)
+
+
+def test_buckling_view_describes_the_mode_and_offers_its_csv() -> None:
+    app = AppTest.from_file(APP, default_timeout=120)
+    app.run()
+    next(r for r in app.radio if r.label == "View").set_value("Buckling mode")
+    app.run()
+    assert not app.exception, [e.value for e in app.exception]
+    assert any("**Mode 1:** lengthwise" in c.value for c in app.caption)
+    assert "Buckling mode CSV" in [b.label for b in app.get("download_button")]

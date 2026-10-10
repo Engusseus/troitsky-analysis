@@ -11,6 +11,7 @@ from __future__ import annotations
 import html
 import io
 import math
+import textwrap
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -124,9 +125,11 @@ def bridge_figure(
     gov = result.governing_member if result is not None else None
     u_gov = res[gov].U if gov in res else None
 
+    slack = set(result.slack_members) if result is not None else set()
     lx, ly, lz, lc = [], [], [], []
     hx, hy, hz, hc, ht = [], [], [], [], []
     crit_x, crit_y, crit_z, crit_ids = [], [], [], []
+    sl_x, sl_y, sl_z = [], [], []
     for m in bridge.members:
         a, b = pos[m.i], pos[m.j]
         u = res[m.id].U * lf if m.id in res else 0.0  # utilisation at F_u,p
@@ -141,7 +144,8 @@ def bridge_figure(
                 u_gov is not None and m.id in res and res[m.id].U >= 0.999 * u_gov
                 and result.governing_mode != "deflection"
             )
-        target = (crit_x, crit_y, crit_z) if is_crit else (lx, ly, lz)
+        target = ((crit_x, crit_y, crit_z) if is_crit else
+                  (sl_x, sl_y, sl_z) if m.id in slack else (lx, ly, lz))
         for p in (a, b):
             x, y, z = _plot_xyz(p)
             target[0].append(x), target[1].append(y), target[2].append(z)
@@ -181,6 +185,10 @@ def bridge_figure(
         line_kw.update(color=SERIES if view in ("deformed", "buckling") else NEUTRAL)
     traces.append(go.Scatter3d(x=lx, y=ly, z=lz, mode="lines", line=line_kw, hoverinfo="skip",
                                name="members", showlegend=False))
+    if sl_x:  # tension-only members left out in compression: drawn, but not as members
+        traces.append(go.Scatter3d(x=sl_x, y=sl_y, z=sl_z, mode="lines",
+                                   line=dict(color=NEUTRAL, width=3, dash="dash"),
+                                   hoverinfo="skip", name="slack", showlegend=False))
     if crit_ids:
         traces.append(go.Scatter3d(x=crit_x, y=crit_y, z=crit_z, mode="lines",
                                    line=dict(color=CRITICAL, width=9), hoverinfo="skip",
@@ -188,10 +196,13 @@ def bridge_figure(
         first = bridge.members[[m.id for m in bridge.members].index(crit_ids[0])]
         lab = _plot_xyz((pos[first.i] + pos[first.j]) / 2)
         # Label at table level under the member, where the clear-span box keeps space free.
+        # Global buckling is a mode of the whole bridge; the member only holds most energy.
+        text = (f"global buckling; most mode energy in {crit_ids[0]}"
+                if result.governing_mode == "global_buckling" else
+                f"governs: {', '.join(crit_ids[:2])}{'…' if len(crit_ids) > 2 else ''}")
         traces.append(go.Scatter3d(
             x=[lab[0]], y=[lab[1]], z=[15.0], mode="text",
-            text=[html.escape(f"governs: {', '.join(crit_ids[:2])}"
-                              f"{'…' if len(crit_ids) > 2 else ''}")],
+            text=[html.escape(text)],
             textfont=dict(color=CRITICAL, size=13), hoverinfo="skip", showlegend=False))
     traces.append(go.Scatter3d(
         x=hx, y=hy, z=hz, mode="markers", hovertext=ht, hoverinfo="text", name="",
@@ -216,9 +227,11 @@ def bridge_figure(
                                showlegend=False, name="supports"))
     d = bridge.deck
     zc = d.z_center_mm
+    kind = ("non-structural" if d.diaphragm is None
+            else f"shear diaphragm, G = {d.diaphragm.G_MPa:g} MPa")
     traces.append(_quad(d.x_start_mm, d.x_end_mm, zc - d.clear_width_mm / 2,
                         zc + d.clear_width_mm / 2, d.top_elevation_mm, DECK, "deck", 0.35,
-                        f"Deck (non-structural): {d.length_mm:.0f} × {d.clear_width_mm:.0f} mm, "
+                        f"Deck ({kind}): {d.length_mm:.0f} × {d.clear_width_mm:.0f} mm, "
                         f"top at {d.top_elevation_mm:.0f} mm"))
     from bridgesim.loads import plate_placement
 
@@ -361,6 +374,7 @@ def member_chain_diagrams(
     the previous member), whichever way round its i and j ends were written, so the curves
     join up. Axial force is tension-positive; the moment is positive when it puts the
     member's local -y face in tension (sagging, for horizontal members), and V_y = dM/dx.
+    Slack tension-only members are drawn with zero forces.
     """
     load = result.Fu_pred_N if load_N is None else load_N
     k = load / result.P_ref_N
@@ -368,6 +382,7 @@ def member_chain_diagrams(
     xs, N, V, M, bounds = [], [], [], [], [0.0]
     offset = 0.0
     nodes = result.bridge.node_map()
+    slack = set(result.slack_members)
     for mid, rev in zip(member_ids, _chain_reversed(result.bridge, member_ids), strict=True):
         pm = model.members[mid]
         L = pm.L()
@@ -378,14 +393,19 @@ def member_chain_diagrams(
             a, b = nodes[m.i].xyz, nodes[m.j].xyz
             fwd, back = local_axes(a, b), local_axes(b, a)
             sv, sm = -float(back[1] @ fwd[1]), -float(back[2] @ fwd[2])
-        # Sampled in ascending x (Pynite needs that across a member's elements), then
-        # reversed for a member read j -> i: its values at L - x.
-        o = slice(None, None, -1 if rev else 1)
-        N.append(-pm.axial_array(41, COMBO, x_array=xa)[1][o] * k)
-        V.append(pm.shear_array("Fy", 41, COMBO, x_array=xa)[1][o] * k * sv)
-        # Pynite reports sagging as negative M_z; plot sagging positive (as the whole-bridge
-        # diagram does). Pynite's V_y then equals dM/dx along the member, as plotted.
-        M.append(-pm.moment_array("Mz", 41, COMBO, x_array=xa)[1][o] * k * sm)
+        if mid in slack:
+            # Left out of the analysis, so it carries nothing. Pynite would still report
+            # forces worked out from its end movements.
+            N.append(np.zeros_like(xa)), V.append(np.zeros_like(xa)), M.append(np.zeros_like(xa))
+        else:
+            # Sampled in ascending x (Pynite needs that across a member's elements), then
+            # reversed for a member read j -> i: its values at L - x.
+            o = slice(None, None, -1 if rev else 1)
+            N.append(-pm.axial_array(41, COMBO, x_array=xa)[1][o] * k)
+            V.append(pm.shear_array("Fy", 41, COMBO, x_array=xa)[1][o] * k * sv)
+            # Pynite reports sagging as negative M_z; plot sagging positive (as the
+            # whole-bridge diagram does). Pynite's V_y then equals dM/dx, as plotted.
+            M.append(-pm.moment_array("Mz", 41, COMBO, x_array=xa)[1][o] * k * sm)
         xs.append(xa + offset)
         offset += L
         bounds.append(offset)
@@ -411,6 +431,46 @@ def member_diagrams_figure(
     fig.suptitle(f"{_mpl_text(title)} at {n_to_kgf(load):.0f} kgf crusher load "
                  "(local member axes)",
                  fontsize=11, color="#0b0b0b")
+    return fig
+
+
+def buckling_mode_figure(result: AnalysisResult) -> Figure | None:
+    """Plan (X-Z) and elevation (X-Y) of the first global buckling mode, drawn over the
+    undeformed bridge in grey, at the same exaggeration as the 3D view. None if there is
+    no mode (nothing in compression, or the eigen-solver failed)."""
+    buck = result.buckling
+    if buck is None or not buck.mode_mm:
+        return None
+    bridge = result.bridge
+    nodes = {n.id: np.array(n.xyz, float) for n in bridge.nodes}
+    xs = [p[0] for p in nodes.values()]
+    s = 0.06 * ((max(xs) - min(xs)) or 1.0)
+    pos = {k: v + s * np.array(buck.mode_mm.get(k, (0, 0, 0))) for k, v in nodes.items()}
+    active = [m for m in bridge.members if m.id not in set(result.slack_members)]
+    pts = np.array([*nodes.values(), *pos.values()])
+    lo, hi = pts.min(axis=0) - 0.3 * s, pts.max(axis=0) + 0.3 * s
+    # Equal scales on both views, so each panel's height follows the bridge's extent.
+    fig = Figure(figsize=(8, 6.4), dpi=150, layout="constrained")
+    axs = fig.subplots(2, 1, height_ratios=[hi[2] - lo[2], hi[1] - lo[1]])
+    for ax, k, name, label in ((axs[0], 2, "Plan (from above)", "Z across (mm)"),
+                               (axs[1], 1, "Elevation (from the side)", "Y up (mm)")):
+        for members, where, color, lw in ((bridge.members, nodes, GHOST, 0.8),
+                                         (active, pos, SERIES, 1.4)):
+            for m in members:
+                a, b = where[m.i], where[m.j]
+                ax.plot([a[0], b[0]], [a[k], b[k]], color=color, linewidth=lw)
+        ax.set_xlim(lo[0], hi[0])
+        ax.set_ylim(lo[k], hi[k])
+        ax.set_aspect("equal", adjustable="box")
+        _style_axis(ax, label)
+        ax.set_title(name, fontsize=9, color=INK, loc="left")
+    axs[1].set_xlabel("X along bridge (mm)", color=INK)
+    F = result.Fu_buckling_N
+    wrapped = textwrap.fill(f"Mode 1: {buck.description}", 100)
+    fig.suptitle(
+        f"{_mpl_text(bridge.name)}: first global buckling mode, F_cr = {n_to_kgf(F):,.0f} kgf "
+        f"({F:,.0f} N)\n{_mpl_text(wrapped)}\nGrey: undeformed. Blue: mode shape, exaggerated.",
+        fontsize=10, color="#0b0b0b")
     return fig
 
 

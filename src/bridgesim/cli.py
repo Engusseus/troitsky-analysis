@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import csv
+import io
 import math
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -29,6 +31,20 @@ RulesOpt = Annotated[str, typer.Option("--rules", "-r", help="Rules YAML path or
 
 #: Problems with an input file: reported in one short message, exit code 2.
 BAD_INPUT = (ValidationError, ValueError, yaml.YAMLError, UnicodeDecodeError, OSError)
+
+
+@app.callback()
+def _utf8_output() -> None:
+    """Write console output as UTF-8, before any command prints.
+
+    When stdout is a pipe or a file, Python on Windows encodes it with the ANSI code page
+    (cp1252), so "§" leaves as the single byte 0xA7, which PowerShell, CI logs and most
+    viewers (all UTF-8) cannot decode. Reconfiguring here, rather than in a wrapper around
+    ``app``, also fixes console scripts installed before this change.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def _fail(what: str, exc: BaseException) -> None:
@@ -104,10 +120,16 @@ def run(
     typer.echo(f"\n{printable(bridge.name)}  (bridgesim {__version__})")
     typer.echo(f"  Predicted ultimate load F_u,p : {n_to_kgf(res.Fu_pred_N):8.1f} kgf "
                f"({res.Fu_pred_N:.0f} N)")
-    gov = f" in {printable(res.governing_member)}" if res.governing_member else ""
-    typer.echo(f"  Governing                     : {res.governing_label}{gov}")
+    typer.echo(f"  Governing                     : {res.governing_label}"
+               f"{printable(res.governing_detail)}")
     typer.echo(f"  Limits: strength {_kgf(res.Fu_strength_N)}, deflection "
                f"{_kgf(res.Fu_deflection_N)}, global buckling {_kgf(res.Fu_buckling_N)}")
+    modes = res.buckling_load_table() if math.isfinite(res.Fu_buckling_N) else []
+    if modes:
+        typer.echo(f"  Global buckling mode 1        : {printable(modes[0]['shape'])}")
+    if len(modes) > 1:
+        typer.echo("  Next global buckling loads    : " + ", ".join(
+            f"{row['F_cr_kgf']:.1f} kgf (mode {row['mode']})" for row in modes[1:]))
     typer.echo(f"  Deflection at F_u,p           : {res.delta_at_Fu_mm:.1f} mm "
                f"(limit {res.deflection_limit_mm:g})")
     extra = (f", incl. {res.mass.extra_kg:.2f} kg extra wood"
@@ -119,6 +141,8 @@ def run(
     for m in res.critical_members(5):
         typer.echo(f"    {printable(m.id):<10} {m.group:<13} U = {m.U * res.load_factor:5.2f}  "
                    f"{m.util.mode_label}")
+    if res.slack_members:
+        typer.echo(f"  Note: {printable(res.slack_note)}")
     for w in res.warnings:
         typer.secho(f"  WARNING: {printable(w)}", fg=typer.colors.YELLOW)
     _print_rules(rep)
@@ -129,14 +153,24 @@ def run(
         out.mkdir(parents=True, exist_ok=True)
         (out / "report.md").write_text(report.to_markdown(res, rep), encoding="utf-8")
         (out / "report.html").write_text(report.to_html(res, rep), encoding="utf-8")
-        rows = res.member_table()
-        with (out / "members.csv").open("w", newline="", encoding="utf-8") as fh:
-            w = csv.DictWriter(fh, fieldnames=list(rows[0]))
-            w.writeheader()
-            w.writerows(csv_row(r) for r in rows)
-        (out / "sfd_bmd_global.png").write_bytes(
-            viz.figure_png(viz.global_sfd_bmd_figure(res)))
-        typer.echo(f"\nWrote report.md, report.html, members.csv, sfd_bmd_global.png to {out}")
+        written = ["report.md", "report.html"]
+        tables = {"members.csv": res.member_table()}
+        if modes:
+            tables |= {"buckling_mode.csv": res.buckling_mode_table(1),
+                       "buckling_loads.csv": modes}
+        for name, rows in tables.items():
+            with (out / name).open("w", newline="", encoding="utf-8") as fh:
+                w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+                w.writeheader()
+                w.writerows(csv_row(r) for r in rows)
+            written.append(name)
+        figures = {"sfd_bmd_global.png": viz.global_sfd_bmd_figure(res)}
+        if modes:
+            figures["buckling_mode.png"] = viz.buckling_mode_figure(res)
+        for name, fig in figures.items():
+            (out / name).write_bytes(viz.figure_png(fig))
+            written.append(name)
+        typer.echo(f"\nWrote {', '.join(written)} to {out}")
 
 
 @app.command()

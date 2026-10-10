@@ -315,7 +315,11 @@ def _results_card(r: AnalysisResult) -> None:
         f", incl. {r.mass.extra_kg:.2f} kg of extra wood (gussets, plates)"
         if r.mass.extra_kg >= 0.005 else ""))
     c2.metric("η_s = F_u/m", f"{r.efficiency:,.0f}", help="kgf per kg (rulebook §12.6)")
-    gov = r.governing_label + (f" in **{md(r.governing_member)}**" if r.governing_member else "")
+    if r.governing_mode == "global_buckling" and r.buckling and r.buckling.description:
+        gov = f"{r.governing_label} ({md(r.buckling.description)})"
+    else:
+        gov = r.governing_label + (f" in **{md(r.governing_member)}**"
+                                   if r.governing_member else "")
     st.markdown(f"**Governs:** {gov}")
     pct = r.delta_at_Fu_mm / r.deflection_limit_mm
     st.markdown(f"**δ at F_u,p:** {r.delta_at_Fu_mm:.1f} / {r.deflection_limit_mm:g} mm")
@@ -327,6 +331,8 @@ def _results_card(r: AnalysisResult) -> None:
 
     st.caption(f"Limits: strength {lim(r.Fu_strength_N)} · deflection "
                f"{lim(r.Fu_deflection_N)} · global buckling {lim(r.Fu_buckling_N)}")
+    if r.slack_members:
+        st.info(md(r.slack_note), icon="➖")
     for w in r.warnings:
         st.warning(md(w), icon="⚠️")
 
@@ -377,11 +383,19 @@ def _viewport(bridge: Bridge, r: AnalysisResult | None) -> None:
     st.plotly_chart(fig, **_stretch())
     if views[label] == "utilization":
         st.caption("Members coloured by utilisation at the predicted failure load "
-                   "(1.0 = fails). Red = governing member. Hover a member for its forces.")
+                   "(1.0 = fails). Red = governing member. Hover a member for its forces."
+                   + (" Dashed grey = slack tension-only member, left out in compression."
+                      if r is not None and r.slack_members else ""))
     elif views[label] == "buckling":
+        modes = r.buckling_load_table() if r is not None else []
+        shape = (f" **Mode 1:** {md(modes[0]['shape'])}." if modes else "")
+        nxt = ("  \nNext global buckling loads: " + ", ".join(
+            f"{m['F_cr_kgf']:,.0f} kgf (mode {m['mode']}: {md(m['shape'])})"
+            for m in modes[1:]) + "." if len(modes) > 1 else "")
         st.caption("First global (system) buckling mode from a linear eigenvalue analysis. "
                    "Darker members take a larger share of the mode's strain energy. Elastic, "
-                   "perfectly straight sticks: real crooked sticks buckle earlier.")
+                   "perfectly straight sticks: real crooked sticks buckle earlier."
+                   + shape + nxt)
 
 
 def _critical_table(r: AnalysisResult) -> None:
@@ -505,7 +519,7 @@ def _metrics(r: AnalysisResult, rep: RulesReport) -> dict:
         "F_u,p (kgf)": round(r.Fu_pred_kgf, 1),
         "Mass (kg)": round(r.mass.total_kg, 2),
         "η_s (kgf/kg)": round(r.efficiency, 1),
-        "Governs": r.governing_label + (f" in {r.governing_member}" if r.governing_member else ""),
+        "Governs": r.governing_label + r.governing_detail,
         "δ at F_u,p (mm)": round(r.delta_at_Fu_mm, 1),
         "Global buckling (kgf)": round(n_to_kgf(r.Fu_buckling_N), 0)
         if math.isfinite(r.Fu_buckling_N)
@@ -540,6 +554,15 @@ def _export(bridge: Bridge, r: AnalysisResult, rep: RulesReport) -> None:
         rw.writerow([csv_cell(v) for v in (x.section, x.title, x.measured_detail, x.limit,
                                            x.passed, x.penalty, " ".join(x.bans), x.note)])
     c2.download_button("Rule check CSV", rbuf.getvalue(), "rules.csv", "text/csv")
+    mode_rows = r.buckling_mode_table(1) if math.isfinite(r.Fu_buckling_N) else []
+    if mode_rows:
+        mbuf = io.StringIO()
+        mw = csv.DictWriter(mbuf, fieldnames=list(mode_rows[0]))
+        mw.writeheader()
+        mw.writerows(csv_row(x) for x in mode_rows)
+        c2.download_button("Buckling mode CSV", mbuf.getvalue(), "buckling_mode.csv",
+                           "text/csv", help="Node movements in the first global buckling "
+                                            "mode (largest movement = 1).")
     c3.download_button("Report (HTML)", report.to_html(r, rep), "design_validation.html",
                        "text/html", help="Assumptions, Method, Results (§10.2). Print to PDF.")
     c3.download_button("Report (Markdown)", report.to_markdown(r, rep), "design_validation.md",

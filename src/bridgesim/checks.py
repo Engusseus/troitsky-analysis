@@ -1,6 +1,7 @@
 """Member and joint capacity checks (linear, at the reference load).
 
-Capacities (wood parallel to grain, all strengths from the material file):
+Capacities (wood parallel to grain; E and strengths from the material file, or from the
+section where it sets its own, see ``Section.value``):
 
 * tension            N_t,R = f_t A
 * compression        N_c,R = min(f_c A, P_cr),  P_cr = pi^2 E I_min / (K L)^2
@@ -39,6 +40,7 @@ MODE_LABELS = {
     "joint": "glued joint shear",
     "deflection": "deflection limit",  # AnalysisResult.governing_label adds the limit
     "global_buckling": "global elastic buckling (instability)",
+    "slack": "slack: tension-only member left out in compression",
 }
 
 
@@ -74,13 +76,14 @@ def capacities(
     tau = glue.tau_g_MPa.value
     F_joint = (tau * glue_area_mm2 if glue_area_mm2 is not None
                else tau * glue.overlap_mm.value * w * glue.faces.value)
+    f_b = section.value("f_b_MPa", material)
     return Capacities(
-        N_t_R=material.f_t_MPa.value * pr.A_mm2,
-        N_c_crush=material.f_c_MPa.value * pr.A_mm2,
-        P_cr=euler_critical_load(material.E_MPa.value, pr.I_min_mm4, L_mm, K),
-        M_R_y=material.f_b_MPa.value * pr.Sy_mm3,
-        M_R_z=material.f_b_MPa.value * pr.Sz_mm3,
-        V_R=material.f_v_MPa.value * pr.A_mm2 / 1.5,
+        N_t_R=section.value("f_t_MPa", material) * pr.A_mm2,
+        N_c_crush=section.value("f_c_MPa", material) * pr.A_mm2,
+        P_cr=euler_critical_load(section.value("E_MPa", material), pr.I_min_mm4, L_mm, K),
+        M_R_y=f_b * pr.Sy_mm3,
+        M_R_z=f_b * pr.Sz_mm3,
+        V_R=section.value("f_v_MPa", material) * pr.A_mm2 / 1.5,
         F_joint_R=F_joint,
     )
 

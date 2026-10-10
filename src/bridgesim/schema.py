@@ -213,11 +213,19 @@ class Node(_Strict):
         return (self.x_mm, self.y_mm, self.z_mm)
 
 
+#: Material values a section may set for itself, overriding the bridge material.
+SECTION_OVERRIDES = ("E_MPa", "G_MPa", "f_t_MPa", "f_c_MPa", "f_b_MPa", "f_v_MPa")
+
+
 class Section(_Strict):
     """Either a stick stack ``{sticks, layout}`` or an explicit rectangle ``{b_mm, d_mm}``.
 
     ``d`` is the depth in the member's primary bending plane (local y): vertical for
     horizontal members, in the truss plane for truss members. See ``sections.py``.
+
+    A section made of something other than sticks laid along the member (a 0/90 or +/-45
+    cross-laminated plate, another wood) can set its own E, G and strengths; any value it
+    leaves out comes from the bridge material. Bounds match ``Material``.
     """
 
     id: str
@@ -225,6 +233,12 @@ class Section(_Strict):
     layout: Literal["flat", "on_edge"] | None = None
     b_mm: float | None = Field(None, ge=MIN_SIZE_MM, le=MAX_SIZE_MM)
     d_mm: float | None = Field(None, ge=MIN_SIZE_MM, le=MAX_SIZE_MM)
+    E_MPa: float | None = Field(None, ge=1, lt=1e6)
+    G_MPa: float | None = Field(None, ge=1, lt=1e6)
+    f_t_MPa: float | None = Field(None, ge=1e-3, lt=1e5)
+    f_c_MPa: float | None = Field(None, ge=1e-3, lt=1e5)
+    f_b_MPa: float | None = Field(None, ge=1e-3, lt=1e5)
+    f_v_MPa: float | None = Field(None, ge=1e-3, lt=1e5)
 
     _id = field_validator("id")(lambda cls, v: _identifier(v))
 
@@ -257,6 +271,15 @@ class Section(_Strict):
             return f"{self.sticks} sticks {self.layout}"
         return f"{self.b_mm:g} x {self.d_mm:g} mm"
 
+    def overrides(self) -> dict[str, float]:
+        """The material values this section sets for itself."""
+        return {k: v for k in SECTION_OVERRIDES if (v := getattr(self, k)) is not None}
+
+    def value(self, key: str, material: Material) -> float:
+        """``key`` (one of SECTION_OVERRIDES) for this section: its own, else the material's."""
+        own = getattr(self, key)
+        return float(own) if own is not None else getattr(material, key).value
+
 
 class Member(_Strict):
     id: str
@@ -271,6 +294,11 @@ class Member(_Strict):
         description="Glued area at each end (mm^2), e.g. under a gusset. Replaces the "
                     "material's overlap x width x faces, and the joint is checked even if "
                     "the member's group is otherwise treated as continuous.")
+    tension_only: bool = Field(
+        False,
+        description="A slender brace or strap that bows elastically in compression without "
+                    "failing. If it would be in compression it is left out and the bridge is "
+                    "re-analysed without it; in tension it is checked as usual.")
 
     _id = field_validator("id", "i", "j", "section")(lambda cls, v: _identifier(v))
 
@@ -290,8 +318,38 @@ class ExtraWood(_Strict):
     _id = field_validator("id")(lambda cls, v: _identifier(v))
 
 
+#: Stations of the two diaphragm edges must line up along X within this distance (mm).
+DIAPHRAGM_X_TOL_MM = 1.0
+
+
+class Diaphragm(_Strict):
+    """The deck plate working as a shear panel in its own plane, between the trusses.
+
+    It is glued to the trusses at the ``connected_to`` nodes. They form two edges, one on
+    each side of the deck centreline (``Deck.z_center_mm``), with one node per station
+    along X on each edge. Each panel between neighbouring stations is modelled by two
+    pin-ended equivalent diagonals with the panel's shear stiffness (``model.py``). Its
+    out-of-plane bending is not modelled, and it is not checked for strength.
+    """
+
+    G_MPa: float = Field(ge=1, lt=1e6, description="In-plane shear modulus of the deck plate")
+    thickness_mm: float | None = Field(
+        None, ge=MIN_SIZE_MM, le=MAX_SIZE_MM,
+        description="Plate thickness for the shear stiffness (default: the deck thickness)")
+    connected_to: list[str] = Field(min_length=4, max_length=MAX_NODES)
+
+    @field_validator("connected_to")
+    @classmethod
+    def _unique(cls, v: list[str]) -> list[str]:
+        dup = sorted({n for n in v if v.count(n) > 1})
+        if dup:
+            raise ValueError(f"Nodes listed twice: {dup}")
+        return v
+
+
 class Deck(_Strict):
-    """Non-structural deck surface. Used for load placement, measurements and mass."""
+    """Deck surface, used for load placement, measurements and mass. Non-structural unless
+    ``diaphragm`` is given."""
 
     x_start_mm: float = Field(ge=-MAX_COORD_MM, le=MAX_COORD_MM)
     x_end_mm: float = Field(ge=-MAX_COORD_MM, le=MAX_COORD_MM)
@@ -299,6 +357,7 @@ class Deck(_Strict):
     clear_width_mm: float = Field(ge=MIN_SIZE_MM, le=MAX_COORD_MM)
     thickness_mm: float = Field(2.0, ge=MIN_SIZE_MM, le=MAX_SIZE_MM)
     z_center_mm: float = Field(0.0, ge=-MAX_COORD_MM, le=MAX_COORD_MM)
+    diaphragm: Diaphragm | None = None
 
     @model_validator(mode="after")
     def _ordered(self) -> Deck:
@@ -345,6 +404,22 @@ class PlateLoad(_Strict):
         min_length=1,
         description="Nodes the deck bears on along its centreline (e.g. floor-beam centres)",
     )
+
+
+def _node_inside(ids: list[str], P: np.ndarray, a: np.ndarray, b: np.ndarray) -> str | None:
+    """The first node (ids, coordinates P) lying strictly inside segment a-b, if any."""
+    v = b - a
+    L = float(np.linalg.norm(v))
+    lo, hi = np.minimum(a, b) - 1e-6, np.maximum(a, b) + 1e-6
+    near = np.all((P >= lo) & (P <= hi), axis=1)
+    if not near.any():
+        return None
+    d = P[near] - a
+    t = d @ v / L
+    perp = np.linalg.norm(d - np.outer(t, v / L), axis=1)
+    inside = (t > 1e-6) & (t < L - 1e-6) & (perp < 1e-6 + 1e-9 * L)
+    hits = np.flatnonzero(inside)
+    return [n for n, keep in zip(ids, near, strict=True) if keep][hits[0]] if hits.size else None
 
 
 class Bridge(_Strict):
@@ -400,12 +475,25 @@ class Bridge(_Strict):
         for nid in support_nodes + self.load.deck_support_nodes:
             if nid not in nodes:
                 raise ValueError(f"Unknown node {nid!r} in supports/load")
+        if self.deck.diaphragm is not None:
+            for nid in self.deck.diaphragm.connected_to:
+                if nid not in nodes:
+                    raise ValueError(f"Unknown node {nid!r} in deck diaphragm connected_to")
         translational = any(d in ("DX", "DY", "DZ")
                             for dofs in self.supports.extra_restraints.values() for d in dofs)
         if not self.supports.pinned and not translational:
             raise ValueError("At least one pinned support (or a translational extra "
                              "restraint) is required")
         self._check_no_hidden_joints(nodes)
+        ids, P = list(nodes), np.array([n.xyz for n in nodes.values()])
+        for i, j in self.diaphragm_diagonals():
+            nid = _node_inside(ids, P, np.array(nodes[i].xyz), np.array(nodes[j].xyz))
+            if nid is not None:
+                raise ValueError(
+                    f"Node {nid!r} lies on the deck diaphragm's diagonal from {i!r} to {j!r}, "
+                    f"so the model would join them. Move the node, or change the diaphragm's "
+                    f"connected_to nodes."
+                )
         return self
 
     def _check_no_hidden_joints(self, nodes: dict[str, Node]) -> None:
@@ -414,28 +502,55 @@ class Bridge(_Strict):
         Pynite splits a member at every model node on its line, which would silently add a
         rigid joint the file never declared. Split the member at that node explicitly.
         """
-        if not self.members:
-            return
-        ids = list(nodes)
-        P = np.array([nodes[n].xyz for n in ids])
+        ids, P = list(nodes), np.array([n.xyz for n in nodes.values()])
         for m in self.members:
-            a, b = np.array(nodes[m.i].xyz), np.array(nodes[m.j].xyz)
-            v = b - a
-            L = float(np.linalg.norm(v))
-            lo, hi = np.minimum(a, b) - 1e-6, np.maximum(a, b) + 1e-6
-            near = np.all((P >= lo) & (P <= hi), axis=1)
-            if not near.any():
-                continue
-            d = P[near] - a
-            t = d @ v / L
-            perp = np.linalg.norm(d - np.outer(t, v / L), axis=1)
-            inside = (t > 1e-6) & (t < L - 1e-6) & (perp < 1e-6 + 1e-9 * L)
-            for k in np.flatnonzero(inside):
-                nid = [n for n, keep in zip(ids, near, strict=True) if keep][k]
+            nid = _node_inside(ids, P, np.array(nodes[m.i].xyz), np.array(nodes[m.j].xyz))
+            if nid is not None:
                 raise ValueError(
                     f"Node {nid!r} lies on member {m.id!r} but the member does not connect to "
                     f"it. Split {m.id!r} at {nid!r} into two members, or move the node."
                 )
+
+    def diaphragm_panels(self) -> list[tuple[str, str, str, str]]:
+        """Deck diaphragm panels along X as (near start, near end, far start, far end).
+
+        "Near" is the -Z side of the deck centreline, "far" the +Z side. Empty if the deck is
+        not a diaphragm. Raises ValueError if the nodes do not form two matching edges.
+        """
+        dia = self.deck.diaphragm
+        if dia is None:
+            return []
+        nodes = self.node_map()
+        zc = self.deck.z_center_mm
+        on_line = [n for n in dia.connected_to if nodes[n].z_mm == zc]
+        if on_line:
+            raise ValueError(
+                f"Deck diaphragm: {on_line} lie on the deck centreline (z = {zc:g} mm). List "
+                "the nodes where the deck is glued to the trusses, on both sides.")
+        near = sorted((n for n in dia.connected_to if nodes[n].z_mm < zc),
+                      key=lambda n: nodes[n].x_mm)
+        far = sorted((n for n in dia.connected_to if nodes[n].z_mm > zc),
+                     key=lambda n: nodes[n].x_mm)
+        if len(near) != len(far) or len(near) < 2:
+            raise ValueError(
+                f"Deck diaphragm: {len(near)} node(s) on the -Z side and {len(far)} on the +Z "
+                "side. Give one node on each side at every station along the bridge (at least "
+                "two stations).")
+        for a, b in zip(near, far, strict=True):
+            if abs(nodes[a].x_mm - nodes[b].x_mm) > DIAPHRAGM_X_TOL_MM:
+                raise ValueError(
+                    f"Deck diaphragm: stations do not line up across the deck: {a!r} is at x = "
+                    f"{nodes[a].x_mm:g} mm but {b!r} at x = {nodes[b].x_mm:g} mm.")
+        for edge in (near, far):
+            for a, b in zip(edge, edge[1:], strict=False):
+                if nodes[b].x_mm - nodes[a].x_mm <= DIAPHRAGM_X_TOL_MM:
+                    raise ValueError(f"Deck diaphragm: {a!r} and {b!r} are at the same station "
+                                     f"on one side of the deck.")
+        return [(near[k], near[k + 1], far[k], far[k + 1]) for k in range(len(near) - 1)]
+
+    def diaphragm_diagonals(self) -> list[tuple[str, str]]:
+        """End nodes of the two crossing diagonals of every deck diaphragm panel."""
+        return [d for n0, n1, f0, f1 in self.diaphragm_panels() for d in ((n0, f1), (f0, n1))]
 
     # ------------------------------------------------------------------ helpers
     def node_map(self) -> dict[str, Node]:
@@ -471,6 +586,8 @@ class Bridge(_Strict):
                 m.pop("releases", None)
             if m.get("K") == 1.0:
                 m.pop("K")
+            if not m.get("tension_only"):
+                m.pop("tension_only", None)
         return yaml.safe_dump(
             data, sort_keys=False, allow_unicode=True, default_flow_style=None, width=120
         )
