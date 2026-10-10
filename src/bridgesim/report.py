@@ -290,14 +290,14 @@ def model_assumptions(result: AnalysisResult) -> list[str]:
                 "crusher-plate load to the floor-beam centre nodes as simply supported strips.")
         general = [deck if a.startswith("The deck is non-structural") else a for a in general]
     out = [f"Material “{m.name}”: {vals}. {src}.", crusher, k_line, mesh]
-    own = [s for s in result.bridge.sections if s.overrides()]
-    if own:
+    own_mat = [s for s in result.bridge.sections if s.overrides()]
+    if own_mat:
         listed = "; ".join(
             f"{s.id} ({', '.join(f'{k} = {v:g}' for k, v in s.overrides().items())})"
-            for s in own[:12])
+            for s in own_mat[:12])
         out.append(f"Sections with their own material values (MPa), used for their stiffness "
                    f"and capacities; anything not listed comes from the bridge material: "
-                   f"{listed}{f'; … ({len(own)} in total)' if len(own) > 12 else ''}.")
+                   f"{listed}{f'; … ({len(own_mat)} in total)' if len(own_mat) > 12 else ''}.")
     t_only = [mem.id for mem in result.bridge.members if mem.tension_only]
     if t_only:
         out.append(
