@@ -82,7 +82,13 @@ The app shows a banner and an *assumed* badge on every value until you mark it *
     $P_{cr} = \pi^2 E I_{min}/(KL)^2$; $M_R = f_b S$; $V_R = f_v A / 1.5$.
 15. **Buckling** uses the full member length, K = 1 (editable per member) and the weaker
     axis. Conservative for chords braced at every node; unconservative for crooked
-    sticks (imperfections arrive in v0.2).
+    sticks (imperfections arrive in v0.2). A member marked `tension_only` (a slender brace
+    or strap) is assumed to bow elastically in compression without failing: any that would
+    be in compression is left out, and the static and global buckling analyses are
+    repeated without it (Pynite's tension-only iteration, which never puts a member back).
+    It is reported as *slack*, with zero forces; in tension it is checked as usual. A
+    bowed brace straightens and works again after a very small movement, so leaving it out
+    of the buckling analysis is conservative.
 16. **Interaction**: $U = |N|/N_R + |M_y|/M_{R,y} + |M_z|/M_{R,z}$, linear, without moment
     amplification. Member shear (resultant of the two local shears, $1.5V/A \le f_v$)
     and glued-joint shear are separate checks.

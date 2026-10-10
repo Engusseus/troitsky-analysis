@@ -327,6 +327,8 @@ def _results_card(r: AnalysisResult) -> None:
 
     st.caption(f"Limits: strength {lim(r.Fu_strength_N)} · deflection "
                f"{lim(r.Fu_deflection_N)} · global buckling {lim(r.Fu_buckling_N)}")
+    if r.slack_members:
+        st.info(md(r.slack_note), icon="➖")
     for w in r.warnings:
         st.warning(md(w), icon="⚠️")
 
@@ -377,7 +379,9 @@ def _viewport(bridge: Bridge, r: AnalysisResult | None) -> None:
     st.plotly_chart(fig, **_stretch())
     if views[label] == "utilization":
         st.caption("Members coloured by utilisation at the predicted failure load "
-                   "(1.0 = fails). Red = governing member. Hover a member for its forces.")
+                   "(1.0 = fails). Red = governing member. Hover a member for its forces."
+                   + (" Dashed grey = slack tension-only member, left out in compression."
+                      if r is not None and r.slack_members else ""))
     elif views[label] == "buckling":
         st.caption("First global (system) buckling mode from a linear eigenvalue analysis. "
                    "Darker members take a larger share of the mode's strain energy. Elastic, "

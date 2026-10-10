@@ -135,6 +135,8 @@ def run(
     for m in res.critical_members(5):
         typer.echo(f"    {printable(m.id):<10} {m.group:<13} U = {m.U * res.load_factor:5.2f}  "
                    f"{m.util.mode_label}")
+    if res.slack_members:
+        typer.echo(f"  Note: {printable(res.slack_note)}")
     for w in res.warnings:
         typer.secho(f"  WARNING: {printable(w)}", fg=typer.colors.YELLOW)
     _print_rules(rep)

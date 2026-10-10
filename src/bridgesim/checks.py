@@ -39,6 +39,7 @@ MODE_LABELS = {
     "joint": "glued joint shear",
     "deflection": "deflection limit",  # AnalysisResult.governing_label adds the limit
     "global_buckling": "global elastic buckling (instability)",
+    "slack": "slack: tension-only member left out in compression",
 }
 
 

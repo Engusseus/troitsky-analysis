@@ -16,6 +16,11 @@
   no other member), which Pynite uses to split it into two elements. Static results are
   unchanged (cubic frame elements are exact for end loads), but the global buckling
   analysis gets two elements per member: with one, F_cr is about 2 % too high.
+* ``tension_only`` members are passed to Pynite as tension-only, so its iterative analysis
+  (``FEModel3D.analyze``) leaves out any that would be in compression, from the stiffness
+  and from the geometric stiffness alike. They are not split: an interior node of a member
+  that drops out would be left with no stiffness. Being in tension whenever they are
+  active, they never need the finer buckling mesh.
 """
 
 from __future__ import annotations
@@ -94,7 +99,8 @@ def build_model(bridge: Bridge, material: Material, P_N: float | None = None) ->
         m.add_section(s.id, A=pr.A_mm2, Iy=pr.Iy_mm4, Iz=pr.Iz_mm4, J=pr.J_mm4)
 
     for mem in bridge.members:
-        m.add_member(mem.id, mem.i, mem.j, _MATERIAL, mem.section)
+        m.add_member(mem.id, mem.i, mem.j, _MATERIAL, mem.section,
+                     tension_only=mem.tension_only)
         rel = member_releases(bridge, mem)
         if rel:
             m.def_releases(mem.id, **{r: True for r in rel})
@@ -103,11 +109,15 @@ def build_model(bridge: Bridge, material: Material, P_N: float | None = None) ->
         prefix = INTERIOR_PREFIX
         while any(n.id.startswith(prefix) for n in bridge.nodes):
             prefix = "~" + prefix
-        split = _interior_points(bridge)
+        tension_only = {mem.id for mem in bridge.members if mem.tension_only}
+        split = {mid: pt for mid, pt in _interior_points(bridge).items()
+                 if mid not in tension_only}
         for mid, (x, y, z) in split.items():
             m.add_node(prefix + mid, x, y, z)
     #: Members left as one element (model too large, or crossed at every split point).
-    m.unsplit_members = [mem.id for mem in bridge.members if mem.id not in split]
+    #: Tension-only members are never split (see the module docstring) and not listed.
+    m.unsplit_members = [mem.id for mem in bridge.members
+                         if mem.id not in split and not mem.tension_only]
 
     for nid in bridge.supports.pinned:
         m.def_support(nid, support_DX=True, support_DY=True, support_DZ=True)
@@ -122,3 +132,8 @@ def build_model(bridge: Bridge, material: Material, P_N: float | None = None) ->
         m.add_node_load(nid, "FY", -F, case=LOAD_CASE)
     m.add_load_combo(COMBO, {LOAD_CASE: 1.0})
     return m
+
+
+def splittable_count(bridge: Bridge) -> int:
+    """Members that the buckling mesh would split in two (all but tension-only ones)."""
+    return sum(not mem.tension_only for mem in bridge.members)

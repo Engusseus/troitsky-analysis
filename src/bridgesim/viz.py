@@ -124,9 +124,11 @@ def bridge_figure(
     gov = result.governing_member if result is not None else None
     u_gov = res[gov].U if gov in res else None
 
+    slack = set(result.slack_members) if result is not None else set()
     lx, ly, lz, lc = [], [], [], []
     hx, hy, hz, hc, ht = [], [], [], [], []
     crit_x, crit_y, crit_z, crit_ids = [], [], [], []
+    sl_x, sl_y, sl_z = [], [], []
     for m in bridge.members:
         a, b = pos[m.i], pos[m.j]
         u = res[m.id].U * lf if m.id in res else 0.0  # utilisation at F_u,p
@@ -141,7 +143,8 @@ def bridge_figure(
                 u_gov is not None and m.id in res and res[m.id].U >= 0.999 * u_gov
                 and result.governing_mode != "deflection"
             )
-        target = (crit_x, crit_y, crit_z) if is_crit else (lx, ly, lz)
+        target = ((crit_x, crit_y, crit_z) if is_crit else
+                  (sl_x, sl_y, sl_z) if m.id in slack else (lx, ly, lz))
         for p in (a, b):
             x, y, z = _plot_xyz(p)
             target[0].append(x), target[1].append(y), target[2].append(z)
@@ -181,6 +184,10 @@ def bridge_figure(
         line_kw.update(color=SERIES if view in ("deformed", "buckling") else NEUTRAL)
     traces.append(go.Scatter3d(x=lx, y=ly, z=lz, mode="lines", line=line_kw, hoverinfo="skip",
                                name="members", showlegend=False))
+    if sl_x:  # tension-only members left out in compression: drawn, but not as members
+        traces.append(go.Scatter3d(x=sl_x, y=sl_y, z=sl_z, mode="lines",
+                                   line=dict(color=NEUTRAL, width=3, dash="dash"),
+                                   hoverinfo="skip", name="slack", showlegend=False))
     if crit_ids:
         traces.append(go.Scatter3d(x=crit_x, y=crit_y, z=crit_z, mode="lines",
                                    line=dict(color=CRITICAL, width=9), hoverinfo="skip",

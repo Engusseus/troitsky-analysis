@@ -271,6 +271,11 @@ class Member(_Strict):
         description="Glued area at each end (mm^2), e.g. under a gusset. Replaces the "
                     "material's overlap x width x faces, and the joint is checked even if "
                     "the member's group is otherwise treated as continuous.")
+    tension_only: bool = Field(
+        False,
+        description="A slender brace or strap that bows elastically in compression without "
+                    "failing. If it would be in compression it is left out and the bridge is "
+                    "re-analysed without it; in tension it is checked as usual.")
 
     _id = field_validator("id", "i", "j", "section")(lambda cls, v: _identifier(v))
 
@@ -471,6 +476,8 @@ class Bridge(_Strict):
                 m.pop("releases", None)
             if m.get("K") == 1.0:
                 m.pop("K")
+            if not m.get("tension_only"):
+                m.pop("tension_only", None)
         return yaml.safe_dump(
             data, sort_keys=False, allow_unicode=True, default_flow_style=None, width=120
         )

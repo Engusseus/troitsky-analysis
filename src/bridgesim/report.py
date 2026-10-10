@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from bridgesim import PYNITE_VERSION, __version__
 from bridgesim.checks import MODE_LABELS
+from bridgesim.model import splittable_count
 from bridgesim.schema import MEMBER_GROUPS
 from bridgesim.textsafe import md, md_keep_bold, printable
 from bridgesim.units import N_PER_KGF, n_to_kgf
@@ -186,6 +187,8 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
         ("p", "Support reactions at F_u,p (N):"),
         ("table", ["Node", "FX", "FY (up +)", "FZ"], reac),
     ]
+    if r.slack_members:
+        blocks.append(("p", r.slack_note))
     if r.warnings:
         blocks.append(("ul", [f"⚠ {w}" for w in r.warnings]))
     if rules is not None:
@@ -243,7 +246,7 @@ def model_assumptions(result: AnalysisResult) -> list[str]:
     unsplit = result.buckling_unsplit_members
     if not unsplit:
         mesh = "Global buckling mesh: two elements per member."
-    elif len(unsplit) == len(result.bridge.members):
+    elif len(unsplit) == splittable_count(result.bridge):
         mesh = ("Global buckling mesh: one element per member (the model is too large to "
                 "refine), so F_cr may be a few percent too high.")
     else:
@@ -259,7 +262,18 @@ def model_assumptions(result: AnalysisResult) -> list[str]:
         glue += (f" Members with their own glued area per end, always checked: "
                  f"{', '.join(own[:12])}{f', … ({len(own)} in total)' if len(own) > 12 else ''}.")
     general = [f"{a} {glue}" if a.startswith("Glued joint") else a for a in MODEL_ASSUMPTIONS]
-    return [f"Material “{m.name}”: {vals}. {src}.", crusher, k_line, mesh, *general]
+    out = [f"Material “{m.name}”: {vals}. {src}.", crusher, k_line, mesh]
+    t_only = [mem.id for mem in result.bridge.members if mem.tension_only]
+    if t_only:
+        out.append(
+            f"Tension-only members ({', '.join(t_only[:12])}"
+            f"{f', … ({len(t_only)} in total)' if len(t_only) > 12 else ''}): slender braces "
+            "assumed to bow elastically in compression without failing. Any that would be in "
+            "compression are left out of the static and global buckling analyses and never "
+            "put back (Pynite's tension-only iteration); the others are checked as usual. A "
+            "bowed brace straightens and works again after a very small movement, so leaving "
+            "it out of the buckling analysis is conservative.")
+    return [*out, *general]
 
 
 # --------------------------------------------------------------------------- renderers

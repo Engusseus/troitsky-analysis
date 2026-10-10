@@ -126,6 +126,9 @@ def global_buckling(
     energy = {}
     for mem in bridge.members:
         pm = model.members[mem.id]
+        if not pm.active[COMBO]:  # a slack tension-only member is not in K or K_g
+            energy[mem.id] = 0.0
+            continue
         e = 0.0
         for sub in (pm.sub_members or {pm.name: pm}).values():  # the member's elements
             i, j = sub.i_node.ID * 6, sub.j_node.ID * 6

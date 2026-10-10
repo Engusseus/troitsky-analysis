@@ -165,6 +165,24 @@ That area then replaces the default, and the member's joints are checked even if
 group is otherwise treated as continuous. Base the number on the glued area you actually
 build, and on a joint test if you can.
 
+### Slender bracing: tension-only members
+
+Thin X-bracing straps get squeezed whenever the chords shorten under load. The member
+check would then report a strap that only bows elastically by a millimetre or two as the
+governing member, and adding bracing would seem to lower the predicted load. Mark such
+members as tension-only:
+
+```yaml
+- {id: tb0a, i: T0n, j: T1f, section: top_brace, group: top_brace, tension_only: true}
+```
+
+A tension-only member that would be in compression is left out, and the bridge is
+re-analysed without it, for the static analysis and the global buckling analysis alike.
+The results list these *slack* members, and the 3D view draws them dashed. In tension the
+member is checked like any other. Use the flag only for members that may bow without the
+bridge failing, not for ones the bridge needs to push (piers, posts, struts). When a
+brace governs by buckling, the results suggest the flag.
+
 ## v0.1 limitations
 
 Stated plainly:
@@ -174,7 +192,9 @@ Stated plainly:
   and batches.
 * **Linear, first-failure.** No P-Δ, no imperfections, no joint slip, no load
   redistribution after a member fails, and no contact-with-crusher failure. Real bridges
-  can carry more after a brace buckles, or less if they are crooked or badly glued.
+  can carry more after a brace buckles (mark slender braces
+  [tension-only](#slender-bracing-tension-only-members)), or less if they are crooked or
+  badly glued.
 * **Idealised joints and laminates.** Glue lines are perfect, splices are not weakened,
   and the joint check is a placeholder (a member under a gusset can state its own glued
   area, see [Gussets, plates and glued areas](#gussets-plates-and-glued-areas)).
