@@ -8,7 +8,7 @@ from bridgesim.analysis import AnalysisError, analyze
 from bridgesim.generators import generate_warren
 from bridgesim.report import model_assumptions, to_markdown
 from bridgesim.schema import Bridge
-from bridgesim.viz import bridge_figure
+from bridgesim.viz import bridge_figure, member_chain_diagrams
 
 STRAP = {"id": "top_brace", "b_mm": 19.0, "d_mm": 4.1}  # 2 jumbo sticks flat
 
@@ -109,3 +109,17 @@ def test_report_and_view_show_slack_members(slack_straps) -> None:
     slack_trace = next(t for t in fig.data if t.name == "slack")
     assert slack_trace.line.dash == "dash"
     assert sum(x is None for x in slack_trace.x) == len(slack_straps.slack_members)
+
+
+def test_diagrams_show_no_force_in_a_slack_member() -> None:
+    """Pynite still works out forces for a member it has switched off, from its end
+    movements; the poster diagrams must show the zero the analysis uses."""
+    data = generate_warren().model_dump(mode="json")
+    data["members"].append({"id": "cb", "i": "B0n", "j": "T1n", "section": "diagonal",
+                            "tension_only": True})  # a counter-diagonal, squeezed
+    r = analyze(Bridge.model_validate(data))
+    assert r.slack_members == ["cb"]
+    _, N, V, M, _ = member_chain_diagrams(r, ["cb"])
+    assert not N.any() and not V.any() and not M.any()
+    _, N, _, _, _ = member_chain_diagrams(r, ["d0un"])  # its neighbour still carries load
+    assert abs(N).max() > 100

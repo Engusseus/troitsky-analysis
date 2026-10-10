@@ -374,6 +374,7 @@ def member_chain_diagrams(
     the previous member), whichever way round its i and j ends were written, so the curves
     join up. Axial force is tension-positive; the moment is positive when it puts the
     member's local -y face in tension (sagging, for horizontal members), and V_y = dM/dx.
+    Slack tension-only members are drawn with zero forces.
     """
     load = result.Fu_pred_N if load_N is None else load_N
     k = load / result.P_ref_N
@@ -381,6 +382,7 @@ def member_chain_diagrams(
     xs, N, V, M, bounds = [], [], [], [], [0.0]
     offset = 0.0
     nodes = result.bridge.node_map()
+    slack = set(result.slack_members)
     for mid, rev in zip(member_ids, _chain_reversed(result.bridge, member_ids), strict=True):
         pm = model.members[mid]
         L = pm.L()
@@ -391,14 +393,19 @@ def member_chain_diagrams(
             a, b = nodes[m.i].xyz, nodes[m.j].xyz
             fwd, back = local_axes(a, b), local_axes(b, a)
             sv, sm = -float(back[1] @ fwd[1]), -float(back[2] @ fwd[2])
-        # Sampled in ascending x (Pynite needs that across a member's elements), then
-        # reversed for a member read j -> i: its values at L - x.
-        o = slice(None, None, -1 if rev else 1)
-        N.append(-pm.axial_array(41, COMBO, x_array=xa)[1][o] * k)
-        V.append(pm.shear_array("Fy", 41, COMBO, x_array=xa)[1][o] * k * sv)
-        # Pynite reports sagging as negative M_z; plot sagging positive (as the whole-bridge
-        # diagram does). Pynite's V_y then equals dM/dx along the member, as plotted.
-        M.append(-pm.moment_array("Mz", 41, COMBO, x_array=xa)[1][o] * k * sm)
+        if mid in slack:
+            # Left out of the analysis, so it carries nothing. Pynite would still report
+            # forces worked out from its end movements.
+            N.append(np.zeros_like(xa)), V.append(np.zeros_like(xa)), M.append(np.zeros_like(xa))
+        else:
+            # Sampled in ascending x (Pynite needs that across a member's elements), then
+            # reversed for a member read j -> i: its values at L - x.
+            o = slice(None, None, -1 if rev else 1)
+            N.append(-pm.axial_array(41, COMBO, x_array=xa)[1][o] * k)
+            V.append(pm.shear_array("Fy", 41, COMBO, x_array=xa)[1][o] * k * sv)
+            # Pynite reports sagging as negative M_z; plot sagging positive (as the
+            # whole-bridge diagram does). Pynite's V_y then equals dM/dx, as plotted.
+            M.append(-pm.moment_array("Mz", 41, COMBO, x_array=xa)[1][o] * k * sm)
         xs.append(xa + offset)
         offset += L
         bounds.append(offset)
