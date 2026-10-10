@@ -12,6 +12,10 @@ uv run ruff check src app tests
 uv run streamlit run app/streamlit_app.py
 ```
 
+Without uv, in a virtual environment (see the README): `python -m pip install -e ".[app]"
+pytest ruff`, then run `python -m pytest -q` and `python -m ruff check src app tests` with
+that environment's Python.
+
 ## Ground rules
 
 * **Units in names**: `span_mm`, `load_N`, `E_MPa`. Internally mm, N, MPa.

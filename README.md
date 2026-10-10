@@ -24,7 +24,8 @@ the browser.
 
 ## Quick start
 
-You need [uv](https://docs.astral.sh/uv/) (it installs the right Python for you).
+The quickest route is [uv](https://docs.astral.sh/uv/) (it installs the right Python for
+you). No uv? See [Without uv](#without-uv-plain-python-and-pip) below.
 
 ```bash
 git clone https://github.com/engusseus/troitsky-analysis.git
@@ -41,6 +42,34 @@ uv run bridgesim run examples/warren_2027.yaml --out results/   # report, CSV, S
 uv run bridgesim check my_bridge.yaml                           # rules only (exit 1 if any rule fails)
 uv run bridgesim generate warren --span-mm 1100 --out my_bridge.yaml
 ```
+
+### Without uv (plain Python and pip)
+
+With Python 3.11 or newer (for example from python.org) you can install into a virtual
+environment inside the repository instead. Nothing is installed system-wide.
+
+Windows (PowerShell or Command Prompt):
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -e ".[app]"   # drop [app] for the command line only
+.venv\Scripts\bridgesim.exe run examples\warren_2027.yaml --out results
+.venv\Scripts\python.exe -m streamlit run app\streamlit_app.py
+```
+
+macOS and Linux:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[app]"           # drop [app] for the command line only
+.venv/bin/bridgesim run examples/warren_2027.yaml --out results
+.venv/bin/python -m streamlit run app/streamlit_app.py
+```
+
+The console script is `.venv\Scripts\bridgesim.exe` on Windows and `.venv/bin/bridgesim`
+elsewhere: use it wherever this README says `uv run bridgesim`. pip installs the newest
+versions that `pyproject.toml` allows rather than the exact ones in `uv.lock` (Pynite is
+pinned in both).
 
 ### Default design (placeholder materials, illustrative only)
 
