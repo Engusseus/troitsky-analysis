@@ -218,7 +218,7 @@ def test_failed_buckling_solve_is_reported_not_infinite(monkeypatch) -> None:
     from bridgesim.stability import BucklingResult
 
     monkeypatch.setattr(analysis_mod, "global_buckling",
-                        lambda model, bridge: BucklingResult(math.nan, note="solver failed"))
+                        lambda model, bridge, **_: BucklingResult(math.nan, note="solver failed"))
     r = analysis_mod.analyze(generate_warren())
     assert math.isnan(r.Fu_buckling_N)
     assert math.isfinite(r.Fu_pred_N) and r.Fu_pred_N > 0

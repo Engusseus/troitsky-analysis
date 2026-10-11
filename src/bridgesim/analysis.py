@@ -40,7 +40,7 @@ from bridgesim.mass import MassReport, bridge_mass
 from bridgesim.materials import bridge_material
 from bridgesim.model import COMBO, REFINE_MAX_MEMBERS, build_model, splittable_count
 from bridgesim.schema import Bridge, Material
-from bridgesim.stability import BucklingResult, global_buckling
+from bridgesim.stability import BucklingResult, diaphragm_terms, global_buckling
 from bridgesim.units import n_to_kgf
 
 DEFLECTION_LIMIT_MM = 50.0
@@ -323,7 +323,8 @@ def analyze(
     U_max = U_max_member.U if U_max_member else 0.0
     Fu_strength = P_ref / U_max if U_max > 0 else math.inf
     Fu_delta = P_ref * deflection_limit_mm / delta_ref if delta_ref > 0 else math.inf
-    buck = global_buckling(model, bridge) if include_buckling else None
+    buck = (global_buckling(model, bridge, extra=diaphragm_terms(bridge))
+            if include_buckling else None)
     if buck is None or math.isinf(buck.lambda_cr):
         Fu_buck = math.inf  # not requested, or no compression-driven mode exists
     elif math.isnan(buck.lambda_cr) or buck.lambda_cr <= 0:

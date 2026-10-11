@@ -195,11 +195,15 @@ deck:
     connected_to: [B0n, B0f, B1n, B1f, B2n, B2f]   # ... every station along the bridge
 ```
 
-Each deck panel between two stations is then modelled by two pin-ended diagonals with the
-panel's shear stiffness $G t b / a$ (panel length $a$, width $b$, thickness $t$ = the deck
-thickness unless `thickness_mm` is given). In-plane shear stiffness depends a lot on how
-the plate is laid up and glued, so measure G if you can, for example with a racking test
-of a square of your deck plate. The deck's own bending and its strength are not modelled.
+Each deck panel between two stations then resists racking with the plate's shear
+stiffness $G t w / a$ in the global buckling analysis. Here $a$ is the panel length, and
+$t$ and $w$ are the plate's thickness and width: the deck's thickness and clear width
+unless the diaphragm gives `thickness_mm` or `width_mm` (for a plate narrower than the gap
+between the trusses). The deck resists shear only. It takes none of the chords' force and
+changes no member force or utilisation; it only raises the buckling load. In-plane shear
+stiffness depends a lot on how the plate is laid up and glued, so measure G if you can,
+for example with a racking test of a square of your deck plate. The deck's own bending
+and its strength are not modelled.
 
 Members are shear-rigid (Euler-Bernoulli) frame elements, because Pynite has no
 shear-deformable beam. Do not model a wide plate as one wide member: its shear flexibility

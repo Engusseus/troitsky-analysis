@@ -279,15 +279,17 @@ def model_assumptions(result: AnalysisResult) -> list[str]:
     general = [f"{a} {glue}" if a.startswith("Glued joint") else a for a in MODEL_ASSUMPTIONS]
     dia = result.bridge.deck.diaphragm
     if dia is not None:
-        t = dia.thickness_mm if dia.thickness_mm is not None else result.bridge.deck.thickness_mm
+        d = result.bridge.deck
+        t = dia.thickness_mm if dia.thickness_mm is not None else d.thickness_mm
+        w = dia.width_mm if dia.width_mm is not None else d.clear_width_mm
         n = len(result.bridge.diaphragm_panels())
         deck = (f"The deck is a shear diaphragm in its own plane (G = {dia.G_MPa:g} MPa, "
-                f"t = {t:g} mm) between {n} pairs of stations of the trusses; each panel of "
-                "length a and width b is two pin-ended equivalent diagonals of area "
-                "A = G t L³ / (2 E a b), which give it the plate's shear stiffness G t b / a. "
-                "They also share a little of the bottom chords' tension. The deck's own "
-                "bending and its strength are not modelled, and it still passes the "
-                "crusher-plate load to the floor-beam centre nodes as simply supported strips.")
+                f"t = {t:g} mm, plate width w = {w:g} mm) in {n} panels between the trusses. "
+                "Each panel of length a is a constant-shear panel with racking stiffness "
+                "G t w / a. It is used in the global buckling analysis only and resists "
+                "shear only: it takes no chord force and changes no member force. Its own "
+                "bending and its strength are not modelled; it still passes the crusher-plate "
+                "load to the floor-beam centre nodes as simply supported strips.")
         general = [deck if a.startswith("The deck is non-structural") else a for a in general]
     out = [f"Material “{m.name}”: {vals}. {src}.", crusher, k_line, mesh]
     own_mat = [s for s in result.bridge.sections if s.overrides()]

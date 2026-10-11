@@ -22,9 +22,8 @@
   and from the geometric stiffness alike. They are not split: an interior node of a member
   that drops out would be left with no stiffness. Being in tension whenever they are
   active, they never need the finer buckling mesh.
-* A deck ``diaphragm`` adds two pin-ended equivalent diagonals per deck panel, sized so
-  each panel has the plate's in-plane shear stiffness (:func:`diaphragm_bars`). They
-  are not bridge members: they carry no checks and appear in no results table.
+* A deck ``diaphragm`` is not part of this model: it only adds shear stiffness to the
+  global buckling analysis (``stability.diaphragm_terms``), so it carries no member forces.
 """
 
 from __future__ import annotations
@@ -52,9 +51,6 @@ _MATERIAL = "wood"
 #: Prefix of the interior nodes added to split members (not part of the bridge). Extra "~"
 #: are prepended if a bridge node already uses the prefix, so names never collide.
 INTERIOR_PREFIX = "~mid "
-#: Prefix of the deck diaphragm's equivalent diagonals (members and sections), lengthened
-#: with "~" like INTERIOR_PREFIX if a bridge member or section id already uses it.
-DIAPHRAGM_PREFIX = "~deck "
 #: Above this many members the split is skipped: Pynite's member subdivision scans every
 #: node for every member, and the extra nodes would make very large uploads slow.
 REFINE_MAX_MEMBERS = 1500
@@ -64,23 +60,16 @@ _SPLIT_AT = tuple(sorted((0.5 + k * d for k in range(13) for d in (0.025, -0.025
 
 def _interior_points(bridge: Bridge) -> dict[str, tuple[float, float, float]]:
     """A point inside each member that lies on no other member (crossing X-braces meet at
-    their midpoints, and a node there would glue them together) and on no deck diaphragm
-    diagonal, unless the diagonal lies along the member (joining the two is then harmless:
-    Pynite keeps the diagonal's end releases at its ends)."""
+    their midpoints, and a node there would glue them together)."""
     nodes = bridge.node_map()
-    segs = [(m.i, m.j) for m in bridge.members] + bridge.diaphragm_diagonals()
-    A = np.array([nodes[i].xyz for i, _ in segs], dtype=float).reshape(-1, 3)
-    B = np.array([nodes[j].xyz for _, j in segs], dtype=float).reshape(-1, 3)
+    A = np.array([nodes[m.i].xyz for m in bridge.members], dtype=float)
+    B = np.array([nodes[m.j].xyz for m in bridge.members], dtype=float)
     D = B - A
     L = np.linalg.norm(D, axis=1)
     U = D / L[:, None]
-    n_mem = len(bridge.members)
     out = {}
     for k, mem in enumerate(bridge.members):
         others = np.arange(len(L)) != k
-        along = np.linalg.norm(np.cross(U, U[k]), axis=1) < 1e-9
-        along &= np.linalg.norm(np.cross(A - A[k], U[k]), axis=1) < 1e-6
-        others[n_mem:] &= ~along[n_mem:]
         for t in _SPLIT_AT:
             pt = A[k] + t * D[k]
             d = pt - A[others]
@@ -89,38 +78,6 @@ def _interior_points(bridge: Bridge) -> dict[str, tuple[float, float, float]]:
             if not np.any((s > -1e-6) & (s < L[others] + 1e-6) & (perp < 1e-6)):
                 out[mem.id] = (float(pt[0]), float(pt[1]), float(pt[2]))
                 break
-    return out
-
-
-def diaphragm_bars(bridge: Bridge, E_MPa: float) -> list[tuple[str, str, float]]:
-    """Equivalent diagonals (i node, j node, area A_d in mm^2) of the deck diaphragm.
-
-    A panel of length a along the bridge, width b and thickness t, with in-plane shear
-    modulus G, resists a sideways movement Delta of one end relative to the other with
-    shear strain Delta / a over the b x t cross-section: k = G t b / a. Two crossing
-    pin-ended diagonals of length L_d (modulus E) each stretch or shorten by Delta b / L_d,
-    and the sideways share of their force is b / L_d, so k = 2 E A_d b^2 / L_d^3. Equal
-    stiffness gives
-
-        A_d = G t L_d^3 / (2 E a b)
-
-    (the usual equivalent-truss model of a shear panel). a and b are the means of the
-    panel's two edges along and across the bridge. As a side effect, the diagonals give the
-    deck an axial stiffness of about G (a / b)^2 along the bridge, usually well below the
-    real plate's, so the deck takes a little of the bottom chords' tension.
-    """
-    dia = bridge.deck.diaphragm
-    if dia is None:
-        return []
-    t = dia.thickness_mm if dia.thickness_mm is not None else bridge.deck.thickness_mm
-    P = {n.id: np.array(n.xyz, dtype=float) for n in bridge.nodes}
-    out = []
-    for n0, n1, f0, f1 in bridge.diaphragm_panels():
-        a = 0.5 * (np.linalg.norm(P[n1] - P[n0]) + np.linalg.norm(P[f1] - P[f0]))
-        b = 0.5 * (np.linalg.norm(P[f0] - P[n0]) + np.linalg.norm(P[f1] - P[n1]))
-        for i, j in ((n0, f1), (f0, n1)):
-            L_d = float(np.linalg.norm(P[j] - P[i]))
-            out.append((i, j, dia.G_MPa * t * L_d**3 / (2.0 * E_MPa * a * b)))
     return out
 
 
@@ -156,16 +113,6 @@ def build_model(bridge: Bridge, material: Material, P_N: float | None = None) ->
         rel = member_releases(bridge, mem)
         if rel:
             m.def_releases(mem.id, **{r: True for r in rel})
-    taken = {x.id for x in (*bridge.members, *bridge.sections)}
-    prefix = DIAPHRAGM_PREFIX
-    while any(x.startswith(prefix) for x in taken):
-        prefix = "~" + prefix
-    for k, (i, j, A) in enumerate(diaphragm_bars(bridge, E)):
-        name = f"{prefix}{k}"
-        # A square bar of area A: its bending stiffness is released at both ends anyway.
-        m.add_section(name, A=A, Iy=A * A / 12.0, Iz=A * A / 12.0, J=0.141 * A * A)
-        m.add_member(name, i, j, _MATERIAL, name)
-        m.def_releases(name, Rxi=True, Ryi=True, Rzi=True, Ryj=True, Rzj=True)
     split: dict[str, tuple[float, float, float]] = {}
     if len(bridge.members) <= REFINE_MAX_MEMBERS:
         prefix = INTERIOR_PREFIX

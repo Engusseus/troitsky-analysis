@@ -327,8 +327,9 @@ class Diaphragm(_Strict):
 
     It is glued to the trusses at the ``connected_to`` nodes. They form two edges, one on
     each side of the deck centreline (``Deck.z_center_mm``), with one node per station
-    along X on each edge. Each panel between neighbouring stations is modelled by two
-    pin-ended equivalent diagonals with the panel's shear stiffness (``model.py``). Its
+    along X on each edge. Each panel between neighbouring stations adds its shear stiffness
+    to the global buckling analysis (``stability.diaphragm_terms``). It resists shear only:
+    it takes no chord force and carries no member forces in the static analysis. Its
     out-of-plane bending is not modelled, and it is not checked for strength.
     """
 
@@ -336,6 +337,11 @@ class Diaphragm(_Strict):
     thickness_mm: float | None = Field(
         None, ge=MIN_SIZE_MM, le=MAX_SIZE_MM,
         description="Plate thickness for the shear stiffness (default: the deck thickness)")
+    width_mm: float | None = Field(
+        None, ge=MIN_SIZE_MM, le=MAX_SIZE_MM,
+        description="Width of the plate that carries the shear, if it differs from the "
+                    "deck's clear width (the default), e.g. a plate narrower than the gap "
+                    "between the trusses")
     connected_to: list[str] = Field(min_length=4, max_length=MAX_NODES)
 
     @field_validator("connected_to")
@@ -485,15 +491,7 @@ class Bridge(_Strict):
             raise ValueError("At least one pinned support (or a translational extra "
                              "restraint) is required")
         self._check_no_hidden_joints(nodes)
-        ids, P = list(nodes), np.array([n.xyz for n in nodes.values()])
-        for i, j in self.diaphragm_diagonals():
-            nid = _node_inside(ids, P, np.array(nodes[i].xyz), np.array(nodes[j].xyz))
-            if nid is not None:
-                raise ValueError(
-                    f"Node {nid!r} lies on the deck diaphragm's diagonal from {i!r} to {j!r}, "
-                    f"so the model would join them. Move the node, or change the diaphragm's "
-                    f"connected_to nodes."
-                )
+        self.diaphragm_panels()  # raises if the diaphragm's nodes do not pair up
         return self
 
     def _check_no_hidden_joints(self, nodes: dict[str, Node]) -> None:
@@ -547,10 +545,6 @@ class Bridge(_Strict):
                     raise ValueError(f"Deck diaphragm: {a!r} and {b!r} are at the same station "
                                      f"on one side of the deck.")
         return [(near[k], near[k + 1], far[k], far[k + 1]) for k in range(len(near) - 1)]
-
-    def diaphragm_diagonals(self) -> list[tuple[str, str]]:
-        """End nodes of the two crossing diagonals of every deck diaphragm panel."""
-        return [d for n0, n1, f0, f1 in self.diaphragm_panels() for d in ((n0, f1), (f0, n1))]
 
     # ------------------------------------------------------------------ helpers
     def node_map(self) -> dict[str, Node]:

@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import scipy.linalg as sla
+import scipy.sparse as sps
 import scipy.sparse.linalg as spla
 
 from bridgesim.model import COMBO
@@ -53,6 +54,10 @@ LOCAL_MODE_RATIO = 0.5
 #: Nodes moving at least this fraction of the largest node movement are named.
 NAMED_NODE_RATIO = 0.8
 _DIRECTIONS = ("lengthwise (X)", "vertical (Y)", "sideways (Z)")
+
+#: Extra elastic stiffness for the buckling analysis: node ids and a matrix over their
+#: translations (3 per node, in the order given), added to K but not to K_g.
+StiffnessTerm = tuple[list[str], np.ndarray]
 
 
 @dataclass
@@ -108,6 +113,58 @@ def describe_mode(mode: dict[str, tuple[float, float, float]], key_member: str |
     return f"{' and '.join(main)} movement{where}{energy}"
 
 
+def diaphragm_terms(bridge: Bridge) -> list[StiffnessTerm]:
+    """Shear stiffness of each deck diaphragm panel (``Deck.diaphragm``).
+
+    A panel has corners n0, n1 on the -Z edge and f0, f1 on the +Z edge, a length a along
+    the bridge (unit vector e1) and a distance b between its edges (e2, across the bridge
+    in the panel's plane). It is a constant-shear panel: from the corner movements u its
+    average engineering shear strain is
+
+        gamma = (u_f0 + u_f1 - u_n0 - u_n1) . e1 / (2 b)
+              + (u_n1 + u_f1 - u_n0 - u_f0) . e2 / (2 a)
+
+    and its strain energy U = 1/2 G t a w gamma^2, with w the width of the plate (the deck's
+    clear width unless the diaphragm gives width_mm) and t its thickness. So the panel's
+    stiffness is k = G t a w g g^T, with g = d gamma / d u. Racking, one end moving Delta
+    across the bridge, gives gamma = Delta / a and a force G t w Delta / a. Stretching or
+    shortening the chords, and moving or turning the panel as a whole, give gamma = 0: the
+    deck resists shear only and takes no chord force.
+    """
+    dia = bridge.deck.diaphragm
+    if dia is None:
+        return []
+    t = dia.thickness_mm if dia.thickness_mm is not None else bridge.deck.thickness_mm
+    w = dia.width_mm if dia.width_mm is not None else bridge.deck.clear_width_mm
+    P = {n.id: np.array(n.xyz, dtype=float) for n in bridge.nodes}
+    terms = []
+    for n0, n1, f0, f1 in bridge.diaphragm_panels():
+        e1 = (P[n1] - P[n0]) + (P[f1] - P[f0])
+        e1 /= np.linalg.norm(e1)
+        e2 = (P[f0] - P[n0]) + (P[f1] - P[n1])
+        e2 -= (e2 @ e1) * e1
+        e2 /= np.linalg.norm(e2)
+        a = 0.5 * ((P[n1] - P[n0]) @ e1 + (P[f1] - P[f0]) @ e1)
+        b = 0.5 * ((P[f0] - P[n0]) @ e2 + (P[f1] - P[n1]) @ e2)
+        u, v = e1 / (2 * b), e2 / (2 * a)
+        g = np.concatenate([-u - v, -u + v, u - v, u + v])  # n0, n1, f0, f1
+        terms.append(([n0, n1, f0, f1], dia.G_MPa * t * a * w * np.outer(g, g)))
+    return terms
+
+
+def _extra_matrix(model, terms, size: int) -> sps.csr_matrix:
+    """The stiffness terms assembled into a size x size matrix on the model's DOFs."""
+    rows, cols, vals = [], [], []
+    for nids, k in terms:
+        dofs = np.concatenate([np.arange(3) + model.nodes[n].ID * 6 for n in nids])
+        r, c = np.meshgrid(dofs, dofs, indexing="ij")
+        rows.append(r.ravel())
+        cols.append(c.ravel())
+        vals.append(np.asarray(k, dtype=float).ravel())
+    return sps.csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+                          shape=(size, size))
+
+
 def _free_dofs(model, bridge: Bridge) -> list[int]:
     # Friction holds DX at every base the bridge stands on, however the support is written.
     held = {model.nodes[n].ID * 6 for n in bridge.support_nodes()}
@@ -121,15 +178,23 @@ def _free_dofs(model, bridge: Bridge) -> list[int]:
 
 
 def global_buckling(
-    model, bridge: Bridge, n_modes: int = 3, dense_max_dof: int = DENSE_MAX_DOF
+    model, bridge: Bridge, n_modes: int = 3, dense_max_dof: int = DENSE_MAX_DOF,
+    extra: list[StiffnessTerm] | tuple = (),
 ) -> BucklingResult:
-    """Solve the buckling eigenproblem on an already analysed Pynite model."""
+    """Solve the buckling eigenproblem on an already analysed Pynite model.
+
+    ``extra`` stiffness (e.g. the deck diaphragm, :func:`diaphragm_terms`) is added to K
+    only: it carries no force in the static analysis, so it has no geometric stiffness.
+    """
     free = _free_dofs(model, bridge)
     # K and K_g are assembled over every DOF before the free ones are sliced out, so the
     # full size decides whether a dense matrix fits in memory.
     sparse = 6 * len(model.nodes) > dense_max_dof
     K = model.Ke(COMBO, sparse=sparse, check_stability=False)
     G = model.Kg(COMBO, sparse=sparse, first_step=False)
+    if extra:
+        X = _extra_matrix(model, extra, K.shape[0])
+        K = K.tocsr() + X if sparse else np.asarray(K) + X.toarray()
     if sparse:
         K, G = K.tocsr(), G.tocsr()
         K11 = K[free][:, free].tocsc()
