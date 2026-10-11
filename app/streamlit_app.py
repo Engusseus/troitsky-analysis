@@ -329,8 +329,11 @@ def _results_card(r: AnalysisResult) -> None:
             return "NOT EVALUATED"
         return f"{n_to_kgf(N):,.0f} kgf" if math.isfinite(N) else "∞"
 
+    working = r.Fu_buckling_braces_working_N
     st.caption(f"Limits: strength {lim(r.Fu_strength_N)} · deflection "
-               f"{lim(r.Fu_deflection_N)} · global buckling {lim(r.Fu_buckling_N)}")
+               f"{lim(r.Fu_deflection_N)} · global buckling {lim(r.Fu_buckling_N)}"
+               + (f" ({lim(working)} with one strap of each slack X working)"
+                  if working is not None else ""))
     if r.slack_members:
         st.info(md(r.slack_note), icon="➖")
     for w in r.warnings:

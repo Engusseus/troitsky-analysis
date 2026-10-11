@@ -103,7 +103,14 @@ The app shows a banner and an *assumed* badge on every value until you mark it *
     repeated without it (Pynite's tension-only iteration, which never puts a member back).
     It is reported as *slack*, with zero forces; in tension it is checked as usual. A
     bowed brace straightens and works again after a very small movement, so leaving it out
-    of the buckling analysis is conservative.
+    of the buckling analysis is conservative. Where slack members cross (an X), global
+    buckling is also solved with each of them put back at half its axial stiffness
+    $E A / 2L$ (no geometric stiffness). When the X racks, one strap stretches by
+    $\delta$ and the other shortens by $\delta$. One strap working at $EA/L$ and the
+    other slack store $\tfrac12 (EA/L)\delta^2$, and so do two at half stiffness,
+    whichever way the X racks. This is exact for racking and too stiff for a mode that
+    shortens both straps. It is reported as the upper end of a bracket; $F_{u,p}$ uses
+    the lower end.
 16. **Interaction**: $U = |N|/N_R + |M_y|/M_{R,y} + |M_z|/M_{R,z}$, linear, without moment
     amplification. Member shear (resultant of the two local shears, $1.5V/A \le f_v$)
     and glued-joint shear are separate checks.

@@ -95,6 +95,9 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
              + (f"; mode 1: {r.buckling.description}"
                 if r.buckling and r.buckling.description and math.isfinite(r.Fu_buckling_N)
                 else "")],
+            *([["F_cr with one strap of each slack X working (upper end; F_u,p uses the "
+                "value above)", _fmt_load(r.Fu_buckling_braces_working_N)]]
+              if r.Fu_buckling_braces_working_N is not None else []),
             ["Mid-span deflection at F_u,p", f"{r.delta_at_Fu_mm:.1f} mm "
              f"(limit {r.deflection_limit_mm:g} mm)"],
             ["Estimated mass m", f"{r.mass.total_kg:.2f} kg (~{r.mass.stick_count} sticks)"
@@ -183,6 +186,8 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
              and r.buckling and r.buckling.description else
              f" in member **{r.governing_member}**." if r.governing_member else ".")
     modes = r.buckling_load_table() if math.isfinite(r.Fu_buckling_N) else []
+    if modes:
+        modes += r.buckling_load_table(braces_working=True)
     blocks = [
         ("p", f"Predicted ultimate load **F_u,p = {_fmt_load(r.Fu_pred_N)}**, governed by "
               f"**{r.governing_label}**{where}"),
@@ -197,9 +202,10 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
             ("p", "Global elastic buckling modes, lowest first. The shape names the "
                   "direction and the nodes that move most; the member with the most strain "
                   "energy alone can mislead (a small member may hold it while the whole span "
-                  "moves)."),
-            ("table", ["Mode", "F_cr (N)", "F_cr (kgf)", "Load factor λ", "Shape"],
-             [[str(m["mode"]), f"{m['F_cr_N']:,.0f}", f"{m['F_cr_kgf']:,.1f}",
+                  "moves). Case \"X braces working\" (if listed) has one strap of each "
+                  "slack X working; the real loads lie between the two cases."),
+            ("table", ["Case", "Mode", "F_cr (N)", "F_cr (kgf)", "Load factor λ", "Shape"],
+             [[m["case"], str(m["mode"]), f"{m['F_cr_N']:,.0f}", f"{m['F_cr_kgf']:,.1f}",
                f"{m['load_factor']:.3f}", m["shape"]] for m in modes]),
         ]
     if r.slack_members:
@@ -309,7 +315,10 @@ def model_assumptions(result: AnalysisResult) -> list[str]:
             "compression are left out of the static and global buckling analyses and never "
             "put back (Pynite's tension-only iteration); the others are checked as usual. A "
             "bowed brace straightens and works again after a very small movement, so leaving "
-            "it out of the buckling analysis is conservative.")
+            "it out of the buckling analysis is conservative. Where slack members cross (an "
+            "X), global buckling is also given with each of them at half its axial "
+            "stiffness, which equals one strap of each X working when the X racks: the "
+            "upper end of a bracket whose lower end F_u,p uses.")
     return [*out, *general]
 
 

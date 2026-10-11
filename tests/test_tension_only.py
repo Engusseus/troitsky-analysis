@@ -1,13 +1,18 @@
 """Tension-only members: slender braces that bow in compression instead of failing."""
 
+import csv
 import math
 
+import numpy as np
 import pytest
+from typer.testing import CliRunner
 
 from bridgesim.analysis import AnalysisError, analyze
+from bridgesim.cli import app
 from bridgesim.generators import generate_warren
 from bridgesim.report import model_assumptions, to_markdown
 from bridgesim.schema import Bridge
+from bridgesim.stability import braces_working_terms, crossing_pairs
 from bridgesim.viz import bridge_figure, member_chain_diagrams
 
 STRAP = {"id": "top_brace", "b_mm": 19.0, "d_mm": 4.1}  # 2 jumbo sticks flat
@@ -123,3 +128,70 @@ def test_diagrams_show_no_force_in_a_slack_member() -> None:
     assert not N.any() and not V.any() and not M.any()
     _, N, _, _, _ = member_chain_diagrams(r, ["d0un"])  # its neighbour still carries load
     assert abs(N).max() > 100
+
+
+def test_crossing_slack_straps_are_found_in_pairs(slack_straps, material) -> None:
+    """The default Warren has an X in every top panel but the one at mid-span: six pairs
+    tb{i}a / tb{i}b. Members that only meet at a node (a strap and a chord) are no pair."""
+    pairs = crossing_pairs(slack_straps.bridge, slack_straps.slack_members, material.stick)
+    assert pairs == [(f"tb{i}a", f"tb{i}b") for i in (0, 1, 2, 4, 5, 6)]
+    assert crossing_pairs(slack_straps.bridge, ["tb0a", "tc0n", "d0un"], material.stick) == []
+
+
+def test_half_stiffness_pair_equals_one_strap_working_in_racking(slack_straps, material) -> None:
+    """Rack the first X: T1n and T1f move Delta = 1 mm across. tb0a (T0n -> T1f) stretches
+    and tb0b (T0f -> T1n) shortens, each by Delta s / L (s = 182 mm across, L = 231.9 mm).
+    One strap working stores 1/2 (E A / L) (Delta s / L)^2; both at half stiffness store
+    the same, with E = 10000 MPa and A = 19 x 4.1 = 77.9 mm^2."""
+    terms, ids = braces_working_terms(slack_straps.fe_model, slack_straps.bridge,
+                                      slack_straps.slack_members, material.stick)
+    assert ids == sorted(slack_straps.slack_members, key=lambda m: (m[2], m[3]))
+    move = {"T1n": np.array([0, 0, 1.0]), "T1f": np.array([0, 0, 1.0])}
+    energy = 0.0
+    for nodes, k in terms[:2]:  # tb0a, tb0b
+        u = np.concatenate([move.get(n, np.zeros(3)) for n in nodes])
+        energy += 0.5 * u @ k @ u
+    L, s = math.hypot(143.75, 182.0), 182.0
+    assert energy == pytest.approx(0.5 * 1e4 * 19 * 4.1 / L * (s / L) ** 2)
+
+
+def test_buckling_is_bracketed_when_slack_straps_cross(slack_straps) -> None:
+    """Lower end: straps out, exactly the bridge without top bracing; F_u,p uses it. Upper
+    end: one strap of each X working, higher."""
+    none = analyze(_warren(drop=frozenset({"top_brace"})))
+    upper = slack_straps.Fu_buckling_braces_working_N
+    assert slack_straps.Fu_buckling_N == pytest.approx(none.Fu_buckling_N, rel=1e-9)
+    assert upper > slack_straps.Fu_buckling_N
+    assert slack_straps.Fu_pred_N == pytest.approx(none.Fu_pred_N, rel=1e-9)
+    assert len(slack_straps.braces_working_members) == 12
+    note = slack_straps.slack_note
+    assert "is a lower bound" in note and "The real value lies in between" in note
+    rows = slack_straps.buckling_load_table(braces_working=True)
+    assert rows[0]["case"] == "X braces working"
+    assert rows[0]["F_cr_N"] == pytest.approx(upper, abs=0.05)
+    assert slack_straps.buckling_load_table()[0]["case"] == "as analysed"
+
+
+def test_no_bracket_without_a_crossing_slack_pair() -> None:
+    """A lone slack counter-diagonal would only work in one direction of sway: no upper end
+    is claimed for it."""
+    data = generate_warren().model_dump(mode="json")
+    data["members"].append({"id": "cb", "i": "B0n", "j": "T1n", "section": "diagonal",
+                            "tension_only": True})
+    r = analyze(Bridge.model_validate(data))
+    assert r.slack_members == ["cb"]
+    assert r.buckling_braces_working is None and r.Fu_buckling_braces_working_N is None
+    assert r.buckling_load_table(braces_working=True) == []
+
+
+def test_cli_prints_and_exports_the_bracket(tmp_path, slack_straps) -> None:
+    path = tmp_path / "straps.yaml"
+    slack_straps.bridge.save(path)
+    res = CliRunner().invoke(app, ["run", str(path), "--out", str(tmp_path / "out")])
+    assert res.exit_code == 0, res.output
+    assert "Global buckling, X working    :" in res.output
+    with (tmp_path / "out" / "buckling_loads.csv").open(encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert [r["case"] for r in rows] == ["as analysed"] * 3 + ["X braces working"] * 3
+    assert "F_cr with one strap of each slack X working" in (tmp_path / "out" / "report.html"
+                                                             ).read_text(encoding="utf-8")

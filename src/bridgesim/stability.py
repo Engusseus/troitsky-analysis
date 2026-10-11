@@ -36,7 +36,7 @@ import scipy.sparse as sps
 import scipy.sparse.linalg as spla
 
 from bridgesim.model import COMBO
-from bridgesim.schema import Bridge
+from bridgesim.schema import Bridge, Stick
 
 _DOFS = ("DX", "DY", "DZ", "RX", "RY", "RZ")
 
@@ -150,6 +150,67 @@ def diaphragm_terms(bridge: Bridge) -> list[StiffnessTerm]:
         g = np.concatenate([-u - v, -u + v, u - v, u + v])  # n0, n1, f0, f1
         terms.append(([n0, n1, f0, f1], dia.G_MPa * t * a * w * np.outer(g, g)))
     return terms
+
+
+def crossing_pairs(bridge: Bridge, ids, stick: Stick) -> list[tuple[str, str]]:
+    """Pairs among members ``ids`` whose centre lines cross inside both, as in an X.
+
+    Two members cross when they share no node, their closest points lie strictly inside
+    both, and those points are less than the larger section dimension of the two apart
+    (crossing straps are often drawn one on top of the other).
+    """
+    nodes, secs = bridge.node_map(), bridge.section_map()
+    mem = {m.id: m for m in bridge.members}
+    ids = [m.id for m in bridge.members if m.id in set(ids)]  # in file order
+    seg = {k: (np.array(nodes[mem[k].i].xyz), np.array(nodes[mem[k].j].xyz)) for k in ids}
+    size = {k: max(secs[mem[k].section].dims(stick)) for k in ids}
+    pairs = []
+    for x, k1 in enumerate(ids):
+        for k2 in ids[x + 1:]:
+            if {mem[k1].i, mem[k1].j} & {mem[k2].i, mem[k2].j}:
+                continue
+            (p, p2), (q, q2) = seg[k1], seg[k2]
+            d1, d2, r = p2 - p, q2 - q, p - q
+            a, b, e = d1 @ d1, d1 @ d2, d2 @ d2
+            den = a * e - b * b
+            if den <= 1e-12 * a * e:  # parallel
+                continue
+            s_ = (b * (d2 @ r) - e * (d1 @ r)) / den
+            t_ = (a * (d2 @ r) - b * (d1 @ r)) / den
+            gap = np.linalg.norm(p + s_ * d1 - q - t_ * d2)
+            if 0 < s_ < 1 and 0 < t_ < 1 and gap < max(size[k1], size[k2]):
+                pairs.append((k1, k2))
+    return pairs
+
+
+def braces_working_terms(model, bridge: Bridge, slack, stick: Stick
+                         ) -> tuple[list[StiffnessTerm], list[str]]:
+    """Axial stiffness, at half its value, of every slack member that crosses another slack
+    member (``crossing_pairs``), and the ids of those members.
+
+    The straps of a tension-only X both go slack under the crusher load when the chords
+    shorten. When the X then racks in a buckling mode, one strap stretches by delta and the
+    other shortens by delta. The stretched one straightens after a tiny movement and works
+    at its full stiffness E A / L; the shortened one stays slack. That stores
+    1/2 (E A / L) delta^2, and so do both straps at half stiffness,
+    2 x 1/2 (E A / 2 L) delta^2, whichever way the X racks. So a linear analysis needs no
+    mode direction. It is exact for racking and too stiff for a mode that shortens both
+    straps (the chords moving closer together), so it is the upper end of a bracket whose
+    lower end leaves the straps out.
+    """
+    ids = sorted({m for pair in crossing_pairs(bridge, slack, stick) for m in pair},
+                 key=[m.id for m in bridge.members].index)
+    nodes = bridge.node_map()
+    mem = {m.id: m for m in bridge.members}
+    terms = []
+    for mid in ids:
+        pm = model.members[mid]
+        d = np.array(nodes[mem[mid].j].xyz) - np.array(nodes[mem[mid].i].xyz)
+        L = float(np.linalg.norm(d))
+        nn = np.outer(d, d) / L**2
+        k = 0.5 * pm.material.E * pm.section.A / L
+        terms.append(([mem[mid].i, mem[mid].j], k * np.block([[nn, -nn], [-nn, nn]])))
+    return terms, ids
 
 
 def _extra_matrix(model, terms, size: int) -> sps.csr_matrix:

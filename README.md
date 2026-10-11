@@ -228,6 +228,14 @@ member is checked like any other. Use the flag only for members that may bow wit
 bridge failing, not for ones the bridge needs to push (piers, posts, struts). When a
 brace governs by buckling, the results suggest the flag.
 
+Under the centred crusher load the chords shorten, so often *both* straps of an X go
+slack, and the bracing then does nothing in the global buckling analysis. But in a
+sideways buckling mode one strap of each X is stretched and works again. So when slack
+straps cross, the results give global buckling as a bracket. The lower end leaves them
+out, and F_u,p uses it. The upper end has one strap of each X working (both straps at
+half stiffness, which is the same thing when the X racks). The real value lies between
+the two, which shows whether the X is worth its mass.
+
 ## v0.1 limitations
 
 Stated plainly:
