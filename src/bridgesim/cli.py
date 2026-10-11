@@ -130,7 +130,7 @@ def run(
     if len(modes) > 1:
         typer.echo("  Next global buckling loads    : " + ", ".join(
             f"{row['F_cr_kgf']:.1f} kgf (mode {row['mode']})" for row in modes[1:]))
-    working = res.buckling_load_table(braces_working=True) if modes else []
+    working = res.buckling_load_table(braces_working=True) if res.has_buckling_bracket else []
     if working:
         typer.echo(f"  Global buckling, X working    : {_kgf(res.Fu_buckling_braces_working_N)} "
                    f"with one strap of each slack X in tension (F_u,p uses the lower "

@@ -62,8 +62,8 @@ def _interior_points(bridge: Bridge) -> dict[str, tuple[float, float, float]]:
     """A point inside each member that lies on no other member (crossing X-braces meet at
     their midpoints, and a node there would glue them together)."""
     nodes = bridge.node_map()
-    A = np.array([nodes[m.i].xyz for m in bridge.members], dtype=float)
-    B = np.array([nodes[m.j].xyz for m in bridge.members], dtype=float)
+    A = np.array([nodes[m.i].xyz for m in bridge.members], dtype=float).reshape(-1, 3)
+    B = np.array([nodes[m.j].xyz for m in bridge.members], dtype=float).reshape(-1, 3)
     D = B - A
     L = np.linalg.norm(D, axis=1)
     U = D / L[:, None]

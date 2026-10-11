@@ -195,3 +195,26 @@ def test_cli_prints_and_exports_the_bracket(tmp_path, slack_straps) -> None:
     assert [r["case"] for r in rows] == ["as analysed"] * 3 + ["X braces working"] * 3
     assert "F_cr with one strap of each slack X working" in (tmp_path / "out" / "report.html"
                                                              ).read_text(encoding="utf-8")
+
+
+def test_a_failed_second_solve_is_warned_about_not_shown_as_a_bracket(monkeypatch) -> None:
+    """If only the solve with the X braces working fails, the lower end stands, a warning
+    says why there is no upper end, and no output claims one."""
+    import bridgesim.analysis as analysis_mod
+    from bridgesim.stability import BucklingResult, global_buckling
+
+    def fail_second(model, bridge, **kw):
+        if len(kw.get("extra", ())) > 0:
+            return BucklingResult(math.nan, note="solver failed")
+        return global_buckling(model, bridge, **kw)
+
+    monkeypatch.setattr(analysis_mod, "global_buckling", fail_second)
+    r = analysis_mod.analyze(_warren(flag=frozenset({"top_brace"})))
+    assert math.isfinite(r.Fu_buckling_N) and math.isnan(r.Fu_buckling_braces_working_N)
+    assert not r.has_buckling_bracket
+    assert any(w.startswith("Global buckling with one strap of each slack X working: solver "
+                            "failed") for w in r.warnings)
+    assert "The real value lies in between" not in r.slack_note
+    text = to_markdown(r)
+    assert "one strap of each slack X working \\(upper end" not in text
+    assert "X braces working |" not in text

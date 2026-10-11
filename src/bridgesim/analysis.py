@@ -176,6 +176,12 @@ class AnalysisResult:
         return f" in {self.governing_member}" if self.governing_member else ""
 
     @property
+    def has_buckling_bracket(self) -> bool:
+        """True if both ends of the buckling bracket for slack X-braces are finite."""
+        F = self.Fu_buckling_braces_working_N
+        return F is not None and math.isfinite(F) and math.isfinite(self.Fu_buckling_N)
+
+    @property
     def Fu_buckling_braces_working_N(self) -> float | None:
         """Global buckling load with one strap of each slack X working (None if no X)."""
         b = self.buckling_braces_working
@@ -198,9 +204,8 @@ class AnalysisResult:
                 f"bows instead of failing, and then carries no load): {ids}{more}. A bowed "
                 f"brace works again once a buckling mode stretches it, so the global buckling "
                 f"load without them is a lower bound.")
-        F = self.Fu_buckling_braces_working_N
-        if F is not None and math.isfinite(F) and math.isfinite(self.Fu_buckling_N):
-            b = self.buckling_braces_working
+        if self.has_buckling_bracket:
+            F, b = self.Fu_buckling_braces_working_N, self.buckling_braces_working
             note += (f" With one strap of each X working ({len(self.braces_working_members)} "
                      f"crossing straps, each at half stiffness) it would be "
                      f"{n_to_kgf(F):,.0f} kgf ({F:,.0f} N; mode 1: {b.description}), against "
@@ -407,6 +412,9 @@ def analyze(
         )
     if buck is not None and buck.note and not math.isinf(buck.lambda_cr):
         warnings.append(f"Global buckling: {buck.note}")
+    if buck_working is not None and math.isnan(buck_working.lambda_cr):
+        warnings.append(f"Global buckling with one strap of each slack X working: "
+                        f"{buck_working.note}")
     if gov_mode == "buckling" and U_max_member is not None:
         N_gov = abs(U_max_member.N_N)
         N_big = max(abs(r.N_N) for r in results)

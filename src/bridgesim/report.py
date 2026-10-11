@@ -97,7 +97,7 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
                 else "")],
             *([["F_cr with one strap of each slack X working (upper end; F_u,p uses the "
                 "value above)", _fmt_load(r.Fu_buckling_braces_working_N)]]
-              if r.Fu_buckling_braces_working_N is not None else []),
+              if r.has_buckling_bracket else []),
             ["Mid-span deflection at F_u,p", f"{r.delta_at_Fu_mm:.1f} mm "
              f"(limit {r.deflection_limit_mm:g} mm)"],
             ["Estimated mass m", f"{r.mass.total_kg:.2f} kg (~{r.mass.stick_count} sticks)"
@@ -186,7 +186,7 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
              and r.buckling and r.buckling.description else
              f" in member **{r.governing_member}**." if r.governing_member else ".")
     modes = r.buckling_load_table() if math.isfinite(r.Fu_buckling_N) else []
-    if modes:
+    if r.has_buckling_bracket:
         modes += r.buckling_load_table(braces_working=True)
     blocks = [
         ("p", f"Predicted ultimate load **F_u,p = {_fmt_load(r.Fu_pred_N)}**, governed by "

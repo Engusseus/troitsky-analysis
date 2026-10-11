@@ -17,3 +17,18 @@ def test_piped_output_is_utf8_whatever_the_locale() -> None:
                          capture_output=True, env=env, timeout=120).stdout
     assert "[PASS] §8.2.1.1".encode() in out
     assert b"\xa7" not in out.replace("§".encode(), b"")
+
+
+def test_a_bridge_without_members_is_an_error_not_a_traceback(tmp_path) -> None:
+    from typer.testing import CliRunner
+
+    from bridgesim.cli import app
+    from bridgesim.generators import generate_warren
+    from bridgesim.schema import Bridge
+
+    data = generate_warren().model_dump(mode="json")
+    data["members"] = []
+    path = tmp_path / "empty.yaml"
+    Bridge.model_validate(data).save(path)
+    res = CliRunner().invoke(app, ["run", str(path)])
+    assert res.exit_code == 2 and "unstable" in res.output, res.output
