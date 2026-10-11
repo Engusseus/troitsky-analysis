@@ -40,7 +40,12 @@ from bridgesim.mass import MassReport, bridge_mass
 from bridgesim.materials import bridge_material
 from bridgesim.model import COMBO, REFINE_MAX_MEMBERS, build_model, splittable_count
 from bridgesim.schema import Bridge, Material
-from bridgesim.stability import BucklingResult, global_buckling
+from bridgesim.stability import (
+    BucklingResult,
+    braces_working_terms,
+    diaphragm_terms,
+    global_buckling,
+)
 from bridgesim.units import n_to_kgf
 
 DEFLECTION_LIMIT_MM = 50.0
@@ -128,6 +133,11 @@ class AnalysisResult:
     buckling_unsplit_members: list[str] = field(default_factory=list)
     #: Tension-only members that would be in compression, so were left out of the analysis.
     slack_members: list[str] = field(default_factory=list)
+    #: Global buckling with every slack member that crosses another slack one (an X) put
+    #: back at half its axial stiffness: one strap of each X working. The upper end of the
+    #: bracket whose lower end, ``buckling``, leaves them out (``braces_working_terms``).
+    buckling_braces_working: BucklingResult | None = None
+    braces_working_members: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     fe_model: Any = field(default=None, repr=False)
 
@@ -166,15 +176,42 @@ class AnalysisResult:
         return f" in {self.governing_member}" if self.governing_member else ""
 
     @property
+    def has_buckling_bracket(self) -> bool:
+        """True if both ends of the buckling bracket for slack X-braces are finite."""
+        F = self.Fu_buckling_braces_working_N
+        return F is not None and math.isfinite(F) and math.isfinite(self.Fu_buckling_N)
+
+    @property
+    def Fu_buckling_braces_working_N(self) -> float | None:
+        """Global buckling load with one strap of each slack X working (None if no X)."""
+        b = self.buckling_braces_working
+        if b is None:
+            return None
+        if math.isinf(b.lambda_cr) or math.isnan(b.lambda_cr):
+            return b.lambda_cr
+        return b.lambda_cr * self.P_ref_N
+
+    @property
     def slack_note(self) -> str:
-        """One sentence naming the tension-only members left out ("" if none)."""
+        """Which tension-only members were left out, and what that does to global buckling
+        ("" if none)."""
         if not self.slack_members:
             return ""
         ids = ", ".join(self.slack_members[:12])
         more = f", … ({len(self.slack_members)} in total)" if len(self.slack_members) > 12 else ""
-        return (f"{len(self.slack_members)} tension-only member(s) would be in compression, so "
+        note = (f"{len(self.slack_members)} tension-only member(s) would be in compression, so "
                 f"they were left out and the bridge re-analysed without them (a slender brace "
-                f"bows instead of failing, and then carries no load): {ids}{more}.")
+                f"bows instead of failing, and then carries no load): {ids}{more}. A bowed "
+                f"brace works again once a buckling mode stretches it, so the global buckling "
+                f"load without them is a lower bound.")
+        if self.has_buckling_bracket:
+            F, b = self.Fu_buckling_braces_working_N, self.buckling_braces_working
+            note += (f" With one strap of each X working ({len(self.braces_working_members)} "
+                     f"crossing straps, each at half stiffness) it would be "
+                     f"{n_to_kgf(F):,.0f} kgf ({F:,.0f} N; mode 1: {b.description}), against "
+                     f"{n_to_kgf(self.Fu_buckling_N):,.0f} kgf without them. The real value "
+                     f"lies in between; F_u,p uses the lower one.")
+        return note
 
     def member(self, mid: str) -> MemberResult:
         return next(m for m in self.members if m.id == mid)
@@ -182,12 +219,17 @@ class AnalysisResult:
     def critical_members(self, n: int = 10) -> list[MemberResult]:
         return sorted(self.members, key=lambda m: m.U, reverse=True)[:n]
 
-    def buckling_load_table(self) -> list[dict[str, Any]]:
-        """One row per global buckling mode found: load factor, F_cr and the mode's shape."""
-        b = self.buckling
+    def buckling_load_table(self, braces_working: bool = False) -> list[dict[str, Any]]:
+        """One row per global buckling mode found: load factor, F_cr and the mode's shape.
+
+        ``braces_working``: the modes with one strap of each slack X working (empty if the
+        bridge has no such X). The ``case`` column tells the two apart in a combined file.
+        """
+        b = self.buckling_braces_working if braces_working else self.buckling
         if b is None:
             return []
-        return [{"mode": k + 1, "load_factor": round(lam, 4),
+        case = "X braces working" if braces_working else "as analysed"
+        return [{"case": case, "mode": k + 1, "load_factor": round(lam, 4),
                  "F_cr_N": round(lam * self.P_ref_N, 1),
                  "F_cr_kgf": round(n_to_kgf(lam * self.P_ref_N), 1), "shape": desc}
                 for k, (lam, desc) in enumerate(zip(b.lambdas, b.descriptions, strict=False))]
@@ -323,7 +365,11 @@ def analyze(
     U_max = U_max_member.U if U_max_member else 0.0
     Fu_strength = P_ref / U_max if U_max > 0 else math.inf
     Fu_delta = P_ref * deflection_limit_mm / delta_ref if delta_ref > 0 else math.inf
-    buck = global_buckling(model, bridge) if include_buckling else None
+    deck = diaphragm_terms(bridge)
+    buck = global_buckling(model, bridge, extra=deck) if include_buckling else None
+    working, working_ids = braces_working_terms(model, bridge, slack, material.stick)
+    buck_working = (global_buckling(model, bridge, extra=deck + working)
+                    if include_buckling and working else None)
     if buck is None or math.isinf(buck.lambda_cr):
         Fu_buck = math.inf  # not requested, or no compression-driven mode exists
     elif math.isnan(buck.lambda_cr) or buck.lambda_cr <= 0:
@@ -366,6 +412,9 @@ def analyze(
         )
     if buck is not None and buck.note and not math.isinf(buck.lambda_cr):
         warnings.append(f"Global buckling: {buck.note}")
+    if buck_working is not None and math.isnan(buck_working.lambda_cr):
+        warnings.append(f"Global buckling with one strap of each slack X working: "
+                        f"{buck_working.note}")
     if gov_mode == "buckling" and U_max_member is not None:
         N_gov = abs(U_max_member.N_N)
         N_big = max(abs(r.N_N) for r in results)
@@ -403,5 +452,7 @@ def analyze(
         governing_member=gov_member, governing_mode=gov_mode,
         mass=bridge_mass(bridge, material), deflection_limit_mm=deflection_limit_mm,
         buckling=buck, buckling_unsplit_members=unsplit, slack_members=slack,
+        buckling_braces_working=buck_working,
+        braces_working_members=working_ids if buck_working is not None else [],
         warnings=warnings, fe_model=model,
     )

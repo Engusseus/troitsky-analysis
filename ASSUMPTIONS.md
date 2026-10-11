@@ -56,13 +56,16 @@ The app shows a banner and an *assumed* badge on every value until you mark it *
 7. **Deck is non-structural** unless the bridge file makes it a shear diaphragm. It
    transfers the plate load to the floor beams as simply supported strips and adds mass.
    As a diaphragm (`deck.diaphragm`: in-plane G and the nodes where it is glued to the
-   trusses) each panel of length $a$, width $b$ and thickness $t$ gets two pin-ended
-   equivalent diagonals of area $A_d = G t L_d^3 / (2 E a b)$, so that its shear
-   stiffness is the plate's $G t b / a$. These diagonals also give the deck an axial
-   stiffness of about $G (a/b)^2$ along the bridge, usually less than the real plate's,
-   so it takes a little of the bottom chords' tension. The deck's bending and strength are
-   not modelled. Without a diaphragm, a deck that does brace the trusses is left out,
-   which makes the sideways buckling load conservative.
+   trusses) each panel between two stations is a constant-shear panel in the global
+   buckling analysis. With corner movements $u$, panel length $a$ and edge spacing $b$,
+   its shear strain is
+   $\gamma = (u_{f0} + u_{f1} - u_{n0} - u_{n1})\cdot e_1/(2b) + (u_{n1} + u_{f1} - u_{n0} - u_{f0})\cdot e_2/(2a)$
+   and its energy $\tfrac12 G t a w \gamma^2$ ($t$, $w$: plate thickness and width).
+   This gives a racking stiffness of $G t w / a$, and none for stretching the chords or
+   for rigid-body movement. So the deck resists shear only: it is left out of the static
+   analysis, takes no chord force, and changes no member force. The deck's bending and
+   strength are not modelled. Without a diaphragm, a deck that does brace the trusses is
+   left out, which makes the sideways buckling load conservative.
 8. **Self-weight ignored.** A 2 kg bridge weighs about 20 N, well under 1 % of a typical
    failure load.
 9. **Torsion ignored** in the member checks (it is still in the stiffness model).
@@ -100,7 +103,14 @@ The app shows a banner and an *assumed* badge on every value until you mark it *
     repeated without it (Pynite's tension-only iteration, which never puts a member back).
     It is reported as *slack*, with zero forces; in tension it is checked as usual. A
     bowed brace straightens and works again after a very small movement, so leaving it out
-    of the buckling analysis is conservative.
+    of the buckling analysis is conservative. Where slack members cross (an X), global
+    buckling is also solved with each of them put back at half its axial stiffness
+    $E A / 2L$ (no geometric stiffness). When the X racks, one strap stretches by
+    $\delta$ and the other shortens by $\delta$. One strap working at $EA/L$ and the
+    other slack store $\tfrac12 (EA/L)\delta^2$, and so do two at half stiffness,
+    whichever way the X racks. This is exact for racking and too stiff for a mode that
+    shortens both straps. It is reported as the upper end of a bracket; $F_{u,p}$ uses
+    the lower end.
 16. **Interaction**: $U = |N|/N_R + |M_y|/M_{R,y} + |M_z|/M_{R,z}$, linear, without moment
     amplification. Member shear (resultant of the two local shears, $1.5V/A \le f_v$)
     and glued-joint shear are separate checks.

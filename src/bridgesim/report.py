@@ -95,6 +95,9 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
              + (f"; mode 1: {r.buckling.description}"
                 if r.buckling and r.buckling.description and math.isfinite(r.Fu_buckling_N)
                 else "")],
+            *([["F_cr with one strap of each slack X working (upper end; F_u,p uses the "
+                "value above)", _fmt_load(r.Fu_buckling_braces_working_N)]]
+              if r.has_buckling_bracket else []),
             ["Mid-span deflection at F_u,p", f"{r.delta_at_Fu_mm:.1f} mm "
              f"(limit {r.deflection_limit_mm:g} mm)"],
             ["Estimated mass m", f"{r.mass.total_kg:.2f} kg (~{r.mass.stick_count} sticks)"
@@ -183,6 +186,8 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
              and r.buckling and r.buckling.description else
              f" in member **{r.governing_member}**." if r.governing_member else ".")
     modes = r.buckling_load_table() if math.isfinite(r.Fu_buckling_N) else []
+    if r.has_buckling_bracket:
+        modes += r.buckling_load_table(braces_working=True)
     blocks = [
         ("p", f"Predicted ultimate load **F_u,p = {_fmt_load(r.Fu_pred_N)}**, governed by "
               f"**{r.governing_label}**{where}"),
@@ -197,9 +202,10 @@ def _sections(result: AnalysisResult, rules: RulesReport | None):
             ("p", "Global elastic buckling modes, lowest first. The shape names the "
                   "direction and the nodes that move most; the member with the most strain "
                   "energy alone can mislead (a small member may hold it while the whole span "
-                  "moves)."),
-            ("table", ["Mode", "F_cr (N)", "F_cr (kgf)", "Load factor λ", "Shape"],
-             [[str(m["mode"]), f"{m['F_cr_N']:,.0f}", f"{m['F_cr_kgf']:,.1f}",
+                  "moves). Case \"X braces working\" (if listed) has one strap of each "
+                  "slack X working; the real loads lie between the two cases."),
+            ("table", ["Case", "Mode", "F_cr (N)", "F_cr (kgf)", "Load factor λ", "Shape"],
+             [[m["case"], str(m["mode"]), f"{m['F_cr_N']:,.0f}", f"{m['F_cr_kgf']:,.1f}",
                f"{m['load_factor']:.3f}", m["shape"]] for m in modes]),
         ]
     if r.slack_members:
@@ -279,15 +285,17 @@ def model_assumptions(result: AnalysisResult) -> list[str]:
     general = [f"{a} {glue}" if a.startswith("Glued joint") else a for a in MODEL_ASSUMPTIONS]
     dia = result.bridge.deck.diaphragm
     if dia is not None:
-        t = dia.thickness_mm if dia.thickness_mm is not None else result.bridge.deck.thickness_mm
+        d = result.bridge.deck
+        t = dia.thickness_mm if dia.thickness_mm is not None else d.thickness_mm
+        w = dia.width_mm if dia.width_mm is not None else d.clear_width_mm
         n = len(result.bridge.diaphragm_panels())
         deck = (f"The deck is a shear diaphragm in its own plane (G = {dia.G_MPa:g} MPa, "
-                f"t = {t:g} mm) between {n} pairs of stations of the trusses; each panel of "
-                "length a and width b is two pin-ended equivalent diagonals of area "
-                "A = G t L³ / (2 E a b), which give it the plate's shear stiffness G t b / a. "
-                "They also share a little of the bottom chords' tension. The deck's own "
-                "bending and its strength are not modelled, and it still passes the "
-                "crusher-plate load to the floor-beam centre nodes as simply supported strips.")
+                f"t = {t:g} mm, plate width w = {w:g} mm) in {n} panels between the trusses. "
+                "Each panel of length a is a constant-shear panel with racking stiffness "
+                "G t w / a. It is used in the global buckling analysis only and resists "
+                "shear only: it takes no chord force and changes no member force. Its own "
+                "bending and its strength are not modelled; it still passes the crusher-plate "
+                "load to the floor-beam centre nodes as simply supported strips.")
         general = [deck if a.startswith("The deck is non-structural") else a for a in general]
     out = [f"Material “{m.name}”: {vals}. {src}.", crusher, k_line, mesh]
     own_mat = [s for s in result.bridge.sections if s.overrides()]
@@ -307,7 +315,10 @@ def model_assumptions(result: AnalysisResult) -> list[str]:
             "compression are left out of the static and global buckling analyses and never "
             "put back (Pynite's tension-only iteration); the others are checked as usual. A "
             "bowed brace straightens and works again after a very small movement, so leaving "
-            "it out of the buckling analysis is conservative.")
+            "it out of the buckling analysis is conservative. Where slack members cross (an "
+            "X), global buckling is also given with each of them at half its axial "
+            "stiffness, which equals one strap of each X working when the X racks: the "
+            "upper end of a bracket whose lower end F_u,p uses.")
     return [*out, *general]
 
 

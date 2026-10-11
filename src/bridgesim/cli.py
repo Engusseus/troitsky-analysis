@@ -130,6 +130,11 @@ def run(
     if len(modes) > 1:
         typer.echo("  Next global buckling loads    : " + ", ".join(
             f"{row['F_cr_kgf']:.1f} kgf (mode {row['mode']})" for row in modes[1:]))
+    working = res.buckling_load_table(braces_working=True) if res.has_buckling_bracket else []
+    if working:
+        typer.echo(f"  Global buckling, X working    : {_kgf(res.Fu_buckling_braces_working_N)} "
+                   f"with one strap of each slack X in tension (F_u,p uses the lower "
+                   f"{_kgf(res.Fu_buckling_N)})")
     typer.echo(f"  Deflection at F_u,p           : {res.delta_at_Fu_mm:.1f} mm "
                f"(limit {res.deflection_limit_mm:g})")
     extra = (f", incl. {res.mass.extra_kg:.2f} kg extra wood"
@@ -157,7 +162,7 @@ def run(
         tables = {"members.csv": res.member_table()}
         if modes:
             tables |= {"buckling_mode.csv": res.buckling_mode_table(1),
-                       "buckling_loads.csv": modes}
+                       "buckling_loads.csv": modes + working}
         for name, rows in tables.items():
             with (out / name).open("w", newline="", encoding="utf-8") as fh:
                 w = csv.DictWriter(fh, fieldnames=list(rows[0]))

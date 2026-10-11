@@ -32,10 +32,11 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import scipy.linalg as sla
+import scipy.sparse as sps
 import scipy.sparse.linalg as spla
 
 from bridgesim.model import COMBO
-from bridgesim.schema import Bridge
+from bridgesim.schema import Bridge, Stick
 
 _DOFS = ("DX", "DY", "DZ", "RX", "RY", "RZ")
 
@@ -53,6 +54,10 @@ LOCAL_MODE_RATIO = 0.5
 #: Nodes moving at least this fraction of the largest node movement are named.
 NAMED_NODE_RATIO = 0.8
 _DIRECTIONS = ("lengthwise (X)", "vertical (Y)", "sideways (Z)")
+
+#: Extra elastic stiffness for the buckling analysis: node ids and a matrix over their
+#: translations (3 per node, in the order given), added to K but not to K_g.
+StiffnessTerm = tuple[list[str], np.ndarray]
 
 
 @dataclass
@@ -108,6 +113,119 @@ def describe_mode(mode: dict[str, tuple[float, float, float]], key_member: str |
     return f"{' and '.join(main)} movement{where}{energy}"
 
 
+def diaphragm_terms(bridge: Bridge) -> list[StiffnessTerm]:
+    """Shear stiffness of each deck diaphragm panel (``Deck.diaphragm``).
+
+    A panel has corners n0, n1 on the -Z edge and f0, f1 on the +Z edge, a length a along
+    the bridge (unit vector e1) and a distance b between its edges (e2, across the bridge
+    in the panel's plane). It is a constant-shear panel: from the corner movements u its
+    average engineering shear strain is
+
+        gamma = (u_f0 + u_f1 - u_n0 - u_n1) . e1 / (2 b)
+              + (u_n1 + u_f1 - u_n0 - u_f0) . e2 / (2 a)
+
+    and its strain energy U = 1/2 G t a w gamma^2, with w the width of the plate (the deck's
+    clear width unless the diaphragm gives width_mm) and t its thickness. So the panel's
+    stiffness is k = G t a w g g^T, with g = d gamma / d u. Racking, one end moving Delta
+    across the bridge, gives gamma = Delta / a and a force G t w Delta / a. Stretching or
+    shortening the chords, and moving or turning the panel as a whole, give gamma = 0: the
+    deck resists shear only and takes no chord force.
+    """
+    dia = bridge.deck.diaphragm
+    if dia is None:
+        return []
+    t = dia.thickness_mm if dia.thickness_mm is not None else bridge.deck.thickness_mm
+    w = dia.width_mm if dia.width_mm is not None else bridge.deck.clear_width_mm
+    P = {n.id: np.array(n.xyz, dtype=float) for n in bridge.nodes}
+    terms = []
+    for n0, n1, f0, f1 in bridge.diaphragm_panels():
+        e1 = (P[n1] - P[n0]) + (P[f1] - P[f0])
+        e1 /= np.linalg.norm(e1)
+        e2 = (P[f0] - P[n0]) + (P[f1] - P[n1])
+        e2 -= (e2 @ e1) * e1
+        e2 /= np.linalg.norm(e2)
+        a = 0.5 * ((P[n1] - P[n0]) @ e1 + (P[f1] - P[f0]) @ e1)
+        b = 0.5 * ((P[f0] - P[n0]) @ e2 + (P[f1] - P[n1]) @ e2)
+        u, v = e1 / (2 * b), e2 / (2 * a)
+        g = np.concatenate([-u - v, -u + v, u - v, u + v])  # n0, n1, f0, f1
+        terms.append(([n0, n1, f0, f1], dia.G_MPa * t * a * w * np.outer(g, g)))
+    return terms
+
+
+def crossing_pairs(bridge: Bridge, ids, stick: Stick) -> list[tuple[str, str]]:
+    """Pairs among members ``ids`` whose centre lines cross inside both, as in an X.
+
+    Two members cross when they share no node, their closest points lie strictly inside
+    both, and those points are less than the larger section dimension of the two apart
+    (crossing straps are often drawn one on top of the other).
+    """
+    nodes, secs = bridge.node_map(), bridge.section_map()
+    mem = {m.id: m for m in bridge.members}
+    ids = [m.id for m in bridge.members if m.id in set(ids)]  # in file order
+    seg = {k: (np.array(nodes[mem[k].i].xyz), np.array(nodes[mem[k].j].xyz)) for k in ids}
+    size = {k: max(secs[mem[k].section].dims(stick)) for k in ids}
+    pairs = []
+    for x, k1 in enumerate(ids):
+        for k2 in ids[x + 1:]:
+            if {mem[k1].i, mem[k1].j} & {mem[k2].i, mem[k2].j}:
+                continue
+            (p, p2), (q, q2) = seg[k1], seg[k2]
+            d1, d2, r = p2 - p, q2 - q, p - q
+            a, b, e = d1 @ d1, d1 @ d2, d2 @ d2
+            den = a * e - b * b
+            if den <= 1e-12 * a * e:  # parallel
+                continue
+            s_ = (b * (d2 @ r) - e * (d1 @ r)) / den
+            t_ = (a * (d2 @ r) - b * (d1 @ r)) / den
+            gap = np.linalg.norm(p + s_ * d1 - q - t_ * d2)
+            if 0 < s_ < 1 and 0 < t_ < 1 and gap < max(size[k1], size[k2]):
+                pairs.append((k1, k2))
+    return pairs
+
+
+def braces_working_terms(model, bridge: Bridge, slack, stick: Stick
+                         ) -> tuple[list[StiffnessTerm], list[str]]:
+    """Axial stiffness, at half its value, of every slack member that crosses another slack
+    member (``crossing_pairs``), and the ids of those members.
+
+    The straps of a tension-only X both go slack under the crusher load when the chords
+    shorten. When the X then racks in a buckling mode, one strap stretches by delta and the
+    other shortens by delta. The stretched one straightens after a tiny movement and works
+    at its full stiffness E A / L; the shortened one stays slack. That stores
+    1/2 (E A / L) delta^2, and so do both straps at half stiffness,
+    2 x 1/2 (E A / 2 L) delta^2, whichever way the X racks. So a linear analysis needs no
+    mode direction. It is exact for racking and too stiff for a mode that shortens both
+    straps (the chords moving closer together), so it is the upper end of a bracket whose
+    lower end leaves the straps out.
+    """
+    ids = sorted({m for pair in crossing_pairs(bridge, slack, stick) for m in pair},
+                 key=[m.id for m in bridge.members].index)
+    nodes = bridge.node_map()
+    mem = {m.id: m for m in bridge.members}
+    terms = []
+    for mid in ids:
+        pm = model.members[mid]
+        d = np.array(nodes[mem[mid].j].xyz) - np.array(nodes[mem[mid].i].xyz)
+        L = float(np.linalg.norm(d))
+        nn = np.outer(d, d) / L**2
+        k = 0.5 * pm.material.E * pm.section.A / L
+        terms.append(([mem[mid].i, mem[mid].j], k * np.block([[nn, -nn], [-nn, nn]])))
+    return terms, ids
+
+
+def _extra_matrix(model, terms, size: int) -> sps.csr_matrix:
+    """The stiffness terms assembled into a size x size matrix on the model's DOFs."""
+    rows, cols, vals = [], [], []
+    for nids, k in terms:
+        dofs = np.concatenate([np.arange(3) + model.nodes[n].ID * 6 for n in nids])
+        r, c = np.meshgrid(dofs, dofs, indexing="ij")
+        rows.append(r.ravel())
+        cols.append(c.ravel())
+        vals.append(np.asarray(k, dtype=float).ravel())
+    return sps.csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+                          shape=(size, size))
+
+
 def _free_dofs(model, bridge: Bridge) -> list[int]:
     # Friction holds DX at every base the bridge stands on, however the support is written.
     held = {model.nodes[n].ID * 6 for n in bridge.support_nodes()}
@@ -121,15 +239,23 @@ def _free_dofs(model, bridge: Bridge) -> list[int]:
 
 
 def global_buckling(
-    model, bridge: Bridge, n_modes: int = 3, dense_max_dof: int = DENSE_MAX_DOF
+    model, bridge: Bridge, n_modes: int = 3, dense_max_dof: int = DENSE_MAX_DOF,
+    extra: list[StiffnessTerm] | tuple = (),
 ) -> BucklingResult:
-    """Solve the buckling eigenproblem on an already analysed Pynite model."""
+    """Solve the buckling eigenproblem on an already analysed Pynite model.
+
+    ``extra`` stiffness (e.g. the deck diaphragm, :func:`diaphragm_terms`) is added to K
+    only: it carries no force in the static analysis, so it has no geometric stiffness.
+    """
     free = _free_dofs(model, bridge)
     # K and K_g are assembled over every DOF before the free ones are sliced out, so the
     # full size decides whether a dense matrix fits in memory.
     sparse = 6 * len(model.nodes) > dense_max_dof
     K = model.Ke(COMBO, sparse=sparse, check_stability=False)
     G = model.Kg(COMBO, sparse=sparse, first_step=False)
+    if extra:
+        X = _extra_matrix(model, extra, K.shape[0])
+        K = K.tocsr() + X if sparse else np.asarray(K) + X.toarray()
     if sparse:
         K, G = K.tocsr(), G.tocsr()
         K11 = K[free][:, free].tocsc()
