@@ -812,19 +812,31 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         fail_mode = "none"
         fail_detail = (f"no failure within {opt.max_travel_mm:g} mm of jack travel")
         Fu_at_fail = peak
-    # the governing failure: what broke around the peak
-    near = [e for e in events if e.kind in ("joint_failure", "joint_cracking", "member_fracture",
-                                             "member_shear", "plate_crack", "floss_break")
+    # the governing failure: what broke around the peak, before the bridge was judged
+    # failed (never something that broke in the collapse afterwards)
+    end = (fail_at if fail_at is not None else np.inf) + 0.5
+    before = [e for e in events if e.travel_mm <= end]
+    near = [e for e in before if e.kind in ("joint_failure", "joint_cracking",
+                                            "member_fracture", "member_shear", "plate_crack",
+                                            "floss_break")
             and abs(e.travel_mm - peak_travel) <= 3.0]
     first_major = near[0] if near else next(
-        (e for e in events if e.kind in ("joint_failure", "member_fracture", "member_shear",
+        (e for e in before if e.kind in ("joint_failure", "member_fracture", "member_shear",
                                          "plate_crack", "floss_break")), None)
     if fail_mode == "collapse" and first_major:
         fail_detail = f"{first_major.kind.replace('_', ' ')}: {first_major.what}. " + \
             fail_detail
     elif fail_mode == "collapse":
-        fail_detail = ("no part broke: a buckling or sway mechanism (see the replay), the "
-                       + fail_detail)
+        soft = list(dict.fromkeys(e.what for e in before if e.kind == "glue_damage"
+                                  and abs(e.travel_mm - peak_travel) <= 3.0))
+        if soft:
+            fail_detail = ("no part broke before the load fell, but the glue of "
+                           + "; ".join(soft[:3]) + (f" (and {len(soft) - 3} more)"
+                                                    if len(soft) > 3 else "")
+                           + " was giving way at the peak: " + fail_detail)
+        else:
+            fail_detail = ("no part broke: a buckling or sway mechanism (see the replay), "
+                           "the " + fail_detail)
     m.mass = phys_mass
     # quasi-static check: kinetic energy vs the work done by the jack, once that work is
     # at least a tenth of the work done up to the peak load (before that both are ~0)

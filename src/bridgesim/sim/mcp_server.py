@@ -267,18 +267,24 @@ def build_server():
     @_safe
     def inspect_bridge(cad_path: str, overrides_yaml: str = "", material: str = "",
                        up_axis: str = "y", span_axis: str = "x", units: str = "",
-                       strict: bool = False, brief: bool = True) -> str:
+                       strict: bool = False, brief: bool = True,
+                       body: list[str] | None = None,
+                       joint: list[str] | None = None) -> str:
         """Read a SolidWorks part (.SLDPRT), Parasolid (.x_b) or STL bridge (use absolute
         paths). Returns JSON: Troitsky 2027 rule check, `warnings` (e.g. overrides that had
         no effect), `questions` the designer should answer (answer them via overrides_yaml,
         or list confirmed ones under `acknowledge:`), the loading position and counts of
         the bodies by kind. brief=false adds every body (how it is modelled, where it is,
-        layup, mass) and glued joint (~100 kB). bridgesim expects X along the span and Y
-        up; say otherwise with up_axis/span_axis."""
+        layup, mass) and glued joint (~100 kB). body / joint (names or glob patterns,
+        e.g. ["Top Chord*"]): only those bodies, the joints with such a part, and the
+        questions about them, in full. bridgesim expects X along the span and Y up; say
+        otherwise with up_axis/span_axis."""
         rep = study.inspect(_infile(cad_path, "CAD file"), None,
                             material or "popsicle_birch", units=units or None, up=up_axis,
                             span=span_axis, strict=strict,
                             overrides_data=_yaml_or_none(overrides_yaml))
+        if body or joint:
+            return study.select(rep, body, joint).model_dump_json()
         return json.dumps(study.inspect_brief(rep)) if brief else rep.model_dump_json()
 
     @srv.tool()
@@ -287,7 +293,7 @@ def build_server():
                      fidelity: str = "standard", out_dir: str = "", material: str = "",
                      up_axis: str = "y", span_axis: str = "x", units: str = "",
                      strict: bool = False, rate_check: bool = False,
-                     brief: bool = True) -> str:
+                     brief: bool = True, full_collapse: bool = False) -> str:
         """Simulate the Troitsky crushing test (rulebook §12.5) on the CAD bridge
         (blocking; minutes). Returns JSON with Fu_kgf, failure_mode, failure_sequence,
         curve, quality (check quality.trustworthy) and artifacts (replay.html, events.csv
@@ -295,15 +301,18 @@ def build_server():
         overrides that have no effect an error. rate_check: crush again at half speed and
         report the change of F_u (quality.rate_check; 3x the time). brief (default):
         without the curve and the event log, which are in out_dir's curve.csv and
-        events.csv (brief=false returns them inline, ~200 kB). Use start_crush instead
-        if your tool calls time out."""
+        events.csv (brief=false returns them inline, ~200 kB). The crush stops 2 mm of
+        jack travel after the bridge is judged failed (F_u and the failures are known);
+        full_collapse=true follows the collapse 15 mm further for the replay (~1/3
+        slower). Use start_crush instead if your tool calls time out."""
         rep, _ = study.crush(_infile(cad_path, "CAD file"), None,
                              material or "popsicle_birch", seed=None if seed < 0 else seed,
                              overrides_data=_yaml_or_none(overrides_yaml),
                              out_dir=str(_outpath(out_dir)) if out_dir else None,
                              fidelity=fidelity,
                              units=units or None, up=up_axis, span=span_axis,
-                             strict=strict, rate_check=rate_check)
+                             strict=strict, rate_check=rate_check,
+                             stop_at_failure=not full_collapse)
         return json.dumps(study.brief(rep)) if brief else rep.model_dump_json()
 
     @srv.tool()
@@ -311,10 +320,12 @@ def build_server():
     def start_crush(cad_path: str, out_dir: str, overrides_yaml: str = "", seed: int = 0,
                     fidelity: str = "standard", material: str = "", up_axis: str = "y",
                     span_axis: str = "x", units: str = "", strict: bool = False,
-                    rate_check: bool = False, brief: bool = True) -> str:
+                    rate_check: bool = False, brief: bool = True,
+                    full_collapse: bool = False) -> str:
         """Start a crush simulation in the background and return at once. Poll
         job_status(out_dir) until status is 'done' (report included) or 'failed' (error
-        included)."""
+        included). It stops 2 mm of jack travel after the bridge is judged failed;
+        full_collapse=true follows the collapse for the replay."""
         cad_path = _infile(cad_path, "CAD file")
         out = _outpath(out_dir)
         cmd = [sys.executable, "-m", "bridgesim.cli", "crush", cad_path, "--out", str(out),
@@ -328,6 +339,8 @@ def build_server():
             cmd += ["--rate-check"]
         if brief:
             cmd += ["--brief"]
+        if not full_collapse:
+            cmd += ["--stop-at-failure"]
         if overrides_yaml:
             out.mkdir(parents=True, exist_ok=True)
             (out / "overrides.yaml").write_text(overrides_yaml, encoding="utf-8")
@@ -339,14 +352,18 @@ def build_server():
     @srv.tool()
     @_safe
     def start_montecarlo(cad_path: str, out_dir: str, n: int = 8, overrides_yaml: str = "",
-                         fidelity: str = "standard", material: str = "") -> str:
+                         fidelity: str = "standard", material: str = "",
+                         sample_placeholders: bool = False) -> str:
         """Start n crushes with different imperfections and material scatter in the
         background (spread of F_u and the value for the Load Prediction Form). Poll
-        job_status(out_dir)."""
+        job_status(out_dir). sample_placeholders: also draw the material values that are
+        still placeholders per run, so the range includes what they leave unknown."""
         cad_path = _infile(cad_path, "CAD file")
         out = _outpath(out_dir)
         cmd = [sys.executable, "-m", "bridgesim.cli", "montecarlo", cad_path, "-n", str(n),
                "--fidelity", fidelity, "--out", str(out), "--json"]
+        if sample_placeholders:
+            cmd.append("--sample-placeholders")
         if overrides_yaml:
             out.mkdir(parents=True, exist_ok=True)
             (out / "overrides.yaml").write_text(overrides_yaml, encoding="utf-8")

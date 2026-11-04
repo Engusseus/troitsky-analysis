@@ -285,7 +285,9 @@ def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: Sim
             question="Stick stiffness/strength and glue strength are textbook placeholders. "
                      "Have you tested sticks (3-point bending) and glued lap joints? Fill "
                      "validation/physical/*.csv and run `bridgesim calibrate`.",
-            assumed="E = 10 GPa, f_t = 40, f_c = 30 MPa, glue 2 MPa (placeholders)",
+            assumed=", ".join(f"{k} = {mat.props()[k].value:g}" for k in
+                              ("E_MPa", "f_t_MPa", "f_c_MPa", "glue.tau_g_MPa")
+                              if k in mat.assumed_keys()) + " (placeholders)",
             answer_with={"cli": "bridgesim calibrate validation/physical --out "
                                 "my_material.yaml, then crush with --material "
                                 "my_material.yaml"},
@@ -439,13 +441,16 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
           replay: bool = True, fidelity: str = "standard", units=None, up: str = "y",
           span: str = "x", strict: bool = False, rate_check: bool = False,
           mesh_scale: float | None = None,
-          overrides_data: dict | None = None) -> tuple[CrushReport, CrushResult]:
+          overrides_data: dict | None = None,
+          stop_at_failure: bool = False) -> tuple[CrushReport, CrushResult]:
     """Simulate the §12.5 crushing test of a CAD bridge. Writes ``crush.json``,
     ``curve.csv``, ``events.csv`` and ``replay.html`` (interactive 3D replay) to
     ``out_dir`` if given. ``rate_check`` crushes the bridge a second time at half the
     jack speed and reports how much F_u changes (``quality.rate_check``). ``mesh_scale``
     (element size relative to standard) overrides the fidelity's mesh, for convergence
-    studies."""
+    studies. ``stop_at_failure``: stop 2 mm of jack travel after the bridge is judged
+    failed (F_u and the failures are known; about a third faster; the replay ends
+    there) instead of following the collapse for 15 mm."""
     from bridgesim.sim.crush import FIDELITY
 
     if fidelity not in FIDELITY:
@@ -470,6 +475,10 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
     # the fine mesh needs a smaller time step, or too much mass scaling would be added
     opt = options or CrushOptions(speed_mm_s=speed,
                                   dt_target=2.2e-6 if fidelity == "fine" else 3e-6)
+    if stop_at_failure:
+        import dataclasses
+
+        opt = dataclasses.replace(opt, after_failure_mm=min(opt.after_failure_mm, 2.0))
     if progress is not None:
         opt.progress = progress
     res = run_crush(model, opt)
@@ -517,7 +526,7 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
                                              else overrides_data) if ov_raw else None,
                                  out_dir)
     if out_dir:
-        out = Path(out_dir)
+        out = Path(out_dir).resolve()
         out.mkdir(parents=True, exist_ok=True)
         with (out / "curve.csv").open("w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
@@ -546,6 +555,16 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
                 replay_html(res, bodies, title=f"{path.stem}: simulated crush test"),
                 encoding="utf-8")
             rep.artifacts["replay_html"] = str(out / "replay.html")
+        wi = next((s.overrides for s in rep.next_steps
+                   if s.action == "strengthen" and s.overrides), None)
+        if wi:  # the what-if of next_steps, ready for ab --overrides-b
+            import yaml
+
+            (out / "whatif.yaml").write_text(
+                "# your overrides plus the what-if of next_steps (strengthen)\n"
+                + yaml.safe_dump(merge_whatif(ov_raw, wi), sort_keys=False,
+                                 allow_unicode=True), encoding="utf-8")
+            rep.artifacts["whatif_yaml"] = str(out / "whatif.yaml")
         rep.artifacts["report_json"] = str(out / "crush.json")
         (out / "crush.json").write_text(rep.model_dump_json(indent=2), encoding="utf-8")
     return rep, res
@@ -623,8 +642,27 @@ def _ov_arg(overrides) -> str:
     """The overrides as a command-line option: the file the caller gave, a placeholder
     when they came as a dict, nothing without overrides."""
     if isinstance(overrides, (str, Path)) and str(overrides):
-        return " -o " + shlex.quote(str(overrides))
+        return " -o " + shlex.quote(str(Path(overrides).resolve()))
     return " -o overrides.yaml" if overrides else ""
+
+
+def merge_whatif(user: dict | None, whatif: dict) -> dict:
+    """The user's overrides with a what-if on top: what-if bodies and joints are added,
+    and a part or joint the user already scaled is scaled by both (factors multiply)."""
+    import copy
+
+    out = copy.deepcopy(user or {})
+    for k, v in (whatif.get("bodies") or {}).items():
+        cur = dict((out.setdefault("bodies", {}) or {}).get(k) or {})
+        for f, x in v.items():
+            cur[f] = round(float(cur.get(f, 1.0)) * float(x), 6) if f in (
+                "section_scale", "glue_factor", "strength_factor") else x
+        out["bodies"][k] = cur
+    for k, x in (whatif.get("glue") or {}).items():
+        g = out.setdefault("glue", {}) or {}
+        g[k] = round(float(g.get(k, 1.0)) * float(x), 6)
+        out["glue"] = g
+    return out
 
 
 def _rule_step(rules: RulesSummary, qs: list[Question],
@@ -656,7 +694,7 @@ def _measure_step(assumed: list[str], f: str, ov: str) -> list[NextStep]:
 
 
 def _next_inspect(rep: InspectReport, path: Path, overrides) -> list[NextStep]:
-    f, ov = shlex.quote(str(path)), _ov_arg(overrides)
+    f, ov = shlex.quote(str(path.resolve())), _ov_arg(overrides)
     steps = _rule_step(rep.rules, rep.questions, rep.acknowledged_questions) \
         + _ask_steps(rep.questions)
     steps.append(NextStep(action="crush", why="simulate the §12.5 crushing test (standard "
@@ -670,7 +708,9 @@ def _copies(name: str) -> str:
     'Top Chord*'): a design change is made on every copy, not on the one this seed broke."""
     import glob as _glob
 
-    return _glob.escape(_group(name)) + "*"
+    g = _group(name)
+    # only names with a side or copy suffix have copies ("Body 4" must not match "Body 41")
+    return _glob.escape(name) if g == name else _glob.escape(g) + "*"
 
 
 def _whatif(gov: list[EventOut]) -> dict:
@@ -689,8 +729,11 @@ def _whatif(gov: list[EventOut]) -> dict:
 
 
 def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextStep]:
-    f, ov = shlex.quote(str(path)), _ov_arg(overrides)
-    out = shlex.quote(str(out_dir)) if out_dir else "results"
+    f, ov = shlex.quote(str(path.resolve())), _ov_arg(overrides)
+    out = shlex.quote(str(Path(out_dir).resolve())) if out_dir else "results"
+    # the what-if (with the user's overrides) is written there by crush(out_dir=...)
+    wy = (shlex.quote(str(Path(out_dir).resolve() / "whatif.yaml")) if out_dir
+          else "whatif.yaml")
     steps: list[NextStep] = []
     q = rep.quality
     if not q.trustworthy:
@@ -704,10 +747,28 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
         steps.append(NextStep(action="strengthen", why="the bridge collapses under its own "
                               "weight: " + rep.failure_detail,
                               parts=sorted({p for e in broke[:3] for p in e.parts})))
+    elif not gov and rep.failure_mode == "collapse" and "glue of" in rep.failure_detail:
+        at = {}  # each joint whose glue was giving way at the peak, and where it is
+        for e in rep.events:
+            if e.kind == "glue_damage" and e.load_kgf >= 0.9 * rep.Fu_kgf:
+                at.setdefault(e.what, e.where_mm)
+        soft = list(at)[:3]
+        wi = {"glue": {f"{_copies(a)} | {_copies(b)}": 1.5
+                       for a, b in (w.split(" | ", 1) for w in soft if " | " in w)}}
+        ova = ov.replace(" -o ", " --overrides-a ")
+        steps.append(NextStep(
+            action="strengthen", parts=sorted({p for w in soft for p in w.split(" | ")}),
+            where_mm=[at[w] for w in soft if at[w]],
+            why=rep.failure_detail + ". Those joints gave way without a clean break: give "
+                "them more glued area or a gusset; try it first as the what-if in "
+                "`overrides` (with your own overrides: whatif.yaml in the output folder) "
+                "with ab on the same seeds",
+            overrides=wi if wi["glue"] else {},
+            cli=(f"bridgesim ab {f} {f}{ova} --overrides-b {wy} -n 3 --json"
+                 if wi["glue"] else f"bridgesim ab {f} <changed design> -n 3 --json")))
     elif not gov and rep.failure_mode in ("collapse", "deflection", "contact"):
-        what = {"collapse": "no part broke: " + rep.failure_detail + ". Brace the members "
-                            "in compression and against sway (the replay shows which one "
-                            "buckled)",
+        what = {"collapse": rep.failure_detail + ". Brace the members in compression and "
+                            "against sway (the replay shows which one buckled)",
                 "deflection": f"it deflected more than 50 mm (§12.5) at {rep.Fu_kgf:.0f} kgf "
                               "without breaking: make it stiffer (a deeper truss, stiffer "
                               "chords)",
@@ -730,10 +791,11 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
             + ". The bridge failed there: strengthen it (glued area, a gusset, a deeper "
               "member). Try it first as a what-if (`overrides`: 1.5x the glue of a joint "
               "that separated, 1.25x the section of a part that broke, on every copy of "
-              "it) with ab on the same seeds; if it helps, make the change in the CAD and "
-              "compare the two files",
+              "it; with your own overrides: whatif.yaml in the output folder) with ab on "
+              "the same seeds; if it helps, make the change in the CAD and compare the two "
+              "files",
             overrides=wi,
-            cli=(f"bridgesim ab {f} {f}{ova} --overrides-b whatif.yaml -n 3 --json" if wi
+            cli=(f"bridgesim ab {f} {f}{ova} --overrides-b {wy} -n 3 --json" if wi
                  else f"bridgesim ab {f} <changed design> -n 3 --json")))
         close = {e.what for e in gov if e.load_kgf <= 1.03 * gov[0].load_kgf}
         if rep.fidelity == "quick":
@@ -765,6 +827,38 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
     return steps
 
 
+def select(rep: InspectReport, body: str | list[str] | None = None,
+           joint: str | list[str] | None = None) -> InspectReport:
+    """The inspect report with only the bodies whose name matches ``body`` and the joints
+    one of whose parts (or whose 'A | B' name) matches ``joint`` (glob patterns, case
+    ignored), and only the questions about them: to look up a few parts of a big bridge."""
+    def pats(p):
+        return [x.lower() for x in ([p] if isinstance(p, str) else list(p or []))]
+
+    bp, jp = pats(body), pats(joint)
+
+    def hit(name: str, ps: list[str]) -> bool:
+        return any(fnmatch.fnmatchcase(name.lower(), p) for p in ps)
+
+    upd: dict[str, Any] = {}
+    names: set[str] = set()
+    if bp:
+        upd["bodies"] = [b for b in rep.bodies if hit(b.name, bp)]
+        names |= {b.name for b in upd["bodies"]}
+    else:
+        upd["bodies"] = [] if jp else rep.bodies
+    if jp:
+        upd["joints"] = [j for j in rep.joints if hit(f"{j.a} | {j.b}", jp)
+                         or hit(j.a, jp) or hit(j.b, jp)]
+        names |= {p for j in upd["joints"] for p in (j.a, j.b)}
+    else:
+        upd["joints"] = [] if bp else rep.joints
+    if bp or jp:
+        upd["questions"] = [q for q in rep.questions
+                            if any(n in q.id or n in q.question for n in names)]
+    return rep.model_copy(update=upd)
+
+
 def inspect_brief(rep: InspectReport) -> dict:
     """The inspect report without the per-body and per-joint lists: counts of each kind,
     the questions, failed rules and warnings (a few kB). Bodies and joints: full report."""
@@ -784,26 +878,30 @@ def inspect_brief(rep: InspectReport) -> dict:
     return d
 
 
-def brief(rep: CrushReport, n_sequence: int = 12, n_failures: int = 15) -> dict:
-    """The crush report without the curve and the event log (they are in the files of
-    ``artifacts``), and with the first ``n_failures`` failures: what an agent needs to
-    decide, in ~30 kB."""
-    d = rep.model_dump(mode="json", exclude={"curve", "events"})
+def brief(rep: CrushReport, n_failures: int = 10) -> dict:
+    """The crush report cut down to what an agent needs to decide its next step, in about
+    10 kB: no curve and event log (curve.csv, events.csv), the first ``n_failures``
+    failures (without their time, newtons and parts list), the important questions in full and the
+    others counted (their ids are in the ask_designer step; inspect has their text and
+    answer_with), the next steps without empty fields. crush.json has everything."""
+    d = rep.model_dump(mode="json", exclude={"curve", "events", "failure_sequence",
+                                             "assumed_parameters"})
     d["kind"] = "crush_brief"
     d["n_failures_total"] = len(d["failures"])
-    d["failures"] = d["failures"][:n_failures]
-    seq = d["failure_sequence"]
-    d["failure_sequence"] = seq[:n_sequence] + (
-        [f"... {len(seq) - n_sequence} more (events.csv)"] if len(seq) > n_sequence else [])
+    # without time, newtons and parts (`what` names them: 'A | B' for a joint)
+    d["failures"] = [{k: v for k, v in f.items() if k not in ("t_s", "load_N", "parts")}
+                     for f in d["failures"][:n_failures]]
+    d["n_assumed_parameters"] = len(rep.assumed_parameters)
     r = d["rules"]
     r["lines"] = [ln for ln in r.get("lines", []) if ln.get("passed") is False
                   or ln.get("penalty") or ln.get("bans")]
-    order = {"important": 0, "check": 1, "info": 2}
-    d["questions"] = sorted(
-        ({"id": q["id"], "severity": q["severity"], "question": q["question"],
-          "assumed": q.get("assumed"), "answer_with": q.get("answer_with")}
-         for q in d["questions"]),
-        key=lambda q: order.get(q["severity"], 3))
+    d["n_questions"] = {sev: sum(q["severity"] == sev for q in d["questions"])
+                        for sev in ("important", "check", "info")}
+    d["questions"] = [{"id": q["id"], "severity": q["severity"], "question": q["question"],
+                       "assumed": q.get("assumed"), "answer_with": q.get("answer_with")}
+                      for q in d["questions"] if q["severity"] == "important"]
+    d["next_steps"] = [{k: v for k, v in st.items() if v not in (None, [], {}, "")}
+                       for st in d["next_steps"]]
     c = rep.curve
     if c.load_kgf and rep.Fu_kgf > 0:  # where F_u was reached (not a later spike)
         k = next((i for i, v in enumerate(c.load_kgf) if v >= 0.999 * rep.Fu_kgf),
@@ -939,6 +1037,10 @@ def _compare_range(mc: MonteCarloReport, test_csv: str | Path) -> RealityGap:
                   "this bridge, more than the scatter explains. Compare its failure with "
                   "the runs' failure modes, then measure the material values that govern "
                   "it (coupon tests) or check the joints' real glued area (glue_factor)."]
+        if mc.assumed_parameters and not mc.sampled_placeholders:
+            advice.append("This range leaves out the placeholder material values: "
+                          "montecarlo --sample-placeholders gives the range that includes "
+                          "them.")
     return RealityGap(subject=f"{mc.file}: montecarlo ({len(F)} runs, {mc.fidelity}) vs "
                               f"{Path(test_csv).name}",
                       metrics=metrics, score_0_100=round(score, 1),
@@ -1012,12 +1114,16 @@ def compare(sim: CrushReport | MonteCarloReport | str | Path,
                and f.load_kgf >= 0.9 * peak_s][:3] or [f for f in rep.failures
                                                        if f.kind != "joint_cracking"][:3]
         obs = t["fail_parts"][0]
-        score = max((_part_match(obs, f.what) for f in gov), default=0.0)
+        # the simulation's first governing failure counts fully; a later one near the
+        # peak (a close competitor that this seed broke second) half
+        score = max((_part_match(obs, f.what) * (1.0 if i == 0 else 0.5)
+                     for i, f in enumerate(gov)), default=0.0)
         metrics.append(GapMetric(
             name="failure location", simulated="; ".join(f.what for f in gov),
             measured=obs, error=1.0 - score,
             meaning="did the simulation break the same part, on the same side, first "
-                    "(0: yes; 0.5: same part, other side; 1: no)"))
+                    "(0: yes; 0.5: same part but on the other side, or the part the "
+                    "simulation broke second near the peak; 1: no)"))
     # score: each metric 0 (as far off as tol, or worse) to 1 (exact); ratios are
     # compared on a log scale, so 2x too stiff and 2x too soft count the same
     tol = {"ultimate load": math.log(1.5), "initial stiffness": math.log(2.0),
@@ -1317,7 +1423,13 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
                 params["scatter.glue_cov"] = float(np.std(tj, ddof=1) / np.mean(tj))
     _direct_coupons(d, mat, sp, changes, notes, params, log)
     if not changes and not params:
-        return mat, ["no test data found in " + str(d)], {}
+        if not d.is_dir():
+            raise FileNotFoundError(f"no such folder: {d}")
+        raise ValueError(
+            f"no coupon test results in {d.name}: fill one or more of the templates of "
+            "validation/physical/ (stick_bending, glue_joint, stick_tension, "
+            "stick_compression, crush_across, end_grain, lap_slip: *_template.csv, a row "
+            "per specimen) and run calibrate on that folder")
     for k, v in params.items():
         if k.startswith("scatter."):
             log.append(f"{k} = {v:.3f} from the scatter of the specimens")
@@ -1417,11 +1529,14 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
                sim_params=None, ruleset=None, options: CrushOptions | None = None,
                processes: int | None = None, fidelity: str = "standard",
                out_dir: str | Path | None = None, progress=None, units=None,
-               up: str = "y", span: str = "x") -> MonteCarloReport:
+               up: str = "y", span: str = "x",
+               sample_placeholders: bool = False) -> MonteCarloReport:
     """Crush the bridge ``n`` times with different random imperfections, material scatter
     and plate placement (seeds 1..n) and report the spread of the ultimate load. Runs
     ``processes`` crushes at a time (default: one per two CPU cores), splitting the
-    cores between them."""
+    cores between them. ``sample_placeholders``: each run also draws the material values
+    that are still placeholders (those of ``sensitivity``) around their placeholder
+    (lognormal, ``PLACEHOLDER_COV``), so the spread includes what they leave unknown."""
     import concurrent.futures as cf
     import os
 
@@ -1432,7 +1547,12 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
     threads = max(1, cpus // procs)
     if out_dir:
         Path(out_dir).mkdir(parents=True, exist_ok=True)
-    args = [(str(cad), overrides, material, sim_params, ruleset, s, options, fidelity,
+    _, _, _, ov_raw, mat_, sp_, _ = _inputs(cad, overrides, material, sim_params, ruleset,
+                                            units, up, span)
+    assumed = _assumed(mat_, sp_)
+    drawn = placeholders(mat_, sp_) if sample_placeholders else {}
+    args = [(str(cad), draw_placeholders(ov_raw, drawn, s) if drawn else overrides,
+             material, sim_params, ruleset, s, options, fidelity,
              str(Path(out_dir) / f"seed_{s}") if out_dir else None, units, up, span)
             for s in range(1, n + 1)]
     res = []
@@ -1461,19 +1581,59 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
     rep.Fu_strict_kgf = [round(x, 2) for x in Fs]
     rep.p50_strict_kgf = round(float(np.percentile(Fs, 50)), 2)
     rep.recommended_prediction_strict_kgf = round(best_prediction(Fs), 1)
-    _, _, _, _, mat_, sp_, _ = _inputs(cad, overrides, material, sim_params, ruleset, units,
-                                       up, span)
-    rep.assumed_parameters = _assumed(mat_, sp_)
-    rep.note = ("The spread covers member bow, stick-to-stick and joint-to-joint scatter "
-                "and plate placement. It does not cover the material values themselves: "
-                + (f"{len(rep.assumed_parameters)} are still placeholders, which can move "
-                   "F_u by tens of % (bridgesim sensitivity shows which); measure them "
-                   "before trusting this range." if rep.assumed_parameters else
-                   "they are all measured."))
+    rep.min_kgf, rep.max_kgf = round(F[0], 2), round(F[-1], 2)
+    rep.assumed_parameters = assumed
+    rep.sampled_placeholders = sorted(drawn)
+    small = (f" With {n} runs the 5 % and 95 % points are interpolated between the "
+             "extreme runs: read min_kgf and max_kgf instead, and use n >= 20 for real "
+             "percentiles." if n < 20 else "")
+    if drawn:
+        rep.note = ("The spread covers member bow, stick-to-stick and joint-to-joint "
+                    "scatter, plate placement and the placeholder material values "
+                    f"({', '.join(sorted(drawn))}), each drawn per run around its "
+                    f"placeholder (lognormal, {PLACEHOLDER_COV:.0%}): an honest range "
+                    "until they are measured." + small)
+    else:
+        rep.note = ("The spread covers member bow, stick-to-stick and joint-to-joint "
+                    "scatter and plate placement. It does not cover the material values "
+                    "themselves: "
+                    + (f"{len(assumed)} are still placeholders, which can move F_u by tens "
+                       "of % (bridgesim sensitivity shows which); measure them, or add "
+                       "--sample-placeholders to include them in the range."
+                       if assumed else "they are all measured.") + small)
     if out_dir:
         (Path(out_dir) / "montecarlo.json").write_text(rep.model_dump_json(indent=2),
                                                       encoding="utf-8")
     return rep
+
+
+def placeholders(mat: Material, sp: SimParams) -> dict[str, float]:
+    """The values of ``sensitivity``'s list that are still placeholders, as override keys
+    with their placeholder value."""
+    assumed = set(_assumed(mat, sp))
+    out = {}
+    for k in SENSITIVITY:
+        if k.startswith("material.") and k in assumed:
+            out[k] = mat.props()[k[len("material."):]].value
+        elif not k.startswith("material.") and f"sim.{k}" in assumed:
+            out[k] = sp[k]
+    return out
+
+
+def draw_placeholders(overrides: dict | None, drawn: dict[str, float], seed: int) -> dict:
+    """The overrides of one montecarlo run with each placeholder value drawn around its
+    placeholder (lognormal, median the placeholder, sigma ``PLACEHOLDER_COV``), the same
+    for the same seed; the user's own overrides are kept."""
+    rng = np.random.default_rng([seed, 104729])
+    doc = json.loads(json.dumps(overrides or {}))
+    prm = dict(doc.get("params") or {})
+    for k, v in drawn.items():
+        x = v * float(np.exp(rng.normal(0.0, PLACEHOLDER_COV)))
+        if k == "glue.end_grain_factor":
+            x = min(x, 1.0)  # end grain never glues better than side grain
+        prm[k] = round(x, 6)
+    doc["params"] = prm
+    return doc
 
 
 def _mc_init(threads: int) -> None:
@@ -1612,6 +1772,10 @@ def summarize_pairs(ra: list[dict], rb: list[dict], name_a: str, name_b: str,
         governing_a=gov(ra), governing_b=gov(rb),
         untrustworthy_runs=sum(1 for r in ra + rb if not r["trustworthy"]))
 
+
+#: spread of a placeholder material value drawn by montecarlo --sample-placeholders
+#: (lognormal sigma): textbook values for birch sticks and PVA glue differ by about this
+PLACEHOLDER_COV = 0.2
 
 SENSITIVITY = {  # key: (meaning, how to measure)
     "material.E_MPa": ("stiffness of a stick along the grain",

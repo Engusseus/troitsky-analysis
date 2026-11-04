@@ -68,6 +68,9 @@ class SimParams:
         if unknown:
             raise KeyError(f"unknown simulation parameter(s) {unknown}; known: "
                            f"{sorted(self.values)}")
+        bad = [msg for k, val in changes.items() if (msg := param_range_error(k, val))]
+        if bad:
+            raise ValueError("overrides: " + "; ".join(bad))
         v = dict(self.values)
         s = dict(self.sources)
         for k, val in changes.items():
@@ -77,6 +80,48 @@ class SimParams:
 
     def assumed_keys(self) -> list[str]:
         return [k for k, s in self.sources.items() if s == "assumed"]
+
+
+# physical range of each simulation parameter (fnmatch pattern, low, high, low inclusive),
+# checked when an override sets it; the first matching pattern applies
+PARAM_RANGES: list[tuple[str, float, float, bool]] = [
+    ("wood.nu_LT", 0.0, 0.5, True),
+    ("wood.crush_softening", 0.0, 0.99, True),
+    ("wood.densification_strain", 0.0, 0.95, False),
+    ("glue.peel_to_shear", 0.0, 5.0, False),
+    ("glue.end_grain_factor", 0.0, 2.0, True),
+    ("glue.tau_peak_over_avg", 1.0, 2.0, True),
+    ("*friction*", 0.0, 2.0, True),
+    ("floss.strands", 1.0, 100.0, True),
+    ("contact.seating_mm", 0.0, 10.0, True),
+    ("scatter.*_cov", 0.0, 1.0, True),
+    ("scatter.bow_L_over", 20.0, 1e6, True),
+    ("scatter.placement_mm", 0.0, 50.0, True),
+    ("scatter.support_level_mm", 0.0, 20.0, True),
+    ("*", 0.0, float("inf"), False),  # moduli, strengths, energies, sizes: positive
+]
+
+
+def param_range_error(key: str, value) -> str | None:
+    """Why ``value`` is not a physical value of the simulation parameter ``key`` (None if
+    it is)."""
+    import fnmatch
+    import math
+
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return f"params.{key} must be a number, got {value!r}"
+    if not math.isfinite(v):
+        return f"params.{key} must be finite, got {value!r}"
+    for pat, lo, hi, lo_in in PARAM_RANGES:
+        if fnmatch.fnmatchcase(key, pat):
+            if v < lo or (v == lo and not lo_in) or v > hi:
+                rng = (f"{'[' if lo_in else '('}{lo:g}, {hi:g}]" if math.isfinite(hi)
+                       else f"{'>=' if lo_in else '>'} {lo:g}")
+                return f"params.{key} = {v:g} is outside its physical range {rng}"
+            return None
+    return None
 
 
 def _default_path() -> Path:

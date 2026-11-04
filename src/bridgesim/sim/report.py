@@ -307,8 +307,15 @@ class MonteCarloReport(BaseModel):
                           "for judges who stop at the collapse (the usual practice)")
     untrustworthy_runs: int = Field(0, description="Runs whose quality.trustworthy is "
                                                    "false")
+    min_kgf: float | None = Field(None, description="Lowest F_u of the runs")
+    max_kgf: float | None = Field(None, description="Highest F_u of the runs (with fewer "
+                                                    "than 20 runs, read these rather than "
+                                                    "p05/p95)")
     assumed_parameters: list[str] = Field([], description="Material values still "
                                                          "placeholders")
+    sampled_placeholders: list[str] = Field([], description=(
+        "Placeholder values drawn per run (--sample-placeholders), so the spread includes "
+        "them"))
     note: str = Field("", description="What the spread does and does not cover")
 
 

@@ -588,14 +588,11 @@ def test_agent_loop_through_mcp(tmp_path):
     assert rep["kind"] == "crush_brief" and rep["Fu_kgf"] > 50
     step = next(s for s in rep["next_steps"] if s["action"] == "strengthen")
     assert step["overrides"], step  # a what-if to try before touching the CAD
-    whatif = json.loads(json.dumps(ov))
-    for k, v in step["overrides"].items():
-        for name, val in v.items():
-            whatif.setdefault(k, {})[name] = {**whatif.get(k, {}).get(name, {}), **val} \
-                if isinstance(val, dict) else val
+    # the what-if with the designer's answers, saved next to the report for ab
+    whatif = Path(rep["artifacts"]["whatif_yaml"]).read_text(encoding="utf-8")
+    assert yaml.safe_load(whatif)["bodies"]["Beam"]["layup"] == "14-ply UD"
     call("start_compare_designs", cad_a=str(cad), cad_b=str(cad), out_dir=str(tmp_path / "ab"),
-         n=1, overrides_a_yaml=ov_yaml, overrides_b_yaml=yaml.safe_dump(whatif),
-         fidelity="quick")
+         n=1, overrides_a_yaml=ov_yaml, overrides_b_yaml=whatif, fidelity="quick")
     for _ in range(600):
         st = call("job_status", out_dir=str(tmp_path / "ab"))
         if st["status"] != "running":
@@ -1051,6 +1048,26 @@ def test_deep_beam_includes_shear_deformation():
     assert run(8, True, **strong).peak == pytest.approx(run(8, False, **strong).peak, rel=0.02)
 
 
+def test_deep_laminated_beam_fails_in_shear():
+    """A deep beam (span 2.5x its depth, the shape of a floor beam under the plate) that
+    is strong in bending splits in shear at P = 4/3 f_v A (tau_max = 1.5 V / A), on a
+    coarse and a fine mesh."""
+    from bridgesim.sim.lab import BeamSpec, add_beam_line, blank_model, drive
+
+    pytest.importorskip("numba")
+    span, b, d, fv = 150.0, 20.0, 60.0, 3.0
+    for n_el in (6, 12):
+        X = np.c_[np.linspace(0, span, n_el + 1), np.zeros((n_el + 1, 2))]
+        m = blank_model(X)
+        add_beam_line(m, list(range(n_el + 1)), BeamSpec(b=b, d=d, E=10000.0, G=625.0,
+                                                          ft=80.0, fc=60.0, Gf=50.0, fv=fv),
+                      up=(0, 1, 0))
+        r = drive(m, {0: "xyz", n_el: "yz"}, n_el // 2, 1, 20.0, sign=-1.0, max_disp=1.5,
+                  stop_drop=0.5, slow_disp=0.05, slow_rate=5.0)
+        assert r.peak == pytest.approx(4 / 3 * fv * b * d, rel=0.02)
+        assert r.state.b_shear.any() and not r.state.b_fractured.any()
+
+
 def test_stick_bending_strength_matches_f_b():
     """The fibre section (tension softening, compression yielding) gives a single stick
     in 3-point bending the material's bending strength f_b (within 10 %)."""
@@ -1236,3 +1253,195 @@ def test_glue_bearing_follows_the_grain():
     f_edge, e_edge = grain_bearing(plate, np.array([1.0, 0, 0]), fc, fc90)
     assert f_face == pytest.approx(fc90)
     assert f_edge == pytest.approx((fc + fc90) / 2) and e_edge == 0.5
+
+
+# ------------------------------------------------------------- round 8: the agent loop
+
+
+def test_simulation_params_are_range_checked(tmp_path):
+    """A params override outside its physical range is an input error naming the key;
+    the defaults are all inside their ranges."""
+    from bridgesim.sim import study
+    from bridgesim.sim.materials import param_range_error
+
+    assert [k for k, v in SP.values.items() if param_range_error(k, v)] == []
+    for key, val in (("glue.K_n_N_per_mm3", -5), ("contact.friction_platform", 7),
+                     ("scatter.glue_cov", -1), ("wood.nu_LT", "soft")):
+        with pytest.raises(ValueError, match=key.replace(".", r"\.")):
+            SP.updated({key: val})
+    assert SP.updated({"floss.strands": 6})["floss.strands"] == 6
+    stl = tmp_path / "b.stl"
+    write_stl(simple_beam_bridge(), stl)
+    with pytest.raises(ValueError, match="physical range"):
+        study.inspect(stl, {"params": {"glue.G_Ic_N_per_mm": 0}})
+
+
+def test_whatif_is_written_with_the_users_overrides(synthetic_crush):
+    """The strengthen step's what-if is saved next to the report, merged with the user's
+    overrides, and every command of next_steps names files by absolute path."""
+    import shlex
+
+    import yaml
+
+    from bridgesim.sim.study import _copies, merge_whatif
+
+    d, rep, _ = synthetic_crush
+    st = next(s for s in rep.next_steps if s.action == "strengthen")
+    if st.overrides:
+        wy = Path(rep.artifacts["whatif_yaml"])
+        assert wy.parent == (d / "out").resolve()
+        assert yaml.safe_load(wy.read_text()) == merge_whatif({}, st.overrides)
+        assert str(wy) in st.cli
+    for s in rep.next_steps:
+        if s.cli and s.action in ("crush", "rerun", "confirm", "predict", "strengthen"):
+            argv = shlex.split(s.cli)
+            assert Path(argv[2]).is_absolute(), s.cli
+    user = {"bodies": {"Stringer*": {"section_scale": 1.2, "grain": "span"}},
+            "params": {"floss.strands": 6}}
+    wi = {"bodies": {"Stringer*": {"section_scale": 1.25}}, "glue": {"A* | B*": 1.5}}
+    m = merge_whatif(user, wi)
+    assert m["bodies"]["Stringer*"] == {"section_scale": 1.5, "grain": "span"}
+    assert m["glue"] == {"A* | B*": 1.5} and m["params"] == {"floss.strands": 6}
+    assert user["bodies"]["Stringer*"]["section_scale"] == 1.2  # not modified
+    # a what-if is made on every copy of a part, and only on its copies
+    assert _copies("Top Chord (10-ply UD) - Far") == "Top Chord (10-ply UD)*"
+    assert _copies("Body 4") == "Body 4"
+
+
+def test_inspect_selects_bodies_and_joints(tmp_path):
+    """inspect --body/--joint: only the parts asked for, in full, with their questions."""
+    from typer.testing import CliRunner
+
+    from bridgesim.cli import app
+    from bridgesim.sim import study
+
+    stl = tmp_path / "b.stl"
+    write_stl(simple_beam_bridge(), stl)
+    rep = study.inspect(stl)  # an STL has no body names: "Body 1" ...
+    bars = sorted(b.name for b in rep.bodies if b.kind == "bar")
+    s = study.select(rep, body=[n.upper() for n in bars])  # case ignored
+    assert sorted(b.name for b in s.bodies) == bars and s.joints == []
+    s = study.select(rep, joint=bars[0])  # a stringer: on two piers, under the deck
+    assert s.bodies == [] and len(s.joints) == 3
+    assert all(bars[0] in (j.a, j.b) for j in s.joints)
+    names = {p for j in s.joints for p in (j.a, j.b)}
+    assert all(any(n in q.id or n in q.question for n in names) for q in s.questions)
+    deck = next(b.name for b in rep.bodies if b.kind == "shell")
+    r = CliRunner().invoke(app, ["inspect", str(stl), "--body", deck, "--json"])
+    assert r.exit_code == 0, r.stderr
+    assert [b["name"] for b in json.loads(r.stdout)["bodies"]] == [deck]
+
+
+def test_crush_brief_keeps_only_important_questions_in_full(synthetic_crush):
+    """The brief carries the important questions in full and counts the others (their
+    ids are in the ask_designer step), without empty fields in its next steps."""
+    from bridgesim.sim import study
+
+    _, rep, _ = synthetic_crush
+    b = study.brief(rep)
+    assert all(q["severity"] == "important" and "answer_with" in q for q in b["questions"])
+    assert sum(b["n_questions"].values()) == len(rep.questions)
+    check = [q.id for q in rep.questions if q.severity == "check"]
+    asked = [i for s in b["next_steps"] if s["action"] == "ask_designer" for i in s["ids"]]
+    assert set(check) <= set(asked)
+    assert all(v not in (None, [], {}) for s in b["next_steps"] for v in s.values())
+    assert "t_s" not in b["failures"][0] and len(b["failures"]) <= 10
+
+
+def test_calibrate_without_data_is_an_input_error(tmp_path):
+    from typer.testing import CliRunner
+
+    from bridgesim.cli import app
+    from bridgesim.sim import study
+
+    with pytest.raises(ValueError, match="no coupon test results"):
+        study.calibrate(tmp_path)
+    r = CliRunner().invoke(app, ["calibrate", str(tmp_path), "--out",
+                                 str(tmp_path / "m.yaml"), "--json"])
+    assert r.exit_code == 2 and r.stdout == ""
+    assert json.loads(r.stderr.strip().splitlines()[-1])["kind"] == "bad_input"
+    assert not (tmp_path / "m.yaml").exists()
+
+
+def test_failure_location_counts_the_first_failure_fully(synthetic_crush, tmp_path):
+    """A test that broke the part the simulation broke first scores 0 error; one that
+    broke the part it broke second near the peak scores 0.5."""
+    from bridgesim.sim import study
+
+    _, rep, _ = synthetic_crush
+    e = rep.failures[0]
+    f1 = e.model_copy(update={"kind": "member_fracture", "what": "Top Chord - Far",
+                              "parts": ["Top Chord - Far"], "load_kgf": rep.Fu_kgf})
+    f2 = f1.model_copy(update={"what": "Deck Stringer - Near",
+                               "parts": ["Deck Stringer - Near"]})
+    r2 = rep.model_copy(update={"failures": [f1, f2]})
+    (tmp_path / "c.json").write_text(r2.model_dump_json())
+    err = {}
+    for part in ("top chord far", "deck stringer near", "end post"):
+        (tmp_path / "t.csv").write_text("test,load_kgf,event,notes\n"
+                                        f"T,{rep.Fu_kgf:.1f},failure,{part}\n")
+        gap = study.compare(tmp_path / "c.json", tmp_path / "t.csv")
+        err[part] = next(m.error for m in gap.metrics if m.name == "failure location")
+    assert err == {"top chord far": 0.0, "deck stringer near": 0.5, "end post": 1.0}
+
+
+def test_montecarlo_can_sample_the_placeholders():
+    """--sample-placeholders draws each placeholder value per run (the same for the same
+    seed), keeping the user's overrides; measured values are not drawn."""
+    from bridgesim.sim.study import PLACEHOLDER_COV, draw_placeholders, placeholders
+
+    ph = placeholders(MAT, SP)
+    assert "material.glue.tau_g_MPa" in ph and "material.E_MPa" in ph
+    user = {"params": {"floss.strands": 6}, "bodies": {"X*": {"glue_factor": 0.8}}}
+    a, b = draw_placeholders(user, ph, 1), draw_placeholders(user, ph, 1)
+    assert a == b and a != draw_placeholders(user, ph, 2)
+    assert a["params"]["floss.strands"] == 6 and a["bodies"] == user["bodies"]
+    assert set(a["params"]) == set(ph) | {"floss.strands"}
+    logs = [math.log(draw_placeholders({}, ph, s)["params"]["material.E_MPa"]
+                     / ph["material.E_MPa"]) for s in range(200)]
+    assert abs(np.mean(logs)) < 0.05 and np.std(logs) == pytest.approx(PLACEHOLDER_COV,
+                                                                      rel=0.15)
+    measured = MAT.model_copy(update={"E_MPa": MAT.E_MPa.model_copy(
+        update={"source": "measured"})})
+    assert "material.E_MPa" not in placeholders(measured, SP)
+
+
+def _x_plate(name: str, half: float, arm: float, y0: float, y1: float):
+    """An X of two arms ``arm`` mm wide, 2 x ``half`` mm across, as one flat body."""
+    from bridgesim.cad.synthetic import prism
+
+    w = arm / 2
+    P = []
+    for ang in (45, 135, 225, 315):
+        a = math.radians(ang)
+        u = np.array([math.cos(a), math.sin(a)])
+        v = np.array([-u[1], u[0]])
+        an = math.radians(ang + 45)
+        P += [half * u - w * v, half * u + w * v,
+              np.array([math.cos(an), math.sin(an)]) * w * math.sqrt(2)]
+    return prism(name, P, y0, y1)
+
+
+def test_geometry_the_model_cannot_represent_well_is_asked_about():
+    """A plate made of narrow arms (an X) and faces read only approximately (a freeform
+    face flattened) each raise a question: the designer can redraw or confirm them."""
+    from bridgesim.cad import CadBody
+    from bridgesim.cad.mesh import tessellate
+    from bridgesim.cad.parasolid import Body
+    from bridgesim.sim.idealize import build_model
+
+    x = _x_plate("X Brace (6-ply UD)", 100.0, 12.0, 173.1, 179.1)
+    assert x.mesh.volume == pytest.approx(6 * (4 * 100 * 12 - 12**2), rel=1e-6)
+    bodies = simple_beam_bridge()
+    pier = bodies[0]
+    faces = list(pier.faces)
+    top = int(np.argmax([f.normal[1] for f in faces]))  # its top face, read as freeform
+    faces[top] = type(faces[top])("other", faces[top].loops)
+    bodies[0] = CadBody(pier.name, tessellate(Body(0, pier.name, faces)), faces, 0)
+    m = build_model(bodies + [x], MAT, SP, seed=0)
+    assert {b.name: b.kind for b in m.bodies}["X Brace (6-ply UD)"] == "shell"
+    qs = {q["id"]: q for q in m.questions}
+    assert "X Brace (6-ply UD)" in qs["narrow_plates"]["question"]
+    q = qs["cad_approximated:Pier L (block)"]
+    assert q["severity"] == "important" and "10.0%" in q["question"]  # 50x150 of 75000
+    assert "cad_approximated:Pier R (block)" not in qs

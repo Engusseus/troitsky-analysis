@@ -27,22 +27,26 @@ the report in hand, most useful first. Each step has an `action` (`fix_cad`,
 same name otherwise). E.g. after a crush: `strengthen` the parts that broke at the peak
 (with a what-if in `overrides` and the `ab` command that tests it), `confirm` a quick
 result at standard fidelity, `rerun` an untrustworthy one, `predict` with `montecarlo`.
-Placeholders in a `cli` are in `<angle brackets>`; the overrides file is the one you
-passed (`overrides.yaml` when they came inline, e.g. through MCP).
+Files in a `cli` are absolute paths, so it runs from any folder. Placeholders are in
+`<angle brackets>`; the overrides file is the one you passed (`overrides.yaml` when they
+came inline, e.g. through MCP). With `--out DIR`, a `strengthen` step's what-if is also
+saved as `DIR/whatif.yaml`: your overrides plus the what-if (a part you already scaled
+gets both factors), ready for its `ab ... --overrides-b DIR/whatif.yaml` command
+(`artifacts.whatif_yaml`).
 
 ## Commands (all accept `--json`: one JSON document on stdout, nothing else)
 
 | Command | What it does | Time |
 |---|---|---|
-| `bridgesim inspect BRIDGE.SLDPRT [-o overrides.yaml] [--strict] --json [--brief]` | Bodies (how each is modelled, centroid and bounding box, layup, mass), glued joints, loading position, rule check from the solids, `warnings`, `questions`, `next_steps`. `--brief` (and the MCP default): questions, counts, failed rules, warnings and next steps only (~25 kB for a 100-body bridge instead of ~100 kB) | seconds |
-| `bridgesim crush BRIDGE.SLDPRT [-o overrides.yaml] [--seed N] [--fidelity quick\|standard\|fine] [--rate-check] [--out DIR] --json [--brief]` | Simulated crushing test; with `--out`: `crush.json`, `curve.csv`, `events.csv` (every event), `replay.html`. `--rate-check` runs it again at half the jack speed (3x the time). `--brief`: the report without the curve and event log and with the first 15 failures (~30 kB instead of ~200 kB; the MCP crush tools return this by default) | minutes |
+| `bridgesim inspect BRIDGE.SLDPRT [-o overrides.yaml] [--strict] [--body PATTERN]... [--joint PATTERN]... --json [--brief]` | Bodies (how each is modelled, centroid and bounding box, layup, mass), glued joints, loading position, rule check from the solids, `warnings`, `questions`, `next_steps`. `--brief` (and the MCP default): questions, counts, failed rules, warnings and next steps only (~25 kB for a 100-body bridge instead of ~100 kB). `--body`/`--joint` (glob, case ignored; MCP `body`, `joint`): only those bodies, the joints with such a part, and the questions about them, in full | seconds |
+| `bridgesim crush BRIDGE.SLDPRT [-o overrides.yaml] [--seed N] [--fidelity quick\|standard\|fine] [--rate-check] [--stop-at-failure] [--out DIR] --json [--brief]` | Simulated crushing test; with `--out`: `crush.json`, `curve.csv`, `events.csv` (every event), `replay.html`. `--rate-check` runs it again at half the jack speed (3x the time). `--stop-at-failure` (the MCP default; `full_collapse=true` to follow the collapse): stop 2 mm of jack travel after the bridge is judged failed, ~1/3 faster, the replay ends there. `--brief`: what an agent needs for its next step, ~12 kB instead of ~200 kB (the MCP crush tools return this by default): no curve, event log or failure sequence; the first 10 `failures` (kind, `what`, load, travel, `where_mm`); the `important` questions in full and `n_questions` by severity (the `check` ids are in the `ask_designer` step; `inspect` has their text and `answer_with`); `next_steps` without empty fields. `crush.json` has everything. A what-if to test: `DIR/whatif.yaml` | minutes |
 | `bridgesim compare DIR/crush.json my_test.csv --json` | Reality gap vs a physical crush test. Given `montecarlo.json` instead of `crush.json`: where the test falls in the predicted range | seconds |
 | `bridgesim calibrate-bridge BRIDGE.SLDPRT my_test.csv [-o overrides.yaml] [--fidelity standard] [--out fitted.overrides.yaml] --json` | After a physical crush test of this bridge: a global stiffness and a global strength factor fitted so the simulated crush reproduces it (one crush per step, up to 4); writes your overrides plus the fitted `params`. The test is then used up for validation | 2-4 x crush |
 | `bridgesim sensitivity BRIDGE.SLDPRT [--rel 0.2] [--fidelity quick] [--seeds 1] [--param KEY]... --json` | Which material values move F_u most: each one lowered and raised by `rel`; `measure_first` lists the tests that would narrow the prediction most. `--param` (repeat it) chooses the values, any key of `materials/simulation.yaml` or `material.<key>` (default: the 9 that usually matter most); `--seeds 3` averages over seeds | (1 + 2 x params) x seeds x crush / processes |
 | `bridgesim lab [--data validation/physical] --json` | Simulated coupon tests (stick bending, lap joint, stick column) and their gap to the team's coupon data | ~1 min |
-| `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, f_t/f_c and tau_g so the *simulated* coupons reproduce the measured ones (`lab --data` then shows ~0 % error); f_t, f_c, f_c90, the end-grain factor and the glue's shear stiffness and toughness from the direct coupon tests; with 3+ specimens of a kind also the scatter (`my_material.overrides.yaml`, `params:`) | ~1 min |
+| `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, f_t/f_c and tau_g so the *simulated* coupons reproduce the measured ones (`lab --data` then shows ~0 % error); f_t, f_c, f_c90, the end-grain factor and the glue's shear stiffness and toughness from the direct coupon tests; with 3+ specimens of a kind also the scatter (`my_material.overrides.yaml`, `params:`). A folder without any test results is an input error (exit 2) | ~1 min |
 | `bridgesim ab A.SLDPRT B.SLDPRT [-n 3] [--overrides-a a.yaml] [--overrides-b b.yaml] [--fidelity standard] --json` | Is B better than A? Both crushed with the same seeds: change of F_u and efficiency with a 90 % interval, `significant`, `verdict`, first failure of each. B may be A with other overrides: a what-if (`section_scale`, `glue_factor`) before changing the CAD | 2n x crush / processes |
-| `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity standard] [--processes 4] [--out DIR] --json` | Spread of F_u over imperfections and material scatter; `recommended_prediction_kgf` for the Load Prediction Form (the 1/F-weighted median, which minimises the §12.7 error). `note` says what the spread leaves out (placeholder material values) | n x crush / processes |
+| `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity standard] [--processes 4] [--sample-placeholders] [--out DIR] --json` | Spread of F_u over imperfections and material scatter (`min_kgf`, `max_kgf`, p05/p50/p95: below 20 runs read min and max); `recommended_prediction_kgf` for the Load Prediction Form (the 1/F-weighted median, which minimises the §12.7 error). `note` says what the spread leaves out: the placeholder material values, unless `--sample-placeholders` (MCP `sample_placeholders`) draws them per run (lognormal, 20 %; `sampled_placeholders`) so the range includes them | n x crush / processes |
 | `bridgesim schema inspect\|crush\|reality_gap\|lab\|montecarlo\|design_comparison\|sensitivity\|bridge_calibration\|question` | JSON Schema of each report | instant |
 | `bridgesim mcp` | The same as MCP tools (`uv sync --extra mcp`) | - |
 
@@ -89,7 +93,9 @@ server's folder (where the client started it), and the error for a missing file 
 An override that matches no body, a joint name that does not exist, an unreadable layup,
 an unknown `params` key: each becomes a line in `warnings` starting with `overrides:`,
 with the closest valid name suggested (e.g. `did you mean 'Top Chord*'?`). An unknown
-`params` key is always an error (exit 2). With `--strict` (MCP `strict=true`) every
+`params` key is always an error (exit 2), and so is a `params` value outside its
+physical range (a negative stiffness, a friction coefficient of 7, a CoV above 1: the
+message names the key and the range). With `--strict` (MCP `strict=true`) every
 override problem is an error: use it in automated loops so a typo cannot silently leave
 the model unchanged.
 
@@ -103,10 +109,10 @@ claude mcp add bridgesim -- uv run --directory /path/to/troitsky-analysis bridge
 
 | Tool | Use |
 |---|---|
-| `inspect_bridge(cad_path, overrides_yaml, up_axis, span_axis, units, strict, brief=true)` | seconds |
-| `crush_bridge(cad_path, overrides_yaml, seed, fidelity, out_dir, strict, rate_check, ...)` | blocking, minutes |
+| `inspect_bridge(cad_path, overrides_yaml, up_axis, span_axis, units, strict, brief=true, body, joint)` | seconds |
+| `crush_bridge(cad_path, overrides_yaml, seed, fidelity, out_dir, strict, rate_check, full_collapse=false, ...)` | blocking, minutes; stops 2 mm after the failure unless `full_collapse` |
 | `start_crush(cad_path, out_dir, ...)` then `job_status(out_dir)` | background: poll until `status` is `done` (report included) or `failed` (error included). Use this when tool calls time out |
-| `start_montecarlo(cad_path, out_dir, n, fidelity)` then `job_status(out_dir)` | background spread of F_u |
+| `start_montecarlo(cad_path, out_dir, n, fidelity, sample_placeholders)` then `job_status(out_dir)` | background spread of F_u |
 | `start_compare_designs(cad_a, cad_b, out_dir, n, overrides_a_yaml, overrides_b_yaml)` then `job_status(out_dir)` | background A/B comparison |
 | `start_sensitivity(cad_path, out_dir, overrides_yaml, rel, params, seeds)` then `job_status(out_dir)` | background: what to measure first |
 | `start_calibrate_bridge(cad_path, test_csv_path, out_dir, overrides_yaml, fidelity)` then `job_status(out_dir)` | background: fit stiffness and strength to a physical crush test (writes `out_dir/fitted.overrides.yaml`) |
@@ -149,12 +155,18 @@ meanwhile, and `answer_with`: how to answer, as an overrides fragment (`bodies`,
 `params`) with placeholders in `<angle brackets>` for the designer to fill, and/or `cad`
 (a change to make in SolidWorks) or `cli` (a command to run). Typical ones:
 
-* a body whose name does not say its layup or grain direction (`layup:<body>`,
-  `orientation:<body>`);
+* a body whose name does not say its layup (`layup:<body>`, important: its stiffness
+  and strength are guessed) or its grain direction (`orientation:<body>`);
 * wrong orientation or units (`geometry:orientation`);
 * a part that touches nothing, or a floss end tied to nothing (`floating:`, `loose:`,
   `floss_end:`);
 * two solids that overlap in the CAD (`overlap:`) - usually a modelling error;
+* faces read only approximately (`cad_approximated:<body>`, important when they are a
+  twentieth of the body's surface): a spline, cone or freeform surface flattened, or a
+  face that could not be decoded closed over;
+* plates made of narrow arms (`narrow_plates`: an X, a frame), with about one shell
+  element across an arm: their arms are too stiff in in-plane bending; if the part is
+  really members, draw each as its own body (it becomes a bar);
 * a member whose glued area is much weaker than the member (`weak_joint:`) - a missing
   gusset?
 * laminated members longer than one stick (`butt_joints`, one question for all of
@@ -308,8 +320,9 @@ design comparisons; glue lines are perfect over the whole touching area unless a
 `glue_factor` says otherwise; butt joints in laminated members are assumed in a brick
 pattern unless `butt_stagger_mm` says otherwise; members are shear-flexible fibre beams
 (no splitting along the grain except through shear), tapered ones with their real
-profile; compact blocks are rigid; plates crack ply by ply; thick plates use thin-plate
-elements; the bearing faces seat over 0.3 mm and the support corners are up to 0.5 mm out
+profile (a part at least twice as long as its section is a member); compact blocks are
+rigid; plates crack ply by ply; thick plates use thin-plate elements, and plates made of
+narrow arms are meshed coarsely across them (`narrow_plates`); the bearing faces seat over 0.3 mm and the support corners are up to 0.5 mm out
 of level (`contact.seating_mm`, `scatter.support_level_mm`: measure them on the built
 bridge); parts that come into contact during the test push on each other without
 friction; time is compressed (the jack moves ~mm/s instead of mm/min; the

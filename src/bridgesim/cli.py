@@ -353,6 +353,12 @@ def inspect(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt =
             brief: Annotated[bool, typer.Option(
                 "--brief", help="With --json: questions, counts, failed rules and warnings "
                                 "only (a few kB instead of ~100 kB)")] = False,
+            body: Annotated[list[str] | None, typer.Option(
+                "--body", help="Only the bodies matching this name or glob (repeat it), "
+                               "with the questions about them")] = None,
+            joint: Annotated[list[str] | None, typer.Option(
+                "--joint", help="Only the glued joints with a part matching this name or "
+                                "glob, or 'A | B' (repeat it)")] = None,
             json_out: JsonOpt = False) -> None:
     """Read a CAD bridge and report how bridgesim understood it (members, plates, joints,
     loading, rules) and what it had to assume. Fast: no simulation."""
@@ -361,6 +367,18 @@ def inspect(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt =
     rep = _guard(json_out, lambda: study.inspect(
         cad, overrides, material or "popsicle_birch", sim_params, rules, units=units,
         up=up_axis, span=span_axis, strict=strict))
+    if body or joint:  # the selected bodies and joints in full (--brief does not apply)
+        rep = study.select(rep, body, joint)
+        brief = False
+        if not json_out:
+            for b in rep.bodies:
+                typer.echo(f"{b.name}: {b.kind}, {b.layup}, {b.mass_g:.1f} g, centroid "
+                           f"{b.centroid_mm} mm")
+            for j in rep.joints:
+                typer.echo(f"{j.a} | {j.b}: {j.kind}, {j.area_mm2:.0f} mm2, shear capacity "
+                           f"{j.shear_capacity_N:.0f} N")
+            _print_questions(rep.questions)
+            return
     if json_out:
         if brief:
             import json as _json
@@ -413,6 +431,10 @@ def crush(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = N
           threads: Annotated[int | None, typer.Option(
               help="CPU threads for this crush (default: all cores; give each of two "
                    "crushes run side by side half of them)")] = None,
+          stop_at_failure: Annotated[bool, typer.Option(
+              "--stop-at-failure", help="Stop 2 mm of jack travel after the bridge is "
+                                        "judged failed (F_u and the failures are known; "
+                                        "~1/3 faster; the replay ends there)")] = False,
           json_out: JsonOpt = False) -> None:
     """Simulate the §12.5 crushing test of a CAD bridge (nonlinear, dynamic): joints
     break, members buckle and crack, the bridge collapses. Writes an interactive 3D
@@ -431,7 +453,7 @@ def crush(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = N
         seed=None if seed < 0 else seed, out_dir=out,
         options=CrushOptions(speed_mm_s=speed) if speed else None, progress=_progress,
         fidelity=fidelity, units=units, up=up_axis, span=span_axis, strict=strict,
-        rate_check=rate_check))
+        rate_check=rate_check, stop_at_failure=stop_at_failure))
     if json_out:
         if brief:
             import json as _json
@@ -587,6 +609,10 @@ def montecarlo(cad: CadArg, n: Annotated[int, typer.Option("--n", "-n",
                out: Annotated[Path | None, typer.Option(
                    "--out", help="Folder: one crush.json per seed and montecarlo.json")]
                = None,
+               sample_placeholders: Annotated[bool, typer.Option(
+                   "--sample-placeholders",
+                   help="Also draw the material values that are still placeholders, per "
+                        "run (+-20 %), so the range includes them")] = False,
                units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
                json_out: JsonOpt = False) -> None:
     """Crush the bridge n times with different imperfections and material scatter: the
@@ -596,12 +622,14 @@ def montecarlo(cad: CadArg, n: Annotated[int, typer.Option("--n", "-n",
     rep = _guard(json_out, lambda: study.montecarlo(
         cad, n, overrides, material or "popsicle_birch", fidelity=fidelity,
         processes=processes, out_dir=out, progress=_progress, units=units, up=up_axis,
-        span=span_axis))
+        span=span_axis, sample_placeholders=sample_placeholders))
     if json_out:
         typer.echo(rep.model_dump_json(indent=2))
         return
-    typer.echo(f"F_u over {n} runs: 5 % {rep.p05_kgf:.1f}, median {rep.p50_kgf:.1f}, 95 % "
-               f"{rep.p95_kgf:.1f} kgf. Predict {rep.recommended_prediction_kgf:.1f} kgf.")
+    typer.echo(f"F_u over {n} runs: min {rep.min_kgf:.1f}, 5 % {rep.p05_kgf:.1f}, median "
+               f"{rep.p50_kgf:.1f}, 95 % {rep.p95_kgf:.1f}, max {rep.max_kgf:.1f} kgf. "
+               f"Predict {rep.recommended_prediction_kgf:.1f} kgf.")
+    typer.echo(rep.note)
     typer.echo(f"First failures: {rep.failure_modes}")
 
 

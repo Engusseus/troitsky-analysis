@@ -218,6 +218,12 @@ def _mrr(poly: Polygon) -> tuple[np.ndarray, np.ndarray, float, float]:
     return b / lb, a / max(la, 1e-9), lb, la
 
 
+#: a solid extrusion this many times longer than its section is a member (a Timoshenko
+#: beam, which bends and shears like a deep beam down to about this length); shorter, it
+#: is a compact rigid block
+BAR_MIN_ASPECT = 2.0
+
+
 def analyse_shape(b: CadBody, layup: Layup, forced: str | None) -> Shape:
     m = b.mesh
     planes = []
@@ -266,9 +272,12 @@ def analyse_shape(b: CadBody, layup: Layup, forced: str | None) -> Shape:
         sh.kind, sh.why = "block", "named a block"
     elif not extr:
         sh.kind, sh.why = "block", "not a simple extrusion"
-    elif Lp / max(Wp, T) >= 3 and Wp <= 4 * T and fill >= 0.75:
-        sh.kind, sh.why = "bar", f"slender ({Lp:.0f} x {Wp:.1f} x {T:.1f} mm)"
-    elif Lp / max(Wp, T) >= 3 and Wp <= 4 * T and fill >= 0.4:
+    elif Lp / max(Wp, T) >= BAR_MIN_ASPECT and Wp <= 4 * T and fill >= 0.75:
+        sh.kind, sh.why = "bar", (f"slender ({Lp:.0f} x {Wp:.1f} x {T:.1f} mm)"
+                                  if Lp / max(Wp, T) >= 3 else
+                                  f"deep member ({Lp:.0f} x {Wp:.1f} x {T:.1f} mm, a "
+                                  "shear-flexible beam)")
+    elif Lp / max(Wp, T) >= BAR_MIN_ASPECT and Wp <= 4 * T and fill >= 0.4:
         # a wedge or tapered strip (a lip, a filler cut along a diagonal): still a member;
         # its section follows the profile along its length
         sh.kind, sh.why = "bar", (f"tapered member ({Lp:.0f} x {Wp:.1f} x {T:.1f} mm, "
@@ -639,6 +648,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             lay = Layup("laminate", [0.0] * max(1, round(0)), "long", "default", "")
             questions.append({
                 "id": f"layup:{b.name}", "body": b.name, "topic": "material",
+                "severity": "important",
                 "question": f"What is '{b.name}' made of (number of stick plies and their "
                             "direction)? Its name does not say.",
                 "assumed": "solid sticks along its long axis (UD)",
@@ -1432,6 +1442,59 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
               "and were closed over (usually a small hole)" for b in bodies
               if b.mesh.capped_loops]
     model.notes += capped
+    # faces read only approximately: a surface other than a plane or a cylinder (spline,
+    # cone, sphere, freeform) becomes a flat best-fit facet; an undecoded face is closed
+    # over. One question per body; important when a twentieth of its surface is affected
+    for bi, b in enumerate(bodies):
+        if shapes[bi].kind not in ("bar", "shell", "block"):
+            continue
+        other = [k for k, f in enumerate(b.faces) if f.kind == "other"]
+        if not other and not b.mesh.capped_loops:
+            continue
+        Vt = b.mesh.vertices[b.mesh.triangles]
+        ta = 0.5 * np.linalg.norm(np.cross(Vt[:, 1] - Vt[:, 0], Vt[:, 2] - Vt[:, 0]), axis=1)
+        frac = float(ta[np.isin(b.mesh.tri_face, other + [-1])].sum() / max(ta.sum(), 1e-9))
+        what = ", ".join(x for x in (
+            f"{len(other)} curved face(s) of a spline, cone or freeform surface flattened"
+            if other else "",
+            f"{b.mesh.capped_loops} undecoded face(s) closed over"
+            if b.mesh.capped_loops else "") if x)
+        model.questions.append({
+            "id": f"cad_approximated:{b.name}", "body": b.name, "topic": "geometry",
+            "severity": "important" if frac >= 0.05 else "check",
+            "question": f"'{b.name}' has faces bridgesim reads only approximately ({what}: "
+                        f"{frac:.1%} of its surface). Its volume, mass and glued area are "
+                        "off there. Is any of those faces glued or bearing load?",
+            "assumed": "the faces as read (flat facets)",
+            "answer_with": {"cad": "draw those faces as planes or cylinders (a polyline "
+                                   "instead of a spline), or export the bridge as a "
+                                   "multi-body STL and inspect that",
+                            "acknowledge": [f"cad_approximated:{b.name}"]}})
+    # plates made of narrow arms (an X, a frame): about one element across an arm makes
+    # the arms too stiff in in-plane bending and places their cracks coarsely
+    narrow: dict[str, tuple[str, float, float]] = {}
+    for bi, (_ids, _trib, h_) in shell_mesh.items():
+        sh = shapes[bi]
+        arm = 2 * sh.poly.area / max(sh.poly.length, 1e-9)
+        if arm < h_:
+            narrow.setdefault(_group(bodies[bi].name), (bodies[bi].name, arm, h_))
+    if narrow:
+        model.questions.append({
+            "id": "narrow_plates", "body": next(iter(narrow.values()))[0],
+            "topic": "geometry", "severity": "check",
+            "question": f"{len(narrow)} plate(s) are made of narrow arms (an X, a frame), "
+                        "about one shell element across an arm: " + "; ".join(
+                            f"{g} (arms ~{a:.0f} mm wide, elements {h:.0f} mm)"
+                            for g, (_n, a, h) in list(narrow.items())[:8])
+                        + ". Their arms come out too stiff in in-plane bending and their "
+                        "cracks are placed coarsely (one grain direction for the whole "
+                        "plate, too). If such a part is really members crossing or framing "
+                        "together, draw each member as its own body: it becomes a bar with "
+                        "its own grain and section.",
+            "assumed": "plates with their elements as listed",
+            "answer_with": {"cad": "split the part into one body per member (SolidWorks: "
+                                   "Split or separate extrusions), then inspect again",
+                            "acknowledge": ["narrow_plates"]}})
     if n_snap:
         model.notes.append(
             f"{n_snap} shell element(s) are larger than the crack band their fracture energy "

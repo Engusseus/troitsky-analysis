@@ -31,6 +31,28 @@ def box(name: str, lo, hi) -> CadBody:
     return CadBody(name, tessellate(body), faces, 0, named_in_cad=True)
 
 
+def prism(name: str, outline_xz, y0: float, y1: float) -> CadBody:
+    """A flat extrusion: the simple polygon ``outline_xz`` ((x, z) points, mm) in the
+    horizontal plane, from height ``y0`` up to ``y1`` (a plate of any outline: an X, a
+    frame, a gusset)."""
+    Q = np.asarray(outline_xz, float)
+    a2 = 0.5 * float(np.sum(Q[:, 0] * np.roll(Q[:, 1], -1) - np.roll(Q[:, 0], -1) * Q[:, 1]))
+    if a2 < 0:  # make it counter-clockwise in (x, z)
+        Q = Q[::-1]
+    lo = np.c_[Q[:, 0], np.full(len(Q), y0), Q[:, 1]]
+    hi = np.c_[Q[:, 0], np.full(len(Q), y1), Q[:, 1]]
+    faces = [Face("plane", [lo], normal=np.array([0.0, -1.0, 0.0]), origin=lo[0]),
+             Face("plane", [hi[::-1]], normal=np.array([0.0, 1.0, 0.0]), origin=hi[0])]
+    for i in range(len(Q)):
+        j = (i + 1) % len(Q)
+        d = Q[j] - Q[i]
+        n = np.array([d[1], 0.0, -d[0]]) / np.linalg.norm(d)  # outward (counter-clockwise)
+        faces.append(Face("plane", [np.array([lo[i], lo[j], hi[j], hi[i]])], normal=n,
+                          origin=lo[i]))
+    body = Body(index=0, name=name, faces=faces)
+    return CadBody(name, tessellate(body), faces, 0, named_in_cad=True)
+
+
 def simple_beam_bridge(span: float = 1000.0, deck_w: float = 150.0) -> list[CadBody]:
     """A minimal bridge: two piers, two stringers glued on top of them and a deck plate
     glued on the stringers. Small enough to simulate in seconds."""
