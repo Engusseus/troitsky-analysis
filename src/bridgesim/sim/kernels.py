@@ -51,7 +51,7 @@ def _log3(R, out):
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
-def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, Wt, soft,
+def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv3, Wt, soft,
                 eps_p, dmg_t, alive, fractured, shear, F, Mo, update, beta, dt, prev):
     nb = bi.shape[0]
     nf = fA.shape[1]
@@ -211,8 +211,11 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, Wt
             fractured[e] = True
         if update:
             if alive[e]:
-                tau = 1.5 * math.sqrt(Vz * Vz + Vy * Vy) / Ar[e] + abs(T) / Wt[e]
-                if tau > fv[e]:
+                # shear along e2 runs across the plies (wood), along e3 on the glue
+                # planes between plies; torsion loads both
+                tt = abs(T) / Wt[e]
+                if (1.5 * abs(Vz) / Ar[e] + tt) / fv[e] > 1.0 or \
+                        (1.5 * abs(Vy) / Ar[e] + tt) / fv3[e] > 1.0:
                     shear[e] = True
                     alive[e] = False
             if cracked_max / Atot > 0.9:
@@ -457,11 +460,17 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
     na0 = (w[42] + w[45] + w[48]) / 3.0
     na1 = (w[43] + w[46] + w[49]) / 3.0
     na2 = (w[44] + w[47] + w[50]) / 3.0
-    tzm = (w[5] + w[11] + w[17]) / 3.0
+    # drilling (Hughes-Brezzi): theta_z of each node against the in-plane rigid rotation
+    om = 0.0
     for a in range(3):
-        f0 = ar * (Bm[e, 0, 2 * a] * na0 + Bm[e, 1, 2 * a] * na1 + Bm[e, 2, 2 * a] * na2)
+        om += -0.5 * Bm[e, 1, 2 * a + 1] * w[6 * a] + 0.5 * Bm[e, 0, 2 * a] * w[6 * a + 1]
+    kde = kd[e] * max(0.0, 1.0 - 10.0 * dmg[e])  # a cracking element: no drilling stiffness
+    sdr = (w[5] - om) + (w[11] - om) + (w[17] - om)
+    for a in range(3):
+        f0 = ar * (Bm[e, 0, 2 * a] * na0 + Bm[e, 1, 2 * a] * na1 + Bm[e, 2, 2 * a] * na2) \
+            + kde * sdr * 0.5 * Bm[e, 1, 2 * a + 1]
         f1 = ar * (Bm[e, 0, 2 * a + 1] * na0 + Bm[e, 1, 2 * a + 1] * na1
-                   + Bm[e, 2, 2 * a + 1] * na2)
+                   + Bm[e, 2, 2 * a + 1] * na2) - kde * sdr * 0.5 * Bm[e, 0, 2 * a]
         f2 = 0.0
         m0 = 0.0
         m1 = 0.0
@@ -477,7 +486,7 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
         f2 *= ar / 3.0
         m0 *= ar / 3.0
         m1 *= ar / 3.0
-        m2 = kd[e] * (w[6 * a + 5] - tzm)
+        m2 = kde * (w[6 * a + 5] - om)
         fe[e, a, 0] = ax0 * f0 + y0 * f1 + z0 * f2
         fe[e, a, 1] = ax1 * f0 + y1 * f1 + z1 * f2
         fe[e, a, 2] = ax2 * f0 + y2 * f1 + z2 * f2
@@ -834,15 +843,21 @@ def expmap_update(R, w, dt):
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
-def integrate(x, v, w, R, F, Mo, mass, gmass, rot, gy, alpha, dt, loose):
+def integrate(x, v, w, R, F, Mo, mass, gmass, rot, gy, alpha, dt, loose, floor):
     """One central-difference update of all nodes (velocities at half steps), with
     mass-proportional damping; gravity acts on ``gmass`` (the physical mass)."""
     for i in range(x.shape[0]):
-        if loose[i]:  # debris: falls under gravity, nothing else acts on it
+        if loose[i]:  # debris: falls under gravity and lands on the platform
             v[i, 1] += dt * gmass[i] * gy / mass[i]
             x[i, 0] += dt * v[i, 0]
             x[i, 1] += dt * v[i, 1]
             x[i, 2] += dt * v[i, 2]
+            if x[i, 1] < floor:
+                x[i, 1] = floor
+                if v[i, 1] < 0.0:
+                    v[i, 1] = 0.0
+                v[i, 0] *= 0.99
+                v[i, 2] *= 0.99
             w[i, 0] = 0.0
             w[i, 1] = 0.0
             w[i, 2] = 0.0

@@ -73,6 +73,23 @@ def test_dkt_patch_test():
             assert B @ dofs(f) == pytest.approx(want, abs=1e-9)
 
 
+def test_shell_element_has_only_rigid_body_zero_modes():
+    """6 zero-energy modes (rigid body) and no more: an element whose nodes can spin
+    about its normal for free lets glued plates drift (a creep that depends on the test
+    speed)."""
+    from bridgesim.sim.materials import Ply
+    from bridgesim.sim.shell import element_data
+
+    ply = Ply.from_material(MAT, SP)
+    rng = np.random.default_rng(3)
+    for _ in range(5):
+        xy = rng.uniform(-10, 10, (3, 2))
+        ed = element_data(xy, [0.0, 90.0], 3.6, ply, 1.0, 1.0, (3.0, 0.3, 1.0),
+                          ply.E_L * 3.6)
+        ev = np.linalg.eigvalsh(ed["K"])
+        assert (ev < 1e-8 * ev.max()).sum() == 6
+
+
 def test_cantilever_small_deflection():
     v, _u, _ = lab.cantilever(0.01)
     assert v == pytest.approx(0.01 / 3, rel=0.01)  # P L^3 / 3 E I
@@ -333,6 +350,19 @@ def test_synthetic_bridge_crush(synthetic_crush):
     assert data["kind"] == "crush" and data["Fu_kgf"] == rep.Fu_kgf
 
 
+def test_brief_crush_report(synthetic_crush):
+    from bridgesim.sim import study
+
+    _, rep, _ = synthetic_crush
+    b = study.brief(rep)
+    assert b["kind"] == "crush_brief" and "curve" not in b and "events" not in b
+    assert b["Fu_kgf"] == rep.Fu_kgf
+    assert b["peak"]["load_kgf"] == pytest.approx(rep.Fu_kgf, rel=0.01)
+    assert len(json.dumps(b)) < len(rep.model_dump_json())
+    sev = [q["severity"] for q in b["questions"]]
+    assert sev == sorted(sev, key=["important", "check", "info"].index)
+
+
 def test_reality_gap(synthetic_crush, tmp_path):
     from bridgesim.sim import study
 
@@ -393,7 +423,7 @@ def test_mcp_server_exposes_the_tools():
     tools = asyncio.run(build_server().list_tools())
     names = {getattr(t, "name", None) for t in getattr(tools, "tools", tools)}
     assert {"inspect_bridge", "crush_bridge", "start_crush", "job_status", "start_montecarlo",
-            "start_compare_designs",
+            "start_compare_designs", "start_sensitivity",
             "compare_with_test", "lab_tests", "calibrate_material", "get_schema"} <= names
 
 
@@ -458,9 +488,11 @@ def test_compare_ignores_the_post_peak_branch(synthetic_crush, tmp_path):
 
     _, rep, _ = synthetic_crush
     c = rep.curve
-    ipk = int(np.argmax(c.load_kgf))
+    L = np.array(c.load_kgf)
+    ipk = int(np.argmax(L >= 0.999 * rep.Fu_kgf))  # the failure
+    end = ipk + int(np.argmax(L[ipk:] < 0.5 * rep.Fu_kgf))  # the record ends after the drop
     rows = ["test,bridge_file,load_kgf,midspan_deflection_mm,event,notes"]
-    idx = sorted(set(range(0, len(c.load_kgf), max(1, len(c.load_kgf) // 60))) | {ipk})
+    idx = sorted(set(range(0, end + 1, max(1, end // 60))) | {ipk, end})
     for i in idx:  # the whole record, the drop after the peak included
         ev = "failure" if i == ipk else ""
         rows.append(f"T1,b.stl,{c.load_kgf[i]:.3f},{c.deflection_mm[i]:.3f},{ev},")
@@ -516,3 +548,13 @@ def test_ab_cli_rejects_missing_designs(tmp_path):
     r = CliRunner().invoke(app, ["ab", str(tmp_path / "a.stl"), str(tmp_path / "nope.stl"),
                                  "--json"])
     assert r.exit_code == 2 and json.loads(r.stderr.strip())["kind"] == "bad_input"
+
+
+def test_sensitivity_rejects_unknown_parameters(tmp_path):
+    from bridgesim.sim import study
+
+    write_stl(simple_beam_bridge(), tmp_path / "b.stl")
+    with pytest.raises(ValueError, match="unknown parameter"):
+        study.sensitivity(tmp_path / "b.stl", params=["material.E_GPa"])
+    with pytest.raises(ValueError, match="rel"):
+        study.sensitivity(tmp_path / "b.stl", rel=1.5)

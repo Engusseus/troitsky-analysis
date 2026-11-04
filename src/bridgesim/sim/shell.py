@@ -127,8 +127,25 @@ def local_stiffness(xy: np.ndarray, A: np.ndarray, D: np.ndarray, E_t: float,
     K[np.ix_(IB, IM)] += Kmb.T
     kd = drill_stiffness(E_t, area)
     idr = np.array([5, 11, 17])
-    K[np.ix_(idr, idr)] += kd * (np.eye(3) - np.full((3, 3), 1 / 3))
+    # drilling: each node's in-plane rotation is tied to the element's in-plane rigid
+    # rotation omega = (v,x - u,y) / 2 (Hughes & Brezzi 1989), energy
+    # kd/2 sum_a (theta_a - omega)^2, so no rotation about the normal is free
+    g = drill_omega(Bm)
+    K[np.ix_(idr, idr)] += kd * np.eye(3)
+    K[np.ix_(idr, IM)] += -kd * np.outer(np.ones(3), g)
+    K[np.ix_(IM, idr)] += -kd * np.outer(g, np.ones(3))
+    K[np.ix_(IM, IM)] += 3 * kd * np.outer(g, g)
     return K
+
+
+def drill_omega(Bm: np.ndarray) -> np.ndarray:
+    """Row g with omega = g . (u1, v1, u2, v2, u3, v3), the in-plane rigid rotation of
+    a constant-strain triangle."""
+    g = np.zeros(6)
+    for a in range(3):
+        g[2 * a] = -0.5 * Bm[1, 2 * a + 1]  # -u,y / 2  (Bm[1, 2a+1] = c_a / 2A = N_a,y)
+        g[2 * a + 1] = 0.5 * Bm[0, 2 * a]  # v,x / 2  (Bm[0, 2a] = b_a / 2A = N_a,x)
+    return g
 
 
 def recovery(xy: np.ndarray) -> np.ndarray:
@@ -186,7 +203,10 @@ def element_data(xy: np.ndarray, angles: list[float], t: float, ply, Ef: float, 
     return {"K": K, "Bm": Bm, "Bb": Bb, "area": area,
             "kd": drill_stiffness(E_t_drill, area), "lay": lay,
             "Q": np.array([Q[0, 0], Q[1, 1], Q[0, 1], Q[2, 2]]), "lim": lim, "rf": rf,
-            "lc": lc, "snapback": bool((rf_raw < 1.05).any())}
+            "lc": lc, "snapback": bool((rf_raw < 1.05).any()),
+            "excess": float(np.max(1.05 / np.maximum(rf_raw, 1e-9))),
+            "snap_modes": [k for k, r in zip(("fibre tension", "across the grain", "shear"),
+                                             rf_raw, strict=True) if r < 1.05]}
 
 
 def pack(elems: list[dict]) -> dict[str, np.ndarray]:

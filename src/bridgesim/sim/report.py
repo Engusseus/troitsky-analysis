@@ -139,6 +139,9 @@ class Quality(BaseModel):
                                                 "treat F_u with suspicion")
     reasons: list[str] = []
     speed_mm_s: float = 0.0
+    holds: int = Field(0, description="Times the jack was slowed to 2 % while something "
+                                      "was breaking, until it stopped (quasi-static failure)")
+    hold_time_s: float = 0.0
     rate_check: dict | None = Field(None, description="With --rate-check: the same crush "
                                     "at half the jack speed (speed_mm_s, Fu_kgf, change = "
                                     "relative change of F_u). |change| < 0.05 shows the "
@@ -266,6 +269,35 @@ class DesignComparison(BaseModel):
     untrustworthy_runs: int = 0
 
 
+class SensitivityItem(BaseModel):
+    param: str = Field(description="Overrides key (params:) of the value varied")
+    meaning: str
+    how_to_measure: str
+    source: str = Field(description="assumed or measured")
+    base: float
+    Fu_low_kgf: float = Field(description="F_u with the value lowered by `rel`")
+    Fu_high_kgf: float
+    elasticity: float = Field(description="Relative change of F_u per relative change of "
+                                          "the value (1 = proportional)")
+
+
+class SensitivityReport(BaseModel):
+    """How much each material value moves F_u: what to measure first."""
+
+    schema_version: str = SCHEMA_VERSION
+    kind: Literal["sensitivity"] = "sensitivity"
+    file: str
+    fidelity: str
+    seed: int | None
+    rel: float = Field(description="Each value is varied by -rel and +rel")
+    Fu_base_kgf: float
+    items: list[SensitivityItem] = Field(description="Most influential first")
+    measure_first: list[str] = Field(description="Assumed values that move F_u most, with "
+                                                 "how to measure them")
+    note: str = ""
+
+
 SCHEMAS = {"inspect": InspectReport, "crush": CrushReport, "reality_gap": RealityGap,
            "lab": LabReport, "montecarlo": MonteCarloReport, "question": Question,
-           "design_comparison": DesignComparison}
+           "design_comparison": DesignComparison,
+           "sensitivity": SensitivityReport}

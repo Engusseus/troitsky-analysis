@@ -238,8 +238,9 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
         big = st.b_alive & (((th_i**2).sum(1) > 1.0) | ((th_j**2).sum(1) > 1.0))
         st.b_alive &= ~big
         st.b_fractured |= big
-        tau = 1.5 * np.hypot(Vz, Vy) / m.b_A + np.abs(T) / m.b_Wt
-        shear_fail = alive & (tau > m.b_fv)
+        tt = np.abs(T) / m.b_Wt
+        shear_fail = alive & (((1.5 * np.abs(Vz) / m.b_A + tt) > m.b_fv)
+                              | ((1.5 * np.abs(Vy) / m.b_A + tt) > m.b_fv3))
         if shear_fail.any():
             st.b_shear |= shear_fail
             st.b_alive &= ~shear_fail
@@ -372,8 +373,15 @@ def shell_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     f = np.zeros((ns, 18))
     f[:, _IM] = m.s_area[:, None] * np.einsum("nik,ni->nk", m.s_Bm, N.mean(axis=1))
     f[:, _IB] = (m.s_area / 3)[:, None] * np.einsum("ngik,ngi->nk", m.s_Bb, M)
-    tz = dd[:, _IR]
-    f[:, _IR] = m.s_kd[:, None] * (tz - tz.mean(axis=1, keepdims=True))
+    # drilling (Hughes-Brezzi): theta_z against the in-plane rigid rotation omega
+    g = np.zeros((ns, 6))
+    g[:, 0::2] = -0.5 * m.s_Bm[:, 1, 1::2]
+    g[:, 1::2] = 0.5 * m.s_Bm[:, 0, 0::2]
+    om = (g * dd[:, _IM]).sum(1)
+    rel = dd[:, _IR] - om[:, None]
+    kde = m.s_kd * np.maximum(0.0, 1.0 - 10.0 * st.s_dmg)  # a cracking element: no drilling
+    f[:, _IR] = kde[:, None] * rel
+    f[:, _IM] -= (kde * rel.sum(1))[:, None] * g
     f[st.s_gone] = 0.0
     if update:
         st.s_gone = st.s_gone | newly
@@ -650,7 +658,7 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
     x, R = st.x, st.R
     if len(m.b_i):
         K.beam_kernel(x, R, m.b_i, m.b_j, m.b_L0, m.b_E0, m.b_fy, m.b_fz, m.b_fA, m.b_E,
-                      m.b_ft, m.b_fc, m.b_Gf, m.b_GJ, m.b_A, m.b_fv, m.b_Wt,
+                      m.b_ft, m.b_fc, m.b_Gf, m.b_GJ, m.b_A, m.b_fv, m.b_fv3, m.b_Wt,
                       float(m.params.get("crush_softening", 0.3)), st.eps_p, st.dmg_t,
                       st.b_alive, st.b_fractured, st.b_shear, F, Mo, update,
                       s.beta if update else 0.0, s.dt, st.b_prev)

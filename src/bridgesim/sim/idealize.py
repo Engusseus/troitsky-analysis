@@ -545,10 +545,12 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     shell_tree: dict[int, cKDTree] = {}
     shell_mesh: dict[int, tuple[np.ndarray, np.ndarray, float]] = {}
     beams: dict[str, list] = {k: [] for k in ("i", "j", "L0", "E0", "fy", "fz", "fA", "E",
-                                              "ft", "fc", "Gf", "GJ", "A", "fv", "Wt",
+                                              "ft", "fc", "Gf", "GJ", "A", "fv", "fv3", "Wt",
                                               "body")}
     shells: dict[str, list] = {k: [] for k in ("nodes", "E0", "P", "t", "el", "body")}
     n_snap = 0
+    snap_excess = 1.0
+    snap_modes: set = set()
     G_f = sp["wood.G_f_N_per_mm"]
 
     for bi, (b, sh) in enumerate(zip(bodies, shapes, strict=True)):
@@ -631,7 +633,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 beams["Gf"].append(G_f * Sf)
                 beams["GJ"].append(lam.G_xy * Ef * J)
                 beams["A"].append(A_true)
-                beams["fv"].append(fv_lam * Sf)
+                beams["fv"].append(mat.f_v_MPa.value * Sf)
+                beams["fv3"].append(fv_lam * Sf)
                 beams["Wt"].append(J / dd)
                 beams["body"].append(bi)
                 info.beams.append(len(beams["i"]) - 1)
@@ -701,7 +704,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                     angs = angs[::-1]
                 ed = shellmod.element_data(Ploc[:, :2], angs, T, ply, Ef, Sf, Gm,
                                            lam_ref.E_x * Ef * T)
-                n_snap += ed["snapback"]
+                if ed["snapback"]:
+                    n_snap += 1
+                    snap_excess = max(snap_excess, ed["excess"])
+                    snap_modes.update(ed["snap_modes"])
                 shells["nodes"].append(ids[t3])
                 shells["E0"].append(E0)
                 shells["P"].append(Ploc)
@@ -1065,7 +1071,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         b_fy=arr(beams["fy"], (0, nf)), b_fz=arr(beams["fz"], (0, nf)),
         b_fA=arr(beams["fA"], (0, nf)), b_E=arr(beams["E"]), b_ft=arr(beams["ft"]),
         b_fc=arr(beams["fc"]), b_Gf=arr(beams["Gf"]), b_GJ=arr(beams["GJ"]),
-        b_A=arr(beams["A"]), b_fv=arr(beams["fv"]), b_Wt=arr(beams["Wt"]),
+        b_A=arr(beams["A"]), b_fv=arr(beams["fv"]), b_fv3=arr(beams["fv3"]),
+        b_Wt=arr(beams["Wt"]),
         b_body=arr(beams["body"], dtype=int),
         s_nodes=arr(shells["nodes"], (0, 3), int),
         s_E0=arr(shells["E0"], (0, 3, 3)), s_P=arr(shells["P"], (0, 3, 3)),
@@ -1123,9 +1130,11 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
               if b.mesh.capped_loops]
     model.notes += capped
     if n_snap:
-        model.notes.append(f"{n_snap} shell element(s) are larger than the crack band their "
-                           "fracture energy allows (snap-back): their cracks dissipate a "
-                           "little more energy than G_f; use --fidelity fine to check")
+        model.notes.append(
+            f"{n_snap} shell element(s) are larger than the crack band their fracture energy "
+            f"allows ({', '.join(sorted(snap_modes))}): they keep their strength and fail as "
+            f"brittly as possible, dissipating up to {snap_excess:.1f}x the fracture energy "
+            "of that mode; a finer mesh (--fidelity fine) removes this")
     return model
 
 

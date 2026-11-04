@@ -43,9 +43,10 @@ P_k (k = 1 is the net section without one ply). By default the plies are assumed
 a brick pattern (s = half a stick), which gives (n - 1)/n of the solid strength; closer
 joints let the glue govern (10 plies with joints 11.5 mm apart: 25 %). Each such member
 gets a question (`butt_joints:`), answered with `butt_stagger_mm` in the overrides (0 for
-plies without joints). Bending shear between the plies runs in the glue lines, so the
-shear strength of a laminated member is min(f_v, tau_g). Butt joints are assumed tight
-in compression (they bear).
+plies without joints). Shear across the thickness through which the plies are stacked
+runs along the glue lines, so there the shear strength is min(f_v, tau_g); shear in the
+other direction crosses the plies and is resisted by the wood (f_v). Butt joints are
+assumed tight in compression (they bear).
 
 ## 3. Joints
 
@@ -71,7 +72,12 @@ the USDA *Wood Handbook* (FPL-GTR-190, Table 5-3a, clear wood at 12 % moisture) 
 paper birch E = 11.0 GPa, modulus of rupture 85 MPa, compression parallel to grain 39 MPa,
 shear 8.3 MPa (yellow birch: 13.9 GPa, 114, 56, 13 MPa). Craft sticks are thin, cut across
 growth rings and have defects, so the placeholders (10 GPa; f_b 50, f_c 30, f_v 6 MPa)
-are deliberately lower. Your own stick tests replace them (`bridgesim calibrate`). In the fibre
+are deliberately lower. The one published measurement on craft sticks we found gives
+E = 7.1 +- 0.2 GPa (cantilever tests, *Emergent Scientist* 1, 3 (2017), "the popsicle
+stick cobra"), 29 % below the 10 GPa placeholder: stiffness, buckling and deflections
+scale with it, so measure your own sticks. `bridgesim sensitivity` shows how much each
+placeholder moves F_u for your design. Your own stick tests replace them
+(`bridgesim calibrate`). In the fibre
 sections: linear elastic; tension softens to zero after f_t with fracture energy G_f
 (3 N/mm, element-length regularised); compression yields at f_c and softens to 70 %
 (crushing). Members split when 1.5 V/A + T/W_t > f_v. Glue and floss: see
@@ -124,6 +130,13 @@ the spread of F_u.
   (74 degrees) or passed through each other stops acting.
 * The jack moves down at constant speed (displacement control); its force is the
   load-cell reading. The crusher + load cell stiffness is 20 kN/mm.
+* **Failures run their course at constant load**, as in the real test where the jack
+  moves mm per minute: whenever something breaks (a joint lets go, a member or plate
+  cracks, floss snaps) the simulated jack slows smoothly to 2 % of its speed and waits
+  until nothing more has broken for 4 ms (at most 30 ms), then speeds up again
+  (`quality.holds`). Without this, a failure that takes ~30 ms to develop (a heel joint
+  letting go and the supports sliding out) would be outrun by the jack, and F_u would
+  depend on the jack speed.
 * **F_u** = peak jack force up to the moment the bridge is judged failed: a load drop to
   half the peak after the peak (collapse), mid-span deflection > 50 mm, or contact of a
   part with the platform other than the original supports (§12.5). A glued joint letting
@@ -135,6 +148,12 @@ the spread of F_u.
 
 ## 6. Numerics
 
+* Shell drilling rotations (about the plate's normal) are tied to the element's in-plane
+  rigid rotation (Hughes & Brezzi 1989) with a small penalty (5 % of E t x area), so
+  every element has exactly its 6 rigid-body zero-energy modes (tested); the penalty is
+  released in an element that has started to crack. An earlier formulation left the
+  nodes of a glued plate free to spin about the normal, and that drift made joints fail
+  earlier the slower the test ran.
 * Explicit central-difference time integration (like LS-DYNA): each step computes the
   internal forces of the deformed structure, so fracture, contact and collapse need no
   convergence. Large rotations are exact (corotational elements, rotation matrices
@@ -150,6 +169,13 @@ the spread of F_u.
   (`kinetic_to_work_max`): below 0.1 the loading is quasi-static. The collapse after the
   peak is dynamic, as in the real test. `--rate-check` crushes the bridge again at half
   the jack speed and reports how much F_u changes (`quality.rate_check`).
+* **Bifurcations.** When two failure modes compete (say a joint at one heel and a
+  gusset at mid-span reach their strength at similar loads), a small difference - the
+  jack speed, the random seed, a 1 % change of a strength - can decide which goes first,
+  and F_u jumps between the two outcomes. Real bridges do the same: two copies of one
+  design fail at different loads. So give F_u as the range from `montecarlo`, compare
+  designs with `ab` (paired seeds), and read `failure_sequence` to see which modes
+  compete.
 * Time is compressed: the simulated jack moves at ~100 mm/s instead of the real
   mm/min. The material laws have no rate effect, so this changes nothing as long as the
   run stays quasi-static; the replay converts back to real test time.
@@ -174,4 +200,6 @@ the spread of F_u.
 * Thick plates (gussets 20 mm thick) use thin-plate (Kirchhoff) elements, sized at
   >= 2.5 x their thickness.
 * Friction in the contact between parts that were not touching at the start.
+* Debris (pieces with nothing left holding them) falls under gravity and lands on the
+  platform, but does not hit the bridge or the plate.
 * Creep, humidity, and the time the bridge waits loaded.

@@ -392,11 +392,16 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
                                                                        rules)
     c = res.curve
     step = max(1, len(c["t"]) // 400)
-    curve = Curve(jack_travel_mm=[round(v, 3) for v in c["travel"][::step]],
-                  load_kgf=[round(v / KGF, 2) for v in c["force"][::step]],
-                  deflection_mm=[round(v, 3) for v in c["deflection"][::step]],
-                  joints_broken=c["glue_broken"][::step],
-                  members_broken=c["members_broken"][::step])
+    keep = set(range(0, len(c["t"]), step))
+    if c["force"] and res.Fu_N > 0:  # always keep the point where F_u was reached
+        keep.add(next((i for i, f in enumerate(c["force"]) if f >= 0.999999 * res.Fu_N),
+                      len(c["force"]) - 1))
+    keep = sorted(keep)
+    curve = Curve(jack_travel_mm=[round(c["travel"][i], 3) for i in keep],
+                  load_kgf=[round(c["force"][i] / KGF, 2) for i in keep],
+                  deflection_mm=[round(c["deflection"][i], 3) for i in keep],
+                  joints_broken=[c["glue_broken"][i] for i in keep],
+                  members_broken=[c["members_broken"][i] for i in keep])
     mass = rules.measurements.get("mass_kg", model.bridge_mass_kg)
     rep = CrushReport(
         file=path.name, sha256=_sha(path), seed=seed, overrides=ov_raw,
@@ -464,6 +469,31 @@ def _compact_events(events) -> list[EventOut]:
     return out
 
 
+def brief(rep: CrushReport, n_sequence: int = 12) -> dict:
+    """The crush report without the curve and the event log (they are in the files of
+    ``artifacts``): what an agent needs to decide, in a few kB."""
+    d = rep.model_dump(mode="json", exclude={"curve", "events"})
+    d["kind"] = "crush_brief"
+    seq = d["failure_sequence"]
+    d["failure_sequence"] = seq[:n_sequence] + (
+        [f"... {len(seq) - n_sequence} more (events.csv)"] if len(seq) > n_sequence else [])
+    r = d["rules"]
+    r["lines"] = [ln for ln in r.get("lines", []) if not ln.get("passed", True)
+                  or ln.get("penalty") or ln.get("bans")]
+    order = {"important": 0, "check": 1, "info": 2}
+    d["questions"] = sorted(
+        ({"id": q["id"], "severity": q["severity"], "question": q["question"],
+          "answer_with": q.get("answer_with")} for q in d["questions"]),
+        key=lambda q: order.get(q["severity"], 3))
+    c = rep.curve
+    if c.load_kgf and rep.Fu_kgf > 0:  # where F_u was reached (not a later spike)
+        k = next((i for i, v in enumerate(c.load_kgf) if v >= 0.999 * rep.Fu_kgf),
+                 len(c.load_kgf) - 1)
+        d["peak"] = {"load_kgf": c.load_kgf[k], "jack_travel_mm": c.jack_travel_mm[k],
+                     "deflection_mm": c.deflection_mm[k]}
+    return d
+
+
 def _first_joint(res: CrushResult) -> float | None:
     hit = [e for e in res.events if e.kind in ("joint_failure", "member_shear")]
     return round(hit[0].force_N / KGF, 2) if hit else None
@@ -476,8 +506,10 @@ def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = N
         reasons.append(f"loading not quasi-static (peak kinetic/work {res.kinetic_ratio_max:.2f}"
                        " > 0.1): run slower or use --rate-check")
     if rc and abs(rc["change"]) >= 0.05:
-        reasons.append(f"F_u changes by {rc['change']:+.0%} at half the jack speed: "
-                       "the simulated test is too fast; use --fidelity fine")
+        reasons.append(f"F_u changes by {rc['change']:+.0%} at half the jack speed: either "
+                       "the simulated test is too fast, or the failure path is sensitive "
+                       "to small differences (two failure modes compete); run montecarlo "
+                       "to see the spread and give F_u as a range")
     if res.added_mass_frac > 0.05:
         reasons.append(f"{res.added_mass_frac:.1%} mass added for stability (> 5 %)")
     if res.failure_mode == "none":
@@ -489,7 +521,9 @@ def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = N
                    kinetic_to_work_max=round(res.kinetic_ratio_max, 4),
                    settle_sag_mm=round(res.settle_sag_mm, 3), notes=res.notes,
                    trustworthy=not reasons, reasons=reasons,
-                   speed_mm_s=getattr(res, "speed_mm_s", 0.0), rate_check=rc)
+                   speed_mm_s=getattr(res, "speed_mm_s", 0.0), rate_check=rc,
+                   holds=getattr(res, "holds", 0),
+                   hold_time_s=round(getattr(res, "hold_time_s", 0.0), 4))
 
 
 # ----------------------------------------------------------------------------- compare
@@ -519,22 +553,37 @@ def compare(sim: CrushReport | str | Path, test_csv: str | Path) -> RealityGap:
                          "midspan_deflection_mm")
     sl = np.array(rep.curve.load_kgf)
     sd = np.array(rep.curve.deflection_mm)
+    # the simulated record up to F_u: after the bridge is judged failed the jack goes on
+    # (for the replay) and may press on the wreckage, which is not part of the test
+    if len(sl) and rep.Fu_kgf > 0:
+        i_fu = int(np.argmax(sl >= 0.999 * rep.Fu_kgf))
+        sl, sd = sl[: i_fu + 1], sd[: i_fu + 1]
     tl, td = t["load"], t["defl"]
     peak_s, peak_t = float(rep.Fu_kgf), float(tl.max())
     i_t = int(np.argmax(tl))
     d_s, d_t = float(rep.deflection_at_Fu_mm), float(td[i_t])
 
     def slope(load, defl, pk):
-        """Secant stiffness on the rising branch only (before the peak), between 10 % and
-        50 % of the peak, so neither the seating toe nor the post-peak drop enters."""
+        """Secant stiffness on the rising branch (before the peak) between the first
+        points where the load reaches 10 % and 50 % of the peak (interpolated, so the
+        sampling of the record does not matter); the seating toe and the post-peak drop
+        do not enter."""
         ipk = int(np.argmax(load))
         load, defl = load[: ipk + 1], defl[: ipk + 1]
-        sel = (load > 0.1 * pk) & (load < 0.5 * pk) & (defl > 0)
-        if sel.sum() < 2:
-            sel = (load < 0.6 * pk) & (defl > 0)
-        if sel.sum() < 2:
+
+        def cross(level):
+            i = int(np.argmax(load >= level))
+            if load[i] < level:
+                return math.nan
+            if i == 0:
+                return float(defl[0])
+            f = (level - load[i - 1]) / max(load[i] - load[i - 1], 1e-12)
+            return float(defl[i - 1] + f * (defl[i] - defl[i - 1]))
+
+        d10, d50 = cross(0.1 * pk), cross(0.5 * pk)
+        if not (math.isfinite(d10) and math.isfinite(d50)) or d50 <= d10:
             return math.nan
-        return float(np.polyfit(defl[sel], load[sel], 1)[0])
+        return 0.4 * pk / (d50 - d10)
 
     k_s, k_t = slope(sl, sd, peak_s), slope(tl, td, peak_t)
     # curve: load at the test's deflections up to the test's peak
@@ -551,7 +600,8 @@ def compare(sim: CrushReport | str | Path, test_csv: str | Path) -> RealityGap:
                   error=rel(peak_s, peak_t), unit="kgf", meaning="§12.5 F_u"),
         GapMetric(name="initial stiffness", simulated=round(k_s, 2) if k_s == k_s else "n/a",
                   measured=round(k_t, 2) if k_t == k_t else "n/a", error=rel(k_s, k_t),
-                  unit="kgf/mm", meaning="slope of load vs mid-span deflection"),
+                  unit="kgf/mm", meaning="secant of load vs mid-span deflection between "
+                                        "10 % and 50 % of the peak"),
         GapMetric(name="deflection at ultimate load", simulated=round(d_s, 2),
                   measured=round(d_t, 2), error=rel(d_s, d_t), unit="mm"),
         GapMetric(name="curve shape", simulated="", measured="", error=curve_err,
@@ -934,6 +984,86 @@ def summarize_pairs(ra: list[dict], rb: list[dict], name_a: str, name_b: str,
         efficiency_change_ci90=ciE, significant=sig, verdict=verdict,
         governing_a=gov(ra), governing_b=gov(rb),
         untrustworthy_runs=sum(1 for r in ra + rb if not r["trustworthy"]))
+
+
+SENSITIVITY = {  # key: (meaning, how to measure)
+    "material.E_MPa": ("stiffness of a stick along the grain",
+                       "3-point bending of single sticks (stick_bending_template.csv)"),
+    "material.f_t_MPa": ("tension strength of a stick",
+                         "pull single sticks to failure, or bend them (MOR)"),
+    "material.f_c_MPa": ("crushing strength of a stick along the grain",
+                         "short glued stack in compression"),
+    "material.f_v_MPa": ("shear strength of a stick", "short-span bending of a stick stack"),
+    "material.glue.tau_g_MPa": ("glue joint strength",
+                                "single-lap joints pulled apart (glue_joint_template.csv)"),
+    "glue.G_IIc_N_per_mm": ("toughness of a glue line in shear",
+                            "the area under the force-slip curve of a lap test"),
+    "wood.f_c90_MPa": ("crushing strength across the grain", "press a block of sticks flat"),
+    "wood.G_f_N_per_mm": ("fracture energy of a stick in tension",
+                          "area under the load-extension curve of a tension test"),
+}
+
+
+def sensitivity(cad: str | Path, overrides=None, material=None, sim_params=None,
+                ruleset=None, params: list[str] | None = None, rel: float = 0.2,
+                seed: int | None = 0, fidelity: str = "quick", processes: int | None = None,
+                progress=None, units=None, up: str = "y", span: str = "x"):
+    """Crush the bridge with each material value lowered and raised by ``rel`` (same
+    seed) and rank the values by how much they move F_u: the measurements that would
+    narrow the prediction most."""
+    from bridgesim.sim.report import SensitivityItem, SensitivityReport
+
+    if not 0 < rel < 0.9:
+        raise ValueError("rel must be between 0 and 0.9")
+    keys = list(params or SENSITIVITY)
+    _, _, _, ov_raw, mat, sp, _ = _inputs(cad, overrides, material, sim_params, ruleset,
+                                          units, up, span)
+    props = mat.props()
+    base_vals, sources = {}, {}
+    for k in keys:
+        if k.startswith("material."):
+            kk = k.split(".", 1)[1]
+            if kk not in props:
+                raise ValueError(f"unknown parameter {k!r}")
+            base_vals[k], sources[k] = float(props[kk].value), props[kk].source
+        else:
+            if k not in sp.values:
+                raise ValueError(f"unknown parameter {k!r}")
+            base_vals[k], sources[k] = float(sp[k]), sp.sources.get(k, "assumed")
+
+    def with_param(k, v):
+        d = json.loads(json.dumps(ov_raw or {}))
+        d.setdefault("params", {})
+        d["params"] = dict(d["params"] or {})
+        if k is not None:
+            d["params"][k] = v
+        return d
+
+    args = [("base", (str(cad), with_param(None, 0), material, sim_params, ruleset, seed,
+                      None, fidelity, None, units, up, span))]
+    for k in keys:
+        for tag, f in (("low", 1 - rel), ("high", 1 + rel)):
+            args.append((f"{k}|{tag}", (str(cad), with_param(k, base_vals[k] * f), material,
+                                        sim_params, ruleset, seed, None, fidelity, None,
+                                        units, up, span)))
+    res = {r["tag"]: r for r in _pool_runs(args, len(args), processes, progress, "crush")}
+    F0 = res["base"]["Fu_kgf"]
+    items = []
+    for k in keys:
+        lo, hi = res[f"{k}|low"]["Fu_kgf"], res[f"{k}|high"]["Fu_kgf"]
+        meaning, how = SENSITIVITY.get(k, (k, "see materials/simulation.yaml"))
+        items.append(SensitivityItem(
+            param=k, meaning=meaning, how_to_measure=how, source=sources[k],
+            base=base_vals[k], Fu_low_kgf=round(lo, 2), Fu_high_kgf=round(hi, 2),
+            elasticity=round((hi - lo) / (2 * rel * max(F0, 1e-9)), 3)))
+    items.sort(key=lambda it: -abs(it.elasticity))
+    first = [f"{it.meaning} ({it.param}, elasticity {it.elasticity:+.2f}): {it.how_to_measure}"
+             for it in items if it.source != "measured" and abs(it.elasticity) >= 0.1][:3]
+    return SensitivityReport(
+        file=Path(cad).name, fidelity=fidelity, seed=seed, rel=rel,
+        Fu_base_kgf=round(F0, 2), items=items, measure_first=first,
+        note="One seed: a value that changes which part fails first can move F_u by more "
+             "than its own effect; repeat with another --seed if a ranking matters.")
 
 
 def compare_designs(cad_a: str | Path, cad_b: str | Path, n: int = 3, overrides_a=None,

@@ -111,6 +111,8 @@ class CrushResult:
     model: Model = field(repr=False)
     notes: list[str] = field(default_factory=list)
     speed_mm_s: float = 0.0
+    holds: int = 0  # times the jack was held while something broke
+    hold_time_s: float = 0.0
 
 
 def _quat(R: np.ndarray) -> np.ndarray:
@@ -345,12 +347,21 @@ class CrushOptions:
     deflection_limit_mm: float = 50.0
     drop_ratio: float = 0.5  # stop when load < drop_ratio * peak, after the peak
     after_failure_mm: float = 8.0  # keep going this far past failure (collapse replay)
-    frames: int = 160
+    frame_mm: float = 0.15  # replay frame every this much jack travel
     alpha: float = 25.0
     max_added_mass: float = 0.05
     dt_target: float = 3e-6
     max_steps: int = 400_000
     self_contact: bool = True  # contact between parts not touching at the start
+    # quasi-static failures: when something breaks (a joint, a member, a plate, floss)
+    # the jack slows to hold_speed_frac of its speed until nothing more has broken for
+    # hold_settle_s (at most hold_max_s), as at the competition, where a failure runs
+    # its course long before the jack has moved
+    hold_on_failure: bool = True
+    hold_speed_frac: float = 0.02
+    hold_ramp_s: float = 0.002
+    hold_settle_s: float = 0.004
+    hold_max_s: float = 0.03
     progress: object = None  # callable(fraction, message)
 
 
@@ -490,7 +501,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         info = S.internal_and_contact(m, st, s, F, Mo)
         if s.use_numba and S.K.HAVE_NUMBA:
             S.K.integrate(st.x, st.v, st.w, st.R, F, Mo, mass, phys_mass,
-                          rot, -s.gravity * grav, alpha, dt, st.loose)
+                          rot, -s.gravity * grav, alpha, dt, st.loose, m.table_y + 1.0)
         else:
             fext = np.zeros_like(F)
             fext[:, 1] = -mass * s.gravity * grav * grav_ratio
@@ -500,6 +511,9 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             st.w += dt * (-Mo / rot[:, None] - alpha * st.w)
             if st.loose.any():
                 st.w[st.loose] = 0.0
+                low = st.loose & (st.x[:, 1] < m.table_y + 1.0)  # debris lands
+                st.x[low, 1] = m.table_y + 1.0
+                st.v[low, 1] = np.maximum(st.v[low, 1], 0.0)
             S.rotate(st, dt, s.use_numba)
         st.t += dt
         steps += 1
@@ -582,7 +596,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     fail_detail = ""
     Fu_at_fail = None
     est_steps = int((opt.max_travel_mm / opt.speed_mm_s) / dt)
-    frame_every = max(1, int((opt.max_travel_mm / opt.speed_mm_s / dt) / opt.frames))
+    frame_every = max(1, int(opt.frame_mm / opt.speed_mm_s / dt))
     ramp = 0.02  # s, the jack starts smoothly
     t_load0 = st.t
     max_ke_ratio = 0.0
@@ -590,9 +604,23 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     last_force = 0.0
     force_f = 0.0
     k = 0
+    throttle = 1.0
+    hold_until = -1.0
+    hold_start = 0.0
+    holds = 0
+    hold_time = 0.0
+    n_seen = 0
+    major = ("joint_failure", "plate_crack", "member_fracture", "member_shear",
+             "floss_break")
     while not unstable:
         tl = st.t - t_load0
-        v = opt.speed_mm_s * min(1.0, tl / ramp)
+        target = opt.hold_speed_frac if st.t < hold_until else 1.0
+        step_thr = dt / opt.hold_ramp_s
+        throttle = min(throttle + step_thr, target) if throttle < target else \
+            max(throttle - step_thr, target)
+        if throttle < 0.999:
+            hold_time += dt
+        v = opt.speed_mm_s * min(1.0, tl / ramp) * throttle
         st.jack_y -= v * dt
         st.jack_v = -v
         do_step(1.0, opt.alpha)
@@ -603,7 +631,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         last_force = raw
         # the load cell reading: low-pass filtered over ~0.3 mm of jack travel, so a
         # stress wave ringing through the bridge is not taken for its strength
-        a_f = min(1.0, dt * max(v, 1e-9) / 0.3)
+        a_f = min(1.0, dt * opt.speed_mm_s / 0.3)  # time constant: 0.3 mm at full speed
         force_f += a_f * (raw - force_f)
         force = force_f
         if k % 25 == 0 or k == 1:
@@ -671,6 +699,14 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             prev_b, prev_bs, prev_s = st.b_fractured.copy(), st.b_shear.copy(), st.s_dmg > 0.5
             prev_k = st.k_alive.copy()
             prev_patch_started, prev_patch_broken = started, broken
+            # ---- hold the jack while something is breaking (quasi-static failure)
+            if opt.hold_on_failure and fail_at is None and len(events) > n_seen:
+                if any(e.kind in major for e in events[n_seen:]):
+                    if st.t >= hold_until:
+                        holds += 1
+                        hold_start = st.t
+                    hold_until = min(st.t + opt.hold_settle_s, hold_start + opt.hold_max_s)
+                n_seen = len(events)
             # ---- §12.5 criteria
             if criteria["deflection"] is None and defl > opt.deflection_limit_mm:
                 criteria["deflection"] = {"t_s": st.t, "travel_mm": travel, "load_N": force}
@@ -765,7 +801,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         criteria=criteria, dt=dt, steps=steps, wall_s=time.time() - t0,
         added_mass_kg=added * 1000, added_mass_frac=added / phys_mass.sum(),
         settle_sag_mm=sag, kinetic_ratio_max=max_ke_ratio, model=m,
-        speed_mm_s=float(opt.speed_mm_s))
+        speed_mm_s=float(opt.speed_mm_s), holds=holds, hold_time_s=hold_time)
     del ke
     return res
 

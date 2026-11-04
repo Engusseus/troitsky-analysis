@@ -23,13 +23,14 @@ SolidWorks needed), a Parasolid `.x_b`, or an STL with all bodies in one file.
 | Command | What it does | Time |
 |---|---|---|
 | `bridgesim inspect BRIDGE.SLDPRT [-o overrides.yaml] [--strict] --json` | Bodies (how each is modelled, centroid and bounding box, layup, mass), glued joints, loading position, rule check from the solids, `warnings`, `questions` | seconds |
-| `bridgesim crush BRIDGE.SLDPRT [-o overrides.yaml] [--seed N] [--fidelity quick\|standard\|fine] [--rate-check] [--out DIR] --json` | Simulated crushing test; with `--out`: `crush.json`, `curve.csv`, `events.csv` (every event), `replay.html`. `--rate-check` runs it again at half the jack speed (3x the time) | minutes |
+| `bridgesim crush BRIDGE.SLDPRT [-o overrides.yaml] [--seed N] [--fidelity quick\|standard\|fine] [--rate-check] [--out DIR] --json [--brief]` | Simulated crushing test; with `--out`: `crush.json`, `curve.csv`, `events.csv` (every event), `replay.html`. `--rate-check` runs it again at half the jack speed (3x the time). `--brief`: the report without the curve and event log (~20 kB instead of ~200 kB; the MCP crush tools return this by default) | minutes |
 | `bridgesim compare DIR/crush.json my_test.csv --json` | Reality gap vs a physical crush test | seconds |
+| `bridgesim sensitivity BRIDGE.SLDPRT [--rel 0.2] [--fidelity quick] --json` | Which material values move F_u most: each one lowered and raised by `rel`; `measure_first` lists the tests that would narrow the prediction most | (1 + 2 x 8) x crush / processes |
 | `bridgesim lab [--data validation/physical] --json` | Simulated coupon tests (stick bending, lap joint, stick column) and their gap to the team's coupon data | ~20 s |
 | `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, strengths, glue strength from coupon CSVs | seconds |
 | `bridgesim ab A.SLDPRT B.SLDPRT [-n 3] [--overrides-a a.yaml] [--overrides-b b.yaml] [--fidelity quick] --json` | Is B better than A? Both crushed with the same seeds: change of F_u and efficiency with a 90 % interval, `significant`, `verdict`, first failure of each. B may be A with other overrides | 2n x crush / processes |
 | `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity quick] [--processes 4] --json` | Spread of F_u over imperfections and material scatter; `recommended_prediction_kgf` for the Load Prediction Form (the 1/F-weighted median, which minimises the §12.7 error) | n x crush / processes |
-| `bridgesim schema inspect\|crush\|reality_gap\|lab\|montecarlo\|design_comparison\|question` | JSON Schema of each report | instant |
+| `bridgesim schema inspect\|crush\|reality_gap\|lab\|montecarlo\|design_comparison\|sensitivity\|question` | JSON Schema of each report | instant |
 | `bridgesim mcp` | The same as MCP tools (`uv sync --extra mcp`) | - |
 
 Fidelity: `quick` (coarser mesh, jack 200 mm/s) to screen design changes, `standard`
@@ -80,6 +81,7 @@ claude mcp add bridgesim -- uv run --directory /path/to/troitsky-analysis bridge
 | `start_crush(cad_path, out_dir, ...)` then `job_status(out_dir)` | background: poll until `status` is `done` (report included) or `failed` (error included). Use this when tool calls time out |
 | `start_montecarlo(cad_path, out_dir, n, fidelity)` then `job_status(out_dir)` | background spread of F_u |
 | `start_compare_designs(cad_a, cad_b, out_dir, n, overrides_a_yaml, overrides_b_yaml)` then `job_status(out_dir)` | background A/B comparison |
+| `start_sensitivity(cad_path, out_dir, overrides_yaml, rel)` then `job_status(out_dir)` | background: what to measure first |
 | `compare_with_test(crush_json_path, test_csv_path)` | reality gap |
 | `lab_tests(material, data_dir)`, `calibrate_material(data_dir, out_path)` | coupon level |
 | `get_schema(name)` | JSON Schemas |
@@ -178,6 +180,8 @@ get "(mirror copy)"). Joint names are `A | B` as listed in the inspect `joints`.
 
 ## Quantifying how close to reality the model is
 
+0. Decide what to measure: `bridgesim sensitivity` ranks the placeholder values by how
+   much they move F_u for *this* design (`measure_first`).
 1. Coupon level: fill `validation/physical/stick_bending_template.csv` and
    `glue_joint_template.csv`, run `bridgesim lab --data validation/physical --json`:
    each specimen gets simulated-vs-measured errors and a 0-100 reality-gap score.

@@ -229,9 +229,10 @@ const plat=new THREE.Mesh(new THREE.BoxGeometry(1420,15,500),new THREE.MeshStand
 const meshes=[];
 for(const m of D.meshes){const T=dec(m.T,Uint32Array),idx=dec(m.idx,Uint32Array),w8=dec(m.w,Uint8Array),o16=dec(m.off,Int16Array);
  const w=new Float32Array(w8.length);for(let i=0;i<w8.length;i++)w[i]=w8[i]/255;const off=new Float32Array(o16.length);for(let i=0;i<o16.length;i++)off[i]=o16[i]/100;
- const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3*m.nv),3));g.setIndex(new THREE.BufferAttribute(T,1));g.computeVertexNormals();
- const mat=new THREE.MeshStandardMaterial({color:D.colours[m.kind]||'#c8955a',roughness:.85,flatShading:true});
- const o=new THREE.Mesh(g,mat);scene.add(o);meshes.push({o,g,idx,w,off,nv:m.nv,body:m.body,base:new THREE.Color(D.colours[m.kind]||'#c8955a')});}
+ const Tw=new Uint32Array(T.length);Tw.set(T);
+ const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3*m.nv),3));g.setIndex(new THREE.BufferAttribute(Tw,1));g.computeVertexNormals();
+ const mat=new THREE.MeshStandardMaterial({color:D.colours[m.kind]||'#c8955a',roughness:.85,flatShading:true,side:THREE.DoubleSide});
+ const o=new THREE.Mesh(g,mat);scene.add(o);meshes.push({o,g,idx,w,off,T,Tw,rest:null,nv:m.nv,body:m.body,base:new THREE.Color(D.colours[m.kind]||'#c8955a')});}
 // plate + jack
 const ph=D.plate.half;const plate=new THREE.Mesh(new THREE.BoxGeometry(2*ph[0],2*ph[1],2*ph[2]),new THREE.MeshStandardMaterial({color:0xb0302a,metalness:.5,roughness:.4}));scene.add(plate);
 const jack=new THREE.Mesh(new THREE.CylinderGeometry(D.jack_r,D.jack_r,600,32),new THREE.MeshStandardMaterial({color:0x9aa0a8,metalness:.8,roughness:.3}));scene.add(jack);
@@ -249,8 +250,16 @@ function nodes(f){const s=D.scale;for(let i=0;i<nN;i++){P[3*i]=X[3*i]+U[(f*nN+i)
  const r=R,o=9*i;r[o]=1-2*(y*y+z*z);r[o+1]=2*(x*y-z*w);r[o+2]=2*(x*z+y*w);r[o+3]=2*(x*y+z*w);r[o+4]=1-2*(x*x+z*z);r[o+5]=2*(y*z-x*w);r[o+6]=2*(x*z-y*w);r[o+7]=2*(y*z+x*w);r[o+8]=1-2*(x*x+y*y);}}
 function tp(n,ox,oy,oz,out,k){const o=9*n;out[k]=P[3*n]+R[o]*ox+R[o+1]*oy+R[o+2]*oz;out[k+1]=P[3*n+1]+R[o+3]*ox+R[o+4]*oy+R[o+5]*oz;out[k+2]=P[3*n+2]+R[o+6]*ox+R[o+7]*oy+R[o+8]*oz;}
 const tmp=new Float32Array(3);
+function skin(m){const pos=m.g.attributes.position.array;for(let v=0;v<m.nv;v++){let x=0,y=0,z=0;for(let k=0;k<3;k++){const w=m.w[3*v+k];if(w<=0)continue;const n=m.idx[3*v+k],o=(3*v+k)*3;tp(n,m.off[o],m.off[o+1],m.off[o+2],tmp,0);x+=w*tmp[0];y+=w*tmp[1];z+=w*tmp[2];}pos[3*v]=x;pos[3*v+1]=y;pos[3*v+2]=z;}return pos;}
+function edge(p,a,b){const dx=p[3*a]-p[3*b],dy=p[3*a+1]-p[3*b+1],dz=p[3*a+2]-p[3*b+2];return Math.sqrt(dx*dx+dy*dy+dz*dz);}
+// a body that breaks apart: its skin triangles would stretch between the pieces; a
+// triangle stretched more than 1.6x (+2 mm) is torn and not drawn
+function tear(m,pos){const T=m.T,Tw=m.Tw,r=m.rest;let k=0;for(let t=0;t<T.length;t+=3){const a=T[t],b=T[t+1],c=T[t+2];
+  if(edge(pos,a,b)>1.6*r[t]+2||edge(pos,b,c)>1.6*r[t+1]+2||edge(pos,c,a)>1.6*r[t+2]+2)continue;Tw[k++]=a;Tw[k++]=b;Tw[k++]=c;}
+ m.g.setDrawRange(0,k);m.g.index.needsUpdate=true;}
+nodes(0);for(const m of meshes){const pos=skin(m),T=m.T,r=new Float32Array(T.length);for(let t=0;t<T.length;t+=3){r[t]=edge(pos,T[t],T[t+1]);r[t+1]=edge(pos,T[t+1],T[t+2]);r[t+2]=edge(pos,T[t+2],T[t]);}m.rest=r;}
 function show(f){nodes(f);
- for(const m of meshes){const pos=m.g.attributes.position.array;for(let v=0;v<m.nv;v++){let x=0,y=0,z=0;for(let k=0;k<3;k++){const w=m.w[3*v+k];if(w<=0)continue;const n=m.idx[3*v+k],o=(3*v+k)*3;tp(n,m.off[o],m.off[o+1],m.off[o+2],tmp,0);x+=w*tmp[0];y+=w*tmp[1];z+=w*tmp[2];}pos[3*v]=x;pos[3*v+1]=y;pos[3*v+2]=z;}
+ for(const m of meshes){const pos=skin(m);tear(m,pos);
   m.g.attributes.position.needsUpdate=true;m.g.computeVertexNormals();const st=BS[f*D.nb+m.body];m.o.material.color.copy(st==2?new THREE.Color('#d0342c'):st==1?new THREE.Color('#e0a800'):m.base);}
  for(let i=0;i<D.nG;i++){tp(gN[i],gO[3*i],gO[3*i+1],gO[3*i+2],gpos,3*i);const d=gD[f*D.nG+i]/255;gcol[3*i]=0.2+0.8*d;gcol[3*i+1]=0.8*(1-d)+0.1;gcol[3*i+2]=0.2;}
  gg.attributes.position.needsUpdate=true;gg.attributes.color.needsUpdate=true;

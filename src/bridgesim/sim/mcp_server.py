@@ -166,27 +166,30 @@ def build_server():
     def crush_bridge(cad_path: str, overrides_yaml: str = "", seed: int = 0,
                      fidelity: str = "standard", out_dir: str = "", material: str = "",
                      up_axis: str = "y", span_axis: str = "x", units: str = "",
-                     strict: bool = False, rate_check: bool = False) -> str:
+                     strict: bool = False, rate_check: bool = False,
+                     brief: bool = True) -> str:
         """Simulate the Troitsky crushing test (rulebook §12.5) on the CAD bridge
         (blocking; minutes). Returns JSON with Fu_kgf, failure_mode, failure_sequence,
         curve, quality (check quality.trustworthy) and artifacts (replay.html, events.csv
         when out_dir is given). fidelity: quick (screening), standard, fine. strict: make
         overrides that have no effect an error. rate_check: crush again at half speed and
-        report the change of F_u (quality.rate_check; 3x the time). Use start_crush
-        instead if your tool calls time out."""
+        report the change of F_u (quality.rate_check; 3x the time). brief (default):
+        without the curve and the event log, which are in out_dir's curve.csv and
+        events.csv (brief=false returns them inline, ~200 kB). Use start_crush instead
+        if your tool calls time out."""
         rep, _ = study.crush(cad_path, _yaml_or_none(overrides_yaml),
                              material or "popsicle_birch", seed=None if seed < 0 else seed,
                              out_dir=out_dir or None, fidelity=fidelity,
                              units=units or None, up=up_axis, span=span_axis,
                              strict=strict, rate_check=rate_check)
-        return rep.model_dump_json()
+        return json.dumps(study.brief(rep)) if brief else rep.model_dump_json()
 
     @srv.tool()
     @_safe
     def start_crush(cad_path: str, out_dir: str, overrides_yaml: str = "", seed: int = 0,
                     fidelity: str = "standard", material: str = "", up_axis: str = "y",
                     span_axis: str = "x", units: str = "", strict: bool = False,
-                    rate_check: bool = False) -> str:
+                    rate_check: bool = False, brief: bool = True) -> str:
         """Start a crush simulation in the background and return at once. Poll
         job_status(out_dir) until status is 'done' (report included) or 'failed' (error
         included)."""
@@ -202,6 +205,8 @@ def build_server():
             cmd += ["--strict"]
         if rate_check:
             cmd += ["--rate-check"]
+        if brief:
+            cmd += ["--brief"]
         if overrides_yaml:
             out.mkdir(parents=True, exist_ok=True)
             (out / "overrides.yaml").write_text(overrides_yaml, encoding="utf-8")
@@ -250,6 +255,26 @@ def build_server():
             if y:
                 (out / f"overrides_{tag}.yaml").write_text(y, encoding="utf-8")
                 cmd += [f"--overrides-{tag}", str(out / f"overrides_{tag}.yaml")]
+        if material:
+            cmd += ["--material", material]
+        return _start(cmd, out)
+
+    @srv.tool()
+    @_safe
+    def start_sensitivity(cad_path: str, out_dir: str, overrides_yaml: str = "",
+                          rel: float = 0.2, fidelity: str = "quick", material: str = "") -> str:
+        """Which material values move F_u most? Starts, in the background, crushes with
+        each placeholder value lowered and raised by rel; the report (job_status) ranks
+        them and lists what to measure first."""
+        if not Path(cad_path).exists():
+            raise FileNotFoundError(f"no such file: {cad_path}")
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        cmd = [sys.executable, "-m", "bridgesim.cli", "sensitivity", cad_path, "--rel",
+               str(rel), "--fidelity", fidelity, "--json"]
+        if overrides_yaml:
+            (out / "overrides.yaml").write_text(overrides_yaml, encoding="utf-8")
+            cmd += ["--overrides", str(out / "overrides.yaml")]
         if material:
             cmd += ["--material", material]
         return _start(cmd, out)

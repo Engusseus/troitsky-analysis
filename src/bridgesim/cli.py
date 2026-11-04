@@ -360,6 +360,10 @@ def crush(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = N
               "--rate-check", help="Crush again at half the jack speed and report how "
                                    "much F_u changes (evidence the test is slow enough)")
           ] = False,
+          brief: Annotated[bool, typer.Option(
+              "--brief", help="With --json: leave out the curve and the event log (they "
+                              "are in curve.csv / events.csv with --out); a few kB")
+          ] = False,
           json_out: JsonOpt = False) -> None:
     """Simulate the §12.5 crushing test of a CAD bridge (nonlinear, dynamic): joints
     break, members buckle and crack, the bridge collapses. Writes an interactive 3D
@@ -374,7 +378,12 @@ def crush(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = N
         fidelity=fidelity, units=units, up=up_axis, span=span_axis, strict=strict,
         rate_check=rate_check))
     if json_out:
-        typer.echo(rep.model_dump_json(indent=2))
+        if brief:
+            import json as _json
+
+            typer.echo(_json.dumps(study.brief(rep), indent=2))
+        else:
+            typer.echo(rep.model_dump_json(indent=2))
         return
     typer.echo(f"\n{rep.file}: predicted ultimate load F_u = {rep.Fu_kgf:.1f} kgf "
                f"({rep.Fu_N:.0f} N), {rep.failure_mode}")
@@ -526,9 +535,41 @@ def ab(cad_a: CadArg, cad_b: Annotated[Path, typer.Argument(
 
 
 @app.command()
+def sensitivity(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = None,
+                rel: Annotated[float, typer.Option(help="Relative change of each value")]
+                = 0.2,
+                seed: Annotated[int, typer.Option(help="Seed (-1: perfect bridge)")] = 0,
+                fidelity: Annotated[str, typer.Option(help="quick, standard, fine")]
+                = "quick",
+                processes: Annotated[int | None, typer.Option(
+                    help="Crushes in parallel (default: one per 2 CPU cores)")] = None,
+                units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
+                json_out: JsonOpt = False) -> None:
+    """Which material values move F_u most? Crushes the bridge with each one lowered
+    and raised: the measurements that would narrow the prediction most."""
+    from bridgesim.sim import study
+
+    rep = _guard(json_out, lambda: study.sensitivity(
+        cad, overrides, material or "popsicle_birch", rel=rel,
+        seed=None if seed < 0 else seed, fidelity=fidelity, processes=processes,
+        progress=_progress, units=units, up=up_axis, span=span_axis))
+    if json_out:
+        typer.echo(rep.model_dump_json(indent=2))
+        return
+    typer.echo(f"F_u = {rep.Fu_base_kgf:.1f} kgf; each value varied by +-{rep.rel:.0%}:")
+    for it in rep.items:
+        typer.echo(f"  {it.param:28s} {it.Fu_low_kgf:8.1f} .. {it.Fu_high_kgf:8.1f} kgf  "
+                   f"elasticity {it.elasticity:+.2f}  ({it.source})")
+    if rep.measure_first:
+        typer.echo("Measure first:")
+        for m_ in rep.measure_first:
+            typer.echo(f"  - {m_}")
+
+
+@app.command()
 def schema(name: Annotated[str, typer.Argument(help="inspect, crush, reality_gap, lab, "
-                                                     "montecarlo, design_comparison or "
-                                                     "question")]) -> None:
+                                                     "montecarlo, design_comparison, "
+                                                     "sensitivity or question")]) -> None:
     """Print the JSON Schema of a report (for scripts and AI agents)."""
     import json as _json
 
