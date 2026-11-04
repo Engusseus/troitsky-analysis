@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -76,7 +77,19 @@ def _start(cmd: list[str], out: Path) -> str:
                        "poll": "job_status(out_dir) every 30-60 s"})
 
 
+def _progress_of(lines: list[str]) -> tuple[float | None, str]:
+    """Last progress line '  42% jack 3.1 mm, ...' -> (0.42, 'jack 3.1 mm, ...')."""
+    for ln in reversed(lines):
+        mt = re.match(r"\s*(\d+)%\s+(.*)", ln)
+        if mt:
+            return int(mt.group(1)) / 100, mt.group(2)
+    return None, lines[-1] if lines else ""
+
+
 def job_status_impl(out_dir: str) -> str:
+    """{"status": running | done | failed | unknown, "progress": 0..1 or null,
+    "message": last progress message, "report": the report when done, "error": the error
+    object when failed}."""
     out = Path(out_dir)
     log = (out / "progress.log").read_text(encoding="utf-8", errors="replace") \
         if (out / "progress.log").exists() else ""
@@ -88,22 +101,28 @@ def job_status_impl(out_dir: str) -> str:
     if proc is None and (out / "status.json").exists():
         code = json.loads((out / "status.json").read_text()).get("exit_code")
     done_json = res.strip().startswith("{") and res.strip().endswith("}")
+    frac, msg = _progress_of(lines)
+
+    def reply(status, **kw):
+        return json.dumps({"status": status, "progress": frac, "message": msg,
+                           "report": None, "error": None} | kw)
+
     if code is None and proc is None and not done_json:
-        return json.dumps({"status": "unknown", "error": "no job started by this server "
-                           "in that folder", "progress": lines[-1] if lines else ""})
+        return reply("unknown", error={"error": "no job was started by this server in that "
+                                                "folder", "kind": "bad_input"})
     if code is None:
-        return json.dumps({"status": "running", "progress": lines[-1] if lines else ""})
+        return reply("running")
     (out / "status.json").write_text(json.dumps({"exit_code": code}))
     if code == 0 and done_json:
-        return json.dumps({"status": "done", "report": json.loads(res)})
+        return reply("done", progress=1.0, report=json.loads(res))
     err = None
     for ln in reversed(lines):
         if ln.startswith("{") and '"error"' in ln:
             with contextlib.suppress(json.JSONDecodeError):
                 err = json.loads(ln)
             break
-    return json.dumps({"status": "failed", "exit_code": code,
-                       "error": err or {"error": "\n".join(lines[-20:])}})
+    return reply("failed", exit_code=code,
+                 error=err or {"error": "\n".join(lines[-20:]), "kind": "simulation_failed"})
 
 
 def build_server():
@@ -146,23 +165,28 @@ def build_server():
     @_safe
     def crush_bridge(cad_path: str, overrides_yaml: str = "", seed: int = 0,
                      fidelity: str = "standard", out_dir: str = "", material: str = "",
-                     up_axis: str = "y", span_axis: str = "x", units: str = "") -> str:
+                     up_axis: str = "y", span_axis: str = "x", units: str = "",
+                     strict: bool = False, rate_check: bool = False) -> str:
         """Simulate the Troitsky crushing test (rulebook §12.5) on the CAD bridge
         (blocking; minutes). Returns JSON with Fu_kgf, failure_mode, failure_sequence,
         curve, quality (check quality.trustworthy) and artifacts (replay.html, events.csv
-        when out_dir is given). fidelity: quick (screening), standard, fine. Use
-        start_crush instead if your tool calls time out."""
+        when out_dir is given). fidelity: quick (screening), standard, fine. strict: make
+        overrides that have no effect an error. rate_check: crush again at half speed and
+        report the change of F_u (quality.rate_check; 3x the time). Use start_crush
+        instead if your tool calls time out."""
         rep, _ = study.crush(cad_path, _yaml_or_none(overrides_yaml),
                              material or "popsicle_birch", seed=None if seed < 0 else seed,
                              out_dir=out_dir or None, fidelity=fidelity,
-                             units=units or None, up=up_axis, span=span_axis)
+                             units=units or None, up=up_axis, span=span_axis,
+                             strict=strict, rate_check=rate_check)
         return rep.model_dump_json()
 
     @srv.tool()
     @_safe
     def start_crush(cad_path: str, out_dir: str, overrides_yaml: str = "", seed: int = 0,
                     fidelity: str = "standard", material: str = "", up_axis: str = "y",
-                    span_axis: str = "x", units: str = "") -> str:
+                    span_axis: str = "x", units: str = "", strict: bool = False,
+                    rate_check: bool = False) -> str:
         """Start a crush simulation in the background and return at once. Poll
         job_status(out_dir) until status is 'done' (report included) or 'failed' (error
         included)."""
@@ -174,6 +198,10 @@ def build_server():
                "--span-axis", span_axis, "--json"]
         if units:
             cmd += ["--units", units]
+        if strict:
+            cmd += ["--strict"]
+        if rate_check:
+            cmd += ["--rate-check"]
         if overrides_yaml:
             out.mkdir(parents=True, exist_ok=True)
             (out / "overrides.yaml").write_text(overrides_yaml, encoding="utf-8")

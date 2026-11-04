@@ -17,6 +17,10 @@ wood:
   f_c90_MPa: {value: 5.0, source: assumed, note: "Crushing across the grain."}
   G_f_N_per_mm: {value: 3.0, source: assumed,
                  note: "Fracture energy of a stick breaking in tension along the grain (sets how suddenly it snaps)."}
+  G_f90_N_per_mm: {value: 0.3, source: assumed,
+                   note: "Fracture energy of a ply parting across the grain (sticks separating edge to edge, or splitting along the grain). Wood: 0.2-0.5 N/mm along the grain (TL/RL crack systems)."}
+  G_v_N_per_mm: {value: 1.0, source: assumed,
+                 note: "Fracture energy of a ply failing in shear along the grain (mode II). Wood: 0.5-2 N/mm."}
   crush_softening: {value: 0.3, source: assumed,
                     note: "Compressive strength lost after crushing (0.3 = strength drops to 70 % of f_c)."}
 

@@ -228,14 +228,42 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, Wt
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
-def _shell_one(e, x, R, sn, K, E0, P, Rr, t, ang, lim, matrix, dmg, update, fe, me, beta,
-               dt, prev, wd, wR, wth):
+def _soft(r, rf):
+    """Damage of a linear-softening mode at history ratio r = strain / onset strain."""
+    if r <= 1.0:
+        return 0.0
+    d = rf / (rf - 1.0) * (1.0 - 1.0 / r)
+    return 1.0 if d > 1.0 else d
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
+def _plateau(r, rc):
+    """Secant damage of a crushing mode: the stress falls from the strength to the plateau
+    rc x strength over one more onset strain, then stays there."""
+    if r <= 1.0:
+        return 0.0
+    u = r - 1.0
+    if u > 1.0:
+        u = 1.0
+    return 1.0 - (1.0 - (1.0 - rc) * u) / r
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
+def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hist, dmg,
+               gone, update, fe, me, beta, dt, prev, wd, wR, wth, ws):
     d = wd[e]
     Rl = wR[e]
     th = wth[e]
+    w = ws[e]
     n0 = sn[e, 0]
     n1 = sn[e, 1]
     n2 = sn[e, 2]
+    for a in range(3):
+        for c in range(3):
+            fe[e, a, c] = 0.0
+            me[e, a, c] = 0.0
+    if gone[e]:
+        return
     c0 = (x[n0, 0] + x[n1, 0] + x[n2, 0]) / 3.0
     c1 = (x[n0, 1] + x[n1, 1] + x[n2, 1]) / 3.0
     c2 = (x[n0, 2] + x[n1, 2] + x[n2, 2]) / 3.0
@@ -281,93 +309,175 @@ def _shell_one(e, x, R, sn, K, E0, P, Rr, t, ang, lim, matrix, dmg, update, fe, 
         d[6 * a + 3] = th[0]
         d[6 * a + 4] = th[1]
         d[6 * a + 5] = th[2]
-    if update and dmg[e] < 1.0:
-        # erosion: an element whose corners have turned > 0.5 rad relative to it is
-        # broken; it is removed (its local rotations would leave the range where the
-        # small-strain element means anything)
+    if update:
+        # erosion: an element whose corners have turned > 0.5 rad relative to it is torn
+        # apart; it is removed (the small-strain element means nothing there)
         for a in range(3):
             r2 = d[6 * a + 3] ** 2 + d[6 * a + 4] ** 2 + d[6 * a + 5] ** 2
             if r2 > 0.25:
+                gone[e] = True
                 dmg[e] = 1.0
-    if update and dmg[e] < 1.0:
-        e0 = 0.0
-        e1_ = 0.0
-        e2_ = 0.0
-        k0 = 0.0
-        k1 = 0.0
-        k2 = 0.0
-        for j in range(18):
-            dj = d[j]
-            e0 += Rr[e, 0, j] * dj
-            e1_ += Rr[e, 1, j] * dj
-            e2_ += Rr[e, 2, j] * dj
-            k0 += Rr[e, 3, j] * dj
-            k1 += Rr[e, 4, j] * dj
-            k2 += Rr[e, 5, j] * dj
-        fi = 0.0
-        for zs in range(2):
-            zf = -0.5 if zs == 0 else 0.5
-            exx = e0 + zf * t[e] * k0
-            eyy = e1_ + zf * t[e] * k1
-            gxy = e2_ + zf * t[e] * k2
-            for kk in range(2):
-                an = ang[e, kk]
-                if an != an:
-                    continue
-                ar = math.radians(an)
-                cs = math.cos(ar)
-                s_ = math.sin(ar)
-                p1 = exx * cs * cs + eyy * s_ * s_ + gxy * cs * s_
-                p2 = exx * s_ * s_ + eyy * cs * cs - gxy * cs * s_
-                g12 = 2.0 * (eyy - exx) * cs * s_ + gxy * (cs * cs - s_ * s_)
-                r1 = p1 / lim[e, 0] if p1 > 0 else -p1 / lim[e, 1]
-                r3 = abs(g12) / lim[e, 4]
-                r = r1 if r1 > r3 else r3
-                if matrix[e]:
-                    r2 = p2 / lim[e, 2] if p2 > 0 else -p2 / lim[e, 3]
-                    if r2 > r:
-                        r = r2
-                if r > fi:
-                    fi = r
-        if fi >= 1.0:
-            # cracking develops over a small strain range (energy released gradually)
-            target = 2.0 * (fi - 1.0) + 0.1
-            if target > 1.0:
-                target = 1.0
-            if target > dmg[e]:
-                dmg[e] = target
-    sc = 1.0 - dmg[e]
-    if beta > 0.0:
-        for j in range(18):
-            dj = d[j]
-            d[j] = dj + beta * (dj - prev[e, j]) / dt
-            if update:
-                prev[e, j] = dj
-    elif update:
-        for j in range(18):
-            prev[e, j] = d[j]
+                return
+    # dofs for the stresses: displacement + beta x rate (stiffness-proportional damping)
+    for j in range(18):
+        dj = d[j]
+        w[j] = dj + beta * (dj - prev[e, j]) / dt if beta > 0.0 else dj
+        if update:
+            prev[e, j] = dj
+    # membrane strains (constant) and curvatures at the 3 in-plane points; [i] from the
+    # displacement (damage history), [18 + i] from displacement + damping (stresses)
+    for i in range(3):
+        s0 = 0.0
+        s1 = 0.0
+        for a in range(3):
+            s0 += Bm[e, i, 2 * a] * d[6 * a] + Bm[e, i, 2 * a + 1] * d[6 * a + 1]
+            s1 += Bm[e, i, 2 * a] * w[6 * a] + Bm[e, i, 2 * a + 1] * w[6 * a + 1]
+        w[18 + i] = s0
+        w[21 + i] = s1
+    for g in range(3):
+        for i in range(3):
+            s0 = 0.0
+            s1 = 0.0
+            for a in range(3):
+                for k in range(3):
+                    bb = Bb[e, g, i, 3 * a + k]
+                    s0 += bb * d[6 * a + 2 + k]
+                    s1 += bb * w[6 * a + 2 + k]
+            w[24 + 3 * g + i] = s0
+            w[33 + 3 * g + i] = s1
+    for k in range(42, 60):
+        w[k] = 0.0
+    q11 = Q[e, 0]
+    q22 = Q[e, 1]
+    q12 = Q[e, 2]
+    q66 = Q[e, 3]
+    nlay = lay.shape[1]
+    crack = 0.0
+    all_open = True
+    for g in range(3):
+        mincr = 1.0
+        for ll in range(nl[e]):
+            zb = lay[e, ll, 0]
+            zt = lay[e, ll, 1]
+            c = lay[e, ll, 2]
+            s = lay[e, ll, 3]
+            hh = zt - zb
+            cc2 = c * c
+            ss2 = s * s
+            cs = c * s
+            for q in range(3):
+                if q == 0:
+                    z = zb
+                    wq = hh / 6.0
+                elif q == 1:
+                    z = 0.5 * (zb + zt)
+                    wq = 4.0 * hh / 6.0
+                else:
+                    z = zt
+                    wq = hh / 6.0
+                exx = w[18] + z * w[24 + 3 * g]
+                eyy = w[19] + z * w[25 + 3 * g]
+                gxy = w[20] + z * w[26 + 3 * g]
+                e1 = exx * cc2 + eyy * ss2 + gxy * cs
+                e2 = exx * ss2 + eyy * cc2 - gxy * cs
+                g12 = 2.0 * (eyy - exx) * cs + gxy * (cc2 - ss2)
+                exx = w[21] + z * w[33 + 3 * g]
+                eyy = w[22] + z * w[34 + 3 * g]
+                gxy = w[23] + z * w[35 + 3 * g]
+                e1t = exx * cc2 + eyy * ss2 + gxy * cs
+                e2t = exx * ss2 + eyy * cc2 - gxy * cs
+                g12t = 2.0 * (eyy - exx) * cs + gxy * (cc2 - ss2)
+                p = (g * nlay + ll) * 3 + q
+                if update:
+                    if e1 > 0.0:
+                        r = e1 / lim[e, 0]
+                        if r > hist[e, p, 0]:
+                            hist[e, p, 0] = r
+                    else:
+                        r = -e1 / lim[e, 1]
+                        if r > hist[e, p, 1]:
+                            hist[e, p, 1] = r
+                    if e2 > 0.0:
+                        r = e2 / lim[e, 2]
+                        if r > hist[e, p, 2]:
+                            hist[e, p, 2] = r
+                    else:
+                        r = -e2 / lim[e, 3]
+                        if r > hist[e, p, 3]:
+                            hist[e, p, 3] = r
+                    r = abs(g12) / lim[e, 4]
+                    if r > hist[e, p, 4]:
+                        hist[e, p, 4] = r
+                hft = hist[e, p, 0]
+                hmt = hist[e, p, 2]
+                hs = hist[e, p, 4]
+                dft = _soft(hft, rf[e, 0])
+                dmt = _soft(hmt, rf[e, 1])
+                ds = _soft(hs, rf[e, 2])
+                d1 = dft if e1t >= 0.0 else _plateau(hist[e, p, 1], rc)
+                d2 = dmt if e2t >= 0.0 else _plateau(hist[e, p, 3], 1.0)
+                dsh = 1.0 - (1.0 - ds) * (1.0 - dft) * (1.0 - dmt)
+                cr = dft
+                if dmt > cr:
+                    cr = dmt
+                if ds > cr:
+                    cr = ds
+                if cr < mincr:
+                    mincr = cr
+                if all_open:
+                    op = hft / rf[e, 0]
+                    if hmt / rf[e, 1] > op:
+                        op = hmt / rf[e, 1]
+                    if hs / rf[e, 2] > op:
+                        op = hs / rf[e, 2]
+                    if op < 2.0:
+                        all_open = False
+                k1 = 1.0 - d1
+                k2 = 1.0 - d2
+                sg1 = k1 * q11 * e1t + k1 * k2 * q12 * e2t
+                sg2 = k1 * k2 * q12 * e1t + k2 * q22 * e2t
+                t12 = (1.0 - dsh) * q66 * g12t
+                sxx = sg1 * cc2 + sg2 * ss2 - 2.0 * t12 * cs
+                syy = sg1 * ss2 + sg2 * cc2 + 2.0 * t12 * cs
+                txy = (sg1 - sg2) * cs + t12 * (cc2 - ss2)
+                w[42 + 3 * g] += wq * sxx
+                w[43 + 3 * g] += wq * syy
+                w[44 + 3 * g] += wq * txy
+                w[51 + 3 * g] += wq * z * sxx
+                w[52 + 3 * g] += wq * z * syy
+                w[53 + 3 * g] += wq * z * txy
+        if mincr > crack:
+            crack = mincr
+    if update:
+        if crack > dmg[e]:
+            dmg[e] = crack
+        if all_open and nl[e] > 0:
+            gone[e] = True  # a wide-open crack through every ply: the element is cut
+    ar = area[e]
+    na0 = (w[42] + w[45] + w[48]) / 3.0
+    na1 = (w[43] + w[46] + w[49]) / 3.0
+    na2 = (w[44] + w[47] + w[50]) / 3.0
+    tzm = (w[5] + w[11] + w[17]) / 3.0
     for a in range(3):
-        f0 = 0.0
-        f1 = 0.0
+        f0 = ar * (Bm[e, 0, 2 * a] * na0 + Bm[e, 1, 2 * a] * na1 + Bm[e, 2, 2 * a] * na2)
+        f1 = ar * (Bm[e, 0, 2 * a + 1] * na0 + Bm[e, 1, 2 * a + 1] * na1
+                   + Bm[e, 2, 2 * a + 1] * na2)
         f2 = 0.0
         m0 = 0.0
         m1 = 0.0
-        m2 = 0.0
-        r0 = 6 * a
-        for j in range(18):
-            dj = d[j]
-            f0 += K[e, r0, j] * dj
-            f1 += K[e, r0 + 1, j] * dj
-            f2 += K[e, r0 + 2, j] * dj
-            m0 += K[e, r0 + 3, j] * dj
-            m1 += K[e, r0 + 4, j] * dj
-            m2 += K[e, r0 + 5, j] * dj
-        f0 *= sc
-        f1 *= sc
-        f2 *= sc
-        m0 *= sc
-        m1 *= sc
-        m2 *= sc
+        for g in range(3):
+            mx = w[51 + 3 * g]
+            my = w[52 + 3 * g]
+            mxy = w[53 + 3 * g]
+            f2 += Bb[e, g, 0, 3 * a] * mx + Bb[e, g, 1, 3 * a] * my + Bb[e, g, 2, 3 * a] * mxy
+            m0 += (Bb[e, g, 0, 3 * a + 1] * mx + Bb[e, g, 1, 3 * a + 1] * my
+                   + Bb[e, g, 2, 3 * a + 1] * mxy)
+            m1 += (Bb[e, g, 0, 3 * a + 2] * mx + Bb[e, g, 1, 3 * a + 2] * my
+                   + Bb[e, g, 2, 3 * a + 2] * mxy)
+        f2 *= ar / 3.0
+        m0 *= ar / 3.0
+        m1 *= ar / 3.0
+        m2 = kd[e] * (w[6 * a + 5] - tzm)
         fe[e, a, 0] = ax0 * f0 + y0 * f1 + z0 * f2
         fe[e, a, 1] = ax1 * f0 + y1 * f1 + z1 * f2
         fe[e, a, 2] = ax2 * f0 + y2 * f1 + z2 * f2
@@ -377,12 +487,12 @@ def _shell_one(e, x, R, sn, K, E0, P, Rr, t, ang, lim, matrix, dmg, update, fe, 
 
 
 @njit(cache=True, fastmath=True, parallel=True, error_model="numpy")
-def shell_kernel(x, R, sn, K, E0, P, Rr, t, ang, lim, matrix, dmg, F, Mo, update, fe, me,
-                 beta, dt, prev, wd, wR, wth):
+def shell_kernel(x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hist, dmg,
+                 gone, F, Mo, update, fe, me, beta, dt, prev, wd, wR, wth, ws):
     ns = sn.shape[0]
     for e in prange(ns):
-        _shell_one(e, x, R, sn, K, E0, P, Rr, t, ang, lim, matrix, dmg, update, fe, me,
-                   beta, dt, prev, wd, wR, wth)
+        _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hist, dmg,
+                   gone, update, fe, me, beta, dt, prev, wd, wR, wth, ws)
     for e in range(ns):
         for a in range(3):
             nd = sn[e, a]
@@ -482,6 +592,12 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
             if update:
                 dmax[i] = dmx
                 dd[i] = d
+            # a debonded pair that has turned, parted or passed through: the two points
+            # no longer face each other, so the pair stops acting as a contact
+            if d >= 0.999 and (nn < 1.6 or dn < -1.0 or dn * dn + s2 > 9.0):
+                if update:
+                    alive[i] = False
+                continue
         tn = (1.0 - d) * kn * dn if dn > 0.0 else kn * dn
         rn = 0.0
         for k in range(3):
@@ -550,7 +666,7 @@ def cable_kernel(x, R, a_node, a_r0, ka, kb, L0, EA, Fb, alive, F, Mo, update):
 
 @njit(cache=True, fastmath=True, error_model="numpy")
 def platform_kernel(x, R, a_node, a_r0, att, table_y, kk_, mu, anchor, touch, F, Mo, update,
-                    vel, omg, cdamp, loose):
+                    vel, omg, cdamp, loose, fmax):
     p = np.empty(3)
     arm = np.empty(3)
     f = np.empty(3)
@@ -570,6 +686,8 @@ def platform_kernel(x, R, a_node, a_r0, att, table_y, kk_, mu, anchor, touch, F,
         # contact damping on the approach speed (never pulls the point down)
         vy = vel[nd, 1] + omg[nd, 2] * arm[0] - omg[nd, 0] * arm[2]
         fn = k * pen - cdamp[i] * vy
+        if fn > fmax[i]:
+            fn = fmax[i]  # the wood crushes locally (bearing)
         if fn < 0.0:
             fn = 0.0
         f0 = -k * (p[0] - anchor[i, 0])
@@ -593,7 +711,7 @@ def platform_kernel(x, R, a_node, a_r0, att, table_y, kk_, mu, anchor, touch, F,
 
 @njit(cache=True, fastmath=True, error_model="numpy")
 def plate_kernel(x, R, a_node, a_r0, att, P, h, kk_, mu, anchor, touch, F, Mo, update,
-                 vel, omg, cdamp, loose):
+                 vel, omg, cdamp, loose, fmax):
     p = np.empty(3)
     arm = np.empty(3)
     loc = np.empty(3)
@@ -643,6 +761,8 @@ def plate_kernel(x, R, a_node, a_r0, att, P, h, kk_, mu, anchor, touch, F, Mo, u
             gn = R[P, j, 0] * nl[0] + R[P, j, 1] * nl[1] + R[P, j, 2] * nl[2]
             vr += (vb_ - vp_) * gn
         fn = k * best - cdamp[i] * vr
+        if fn > fmax[i]:
+            fn = fmax[i]  # the wood crushes locally under the plate (bearing)
         if fn < 0.0:
             fn = 0.0
         rn = 0.0

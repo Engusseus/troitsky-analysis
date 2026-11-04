@@ -179,6 +179,85 @@ def test_compiled_kernels_match_numpy():
     assert np.abs(Mo - Mo2).max() <= 1e-9 * max(1.0, np.abs(Mo2).max())
 
 
+def test_compiled_shell_damage_matches_numpy():
+    """Large strains: the layered shell damage histories evolve identically."""
+    from bridgesim.sim.idealize import build_model
+
+    pytest.importorskip("numba")
+    m = build_model(simple_beam_bridge(), MAT, SP, seed=0)
+    s = S.Settings(dt=3e-6)
+    rng = np.random.default_rng(2)
+    st = S.initial_state(m, 1e4)
+    st2 = S.initial_state(m, 1e4)
+    F, Mo = np.zeros((m.n_nodes, 3)), np.zeros((m.n_nodes, 3))
+    F2, Mo2 = F.copy(), Mo.copy()
+    for _ in range(3):
+        st.x = m.X + rng.normal(0, 0.15, st.x.shape)
+        st.R = S.expmap(rng.normal(0, 0.01, (m.n_nodes, 3)))
+        st2.x, st2.R = st.x.copy(), st.R.copy()
+        S.internal_and_contact(m, st, s, F, Mo)
+        S.internal_and_contact_numpy(m, st2, s, F2, Mo2)
+    assert st.s_hist.max() > 1.0  # some points are past their strength
+    assert (st.s_dmg > 0).any()
+    np.testing.assert_allclose(st.s_hist, st2.s_hist, rtol=1e-8, atol=1e-10)
+    np.testing.assert_allclose(st.s_dmg, st2.s_dmg, rtol=1e-8, atol=1e-10)
+    assert (st.s_gone == st2.s_gone).all()
+    assert np.abs(F - F2).max() <= 1e-8 * max(1.0, np.abs(F2).max())
+    assert np.abs(Mo - Mo2).max() <= 1e-8 * max(1.0, np.abs(Mo2).max())
+
+
+def test_shell_fracture_energy_is_mesh_independent():
+    """A plate strip pulled apart: same strength and same work of fracture (G_f W t) with
+    5 mm and 2.5 mm elements (crack-band regularised shell damage)."""
+    pytest.importorskip("numba")
+    W, t = 10.0, 2.0
+    ply = __import__("bridgesim.sim.materials", fromlist=["Ply"]).Ply.from_material(MAT, SP)
+    for h in (5.0, 2.5):
+        r = lab.shell_strip_tension(h, W=W, t=t)
+        work = float(np.trapezoid(r.force, r.disp))
+        assert r.peak == pytest.approx(0.95 * ply.f_t * W * t, rel=0.04), h
+        assert work == pytest.approx(SP["wood.G_f_N_per_mm"] * W * t, rel=0.1), h
+        assert r.force[-1] < 0.02 * r.peak  # completely broken
+
+
+def test_self_contact_stops_a_falling_member():
+    """A stick dropped across another (not touching at the start) comes to rest on it,
+    at the sum of their contact radii, instead of passing through."""
+    from bridgesim.sim import contact
+    from bridgesim.sim.crush import stable_dt
+    from bridgesim.sim.model import BodyInfo
+
+    pytest.importorskip("numba")
+    n = 9
+    s_ = np.linspace(-100, 100, n)
+    XA = np.c_[s_, np.zeros(n), np.zeros(n)]
+    XB = np.c_[np.zeros(n), np.full(n, 15.0), s_]  # crossing above, 3.7 mm clear
+    m = lab.blank_model(np.vstack([XA, XB]))
+    spec = lab.BeamSpec(b=10.0, d=10.0, E=10000.0)
+    lab.add_beam_line(m, list(range(n)), spec, up=(0, 1, 0))
+    lab.add_beam_line(m, list(range(n, 2 * n)), spec, up=(0, 1, 0))
+    m.b_body[n - 1:] = 1
+    m.node_body[n:] = 1
+    m.bodies = [BodyInfo(nm, "bar", "", "", 0.0, 0.0, section_mm=(10.0, 10.0))
+                for nm in ("A", "B")]
+    s = S.Settings(dt=1e-6)
+    s.dt, m.mass, m.rot_inertia, _ = stable_dt(m, s, 5e-6, 0.0)
+    st = S.initial_state(m, 1e12)
+    st.sc = contact.setup(m, m.X, m.mass, s.dt)
+    assert st.sc.n_active == 0
+    st.v[n:, 1] = -300.0  # B thrown down onto A
+    F, Mo = np.zeros((m.n_nodes, 3)), np.zeros((m.n_nodes, 3))
+    lowest = 1e9
+    for _ in range(int(0.1 / s.dt)):
+        S.step(m, st, s, F, Mo, grav_scale=1.0, alpha=20.0)
+        st.x[[0, n - 1]] = m.X[[0, n - 1]]  # A held at its ends
+        st.v[[0, n - 1]] = 0.0
+        lowest = min(lowest, st.x[n + n // 2, 1])
+    reach = 2 * math.sqrt(100.0 / math.pi)  # two capsules of the stick's area
+    assert lowest > reach - 1.5  # it did not go through
+    assert st.x[n + n // 2, 1] == pytest.approx(reach + st.x[n // 2, 1], abs=1.0)
+
+
 # --------------------------------------------------------------------- CAD + rules
 
 

@@ -24,6 +24,7 @@ from __future__ import annotations
 import difflib
 import fnmatch
 import math
+import re
 import zlib
 from dataclasses import dataclass, field
 
@@ -59,7 +60,9 @@ class Overrides:
     (bar/shell/block/cable/ignore), ``layup`` (any text bridgesim can parse, e.g.
     ``"6-ply UD"``), ``grain`` (``long``/``span``), ``glue_factor`` (multiplies the
     strength of every glue line on that body, e.g. 0.5 for a poorly glued part) and
-    ``strength_factor``. ``params`` overrides values of ``materials/simulation.yaml``
+    ``strength_factor``; ``butt_stagger_mm`` is the distance between the butt joints of
+    adjacent plies of a laminated member longer than one stick (0: no butt joints, e.g.
+    built from full-length strips). ``params`` overrides values of ``materials/simulation.yaml``
     (e.g. ``floss.strands: 6``). ``glue`` maps ``"Body A | Body B"`` to a factor.
     """
 
@@ -69,7 +72,7 @@ class Overrides:
     used: set = field(default_factory=set)  # patterns and glue keys that matched
 
     KINDS = ("bar", "shell", "block", "cable", "ignore")
-    FIELDS = ("kind", "layup", "grain", "glue_factor", "strength_factor")
+    FIELDS = ("kind", "layup", "grain", "glue_factor", "strength_factor", "butt_stagger_mm")
 
     def for_body(self, name: str) -> dict:
         out: dict = {}
@@ -401,6 +404,55 @@ class _Builder:
         return len(self.att_node) - 1
 
 
+def _group(name: str) -> str:
+    """Name without its side / copy suffix ('Top Chord (..) - Far' -> 'Top Chord (..)')."""
+    return re.sub(r"( - .*| \(mirror copy\).*| #\d+)$", "", name).strip()
+
+
+def _laminated_member(name: str, sh, lam, L: float, mat: Material, o: dict,
+                      questions: list) -> tuple[float, float]:
+    """Tension-strength factor and shear strength of a member laminated from sticks.
+
+    A ply longer than one stick has butt joints; its load goes round each joint through
+    the glue lines to the next plies. With joints staggered by ``s`` the weakest tension
+    path cuts k plies at their joints and shears the glue between them:
+    ``P_k = (n - k) P_ply + (k - 1) tau_g w s``, the smallest over k (k = 1 is the net
+    section, k = n a path through every joint). Bending shear between plies runs in the
+    glue lines, so the member's shear strength is at most the glue's."""
+    n = len(lam.angles)
+    f_v = mat.f_v_MPa.value
+    if sh.layup.kind != "laminate" or n < 2:
+        return 1.0, f_v
+    gf = float(o.get("glue_factor", 1.0))
+    tau = mat.glue.tau_g_MPa.value * max(gf, 1e-3)
+    fv = min(f_v, tau)
+    Ls = mat.stick.length_mm
+    if L <= 1.02 * Ls or o.get("butt_stagger_mm") == 0:
+        return 1.0, fv
+    s = float(o.get("butt_stagger_mm") or Ls / 2)  # brick pattern: half a stick
+    w = sh.Wp  # glue-line width (plies stacked through the thickness)
+    P_ply = lam.f_t * sh.Wp * sh.T / n
+    P = min((n - k) * P_ply + (k - 1) * tau * w * s for k in range(1, n + 1))
+    kt = min(1.0, P / (n * P_ply))
+    g = _group(name)
+    if o.get("butt_stagger_mm") is None and not any(
+            q["id"] == f"butt_joints:{g}" for q in questions):
+        questions.append({
+            "id": f"butt_joints:{g}", "body": name, "topic": "design", "severity": "check",
+            "question": f"'{g}' is {L:.0f} mm long, longer than one stick "
+                        f"({Ls:.0f} mm), so its plies have butt joints. How far apart are "
+                        "the joints of neighbouring plies? This sets its tension "
+                        f"strength: {kt:.0%} of a solid member with joints {s:.0f} mm "
+                        "apart; joints closer together let the glue between them shear "
+                        "first.",
+            "assumed": f"brick pattern: each ply's joints {s:.1f} mm (half a stick) from "
+                       "its neighbours'",
+            "answer_with": {"bodies": {g + "*": {
+                "butt_stagger_mm": "<distance between joints of neighbouring plies, mm; "
+                                   "0 if the plies have no joints>"}}}})
+    return kt, fv
+
+
 def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 ov: Overrides | None = None, seed: int | None = 0,
                 plate_offset_mm: tuple[float, float] = (0.0, 0.0),
@@ -495,8 +547,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     beams: dict[str, list] = {k: [] for k in ("i", "j", "L0", "E0", "fy", "fz", "fA", "E",
                                               "ft", "fc", "Gf", "GJ", "A", "fv", "Wt",
                                               "body")}
-    shells: dict[str, list] = {k: [] for k in ("nodes", "K", "E0", "P", "R", "t", "ang",
-                                               "lim", "matrix", "body")}
+    shells: dict[str, list] = {k: [] for k in ("nodes", "E0", "P", "t", "el", "body")}
+    n_snap = 0
     G_f = sp["wood.G_f_N_per_mm"]
 
     for bi, (b, sh) in enumerate(zip(bodies, shapes, strict=True)):
@@ -528,6 +580,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             s_v = (b.mesh.vertices - c) @ u
             s0, s1 = float(s_v.min()), float(s_v.max())
             L = s1 - s0
+            kt, fv_lam = _laminated_member(b.name, sh, lam, L, mat, o, questions)
             # uniform elements; joints attach to the nearest node through a rigid arm
             h = min(30.0 * mesh_scale, L / 4 * min(mesh_scale, 1.5)) if L >= 60 \
                 else max(L / 2, 1e-3)
@@ -573,12 +626,12 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 beams["fz"].append(FZ.ravel())
                 beams["fA"].append(fA)
                 beams["E"].append(lam.E_x * Ef)
-                beams["ft"].append(lam.f_t * Ef * Sf)
+                beams["ft"].append(lam.f_t * Ef * Sf * kt)
                 beams["fc"].append(lam.f_c * Ef * Sf)
                 beams["Gf"].append(G_f * Sf)
                 beams["GJ"].append(lam.G_xy * Ef * J)
                 beams["A"].append(A_true)
-                beams["fv"].append(mat.f_v_MPa.value * Sf)
+                beams["fv"].append(fv_lam * Sf)
                 beams["Wt"].append(J / dd)
                 beams["body"].append(bi)
                 info.beams.append(len(beams["i"]) - 1)
@@ -590,7 +643,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 for nn in (a_, b_):
                     bld.rot[nn] += me / 2 * (L0**2 / 12 + r2)
             del E0
-            info.E_eff_MPa, info.f_t_eff_MPa, info.f_c_eff_MPa = lam.E_x, lam.f_t, lam.f_c
+            info.E_eff_MPa, info.f_t_eff_MPa, info.f_c_eff_MPa = lam.E_x, lam.f_t * kt, lam.f_c
             info.section_mm = (round(Wp, 2), round(T, 2))
             info.length_mm = L
             info.nodes = list(ids)
@@ -622,9 +675,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 segl = np.linalg.norm(np.diff(ext, axis=0), axis=1)
                 for k in np.where(segl >= 0.25 * segl.max())[0]:
                     edges.append((ext[k], ext[k + 1]))
-            lims = np.array([ply.f_t / ply.E_L, ply.f_c / ply.E_L, ply.f_t90 / ply.E_T,
-                             ply.f_c90 / ply.E_T, ply.f_v / ply.G_LT]) * Sf
-            distinct = sorted({round(a % 180, 3) for a in sh.layup.angles})
+            Gm = (sp["wood.G_f_N_per_mm"] * Sf, sp["wood.G_f90_N_per_mm"],
+                  sp["wood.G_v_N_per_mm"])
             for t3 in tri:
                 xy3 = P2[t3]
                 X3 = np.array([bld.X[ids[k]] for k in t3])
@@ -645,19 +697,16 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                     g /= np.linalg.norm(g)
                 gang = math.degrees(math.atan2(float(g @ ey), float(g @ ex)))
                 angs = [gang + a for a in sh.layup.angles]
-                lam = laminate(ply, angs, T)
-                K = shellmod.local_stiffness(Ploc[:, :2], lam.A * Ef, lam.D * Ef,
-                                             lam_ref.E_x * Ef * T)
+                if float(ez @ sh.n) < 0:  # plies listed from the -n face up
+                    angs = angs[::-1]
+                ed = shellmod.element_data(Ploc[:, :2], angs, T, ply, Ef, Sf, Gm,
+                                           lam_ref.E_x * Ef * T)
+                n_snap += ed["snapback"]
                 shells["nodes"].append(ids[t3])
-                shells["K"].append(K)
                 shells["E0"].append(E0)
                 shells["P"].append(Ploc)
-                shells["R"].append(shellmod.recovery(Ploc[:, :2]))
                 shells["t"].append(T)
-                ae = [gang + a for a in distinct][:2]
-                shells["ang"].append(ae + [math.nan] * (2 - len(ae)))
-                shells["lim"].append(lims)
-                shells["matrix"].append(len(distinct) == 1)
+                shells["el"].append(ed)
                 shells["body"].append(bi)
                 info.shells.append(len(shells["nodes"]) - 1)
                 ar = 0.5 * np.linalg.norm(np.cross(X3[1] - X3[0], X3[2] - X3[0]))
@@ -885,22 +934,36 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     Vall = np.vstack(allV)
     table_y = float(Vall[:, 1].min())
     active = [i for i in range(len(bodies)) if shapes[i].kind not in ("ignore",)]
-    p_att, p_sup = [], []
+    def bearing(bi: int) -> float:
+        """Crushing strength (MPa) of a body pressed vertically: along the grain for
+        a standing bar, across it for anything lying flat."""
+        sh = shapes[bi]
+        if sh.kind == "bar" and sh.layup.kind != "toothpick" and abs(sh.u[1]) > 0.7:
+            return ply.f_c
+        if sh.kind == "shell" and abs(sh.n[1]) < 0.7:
+            return 0.5 * (ply.f_c + ply.f_c90)
+        return ply.f_c90
+
+    V_AREA = 16.0  # mm^2 a mesh corner stands for
+    p_att, p_sup, p_fmax = [], [], []
     for bi in active:
         if shapes[bi].kind == "cable":
             continue
         V = bodies[bi].mesh.vertices
-        extra = []
+        fb = bearing(bi)
+        extra, areas = [], [np.full(len(V), V_AREA)]
         for f in bodies[bi].faces:
             if f.kind == "plane" and f.normal[1] < -0.9 and \
                     abs(f.loops[0][0][1] - table_y) < 1.0:
                 poly, o, e1, e2 = face_polygon(f)
                 pts = _sample_polygon(poly, 8.0, 60)
                 extra.append(o + np.outer(pts[:, 0], e1) + np.outer(pts[:, 1], e2))
+                areas.append(np.full(len(pts), poly.area / max(len(pts), 1)))
         Vb = np.vstack([V] + extra) if extra else V
-        for p in Vb:
+        for p, a in zip(Vb, np.concatenate(areas), strict=True):
             p_att.append(attach(bi, p))
             p_sup.append(p[1] - table_y < 0.5)
+            p_fmax.append(fb * a)
     sup = np.array([bld.X[bld.att_node[a]] + bld.att_r0[a] for a, s in zip(p_att, p_sup,
                                                                         strict=True) if s])
     if not len(sup):
@@ -950,12 +1013,15 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     # what is underneath (ribs, stringers, a saddle)
     region_lo = np.array([mid_x - PL / 2 - 20, plate_bottom - 40, deck_z - PW / 2 - 20])
     region_hi = np.array([mid_x + PL / 2 + 20, plate_bottom + PT + 150, deck_z + PW / 2 + 20])
+    q_fmax = []
     for bi in active:
         if shapes[bi].kind == "cable":
             continue
         V = bodies[bi].mesh.vertices
         sel = ((V >= region_lo) & (V <= region_hi)).all(1)
         pts = [V[sel]]
+        fb = bearing(bi)
+        areas = [np.full(int(sel.sum()), V_AREA)]
         for f in bodies[bi].faces:
             if f.kind != "plane":
                 continue
@@ -965,9 +1031,12 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             poly, o, e1, e2 = face_polygon(f)
             g = _sample_polygon(poly, 8.0, 400)
             g3 = o + np.outer(g[:, 0], e1) + np.outer(g[:, 1], e2)
-            pts.append(g3[((g3 >= region_lo) & (g3 <= region_hi)).all(1)])
-        for p in np.vstack(pts):
+            keep = ((g3 >= region_lo) & (g3 <= region_hi)).all(1)
+            pts.append(g3[keep])
+            areas.append(np.full(int(keep.sum()), poly.area / max(len(g), 1)))
+        for p, a in zip(np.vstack(pts), np.concatenate(areas), strict=True):
             q_att.append(attach(bi, p))
+            q_fmax.append(fb * a)
 
     plate_mass = sp["crusher.plate_mass_kg"] * TONNE_PER_KG
     pc = np.array([mid_x, plate_bottom + PT / 2 + 0.02, deck_z])
@@ -998,11 +1067,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         b_fc=arr(beams["fc"]), b_Gf=arr(beams["Gf"]), b_GJ=arr(beams["GJ"]),
         b_A=arr(beams["A"]), b_fv=arr(beams["fv"]), b_Wt=arr(beams["Wt"]),
         b_body=arr(beams["body"], dtype=int),
-        s_nodes=arr(shells["nodes"], (0, 3), int), s_K=arr(shells["K"], (0, 18, 18)),
+        s_nodes=arr(shells["nodes"], (0, 3), int),
         s_E0=arr(shells["E0"], (0, 3, 3)), s_P=arr(shells["P"], (0, 3, 3)),
-        s_R=arr(shells["R"], (0, 6, 18)), s_t=arr(shells["t"]),
-        s_ang=arr(shells["ang"], (0, 2)), s_lim=arr(shells["lim"], (0, 5)),
-        s_matrix=arr(shells["matrix"], dtype=bool), s_body=arr(shells["body"], dtype=int),
+        s_t=arr(shells["t"]), s_body=arr(shells["body"], dtype=int),
+        **(shellmod.pack(shells["el"]) if shells["el"] else shellmod.empty()),
         a_node=np.array(bld.att_node, int), a_r0=np.array(bld.att_r0),
         c_a=arr(springs["a"], dtype=int), c_b=arr(springs["b"], dtype=int),
         c_area=arr(springs["area"]), c_n0=arr(springs["n0"], (0, 3)),
@@ -1026,6 +1094,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 "deck_bodies": deck_bodies, "deck_y": deck_y,
                 "test_rate_mm_per_min": sp["crusher.test_rate_mm_per_min"],
                 "c_d0": np.array(springs["d0"], float),
+                "fmax_p": np.array(p_fmax, float), "fmax_q": np.array(q_fmax, float),
                 "plate_offset_mm": [float(off[0]), float(off[1])],
                 "seed": seed},
         questions=questions, notes=notes)
@@ -1053,6 +1122,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
               "and were closed over (usually a small hole)" for b in bodies
               if b.mesh.capped_loops]
     model.notes += capped
+    if n_snap:
+        model.notes.append(f"{n_snap} shell element(s) are larger than the crack band their "
+                           "fracture energy allows (snap-back): their cracks dissipate a "
+                           "little more energy than G_f; use --fidelity fine to check")
     return model
 
 

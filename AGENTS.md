@@ -23,7 +23,7 @@ SolidWorks needed), a Parasolid `.x_b`, or an STL with all bodies in one file.
 | Command | What it does | Time |
 |---|---|---|
 | `bridgesim inspect BRIDGE.SLDPRT [-o overrides.yaml] [--strict] --json` | Bodies (how each is modelled, centroid and bounding box, layup, mass), glued joints, loading position, rule check from the solids, `warnings`, `questions` | seconds |
-| `bridgesim crush BRIDGE.SLDPRT [-o overrides.yaml] [--seed N] [--fidelity quick\|standard\|fine] [--out DIR] --json` | Simulated crushing test; with `--out`: `crush.json`, `curve.csv`, `events.csv` (every event), `replay.html` | minutes |
+| `bridgesim crush BRIDGE.SLDPRT [-o overrides.yaml] [--seed N] [--fidelity quick\|standard\|fine] [--rate-check] [--out DIR] --json` | Simulated crushing test; with `--out`: `crush.json`, `curve.csv`, `events.csv` (every event), `replay.html`. `--rate-check` runs it again at half the jack speed (3x the time) | minutes |
 | `bridgesim compare DIR/crush.json my_test.csv --json` | Reality gap vs a physical crush test | seconds |
 | `bridgesim lab [--data validation/physical] --json` | Simulated coupon tests (stick bending, lap joint, stick column) and their gap to the team's coupon data | ~20 s |
 | `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, strengths, glue strength from coupon CSVs | seconds |
@@ -75,7 +75,7 @@ claude mcp add bridgesim -- uv run --directory /path/to/troitsky-analysis bridge
 | Tool | Use |
 |---|---|
 | `inspect_bridge(cad_path, overrides_yaml, up_axis, span_axis, units, strict)` | seconds |
-| `crush_bridge(cad_path, overrides_yaml, seed, fidelity, out_dir, ...)` | blocking, minutes |
+| `crush_bridge(cad_path, overrides_yaml, seed, fidelity, out_dir, strict, rate_check, ...)` | blocking, minutes |
 | `start_crush(cad_path, out_dir, ...)` then `job_status(out_dir)` | background: poll until `status` is `done` (report included) or `failed` (error included). Use this when tool calls time out |
 | `start_montecarlo(cad_path, out_dir, n, fidelity)` then `job_status(out_dir)` | background spread of F_u |
 | `compare_with_test(crush_json_path, test_csv_path)` | reality gap |
@@ -113,6 +113,8 @@ meanwhile, and `answer_with`: an overrides fragment showing how to answer (place
 * two solids that overlap in the CAD (`overlap:`) - usually a modelling error;
 * a member whose glued area is much weaker than the member (`weak_joint:`) - a missing
   gusset?
+* a laminated member longer than one stick (`butt_joints:<member>`): how far apart the
+  butt joints of neighbouring plies are (it sets the member's tension strength);
 * a rigid block directly under the loading plate (`block_under_plate:`);
 * a failing rule (`rule:<section>`), the mass with an assumed density
   (`material:density`), placeholder material values (`material:measure`).
@@ -132,6 +134,8 @@ bodies:                     # by exact body name or glob pattern
   "Hub Tie Strap*": {glue_factor: 0.7}          # poorly glued part (x glue strength)
   "Spacer*": {glue_factor: 0}                   # touching but NOT glued
   "Top Chord*": {strength_factor: 0.9, grain: span}
+  "Deck Stringer*": {butt_stagger_mm: 30}       # joints of neighbouring plies 30 mm apart
+  "Bottom Chord*": {butt_stagger_mm: 0}         # plies without butt joints (long strips)
 glue:
   "Top Chord (10-ply UD 20.9x47.5) - Far | T-Node (10-ply) - R Far": 0.5   # one joint
 params:                     # any key of materials/simulation.yaml, or material.<key>
@@ -146,7 +150,8 @@ get "(mirror copy)"). Joint names are `A | B` as listed in the inspect `joints`.
 ## What the crush report means
 
 * `Fu_kgf`: predicted ultimate load (§12.5): the peak jack force before the bridge is
-  judged failed (load drop, 50 mm deflection, or contact with the platform).
+  judged failed (load drop, 50 mm deflection, or contact with the platform); 0 if it
+  collapses under its own weight (`failure_mode: instability`).
 * `failure_sequence`: what broke, in order, with the load at that moment. The first
   entries near the peak are the reason the bridge failed: strengthen *that*.
 * `events`: the first event of each kind per part, with `where_mm`; `events.csv` in the
@@ -155,10 +160,13 @@ get "(mirror copy)"). Joint names are `A | B` as listed in the inspect `joints`.
   joint failure as a failure when the judges see it).
 * `criteria`: when each §12.5 criterion (deflection, contact, joint/shear, instability)
   was first met.
-* `quality.trustworthy`: `false` when the run was not quasi-static
-  (`kinetic_to_work_max` > 0.1), needed more than 5 % added mass, did not fail within the
-  jack travel, or had to restart; `quality.reasons` says which. Re-run with a slower
-  `--speed` or a finer `--fidelity` before relying on an untrustworthy F_u.
+* `quality.trustworthy`: `false` when the loading was not quasi-static
+  (`kinetic_to_work_max` > 0.1: kinetic energy of the bridge over the jack's work while
+  the load rises to 95 % of its peak), F_u moved more than 5 % at half speed
+  (`quality.rate_check`, with `--rate-check`), more than 5 % mass was added, the bridge
+  did not fail within the jack travel, or the run had to restart; `quality.reasons` says
+  which. Re-run with `--rate-check` or a finer `--fidelity` before relying on an
+  untrustworthy F_u.
 * `assumed_parameters`: values still not measured. With placeholders the absolute load
   is uncertain (maybe +-40 %), while design comparisons (A vs B) are much more reliable.
 * `rules`: the 2027 dimensional rules measured on the solids (penalties, bans).
@@ -191,8 +199,12 @@ print(crush.model_dump_json(indent=2))
 ## Limits to tell the designer about
 
 Read [ASSUMPTIONS-SIM.md](ASSUMPTIONS-SIM.md). In short: material values are placeholders
-until measured; glue lines are perfect over the whole touching area unless a
-`glue_factor` says otherwise; members are fibre beams (no local crushing under
-concentrated loads, no splitting along the grain except through shear); thick plates use
-thin-plate elements; time is compressed (the jack moves ~mm/s instead of mm/min; the
-materials have no rate effect).
+until measured, and the model is verified (the equations are solved right) but not yet
+validated against a physical crush test, so give F_u with its uncertainty and lean on
+design comparisons; glue lines are perfect over the whole touching area unless a
+`glue_factor` says otherwise; butt joints in laminated members are assumed in a brick
+pattern unless `butt_stagger_mm` says otherwise; members are fibre beams (no splitting
+along the grain except through shear); plates crack ply by ply; thick plates use
+thin-plate elements; parts that come into contact during the test push on each other
+without friction; time is compressed (the jack moves ~mm/s instead of mm/min; the
+materials have no rate effect, and `--rate-check` shows the speed does not matter).

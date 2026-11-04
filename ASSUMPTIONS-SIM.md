@@ -20,17 +20,32 @@ relevant parts in your Design Validation (§10). Units: mm, N, MPa, s.
 | Body shape (from its faces) | Model | Why |
 |---|---|---|
 | slender extrusion, section no flatter than 1:4 | **bar**: chain of corotational fibre beams on its centre line, ~25-30 mm elements (>= 4), real section and length | members carry axial force + bending; buckling needs >= 4 elements |
-| thin extrusion (width >= 3 x thickness) | **shell**: CST membrane + DKT bending triangles on the mid-surface, meshed from the real outline (holes > element size kept) | gussets, webs, decks, diaphragms |
+| thin extrusion (width >= 3 x thickness) | **shell**: CST membrane + DKT bending triangles on the mid-surface, meshed from the real outline (holes > element size kept), integrated ply by ply (layered) | gussets, webs, decks, diaphragms |
 | compact piece, block, short toothpick | **rigid body** with its real mass and inertia | much stiffer than the members |
 | floss (by name) | **cable**: tension only, snaps at its breaking load | §8.4.5 |
 
 Laminates come from the body name (`10-ply UD`, `2-ply 0-90`, `4-ply +-45`, `block`,
 `round toothpick`, `waxed floss`) or the overrides file; an unknown one is assumed UD
 along the long axis and reported as a question. Stiffness from classical lamination
-theory with orthotropic plies (E_L, E_T, G_LT, nu_LT); strength by first-ply max strain
-along the fibres and in shear (across-the-grain cracking only counts when no ply runs
-along the load). UD bars and plates take their grain along the long axis (or the global
-X with "along the span"; for non-rectangular UD plates, along the nearest long edge).
+theory with orthotropic plies (E_L, E_T, G_LT, nu_LT), including the membrane-bending
+coupling of unsymmetric layups (a 2-ply 0/90 plate bends when stretched). UD bars and
+plates take their grain along the long axis (or the global X with "along the span"; for
+non-rectangular UD plates, along the nearest long edge). The order of the plies through
+the thickness is not in the CAD: it is taken from the name, listed from the face the
+plate's normal points away from.
+
+**Laminated members longer than one stick.** A ply longer than a stick (115 mm) has butt
+joints, and its load goes round each joint through the glue lines to the neighbouring
+plies. With the joints of neighbouring plies a distance s apart, the weakest tension path
+cuts k plies at their joints and shears the glue between them:
+P_k = (n - k) P_ply + (k - 1) tau_g w s; the member's tension strength is the smallest
+P_k (k = 1 is the net section without one ply). By default the plies are assumed laid in
+a brick pattern (s = half a stick), which gives (n - 1)/n of the solid strength; closer
+joints let the glue govern (10 plies with joints 11.5 mm apart: 25 %). Each such member
+gets a question (`butt_joints:`), answered with `butt_stagger_mm` in the overrides (0 for
+plies without joints). Bending shear between the plies runs in the glue lines, so the
+shear strength of a laminated member is min(f_v, tau_g). Butt joints are assumed tight
+in compression (they bear).
 
 ## 3. Joints
 
@@ -59,9 +74,24 @@ growth rings and have defects, so the placeholders (10 GPa; f_b 50, f_c 30, f_v 
 are deliberately lower. Your own stick tests replace them (`bridgesim calibrate`). In the fibre
 sections: linear elastic; tension softens to zero after f_t with fracture energy G_f
 (3 N/mm, element-length regularised); compression yields at f_c and softens to 70 %
-(crushing). Members split when 1.5 V/A + T/W_t > f_v. Plates crack when a ply strain
-limit is passed (its stiffness falls to zero over a small strain range). Glue and floss: see
+(crushing). Members split when 1.5 V/A + T/W_t > f_v. Glue and floss: see
 `materials/simulation.yaml`, every value with its source and how to measure it.
+
+**Plates (layered shells).** At each of the 3 in-plane points of a triangle and at 3
+points through each ply group (Simpson's rule, exact for the elastic bending
+stiffness), the strain is turned into the grain axes and each failure mode has its own
+damage (as LS-DYNA's MAT_054 or Abaqus' Hashin damage): fibre tension softens to zero with
+fracture energy G_f (3 N/mm); fibre compression crushes to a plateau at 70 % of f_c;
+across-grain tension (sticks parting edge to edge, f_t90 = 1 MPa) softens with G_f90
+(0.3 N/mm); across-grain compression yields at f_c90; in-plane shear softens with G_v
+(1 N/mm). Cracks close: a broken ply still carries compression. The softening strain of
+each element is set from its size (crack band, Bažant & Oh 1983), so the energy a crack
+dissipates does not depend on the mesh: a plate strip pulled apart dissipates
+G_f x width x thickness within 2 % with 5, 2.5 and 1.25 mm elements
+(`test_shell_fracture_energy_is_mesh_independent`). Elements larger than the crack band
+of a mode allows (snap-back) keep their strength and fail as brittle as possible; they are
+counted in the warnings. An element is removed only when every ply is torn wide open
+(twice the strain at which it carries nothing) or when it is distorted beyond 0.5 rad.
 
 **Scatter** (seeded, `--seed`; `--seed -1` for a perfect bridge): per body, E (CoV 12 %)
 and strength (CoV 18 %); per joint, glue strength (CoV 30 %); per bar, an initial bow of
@@ -73,18 +103,35 @@ the spread of F_u.
 * The bridge stands on the crusher's flat steel base platform: unilateral contact with
   Coulomb friction (mu = 0.35), no anchorage (§8.3). Every vertex of every body, and a
   grid on downward faces at table level, can touch it.
-* Gravity acts on everything. The bridge first settles under its own weight (a bridge
-  that keeps sagging fails by *instability*).
+* Gravity acts on everything. The bridge first settles under its own weight; a bridge
+  that sags more than 20 mm fails by *instability* ("failure under self-weight") and
+  gets F_u = 0.
 * The 200 x 90 mm loading plate (§12.5; two 15 mm steel plates, 3 kg, Appendix B) is a
   rigid body resting on the deck at mid-span and the deck centreline. The jack pushes on
   its hemispherical seat, so the plate tilts freely; plate-bridge contact is unilateral
   with friction (mu = 0.3) on any part of the bridge that reaches the plate.
+* **Bearing**: each contact point with the platform or the plate carries at most the
+  crushing strength of the wood under it times the area it stands for (f_c90 for wood
+  pressed across the grain, f_c for a post standing on its end grain): a plate edge
+  digging into the deck, or a support corner, crushes locally instead of carrying an
+  unlimited load.
+* **Contact between parts that were not touching at the start** (a broken chord falling
+  on a cross-beam, a deck sagging onto a strut): penalty contact of every node and beam
+  mid-point against beam capsules and shell slabs of the other bodies
+  (`bridgesim/sim/contact.py`), frictionless. Parts touching at the start interact
+  through their glue springs instead, which keep bearing and sliding with friction after
+  the glue breaks; a broken glue pair whose two points have moved apart (3 mm), turned
+  (74 degrees) or passed through each other stops acting.
 * The jack moves down at constant speed (displacement control); its force is the
   load-cell reading. The crusher + load cell stiffness is 20 kN/mm.
 * **F_u** = peak jack force up to the moment the bridge is judged failed: a load drop to
   half the peak after the peak (collapse), mid-span deflection > 50 mm, or contact of a
-  part with the platform other than the original supports (§12.5). Joint failures and
-  member splits are logged with the load at which they happened.
+  part with the platform other than the original supports (§12.5). A glued joint letting
+  go inside the bridge is also a §12.5 failure ("shear, including joint failure"), but
+  the judges only see it when the bridge visibly gives way, which shows as the load
+  drop; the load at the first complete joint separation is reported separately
+  (`Fu_first_joint_failure_kgf`). Every joint failure and member split is logged with
+  the load at which it happened.
 
 ## 6. Numerics
 
@@ -98,24 +145,33 @@ the spread of F_u.
   restarted with half the step.
 * Damping: mass-proportional (alpha = 25 1/s; ~5 % of critical for the bridge's first
   modes), material damping beta = 0.1 dt (only for the highest, numerical frequencies)
-  and contact damping. The kinetic energy is reported against the work done by the jack
-  (`kinetic_to_work_max`): below 0.1 the test is quasi-static.
+  and contact damping. The kinetic energy of the bridge (falling debris excluded) is
+  reported against the work done by the jack while the load rises to 95 % of its peak
+  (`kinetic_to_work_max`): below 0.1 the loading is quasi-static. The collapse after the
+  peak is dynamic, as in the real test. `--rate-check` crushes the bridge again at half
+  the jack speed and reports how much F_u changes (`quality.rate_check`).
 * Time is compressed: the simulated jack moves at ~100 mm/s instead of the real
   mm/min. The material laws have no rate effect, so this changes nothing as long as the
   run stays quasi-static; the replay converts back to real test time.
-* Validated in `tests/test_sim.py`: cantilever (0.04 % vs PL^3/3EI), large-deflection
-  elastica (Bisshopp-Drucker, < 1 %), Euler buckling of a stick, 3-point bending
-  stiffness, lap-joint strength, energy conservation, DKT patch test, compiled kernels
-  identical to the NumPy reference.
+* **Verified** (the equations are solved right) in `tests/test_sim.py`: cantilever
+  (0.04 % vs PL^3/3EI), large-deflection elastica (Bisshopp-Drucker, < 1 %), Euler
+  buckling of a stick, 3-point bending stiffness, lap-joint strength, energy
+  conservation, DKT patch test, layered shell = exact laminate stiffness, mesh-independent
+  fracture energy of a plate strip, a member dropped on another stopped by contact,
+  compiled kernels identical to the NumPy reference (damage histories included).
+* **Not yet validated** against physical tests (whether the equations are the right ones
+  for popsicle sticks): no load-deflection record of a real Troitsky crush test was
+  available. `bridgesim lab --data` and `bridgesim compare` measure that gap as soon as
+  you have coupon or prototype data, and `bridgesim calibrate` closes it.
 
 ## 7. Not modelled (yet)
 
 * Glue lines are perfect over the whole touching area: starved or gappy joints only
   through `glue_factor` in the overrides.
-* Splitting of a member along the grain other than by shear, local crushing under a
-  concentrated load at a joint, knots and stick-to-stick variation inside one body.
+* Splitting of a member along the grain other than by shear, local crushing at a joint
+  inside the bridge (bearing is modelled only against the platform and the plate), knots
+  and stick-to-stick variation inside one body; butt joints in plates (only in bars).
 * Thick plates (gussets 20 mm thick) use thin-plate (Kirchhoff) elements, sized at
   >= 2.5 x their thickness.
-* Contact between two bridge parts that were not touching at the start (only parts that
-  were touching keep bearing on each other after their glue fails).
+* Friction in the contact between parts that were not touching at the start.
 * Creep, humidity, and the time the bridge waits loaded.

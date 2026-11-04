@@ -23,6 +23,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from bridgesim.sim import shell as shellmod
 from bridgesim.sim import solver as S
 from bridgesim.sim.materials import fibre_spread as _exact
 from bridgesim.sim.model import Model
@@ -36,9 +37,8 @@ def blank_model(X: np.ndarray, nf: int = 15) -> Model:
         b_i=z(0, int), b_j=z(0, int), b_L0=z(0), b_E0=z((0, 3, 3)), b_fy=z((0, nf)),
         b_fz=z((0, nf)), b_fA=z((0, nf)), b_E=z(0), b_ft=z(0), b_fc=z(0), b_Gf=z(0),
         b_GJ=z(0), b_A=z(0), b_fv=z(0), b_Wt=z(0), b_body=z(0, int),
-        s_nodes=z((0, 3), int), s_K=z((0, 18, 18)), s_E0=z((0, 3, 3)), s_P=z((0, 3, 3)),
-        s_R=z((0, 6, 18)), s_t=z(0), s_ang=z((0, 2)), s_lim=z((0, 5)),
-        s_matrix=z(0, bool), s_body=z(0, int), a_node=z(0, int), a_r0=z((0, 3)),
+        s_nodes=z((0, 3), int), s_E0=z((0, 3, 3)), s_P=z((0, 3, 3)), s_t=z(0),
+        s_body=z(0, int), **shellmod.empty(), a_node=z(0, int), a_r0=z((0, 3)),
         c_a=z(0, int), c_b=z(0, int), c_area=z(0), c_n0=z((0, 3)), c_Kn=z(0), c_Ks=z(0),
         c_sig=z(0), c_tau=z(0), c_GIc=z(0), c_GIIc=z(0), c_mu=z(0), c_patch=z(0, int),
         c_breakable=z(0, bool), k_a=z(0, int), k_b=z(0, int), k_L0=z(0), k_EA=z(0),
@@ -125,14 +125,15 @@ class TestResult:
         return float(np.polyfit(self.disp[sel], self.force[sel], 1)[0])
 
 
-def drive(m: Model, fixed: dict[int, str], node: int, dof: int, rate: float,
+def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
           max_disp: float, dt: float | None = None, alpha: float = 200.0,
           stop_drop: float = 0.3, record_every: int = 20, max_steps: int = 2_000_000,
           gravity: bool = False, sign: float = 1.0) -> TestResult:
-    """Move ``node`` along global ``dof`` at ``rate`` mm/s (displacement control) with
-    the ``fixed`` nodes held ("xyz", "xyzr" = also rotations, any subset of x, y, z, r)
-    and record the reaction force. Stops at ``max_disp`` or when the force drops below
-    ``stop_drop`` x peak after the peak."""
+    """Move ``node`` (one node or a list: a grip) along global ``dof`` at ``rate`` mm/s
+    (displacement control) with the ``fixed`` nodes held ("xyz", "xyzr" = also rotations,
+    any subset of x, y, z, r) and record the reaction force. Stops at ``max_disp`` or
+    when the force drops below ``stop_drop`` x peak after the peak."""
+    node = np.atleast_1d(np.asarray(node, int))
     m.mass = np.maximum(m.mass, 1e-12)
     m.rot_inertia = np.maximum(m.rot_inertia, 1e-12)
     s = S.Settings(dt=dt or 1e-6)
@@ -180,7 +181,7 @@ def drive(m: Model, fixed: dict[int, str], node: int, dof: int, rate: float,
         S.rotate(st, s.dt)
         st.t += s.dt
         if k % record_every == 0:
-            f = sign * F[node, dof]
+            f = sign * float(F[node, dof].sum())
             disp.append(u)
             force.append(f)
             peak = max(peak, f)
@@ -311,3 +312,68 @@ def lap_shear(tau_max: float, peel_to_shear: float = 0.5, Kn: float = 150.0,
     # grips: the outer ends, clamped (no rotation); the B grip is pulled along +X
     return drive(m, {na[0]: "xyzr", nb[-1]: "yzr"}, nb[-1], 0, rate, max_disp=2.0,
                  stop_drop=0.2)
+
+
+def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2.0,
+                        angles: tuple = (0.0,), weak: float = 0.95, rate: float = 40.0,
+                        material=None, sim_params=None) -> TestResult:
+    """A plate strip (L along X, W across, thickness t, ply ``angles`` from X) meshed with
+    right triangles of size ``h``, clamped at x = 0 and pulled along X at x = L until it
+    breaks. The column of elements at mid-length is ``weak`` x as strong, so the crack
+    forms there. With the crack-band regularisation the work to break the strip is
+    G_f W t whatever ``h`` is (the mesh-convergence check of the shell damage)."""
+    from bridgesim.schema import Material
+    from bridgesim.sim.materials import Ply, SimParams
+
+    sp = sim_params or SimParams.load()
+    mat = material or Material.from_yaml(
+        __import__("pathlib").Path(__file__).resolve().parents[3] / "materials"
+        / "popsicle_birch.yaml")
+    ply = Ply.from_material(mat, sp)
+    nx, ny = max(2, round(L / h)), max(1, round(W / h))
+    xs, ys = np.linspace(0, L, nx + 1), np.linspace(0, W, ny + 1)
+    X = np.array([[x, y, 0.0] for x in xs for y in ys])
+    m = blank_model(X)
+    rho = mat.density_kg_m3.value * 1e-12  # t/mm^3
+
+    def nid(i, j):
+        return i * (ny + 1) + j
+
+    G = (sp["wood.G_f_N_per_mm"], sp["wood.G_f90_N_per_mm"], sp["wood.G_v_N_per_mm"])
+    els, nodes, E0s, Ps = [], [], [], []
+    for i in range(nx):
+        for j in range(ny):
+            for tri in ((nid(i, j), nid(i + 1, j), nid(i + 1, j + 1)),
+                        (nid(i, j), nid(i + 1, j + 1), nid(i, j + 1))):
+                P3 = X[list(tri)]
+                c = P3.mean(0)
+                ex = (P3[1] - P3[0]) / np.linalg.norm(P3[1] - P3[0])
+                ez = np.array([0.0, 0.0, 1.0])
+                ey = np.cross(ez, ex)
+                E0 = np.stack([ex, ey, ez], axis=1)
+                Ploc = (P3 - c) @ E0
+                gang = math.degrees(math.atan2(float(np.array([1.0, 0, 0]) @ ey),
+                                               float(np.array([1.0, 0, 0]) @ ex)))
+                Sf = weak if abs(c[0] - L / 2) < 0.5 * L / nx else 1.0
+                ed = shellmod.element_data(Ploc[:, :2], [gang + a for a in angles], t, ply,
+                                           1.0, Sf, G, ply.E_L * t)
+                els.append(ed)
+                nodes.append(tri)
+                E0s.append(E0)
+                Ps.append(Ploc)
+                me = rho * ed["area"] * t
+                for nd in tri:
+                    m.mass[nd] += me / 3
+                    m.rot_inertia[nd] += me / 3 * (h * h / 12 + t * t / 12)
+    for k, v in shellmod.pack(els).items():
+        setattr(m, k, v)
+    m.s_nodes = np.array(nodes, int)
+    m.s_E0, m.s_P = np.array(E0s), np.array(Ps)
+    m.s_t = np.full(len(nodes), t)
+    m.s_body = np.zeros(len(nodes), int)
+    m.params["crush_softening"] = sp["wood.crush_softening"]
+    left = [nid(0, j) for j in range(ny + 1)]
+    right = [nid(nx, j) for j in range(ny + 1)]
+    fixed = {n: "xyzr" for n in left} | {n: "yzr" for n in right}
+    return drive(m, fixed, right, 0, rate, max_disp=1.0, stop_drop=0.01, alpha=2000.0,
+                 record_every=5)

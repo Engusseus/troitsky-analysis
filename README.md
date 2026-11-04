@@ -107,12 +107,15 @@ uv run streamlit run app/streamlit_app.py         # page "SolidWorks crush test"
 inside it; no SolidWorks licence needed). Every solid body is rebuilt with its name. Each
 body becomes what an engineer would model it as: a **member** (corotational beam with a
 fibre section that cracks in tension and crushes in compression), a **plate** (shell
-elements meshed on its real outline, holes included), a **rigid block**, or **floss** (a
-tension-only cable that snaps). The layup comes from the body name: `10-ply UD`,
-`2-ply 0-90`, `4-ply +-45`, `block`, `round toothpick`, `waxed floss`. Laminates use
-classical lamination theory. Every place where two bodies touch face to face becomes a
-**glue joint** of the exact overlap shape. It peels and slides, fails in mixed mode, and
-keeps bearing with friction once broken.
+elements meshed on its real outline, holes included, that crack ply by ply with
+mesh-independent fracture energy), a **rigid block**, or **floss** (a tension-only cable
+that snaps). The layup comes from the body name: `10-ply UD`, `2-ply 0-90`, `4-ply +-45`,
+`block`, `round toothpick`, `waxed floss`. Laminates use classical lamination theory;
+members longer than one stick lose tension strength at their butt joints. Every place
+where two bodies touch face to face becomes a **glue joint** of the exact overlap shape.
+It peels and slides, fails in mixed mode, and keeps bearing with friction once broken.
+Parts that meet during the collapse push on each other (contact), and wood crushes
+locally under the plate and at the supports.
 
 **The test, as at the competition.** The bridge stands on the press's flat steel
 platform with friction and no anchorage, and settles under its own weight. The 200 x 90
@@ -131,7 +134,10 @@ that overlap, a joint much weaker than its member, a failing rule, an assumed de
 pushing the mass over 6 kg. The answers go in an overrides YAML. `bridgesim compare`
 scores the simulation against a real crush test, and `bridgesim lab` and
 `bridgesim calibrate` do the same at the coupon level. See [AGENTS.md](AGENTS.md).
-The method and every assumption are in [ASSUMPTIONS-SIM.md](ASSUMPTIONS-SIM.md).
+The method and every assumption are in [ASSUMPTIONS-SIM.md](ASSUMPTIONS-SIM.md). The
+simulation is verified against textbook solutions in the tests but **not yet validated
+against a real crush test**: with placeholder materials, treat F_u as an estimate and
+rely on comparisons between designs.
 
 ## The app
 

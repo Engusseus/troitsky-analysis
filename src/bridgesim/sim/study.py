@@ -358,9 +358,12 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
           seed: int | None = 0, out_dir: str | Path | None = None,
           options: CrushOptions | None = None, progress=None,
           replay: bool = True, fidelity: str = "standard", units=None, up: str = "y",
-          span: str = "x", strict: bool = False) -> tuple[CrushReport, CrushResult]:
+          span: str = "x", strict: bool = False, rate_check: bool = False
+          ) -> tuple[CrushReport, CrushResult]:
     """Simulate the §12.5 crushing test of a CAD bridge. Writes ``crush.json``,
-    ``curve.csv`` and ``replay.html`` (interactive 3D replay) to ``out_dir`` if given."""
+    ``curve.csv``, ``events.csv`` and ``replay.html`` (interactive 3D replay) to
+    ``out_dir`` if given. ``rate_check`` crushes the bridge a second time at half the
+    jack speed and reports how much F_u changes (``quality.rate_check``)."""
     from bridgesim.sim.crush import FIDELITY
 
     if fidelity not in FIDELITY:
@@ -374,6 +377,17 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
     if progress is not None:
         opt.progress = progress
     res = run_crush(model, opt)
+    rc = None
+    if rate_check:
+        import dataclasses
+
+        slow = dataclasses.replace(opt, speed_mm_s=opt.speed_mm_s / 2)
+        if progress is not None:
+            slow.progress = lambda f, msg: progress(f, "rate check (half speed): " + msg)
+        res2 = run_crush(_build(bodies, mat, sp, ov, seed, scale, False), slow)
+        rc = {"speed_mm_s": slow.speed_mm_s, "Fu_kgf": round(res2.Fu_kgf, 2),
+              "change": round((res.Fu_kgf - res2.Fu_kgf) / max(res2.Fu_kgf, 1e-9), 4),
+              "failure_mode": res2.failure_mode}
     qs = [Question(**q) for q in model.questions] + design_questions(bodies, model, mat, sp,
                                                                        rules)
     c = res.curve
@@ -392,7 +406,7 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         criteria=res.criteria,
         events=_compact_events(res.events), n_events_total=len(res.events),
         failure_sequence=_sequence(res.events), curve=curve,
-        quality=_quality(res, mat, sp),
+        quality=_quality(res, mat, sp, rc),
         rules=rules, questions=qs, assumed_parameters=_assumed(mat, sp),
         fidelity=fidelity, Fu_first_joint_failure_kgf=_first_joint(res),
         warnings=list(model.notes))
@@ -455,11 +469,15 @@ def _first_joint(res: CrushResult) -> float | None:
     return round(hit[0].force_N / KGF, 2) if hit else None
 
 
-def _quality(res: CrushResult, mat: Material, sp: SimParams) -> Quality:
+def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = None
+             ) -> Quality:
     reasons = []
-    if res.kinetic_ratio_max > 0.1:
+    if res.kinetic_ratio_max > 0.1 and not (rc and abs(rc["change"]) < 0.05):
         reasons.append(f"loading not quasi-static (peak kinetic/work {res.kinetic_ratio_max:.2f}"
-                       " > 0.1): run slower")
+                       " > 0.1): run slower or use --rate-check")
+    if rc and abs(rc["change"]) >= 0.05:
+        reasons.append(f"F_u changes by {rc['change']:+.0%} at half the jack speed: "
+                       "the simulated test is too fast; use --fidelity fine")
     if res.added_mass_frac > 0.05:
         reasons.append(f"{res.added_mass_frac:.1%} mass added for stability (> 5 %)")
     if res.failure_mode == "none":
@@ -471,7 +489,7 @@ def _quality(res: CrushResult, mat: Material, sp: SimParams) -> Quality:
                    kinetic_to_work_max=round(res.kinetic_ratio_max, 4),
                    settle_sag_mm=round(res.settle_sag_mm, 3), notes=res.notes,
                    trustworthy=not reasons, reasons=reasons,
-                   speed_mm_s=getattr(res, "speed_mm_s", 0.0))
+                   speed_mm_s=getattr(res, "speed_mm_s", 0.0), rate_check=rc)
 
 
 # ----------------------------------------------------------------------------- compare

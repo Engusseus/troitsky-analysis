@@ -104,6 +104,12 @@ class State:
     scratch: tuple | None = None  # contact force scratch arrays
     c_alive: np.ndarray = field(default_factory=lambda: np.zeros(0, bool))
     loose: np.ndarray = field(default_factory=lambda: np.zeros(0, bool))  # debris nodes
+    # shells: per in-plane point, ply layer and through-thickness point, the largest
+    # strain / onset strain reached in each failure mode (fibre t, fibre c, across t,
+    # across c, shear); s_dmg is the through-crack indicator, s_gone the eroded elements
+    s_hist: np.ndarray = field(default_factory=lambda: np.zeros((0, 3, 5)))
+    s_gone: np.ndarray = field(default_factory=lambda: np.zeros(0, bool))
+    sc: object | None = None  # self-contact (bridgesim.sim.contact.SelfContact)
     t: float = 0.0
     jack_y: float = 0.0
     jack_v: float = 0.0  # jack speed (mm/s, negative = down)
@@ -131,7 +137,9 @@ def initial_state(m: Model, jack_y: float) -> State:
         p_touch=np.zeros(len(m.p_att), bool), q_anchor=np.zeros((len(m.q_att), 3)),
         q_touch=np.zeros(len(m.q_att), bool), jack_y=jack_y,
         b_prev=np.zeros((nb, 7)), s_prev=np.zeros((len(m.s_nodes), 18)),
-        c_prev=np.zeros((nc, 3)), c_alive=np.ones(nc, bool), loose=np.zeros(n, bool))
+        c_prev=np.zeros((nc, 3)), c_alive=np.ones(nc, bool), loose=np.zeros(n, bool),
+        s_hist=np.zeros((len(m.s_nodes), 9 * m.s_lay.shape[1], 5)),
+        s_gone=np.zeros(len(m.s_nodes), bool))
 
 
 # ----------------------------------------------------------------------------- kernels
@@ -250,11 +258,43 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     return {"N": N * a, "Mz": 0.5 * (np.abs(Mzi) + np.abs(Mzj)) * a, "l": l}
 
 
+def _rc(m: Model) -> float:
+    """Crushing plateau of the fibres, as a fraction of the compressive strength."""
+    return 1.0 - float(m.params.get("crush_softening", 0.3))
+
+
+def _soft(r: np.ndarray, rf: np.ndarray) -> np.ndarray:
+    d = rf / (rf - 1.0) * (1.0 - 1.0 / np.maximum(r, 1.0))
+    return np.where(r > 1.0, np.minimum(d, 1.0), 0.0)
+
+
+def _plateau(r: np.ndarray, rc: float) -> np.ndarray:
+    u = np.minimum(np.maximum(r - 1.0, 0.0), 1.0)
+    return np.where(r > 1.0, 1.0 - (1.0 - (1.0 - rc) * u) / np.maximum(r, 1.0), 0.0)
+
+
+def _ply_strain(e, k, z, cc2, ss2, cs):
+    """Strain at height z (membrane e + z x curvature k) in the grain axes."""
+    exx = e[:, 0] + z * k[:, 0]
+    eyy = e[:, 1] + z * k[:, 1]
+    gxy = e[:, 2] + z * k[:, 2]
+    return (exx * cc2 + eyy * ss2 + gxy * cs, exx * ss2 + eyy * cc2 - gxy * cs,
+            2 * (eyy - exx) * cs + gxy * (cc2 - ss2))
+
+
+_IM = np.array([0, 1, 6, 7, 12, 13])
+_IB = np.array([2, 3, 4, 8, 9, 10, 14, 15, 16])
+_IR = np.array([5, 11, 17])
+
+
 def shell_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
                  update: bool = True, beta: float = 0.0, dt: float = 1.0) -> None:
+    """Layered shells (see :mod:`bridgesim.sim.shell`): forces integrated ply by ply with
+    a damage state per failure mode at every integration point."""
     if len(m.s_nodes) == 0:
         return
     sn = m.s_nodes
+    ns = len(sn)
     x = st.x[sn]  # (ns, 3, 3)
     c = x.mean(axis=1)
     ex = _unit(x[:, 1] - x[:, 0])
@@ -265,36 +305,79 @@ def shell_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     p = np.einsum("nij,naj->nai", Et, x - c[:, None, :])
     u = p - m.s_P
     th = logvec(Et[:, None] @ st.R[sn] @ m.s_E0[:, None])
-    dloc = np.concatenate([u, th], axis=2).reshape(len(sn), 18)
+    dloc = np.concatenate([u, th], axis=2).reshape(ns, 18)
     if update:
-        st.s_dmg = np.where((th**2).sum(2).max(1) > 0.25, 1.0, st.s_dmg)
-        strain = np.einsum("nij,nj->ni", m.s_R, dloc)  # noqa: E501
-        em, kap = strain[:, :3], strain[:, 3:]
-        fi = np.zeros(len(sn))
-        for zf in (-0.5, 0.5):
-            ez_ = em + (zf * m.s_t)[:, None] * kap
-            for k in range(2):
-                ang = m.s_ang[:, k]
-                ok = ~np.isnan(ang)
-                a = np.radians(np.nan_to_num(ang))
-                cs, sn_ = np.cos(a), np.sin(a)
-                e1 = ez_[:, 0] * cs**2 + ez_[:, 1] * sn_**2 + ez_[:, 2] * cs * sn_
-                e2 = ez_[:, 0] * sn_**2 + ez_[:, 1] * cs**2 - ez_[:, 2] * cs * sn_
-                g12 = 2 * (ez_[:, 1] - ez_[:, 0]) * cs * sn_ + ez_[:, 2] * (cs**2 - sn_**2)
-                lim = m.s_lim
-                r = np.maximum(np.where(e1 > 0, e1 / lim[:, 0], -e1 / lim[:, 1]),
-                               np.abs(g12) / lim[:, 4])
-                r2 = np.where(e2 > 0, e2 / lim[:, 2], -e2 / lim[:, 3])
-                r = np.where(m.s_matrix, np.maximum(r, r2), r)
-                fi = np.maximum(fi, np.where(ok, r, 0))
-        live = (fi >= 1.0) & (st.s_dmg < 1.0)
-        target = np.minimum(1.0, 2.0 * (fi - 1.0) + 0.1)
-        st.s_dmg = np.where(live, np.maximum(st.s_dmg, target), st.s_dmg)
+        torn = (th**2).sum(2).max(1) > 0.25
+        st.s_dmg = np.where(torn & ~st.s_gone, 1.0, st.s_dmg)
+        st.s_gone = st.s_gone | torn
     dd = dloc + (beta * (dloc - st.s_prev) / dt if beta > 0 else 0.0)
     if update:
         st.s_prev = dloc
-    f = np.einsum("nij,nj->ni", m.s_K, dd) * (1 - st.s_dmg)[:, None]
-    f = f.reshape(len(sn), 3, 6)
+    em = np.einsum("nik,nk->ni", m.s_Bm, dloc[:, _IM])
+    emt = np.einsum("nik,nk->ni", m.s_Bm, dd[:, _IM])
+    kap = np.einsum("ngik,nk->ngi", m.s_Bb, dloc[:, _IB])
+    kapt = np.einsum("ngik,nk->ngi", m.s_Bb, dd[:, _IB])
+    q11, q22, q12, q66 = m.s_Q.T
+    lim, rf, rc = m.s_lim, m.s_rf, _rc(m)
+    nlay = m.s_lay.shape[1]
+    N = np.zeros((ns, 3, 3))
+    M = np.zeros((ns, 3, 3))
+    crack = np.zeros(ns)
+    all_open = np.ones(ns, bool)
+    for g in range(3):
+        mincr = np.ones(ns)
+        for ll in range(nlay):
+            act = ll < m.s_nl
+            zb, zt, cg, sg = m.s_lay[:, ll].T
+            hh = zt - zb
+            cc2, ss2, cs = cg * cg, sg * sg, cg * sg
+            for q, (z, wq) in enumerate(((zb, hh / 6), ((zb + zt) / 2, 4 * hh / 6),
+                                         (zt, hh / 6))):
+                e1, e2, g12 = _ply_strain(em, kap[:, g], z, cc2, ss2, cs)
+                e1t, e2t, g12t = _ply_strain(emt, kapt[:, g], z, cc2, ss2, cs)
+                h = st.s_hist[:, (g * nlay + ll) * 3 + q]
+                if update:
+                    upd = (act & ~st.s_gone)[:, None]
+                    new = np.stack([np.where(e1 > 0, e1 / lim[:, 0], 0),
+                                    np.where(e1 > 0, 0, -e1 / lim[:, 1]),
+                                    np.where(e2 > 0, e2 / lim[:, 2], 0),
+                                    np.where(e2 > 0, 0, -e2 / lim[:, 3]),
+                                    np.abs(g12) / lim[:, 4]], axis=1)
+                    h[:] = np.where(upd, np.maximum(h, new), h)
+                dft = _soft(h[:, 0], rf[:, 0])
+                dmt = _soft(h[:, 2], rf[:, 1])
+                ds = _soft(h[:, 4], rf[:, 2])
+                d1 = np.where(e1t >= 0, dft, _plateau(h[:, 1], rc))
+                d2 = np.where(e2t >= 0, dmt, _plateau(h[:, 3], 1.0))
+                dsh = 1 - (1 - ds) * (1 - dft) * (1 - dmt)
+                cr = np.maximum(np.maximum(dft, dmt), ds)
+                mincr = np.where(act, np.minimum(mincr, cr), mincr)
+                op = np.maximum(np.maximum(h[:, 0] / rf[:, 0], h[:, 2] / rf[:, 1]),
+                                h[:, 4] / rf[:, 2])
+                all_open &= ~act | (op >= 2.0)
+                k1, k2 = 1 - d1, 1 - d2
+                s1 = k1 * q11 * e1t + k1 * k2 * q12 * e2t
+                s2 = k1 * k2 * q12 * e1t + k2 * q22 * e2t
+                t12 = (1 - dsh) * q66 * g12t
+                sig = np.stack([s1 * cc2 + s2 * ss2 - 2 * t12 * cs,
+                                s1 * ss2 + s2 * cc2 + 2 * t12 * cs,
+                                (s1 - s2) * cs + t12 * (cc2 - ss2)], axis=1)
+                wa = np.where(act, wq, 0.0)[:, None]
+                N[:, g] += wa * sig
+                M[:, g] += (wa * z[:, None]) * sig
+        crack = np.maximum(crack, mincr)
+    if update:
+        st.s_dmg = np.where(st.s_gone, st.s_dmg, np.maximum(st.s_dmg, crack))
+        newly = all_open & (m.s_nl > 0) & ~st.s_gone
+    f = np.zeros((ns, 18))
+    f[:, _IM] = m.s_area[:, None] * np.einsum("nik,ni->nk", m.s_Bm, N.mean(axis=1))
+    f[:, _IB] = (m.s_area / 3)[:, None] * np.einsum("ngik,ngi->nk", m.s_Bb, M)
+    tz = dd[:, _IR]
+    f[:, _IR] = m.s_kd[:, None] * (tz - tz.mean(axis=1, keepdims=True))
+    f[st.s_gone] = 0.0
+    if update:
+        st.s_gone = st.s_gone | newly
+    f = f.reshape(ns, 3, 6)
     fg = np.einsum("nij,naj->nai", E, f[:, :, :3])
     mg = np.einsum("nij,naj->nai", E, f[:, :, 3:])
     np.add.at(F, sn.ravel(), fg.reshape(-1, 3))
@@ -308,7 +391,9 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     pa, arm_a = _attach_pos(m, st, m.c_a)
     pb, arm_b = _attach_pos(m, st, m.c_b)
     na, nb = m.a_node[m.c_a], m.a_node[m.c_b]
-    n = _unit(np.einsum("nij,nj->ni", st.R[na] + st.R[nb], m.c_n0))
+    nv = np.einsum("nij,nj->ni", st.R[na] + st.R[nb], m.c_n0)
+    nn = np.linalg.norm(nv, axis=1)
+    n = nv / nn[:, None]
     delta = pb - pa
     dn = (delta * n).sum(1)
     ds = delta - dn[:, None] * n
@@ -333,6 +418,11 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     if update:
         st.c_dmax = np.where(m.c_breakable, dmax, 0.0)
         st.c_d = d
+    # a debonded pair that has turned, parted or passed through stops acting as contact
+    gone = m.c_breakable & (d >= 0.999) & ((nn < 1.6) | (dn < -1.0) | (dn**2 + s**2 > 9.0))
+    live = st.c_alive & ~gone
+    if update:
+        st.c_alive = live
     tn = np.where(dn > 0, (1 - d) * Kn * dn, Kn * dn)
     # friction on the broken part (anchor follows the slip)
     rel = ds - st.c_slip
@@ -348,14 +438,14 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
         st.c_slip = np.where((d > 0)[:, None], new_anchor, ds)
     ts = (1 - d)[:, None] * Ks[:, None] * ds + d[:, None] * tf
     t = tn[:, None] * n + ts
-    f = t * m.c_area[:, None] * st.c_alive[:, None]  # force pulling B back towards A
+    f = t * m.c_area[:, None] * live[:, None]  # force pulling B back towards A
     if beta > 0:
         rate = (delta - st.c_prev) / dt
         rn = (rate * n).sum(1)
         kk = np.where(dn <= 0, Kn, (1 - d) * Kn)
         f = f + beta * (kk[:, None] * rn[:, None] * n
                         + ((1 - d) * Ks)[:, None] * (rate - rn[:, None] * n)) \
-            * (m.c_area * st.c_alive)[:, None]
+            * (m.c_area * live)[:, None]
     if update:
         st.c_prev = delta
     # f pulls A towards B; F holds internal (resisting) forces, hence the signs
@@ -387,7 +477,7 @@ def platform_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray, k: float
     touch = (pen > 0) & ~st.loose[m.a_node[m.p_att]]
     nd = m.a_node[m.p_att]
     vy = st.v[nd, 1] + st.w[nd, 2] * arm[:, 0] - st.w[nd, 0] * arm[:, 2]
-    fn = np.where(touch, np.maximum(k * pen - cdamp * vy, 0.0), 0.0)
+    fn = np.where(touch, np.maximum(np.minimum(k * pen - cdamp * vy, _fmax(m, "p")), 0.0), 0.0)
     k = np.broadcast_to(np.asarray(k, float), (len(p),))
     rel = p - st.p_anchor
     rel[:, 1] = 0
@@ -431,7 +521,8 @@ def plate_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray, k: float,
     vb = st.v[nd] + np.cross(st.w[nd], arm)
     vp = st.v[P] + np.cross(st.w[P], p - xp)
     vr = ((vb - vp) * n).sum(1)
-    fn = np.where(inside, np.maximum(k * pen - cdamp * vr, 0.0), 0.0)
+    fn = np.where(inside, np.maximum(np.minimum(k * pen - cdamp * vr, _fmax(m, "q")), 0.0),
+                  0.0)
     rel = loc - st.q_anchor
     rel = rel - (rel * nloc).sum(1)[:, None] * nloc
     ftl = -k[:, None] * rel
@@ -498,8 +589,14 @@ class Settings:
 def internal_and_contact(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarray,
                          update: bool = True) -> dict:
     if s.use_numba and K.HAVE_NUMBA:
-        return _internal_fast(m, st, s, F, Mo, update)
-    return internal_and_contact_numpy(m, st, s, F, Mo, update)
+        out = _internal_fast(m, st, s, F, Mo, update)
+    else:
+        out = internal_and_contact_numpy(m, st, s, F, Mo, update)
+    if st.sc is not None:
+        from bridgesim.sim import contact
+
+        contact.forces(m, st, st.sc, F, Mo, s.dt, update)
+    return out
 
 
 def contact_damping_coeffs(m: Model, s: Settings, mass: np.ndarray) -> None:
@@ -527,6 +624,17 @@ def _kc(m: Model, key: str, s: Settings) -> np.ndarray:
     return k
 
 
+def _fmax(m: Model, key: str) -> np.ndarray:
+    """Bearing capacity of each platform ("p") or plate ("q") contact point: crushing
+    strength of the wood under it x the area the point stands for."""
+    n = len(m.p_att) if key == "p" else len(m.q_att)
+    f = m.params.get(f"fmax_{key}")
+    if f is None or len(f) != n:
+        f = np.full(n, np.inf)
+        m.params[f"fmax_{key}"] = f
+    return f
+
+
 def _cd(m: Model, key: str, s: Settings, update: bool) -> np.ndarray:
     n = len(m.p_att) if key == "p" else len(m.q_att)
     c = m.params.get(f"cdamp_{key}")
@@ -550,11 +658,12 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
         ns = len(m.s_nodes)
         if st.work is None or st.work[0].shape[0] != ns:
             st.work = (np.zeros((ns, 3, 3)), np.zeros((ns, 3, 3)), np.zeros((ns, 18)),
-                       np.zeros((ns, 3, 3)), np.zeros((ns, 3)))
-        fe, me, wd, wR, wth = st.work
-        K.shell_kernel(x, R, m.s_nodes, m.s_K, m.s_E0, m.s_P, m.s_R, m.s_t, m.s_ang,
-                       m.s_lim, m.s_matrix, st.s_dmg, F, Mo, update, fe, me,
-                       s.beta if update else 0.0, s.dt, st.s_prev, wd, wR, wth)
+                       np.zeros((ns, 3, 3)), np.zeros((ns, 3)), np.zeros((ns, 60)))
+        fe, me, wd, wR, wth, ws = st.work
+        K.shell_kernel(x, R, m.s_nodes, m.s_E0, m.s_P, m.s_Bm, m.s_Bb, m.s_area, m.s_kd,
+                       m.s_lay, m.s_nl, m.s_Q, m.s_lim, m.s_rf, _rc(m), st.s_hist,
+                       st.s_dmg, st.s_gone, F, Mo, update, fe, me,
+                       s.beta if update else 0.0, s.dt, st.s_prev, wd, wR, wth, ws)
     if len(m.c_a):
         K.glue_kernel(x, R, m.a_node, m.a_r0, m.c_a, m.c_b, m.c_area, m.c_n0, m.c_Kn,
                       m.c_Ks, m.c_sig, m.c_tau, m.c_GIc, m.c_GIIc, m.c_mu, m.c_breakable,
@@ -570,13 +679,13 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
     Mc[:] = 0.0
     K.platform_kernel(x, R, m.a_node, m.a_r0, m.p_att, m.table_y, _kc(m, "p", s),
                       s.mu_platform, st.p_anchor, st.p_touch, Fc, Mc, update, st.v, st.w,
-                      _cd(m, "p", s, update), st.loose)
+                      _cd(m, "p", s, update), st.loose, _fmax(m, "p"))
     plate_load = 0.0
     if len(m.q_att) and m.plate_node >= 0:
         plate_load = K.plate_kernel(x, R, m.a_node, m.a_r0, m.q_att, m.plate_node,
                                     m.plate_half, _kc(m, "q", s), s.mu_plate, st.q_anchor,
                                     st.q_touch, Fc, Mc, update, st.v, st.w,
-                                    _cd(m, "q", s, update), st.loose)
+                                    _cd(m, "q", s, update), st.loose, _fmax(m, "q"))
     jack_forces(m, st, Fc, Mc, s.k_jack, s.k_jack_lat, s.contact_damping, st.jack_v)
     F -= Fc
     Mo -= Mc

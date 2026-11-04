@@ -21,11 +21,16 @@ Failure criteria tracked (first time each happens):
   shear;
 * **Instability**: the bridge collapses under self-weight before loading.
 
-The reported ultimate load F_u is the highest jack force reached up to the moment the
-bridge is judged failed (peak of the load-deflection curve, or the load at the moment of
-the first §12.5 failure if that comes before the peak). Every damage event (first crack
-of a member, every joint that lets go, floss breaking) is logged with the time and the
-jack force, so the failure sequence can be read like a test report.
+The reported ultimate load F_u is the highest jack force reached before the bridge is
+judged failed: by a clear load drop (collapse), by the 50 mm deflection limit or by
+contact with the platform. A bridge that fails under its own weight has F_u = 0. A glued
+joint letting go inside the bridge is also a §12.5 failure ("shear, including joint
+failure") but the judges only see it when the bridge visibly gives way, which shows as a
+load drop; so the load at the first complete joint separation is reported separately
+(``Fu_first_joint_failure_kgf``) together with when each criterion was first met. Every
+damage event (first crack of a member, every joint that lets go, floss breaking) is logged
+with the time and the jack force, so the failure sequence can be read like a test
+report.
 
 The simulation is dynamic but slow compared with the bridge's vibrations: quasi-static.
 The kinetic energy is recorded and reported against the work done, so it can be checked.
@@ -345,6 +350,7 @@ class CrushOptions:
     max_added_mass: float = 0.05
     dt_target: float = 3e-6
     max_steps: int = 400_000
+    self_contact: bool = True  # contact between parts not touching at the start
     progress: object = None  # callable(fraction, message)
 
 
@@ -372,6 +378,7 @@ def run_crush(m: Model, opt: CrushOptions | None = None) -> CrushResult:
     time step, so a result is never produced from an unstable integration."""
     opt = opt or CrushOptions()
     X0, m0, r0 = m.X.copy(), m.mass.copy(), m.rot_inertia.copy()
+    att0 = (m.a_node.copy(), m.a_r0.copy())
     notes = []
     dt_target = opt.dt_target
     for _attempt in range(4):
@@ -385,6 +392,7 @@ def run_crush(m: Model, opt: CrushOptions | None = None) -> CrushResult:
             notes.append(f"integration diverged at dt = {dt_target * 1e6:.1f} us ({exc}); "
                          "restarted with a smaller step")
             m.X, m.mass, m.rot_inertia = X0.copy(), m0.copy(), r0.copy()
+            m.a_node, m.a_r0 = att0[0].copy(), att0[1].copy()
             dt_target *= 0.5
     raise RuntimeError("the simulation is unstable even with a small time step: "
                        + "; ".join(notes))
@@ -408,6 +416,10 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     P = m.plate_node
     seat_y0 = m.X[P, 1] + m.plate_half[1]
     st = S.initial_state(m, jack_y=seat_y0 + 50.0)
+    if opt.self_contact:
+        from bridgesim.sim import contact
+
+        st.sc = contact.setup(m, m.X, mass, dt)
     F = np.zeros((m.n_nodes, 3))
     Mo = np.zeros((m.n_nodes, 3))
     events: list[Event] = []
@@ -437,6 +449,16 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     has_el[m.s_nodes.ravel()] = True
     spring_nodes = np.c_[m.a_node[m.c_a], m.a_node[m.c_b]] if len(m.c_a) else \
         np.zeros((0, 2), int)
+    cable_nodes = np.c_[m.a_node[m.k_a], m.a_node[m.k_b]] if len(m.k_a) else \
+        np.zeros((0, 2), int)
+    # rigid blocks hang on their glue and floss only: with none left they are debris too
+    blk = ~has_el
+    if m.plate_node >= 0:
+        blk[m.plate_node] = False
+    tied = np.zeros(m.n_nodes, bool)
+    tied[spring_nodes.ravel()] = True
+    tied[cable_nodes.ravel()] = True
+    blk &= tied
 
     # developer aid: BRIDGESIM_DUMP_UNSTABLE=path keeps the last state before any node
     # first moved faster than 20 m/s
@@ -450,8 +472,13 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         ok_b = st.b_alive
         live[m.b_i[ok_b]] = True
         live[m.b_j[ok_b]] = True
-        live[m.s_nodes[st.s_dmg < 0.9].ravel()] = True
+        live[m.s_nodes[~st.s_gone].ravel()] = True
         newly = has_el & ~live & ~st.loose
+        if blk.any():
+            con = np.zeros(m.n_nodes, bool)
+            con[spring_nodes[st.c_alive].ravel()] = True
+            con[cable_nodes[st.k_alive].ravel()] = True
+            newly |= blk & ~con & ~st.loose
         if newly.any():
             st.loose |= newly
             if len(spring_nodes):
@@ -530,6 +557,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                                                           "its own weight"}
         events.append(Event(st.t, 0.0, 0.0, "instability",
                             "bridge collapses under its own weight", f"sag {sag:.1f} mm"))
+    unstable = criteria["instability"] is not None  # failed before any load: F_u = 0
     deck0 = deck_y()
     seat = st.x[P] + st.R[P] @ np.array([0, m.plate_half[1], 0])
     st.jack_y = float(seat[1])  # the jack is brought onto the seat, then starts moving
@@ -562,7 +590,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     last_force = 0.0
     force_f = 0.0
     k = 0
-    while True:
+    while not unstable:
         tl = st.t - t_load0
         v = opt.speed_mm_s * min(1.0, tl / ramp)
         st.jack_y -= v * dt
@@ -580,10 +608,12 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         force = force_f
         if k % 25 == 0 or k == 1:
             defl = deck0 - deck_y()
-            # kinetic energy of the bridge (the plate just moves along with the jack)
-            vb = st.v[:-1] if P == m.n_nodes - 1 else st.v
-            mb = mass[:-1] if P == m.n_nodes - 1 else mass
-            kin = 0.5 * float((mb * (vb**2).sum(1)).sum())
+            # kinetic energy of the bridge, without the plate (it moves with the jack)
+            # and without debris (broken-off pieces falling away)
+            inb = ~st.loose
+            if P >= 0:
+                inb[P] = False
+            kin = 0.5 * float((mass[inb] * (st.v[inb] ** 2).sum(1)).sum())
             curve.setdefault("work", []).append(work)
             curve["t"].append(st.t)
             curve["travel"].append(travel)
@@ -698,6 +728,9 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         if travel > opt.max_travel_mm or k > min(opt.max_steps, 3 * est_steps):
             break
     frames.append(_frame(m, st, jack0 - st.jack_y, st.jack_force, deck0 - deck_y()))
+    if unstable:
+        fail_at, fail_mode, Fu_at_fail = 0.0, "instability", 0.0
+        fail_detail = criteria["instability"]["detail"]
     if fail_at is None:
         fail_mode = "none"
         fail_detail = (f"no failure within {opt.max_travel_mm:g} mm of jack travel")
@@ -717,10 +750,13 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     # at least a tenth of the work done up to the peak load (before that both are ~0)
     W = np.array(curve.get("work", [0.0]))
     KE = np.array(curve["kinetic"]) if curve["kinetic"] else np.zeros(1)
-    i_pk = int(np.argmax(curve["force"])) if curve["force"] else 0
+    Fc = np.array(curve["force"]) if curve["force"] else np.zeros(1)
+    i_pk = int(np.argmax(Fc))
+    # judged on the loading up to 95 % of the peak load: whether inertia props up the
+    # rising branch. The collapse that follows the peak is dynamic, as in the real test.
+    i_95 = int(np.argmax(Fc >= 0.95 * Fc[i_pk])) if len(Fc) else 0
     w_ref = 0.1 * (W[i_pk] if len(W) > i_pk else 0.0)
-    # judged on the loading up to the peak: the collapse after it is meant to be dynamic
-    sel = (W > max(w_ref, 1.0)) & (np.arange(len(W)) <= i_pk)
+    sel = (W > max(w_ref, 1.0)) & (np.arange(len(W)) <= i_95)
     max_ke_ratio = float((KE[sel] / W[sel]).max()) if sel.any() else 0.0
     res = CrushResult(
         Fu_N=float(Fu_at_fail), Fu_kgf=float(Fu_at_fail) / KGF, failure_mode=fail_mode,
@@ -739,6 +775,7 @@ def _frame(m: Model, st: S.State, travel: float, force: float, defl: float) -> F
     bstate[st.b_fractured] = 1
     bstate[st.b_shear | ~st.b_alive] = 2
     sstate = (st.s_dmg > 0.5).astype(np.uint8)
+    sstate[st.s_gone] = 2
     pd = np.zeros(len(m.patches))
     if len(m.c_patch):
         np.maximum.at(pd, m.c_patch, st.c_d)

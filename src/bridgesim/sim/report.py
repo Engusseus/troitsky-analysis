@@ -128,15 +128,21 @@ class Quality(BaseModel):
     wall_s: float
     added_mass_fraction: float = Field(description="Mass added for numerical stability "
                                                    "(<= 0.05 is fine).")
-    kinetic_to_work_max: float = Field(description="Peak kinetic energy / work done by the "
-                                                   "jack, up to the peak load; < 0.1 means "
-                                                   "the loading was quasi-static.")
+    kinetic_to_work_max: float = Field(description="Peak kinetic energy of the bridge "
+                                                   "(debris excluded) / work done by the "
+                                                   "jack, while the load rises to 95 % of "
+                                                   "its peak; < 0.1 means the loading was "
+                                                   "quasi-static.")
     settle_sag_mm: float
     notes: list[str] = []
     trustworthy: bool = Field(True, description="False if any of `reasons` applies: then "
                                                 "treat F_u with suspicion")
     reasons: list[str] = []
     speed_mm_s: float = 0.0
+    rate_check: dict | None = Field(None, description="With --rate-check: the same crush "
+                                    "at half the jack speed (speed_mm_s, Fu_kgf, change = "
+                                    "relative change of F_u). |change| < 0.05 shows the "
+                                    "simulated test is slow enough to stand for the real one.")
 
 
 class CrushReport(BaseModel):

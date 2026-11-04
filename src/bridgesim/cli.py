@@ -355,7 +355,12 @@ def crush(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = N
                                                                  "curve.csv, events.csv, "
                                                                  "replay.html")] = None,
           units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
-          strict: StrictOpt = False, json_out: JsonOpt = False) -> None:
+          strict: StrictOpt = False,
+          rate_check: Annotated[bool, typer.Option(
+              "--rate-check", help="Crush again at half the jack speed and report how "
+                                   "much F_u changes (evidence the test is slow enough)")
+          ] = False,
+          json_out: JsonOpt = False) -> None:
     """Simulate the §12.5 crushing test of a CAD bridge (nonlinear, dynamic): joints
     break, members buckle and crack, the bridge collapses. Writes an interactive 3D
     replay with --out."""
@@ -366,7 +371,8 @@ def crush(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = N
         cad, overrides, material or "popsicle_birch", sim_params, rules,
         seed=None if seed < 0 else seed, out_dir=out,
         options=CrushOptions(speed_mm_s=speed) if speed else None, progress=_progress,
-        fidelity=fidelity, units=units, up=up_axis, span=span_axis, strict=strict))
+        fidelity=fidelity, units=units, up=up_axis, span=span_axis, strict=strict,
+        rate_check=rate_check))
     if json_out:
         typer.echo(rep.model_dump_json(indent=2))
         return

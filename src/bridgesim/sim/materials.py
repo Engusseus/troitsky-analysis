@@ -201,6 +201,7 @@ class LaminateProps:
     eps_c: float  # ... and in compression (positive number)
     angles: list[float]
     ply: Ply
+    B: np.ndarray | None = None  # membrane-bending coupling (unsymmetric layups, e.g. 0/90)
 
     @property
     def f_t(self) -> float:
@@ -215,12 +216,14 @@ def laminate(ply: Ply, angles: list[float], t: float) -> LaminateProps:
     n = len(angles)
     h = t / n
     A = np.zeros((3, 3))
+    B = np.zeros((3, 3))
     D = np.zeros((3, 3))
     for k, th in enumerate(angles):
         z0 = -t / 2 + k * h
         z1 = z0 + h
         Qb = Qbar(ply, th)
         A += Qb * h
+        B += Qb * (z1**2 - z0**2) / 2
         D += Qb * (z1**3 - z0**3) / 3
     a = np.linalg.inv(A)
     d = np.linalg.inv(D)
@@ -252,7 +255,28 @@ def laminate(ply: Ply, angles: list[float], t: float) -> LaminateProps:
         return lim
 
     return LaminateProps(A, D, t, E_x, E_bx, G_xy, fail_strain(1.0), fail_strain(-1.0),
-                         list(angles), ply)
+                         list(angles), ply, B)
+
+
+def ply_layers(angles: list[float], t: float, min_layers: int = 2
+               ) -> list[tuple[float, float, float]]:
+    """Through-thickness layers (z_bottom, z_top, angle) of a laminate for layered shell
+    integration: consecutive plies with the same angle are merged, and a laminate with
+    fewer than ``min_layers`` layers is split so the outer fibres are resolved."""
+    n = len(angles)
+    h = t / n
+    groups: list[list[float]] = []
+    for k, th in enumerate(angles):
+        if groups and abs(((groups[-1][2] - th) + 90) % 180 - 90) < 1e-6:
+            groups[-1][1] = -t / 2 + (k + 1) * h
+        else:
+            groups.append([-t / 2 + k * h, -t / 2 + (k + 1) * h, th])
+    out = []
+    split = max(1, math.ceil(min_layers / len(groups)))
+    for zb, zt, th in groups:
+        dz = (zt - zb) / split
+        out += [(zb + i * dz, zb + (i + 1) * dz, th) for i in range(split)]
+    return out
 
 
 def fibre_spread(n: int) -> float:

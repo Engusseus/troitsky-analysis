@@ -80,16 +80,25 @@ class Model:
     b_Wt: np.ndarray  # torsional section modulus (mm^3)
     b_body: np.ndarray
     # shells
+    # (layered: each ply group is integrated through its thickness at 3 points, at each
+    # of the 3 in-plane points, with its own damage state)
     s_nodes: np.ndarray  # (ns, 3)
-    s_K: np.ndarray  # (ns, 18, 18) local stiffness
+    s_K: np.ndarray  # (ns, 18, 18) undamaged local stiffness (time step estimates)
     s_E0: np.ndarray  # (ns, 3, 3)
     s_P: np.ndarray  # (ns, 3, 3) initial local coordinates of the 3 nodes
-    s_R: np.ndarray  # (ns, 6, 18) strain recovery
     s_t: np.ndarray  # (ns,) thickness
-    s_ang: np.ndarray  # (ns, 2) distinct ply angles in element axes (deg), nan if absent
-    s_lim: np.ndarray  # (ns, 5) e1t, e1c, e2t, e2c, g12 failure strains
-    s_matrix: np.ndarray  # (ns,) bool: across-grain limits count
+    s_lim: np.ndarray  # (ns, 5) e1t, e1c, e2t, e2c, g12 failure strains of a ply
     s_body: np.ndarray
+    s_Bm: np.ndarray  # (ns, 3, 6) membrane strain operator
+    s_Bb: np.ndarray  # (ns, 3, 3, 9) curvature operators at the 3 in-plane points
+    s_area: np.ndarray  # (ns,)
+    s_kd: np.ndarray  # (ns,) drilling stiffness
+    s_lay: np.ndarray  # (ns, NL, 4) layers: z bottom, z top, cos, sin of the grain angle
+    s_nl: np.ndarray  # (ns,) number of layers used
+    s_Q: np.ndarray  # (ns, 4) ply stiffness Q11, Q22, Q12, Q66 (grain axes)
+    s_rf: np.ndarray  # (ns, 3) final/onset strain of the softening (fibre tension,
+    #                  across-grain tension, shear), from fracture energy and element size
+    s_lc: np.ndarray  # (ns,) characteristic length of the element (crack band width)
     # attachments (rigid arms)
     a_node: np.ndarray
     a_r0: np.ndarray  # (na, 3)
