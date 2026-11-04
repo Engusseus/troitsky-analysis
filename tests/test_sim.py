@@ -947,8 +947,8 @@ def test_direct_coupon_tests_calibrate_their_values(tmp_path):
 
     for f in (ROOT / "validation" / "physical").glob("*_template.csv"):
         shutil.copy(f, tmp_path / f.name)
-    _, log, params = study.calibrate(tmp_path)
-    assert not params and "no test data" in log[0]
+    with pytest.raises(ValueError, match="no coupon test results"):
+        study.calibrate(tmp_path)  # the templates as shipped hold no results
     (tmp_path / "stick_tension_template.csv").write_text(
         "specimen,width_mm,thickness_mm,failure_load_N\nT1,10,2,1600\nT2,10,2,1700\n")
     (tmp_path / "stick_compression_template.csv").write_text(
@@ -1345,7 +1345,8 @@ def test_crush_brief_keeps_only_important_questions_in_full(synthetic_crush):
     asked = [i for s in b["next_steps"] if s["action"] == "ask_designer" for i in s["ids"]]
     assert set(check) <= set(asked)
     assert all(v not in (None, [], {}) for s in b["next_steps"] for v in s.values())
-    assert "t_s" not in b["failures"][0] and len(b["failures"]) <= 10
+    assert len(b["failures"]) <= 10
+    assert not any(k in f for f in b["failures"] for k in ("t_s", "load_N", "parts"))
 
 
 def test_calibrate_without_data_is_an_input_error(tmp_path):
@@ -1367,11 +1368,11 @@ def test_failure_location_counts_the_first_failure_fully(synthetic_crush, tmp_pa
     """A test that broke the part the simulation broke first scores 0 error; one that
     broke the part it broke second near the peak scores 0.5."""
     from bridgesim.sim import study
+    from bridgesim.sim.report import EventOut
 
     _, rep, _ = synthetic_crush
-    e = rep.failures[0]
-    f1 = e.model_copy(update={"kind": "member_fracture", "what": "Top Chord - Far",
-                              "parts": ["Top Chord - Far"], "load_kgf": rep.Fu_kgf})
+    f1 = EventOut(t_s=0.1, jack_travel_mm=5.0, load_N=rep.Fu_N, load_kgf=rep.Fu_kgf,
+                  kind="member_fracture", what="Top Chord - Far", parts=["Top Chord - Far"])
     f2 = f1.model_copy(update={"what": "Deck Stringer - Near",
                                "parts": ["Deck Stringer - Near"]})
     r2 = rep.model_copy(update={"failures": [f1, f2]})
