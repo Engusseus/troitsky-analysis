@@ -1,0 +1,63 @@
+# Parameters of the nonlinear crush simulation (bridgesim.sim) that the linear analysis
+# does not need. The wood's E, G, density and strengths along the grain still come from
+# the material file (materials/popsicle_birch.yaml) so there is one place to put your
+# measurements.
+#
+# EVERY VALUE IS A PLACEHOLDER (source: assumed) unless you measured it. Each `note` says
+# how to measure it; `bridgesim calibrate` fits several of them from the CSV templates in
+# validation/physical/. Units: mm, N, MPa (= N/mm^2), N/mm^3, N/mm, kg.
+name: Troitsky crush simulation defaults (placeholder)
+
+wood:
+  E_T_MPa: {value: 500, source: assumed,
+            note: "Modulus across the grain of one stick. Birch: about E_L/20."}
+  nu_LT: {value: 0.35, source: assumed, note: "Major Poisson ratio of one ply."}
+  f_t90_MPa: {value: 1.0, source: assumed,
+              note: "Tension across the grain of a ply. Sticks laid side by side are barely joined edge to edge, so this is low."}
+  f_c90_MPa: {value: 5.0, source: assumed, note: "Crushing across the grain."}
+  G_f_N_per_mm: {value: 3.0, source: assumed,
+                 note: "Fracture energy of a stick breaking in tension along the grain (sets how suddenly it snaps)."}
+  crush_softening: {value: 0.3, source: assumed,
+                    note: "Compressive strength lost after crushing (0.3 = strength drops to 70 % of f_c)."}
+
+glue:
+  K_n_N_per_mm3: {value: 150, source: assumed,
+                  note: "Peel (normal) stiffness of a glue line plus the wood next to it, per mm^2 of glued area."}
+  K_s_N_per_mm3: {value: 60, source: assumed, note: "Shear stiffness of the glue line per mm^2."}
+  peel_to_shear: {value: 0.5, source: assumed,
+                  note: "Peel strength / shear strength of a white-glue joint (peel is weaker)."}
+  G_Ic_N_per_mm: {value: 0.25, source: assumed, note: "Fracture energy, opening (peel)."}
+  G_IIc_N_per_mm: {value: 0.6, source: assumed, note: "Fracture energy, sliding (shear)."}
+  friction: {value: 0.4, source: assumed,
+             note: "Wood-on-wood friction once a glue line has broken (pieces still bear and rub)."}
+  calibrate_to_lap_test: {value: 1, source: assumed,
+                          note: "1: scale the glue strength so a simulated 20 mm single-lap test reproduces tau_g of the material file."}
+
+floss:
+  strands: {value: 4, source: assumed,
+            note: "Strands of floss in each modelled floss tie (count the passes you actually make)."}
+  strand_break_N: {value: 25, source: assumed,
+                   note: "Breaking load of one strand of your waxed floss. Hang weights on a strand."}
+  strand_EA_N: {value: 300, source: assumed,
+               note: "Axial stiffness of one strand (load / strain). From the same hanging test."}
+
+contact:
+  friction_platform: {value: 0.35, source: assumed,
+                      note: "Wood on the crusher's steel base platform."}
+  friction_plate: {value: 0.3, source: assumed, note: "Wood on the steel loading plate."}
+
+crusher:
+  plate_mass_kg: {value: 3.0, source: assumed,
+                  note: "Mass of the loading plates resting on the deck (2 x 15 mm steel plates, Appendix B). Weigh them if you can."}
+  jack_diameter_mm: {value: 40, source: assumed, note: "Lower jack rod (Appendix B: 4.0 cm)."}
+  frame_clear_width_mm: {value: 1370, source: assumed, note: "Between the press uprights (Appendix B: 137 cm)."}
+  test_rate_mm_per_min: {value: 10, source: assumed,
+                         note: "Real jack speed at the competition, used only to replay the simulation in real time."}
+
+scatter:
+  E_cov: {value: 0.12, source: assumed, note: "Stick-to-stick coefficient of variation of E (from your bending tests)."}
+  strength_cov: {value: 0.18, source: assumed, note: "Coefficient of variation of stick strength."}
+  glue_cov: {value: 0.30, source: assumed, note: "Coefficient of variation of glue-joint strength (hand-made joints vary a lot)."}
+  bow_L_over: {value: 400, source: assumed,
+               note: "Typical initial bow of a member, as span/bow (L/400). Measure the crookedness of your built members."}
+  placement_mm: {value: 3.0, source: assumed, note: "How far off-centre the plate may be placed (each way)."}

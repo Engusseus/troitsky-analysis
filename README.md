@@ -17,9 +17,15 @@ University). Design a popsicle-stick bridge, and bridgesim will:
 No expensive commercial software is needed. It runs on any laptop, and can run fully in
 the browser.
 
-> **Status: v0.1.** Linear analysis, first-failure prediction, one parametric generator
-> (through Warren truss) plus any bridge described in a YAML file. **All material values
-> are placeholders until you test your own sticks and glue.** See
+> **Status: v0.2.** Two tools in one package:
+> * **Crush simulation of SolidWorks bridges** (new): drop in your `.SLDPRT` and get a
+>   nonlinear, dynamic simulation of the §12.5 crushing test, in which glue joints peel
+>   and break, members buckle and crack, floss snaps and the bridge collapses, with an
+>   interactive 3D replay. See [Crush simulation of a SolidWorks bridge](#crush-simulation-of-a-solidworks-bridge).
+> * **Linear frame analysis** of centre-line models (YAML / parametric Warren truss), with
+>   first-failure prediction.
+>
+> **All material values are placeholders until you test your own sticks and glue.** See
 > [Limitations](#v01-limitations).
 
 ## Quick start
@@ -87,6 +93,45 @@ wide at 200 mm) passes every computable 2027 rule:
 
 These numbers use **assumed** material strengths and will change once you enter measured
 values.
+
+## Crush simulation of a SolidWorks bridge
+
+```bash
+uv sync --extra sim                               # numba: ~10x faster simulation
+uv run bridgesim inspect Bridge_v6.SLDPRT         # what was understood + questions
+uv run bridgesim crush Bridge_v6.SLDPRT --out results/   # minutes; results/replay.html
+uv run streamlit run app/streamlit_app.py         # page "SolidWorks crush test": drag & drop
+```
+
+**What happens to your file.** The SolidWorks part is read directly (the Parasolid model
+inside it; no SolidWorks licence needed). Every solid body is rebuilt with its name. Each
+body becomes what an engineer would model it as: a **member** (corotational beam with a
+fibre section that cracks in tension and crushes in compression), a **plate** (shell
+elements meshed on its real outline, holes included), a **rigid block**, or **floss** (a
+tension-only cable that snaps). The layup comes from the body name: `10-ply UD`,
+`2-ply 0-90`, `4-ply +-45`, `block`, `round toothpick`, `waxed floss`. Laminates use
+classical lamination theory. Every place where two bodies touch face to face becomes a
+**glue joint** of the exact overlap shape. It peels and slides, fails in mixed mode, and
+keeps bearing with friction once broken.
+
+**The test, as at the competition.** The bridge stands on the press's flat steel
+platform with friction and no anchorage, and settles under its own weight. The 200 x 90
+mm loading plate is placed on the deck at mid-span; it is a rigid body that tilts on the
+jack's hemisphere. The jack then moves down at constant speed, and its force is the
+load-cell reading. The run stops after the bridge has failed by a §12.5 criterion: a load
+drop (collapse), more than 50 mm of deflection, or contact with the platform. You get
+the **predicted ultimate load**, the **failure sequence** (what broke, in order, at what
+load), the load–deflection curve, the 2027 rules measured on the real solids, and an
+**interactive replay** of the crush, in real test time or faster.
+
+**For AI agents.** Every command has `--json`, `bridgesim schema` prints the JSON
+schemas, and `bridgesim mcp` serves the same functions as MCP tools. `inspect` returns
+**questions** when the design is ambiguous or suspect. Examples: an unnamed body, parts
+that overlap, a joint much weaker than its member, a failing rule, an assumed density
+pushing the mass over 6 kg. The answers go in an overrides YAML. `bridgesim compare`
+scores the simulation against a real crush test, and `bridgesim lab` and
+`bridgesim calibrate` do the same at the coupon level. See [AGENTS.md](AGENTS.md).
+The method and every assumption are in [ASSUMPTIONS-SIM.md](ASSUMPTIONS-SIM.md).
 
 ## The app
 

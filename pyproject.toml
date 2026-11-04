@@ -24,10 +24,15 @@ dependencies = [
     "matplotlib>=3.8",
     "pandas>=2.1",
     "typer>=0.12",
+    "shapely>=2.1",
 ]
 
 [project.optional-dependencies]
-app = ["streamlit>=1.40"]
+app = ["streamlit>=1.40", "numba>=0.60"]
+# compiled kernels for the crush simulation (about 10x faster; NumPy is used without it)
+sim = ["numba>=0.60"]
+# MCP server so AI agents can call bridgesim as tools (`bridgesim mcp`)
+mcp = ["mcp>=1.2"]
 
 [project.scripts]
 bridgesim = "bridgesim.cli:app"
@@ -37,6 +42,7 @@ dev = [
     "pytest>=8",
     "ruff>=0.6",
     "streamlit>=1.40",
+    "numba>=0.60",
 ]
 
 [build-system]
@@ -65,3 +71,7 @@ ignore = ["E741", "SIM300"]
 
 [tool.ruff.lint.per-file-ignores]
 "web/stlite_entry.py" = ["F704", "PLE1142"]
+# the replay page's HTML/JS template is one long string
+"src/bridgesim/sim/replay.py" = ["E501"]
+# numba kernels: plain if/else reads better than nested ternaries in hot loops
+"src/bridgesim/sim/kernels.py" = ["SIM108"]

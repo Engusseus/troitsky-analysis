@@ -324,6 +324,14 @@ def evaluate(
     meas = measurements or measure(bridge, material, rs.constants)
     values = dict(meas.values)
     values["mass_kg"] = bridge_mass(bridge, material).total_kg
+    return evaluate_values(Measurements(values, meas.details), rs)
+
+
+def evaluate_values(meas: Measurements, ruleset: RuleSet | None = None) -> RulesReport:
+    """Apply the rules to measurements that already include ``mass_kg`` (for example
+    measured on CAD solids by :func:`bridgesim.cad.rules_cad.measure_cad`)."""
+    rs = ruleset or RuleSet.load()
+    values = dict(meas.values)
     for rule in rs.rules:
         needed = list(rule.measures) + ([rule.measure] if rule.measure else []) + rule.show
         unknown = [k for k in needed if k not in values]
