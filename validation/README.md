@@ -171,3 +171,17 @@ every mesh, its random values being keyed on the CAD, not the mesh):
   on every copy), tested with `ab -n 3 --fidelity quick`: F_u +13.5 % (90 % interval
   +3.7 % to +23.4 %, stronger with 3 of 3 seeds); the deck stringers under the plate then
   govern.
+
+### 3.5 The linear screen against the crush
+
+`bridgesim screen` solves the same model linearly (seconds) and says where damage starts.
+On Bridge_v6 (perfect bridge, standard mesh, 6 s) it puts the bridge's stiffness under the
+plate at 678 kgf/mm (the crush's load against jack travel, ~450 kgf/mm, includes the
+press's own compliance, ~2000 kgf/mm, and the 0.3 mm seating). Its most loaded parts are the
+four end-grain joints of the deck stringers to the cross-beam under the plate (their
+limit at 150 kgf), where the crush's glue damage starts first (50-190 kgf), and then the
+joints of the hub tie straps to the hub spreader (667 kgf), the first joints the crush
+separates (~790 kgf). It does not give F_u: those first joints let go long before the
+peak (~2690 kgf), as the load finds other paths, which only the crush follows
+(`test_linear_screen_matches_beam_theory` checks its stiffness and fibre limits against
+beam theory within 3 %).
