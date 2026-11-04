@@ -816,10 +816,13 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     # failed (never something that broke in the collapse afterwards)
     end = (fail_at if fail_at is not None else np.inf) + 0.5
     before = [e for e in events if e.travel_mm <= end]
-    near = [e for e in before if e.kind in ("joint_failure", "joint_cracking",
-                                            "member_fracture", "member_shear", "plate_crack",
-                                            "floss_break")
-            and abs(e.travel_mm - peak_travel) <= 3.0]
+    breaks = ("joint_failure", "joint_cracking", "member_fracture", "member_shear",
+              "plate_crack", "floss_break")
+    # what broke at the peak load (within 10 % of it), a clean break before a joint
+    # that only cracked; else what broke within 3 mm of jack travel of the peak
+    at_peak = [e for e in before if e.kind in breaks and e.force_N >= 0.9 * peak]
+    near = [e for e in at_peak if e.kind != "joint_cracking"] or at_peak or [
+        e for e in before if e.kind in breaks and abs(e.travel_mm - peak_travel) <= 3.0]
     first_major = near[0] if near else next(
         (e for e in before if e.kind in ("joint_failure", "member_fracture", "member_shear",
                                          "plate_crack", "floss_break")), None)
@@ -828,7 +831,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             fail_detail
     elif fail_mode == "collapse":
         soft = list(dict.fromkeys(e.what for e in before if e.kind == "glue_damage"
-                                  and abs(e.travel_mm - peak_travel) <= 3.0))
+                                  and e.force_N >= 0.9 * peak))
         if soft:
             fail_detail = ("no part broke before the load fell, but the glue of "
                            + "; ".join(soft[:3]) + (f" (and {len(soft) - 3} more)"
