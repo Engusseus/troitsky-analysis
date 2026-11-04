@@ -281,11 +281,14 @@ def cantilever(P_over: float = 1.0, E: float = 10000.0, L: float = 100.0, b: flo
 def lap_shear(tau_max: float, peel_to_shear: float = 0.5, Kn: float = 150.0,
               Ks: float = 60.0, GIc: float = 0.25, GIIc: float = 0.6,
               overlap: float = 20.0, width: float = 10.0, t: float = 2.0,
-              E: float = 10000.0, free: float = 40.0, rate: float = 20.0) -> TestResult:
+              E: float = 10000.0, free: float = 40.0, rate: float = 20.0,
+              n_ov: int = 8, n_glue: int = 9, one_node: bool = False) -> TestResult:
     """Single-lap joint of two sticks (overlap x width), pulled along X. Returns the
-    pull force; tau_avg = peak / (overlap * width)."""
+    pull force; tau_avg = peak / (overlap * width). The overlap has ``n_ov`` elements per
+    stick and ``n_glue`` rows of glue points, each hung on the nearest node of each stick
+    by a rigid arm (as in a bridge model, where a joint's glue points hang on fewer
+    nodes than there are points)."""
     n_free = 8
-    n_ov = 8
     # stick A from x=0 to free+overlap at y = 0; stick B overlaps, at y = t
     xa = np.r_[np.linspace(0, free, n_free + 1)[:-1], np.linspace(free, free + overlap,
                                                                     n_ov + 1)]
@@ -299,15 +302,19 @@ def lap_shear(tau_max: float, peel_to_shear: float = 0.5, Kn: float = 150.0,
     spec = BeamSpec(b=width, d=t, E=E)
     add_beam_line(m, na, spec, up=(0, 1, 0))
     add_beam_line(m, nb, spec, up=(0, 1, 0))
-    # glue springs: on the interface y = t/2, one per overlap node, 2 across the width
+    # glue springs: on the interface y = t/2, n_glue rows along the overlap, 2 across
     a_node, a_r0, ca, cb, area = [], [], [], [], []
-    ov_a = na[n_free:]
-    ov_b = nb[: n_ov + 1]
-    trib = np.full(n_ov + 1, overlap / n_ov)
+    ov_a = np.array(na[n_free:])
+    ov_b = np.array(nb[: n_ov + 1])
+    xg = np.linspace(free, free + overlap, n_glue)
+    trib = np.full(n_glue, overlap / (n_glue - 1))
     trib[[0, -1]] *= 0.5
-    for k, (ia, ib) in enumerate(zip(ov_a, ov_b, strict=True)):
+    for k, xq in enumerate(xg):
+        xn = free + overlap / 2 if one_node else xq  # one_node: all on the middle node
+        ia = int(ov_a[np.argmin(abs(m.X[ov_a, 0] - xn))])
+        ib = int(ov_b[np.argmin(abs(m.X[ov_b, 0] - xn))])
         for zq in (-width / 4, width / 4):
-            p = np.array([m.X[ia, 0], t / 2, zq])
+            p = np.array([xq, t / 2, zq])
             a_node += [ia, ib]
             a_r0 += [p - m.X[ia], p - m.X[ib]]
             ca.append(len(a_node) - 2)

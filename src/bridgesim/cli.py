@@ -455,7 +455,9 @@ def crush(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = N
 
 
 @app.command()
-def compare(result: Annotated[Path, typer.Argument(help="crush.json from bridgesim crush")],
+def compare(result: Annotated[Path, typer.Argument(
+                help="crush.json from bridgesim crush, or montecarlo.json from "
+                     "bridgesim montecarlo --out")],
             test: Annotated[Path, typer.Argument(help="Your crush test CSV (format of "
                                                       "validation/physical/"
                                                       "crush_test_template.csv)")],
@@ -524,6 +526,44 @@ def calibrate(data: Annotated[Path, typer.Argument(help="Folder with your test C
         typer.echo(f"  {line}")
     typer.echo(f"Wrote {out} (use it with --material {out})"
                + (f" and {ov_path} (use it with -o {ov_path})" if ov_path else ""))
+
+
+@app.command("calibrate-bridge")
+def calibrate_bridge(cad: CadArg,
+                     test: Annotated[Path, typer.Argument(
+                         help="Your crush test CSV of this bridge (format of "
+                              "validation/physical/crush_test_template.csv)")],
+                     overrides: OverridesOpt = None, material: MaterialOpt = None,
+                     fidelity: Annotated[str, typer.Option(help="quick, standard, fine")]
+                     = "standard",
+                     seed: Annotated[int, typer.Option(help="Seed (-1: perfect bridge)")]
+                     = 0,
+                     iterations: Annotated[int, typer.Option(
+                         help="Most crushes to run")] = 4,
+                     out: Annotated[Path, typer.Option(
+                         help="Overrides YAML to write: yours plus the fitted params")]
+                     = Path("fitted.overrides.yaml"),
+                     units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
+                     json_out: JsonOpt = False) -> None:
+    """Fit a global stiffness and a global strength factor so the simulated crush of
+    this bridge reproduces your physical crush test of it (one crush per step)."""
+    from bridgesim.sim import study
+
+    rep = _guard(json_out, lambda: study.calibrate_bridge(
+        cad, test, overrides, material or "popsicle_birch", fidelity=fidelity,
+        seed=None if seed < 0 else seed, iterations=iterations, progress=_progress,
+        units=units, up=up_axis, span=span_axis))
+    out.write_text(yaml.safe_dump(rep.overrides, sort_keys=False), encoding="utf-8")
+    if json_out:
+        typer.echo(rep.model_dump_json(indent=2))
+        return
+    for st_ in rep.steps:
+        typer.echo(f"  stiffness x{st_.stiffness_factor:.3f}, strength "
+                   f"x{st_.strength_factor:.3f}: F_u {st_.Fu_kgf:.1f} kgf "
+                   f"({st_.Fu_error:+.1%})" + (f", stiffness {st_.stiffness_error:+.1%}"
+                                               if st_.stiffness_error is not None else ""))
+    typer.echo(f"{'Converged' if rep.converged else 'NOT converged'}; wrote {out} "
+               f"(use it with -o {out}). {rep.note}")
 
 
 @app.command()
@@ -600,6 +640,12 @@ def sensitivity(cad: CadArg, overrides: OverridesOpt = None, material: MaterialO
                 = "quick",
                 processes: Annotated[int | None, typer.Option(
                     help="Crushes in parallel (default: one per 2 CPU cores)")] = None,
+                param: Annotated[list[str] | None, typer.Option(
+                    "--param", help="A value to vary (repeat the option; any key of "
+                                    "materials/simulation.yaml or material.<key>). "
+                                    "Default: the 9 that usually matter most")] = None,
+                seeds: Annotated[int, typer.Option(
+                    help="Average the effect over this many seeds (paired)")] = 1,
                 units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
                 json_out: JsonOpt = False) -> None:
     """Which material values move F_u most? Crushes the bridge with each one lowered
@@ -607,9 +653,9 @@ def sensitivity(cad: CadArg, overrides: OverridesOpt = None, material: MaterialO
     from bridgesim.sim import study
 
     rep = _guard(json_out, lambda: study.sensitivity(
-        cad, overrides, material or "popsicle_birch", rel=rel,
+        cad, overrides, material or "popsicle_birch", params=param or None, rel=rel,
         seed=None if seed < 0 else seed, fidelity=fidelity, processes=processes,
-        progress=_progress, units=units, up=up_axis, span=span_axis))
+        progress=_progress, units=units, up=up_axis, span=span_axis, seeds=seeds))
     if json_out:
         typer.echo(rep.model_dump_json(indent=2))
         return
@@ -626,7 +672,8 @@ def sensitivity(cad: CadArg, overrides: OverridesOpt = None, material: MaterialO
 @app.command()
 def schema(name: Annotated[str, typer.Argument(help="inspect, crush, reality_gap, lab, "
                                                      "montecarlo, design_comparison, "
-                                                     "sensitivity or question")],
+                                                     "sensitivity, bridge_calibration or "
+                                                     "question")],
            json_out: Annotated[bool, typer.Option("--json", help="Errors as JSON too (the "
                                                   "schema is always JSON)")] = False) -> None:
     """Print the JSON Schema of a report (for scripts and AI agents)."""

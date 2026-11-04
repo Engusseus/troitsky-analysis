@@ -757,7 +757,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                     criteria["contact"] = {"t_s": st.t, "travel_mm": travel, "load_N": force,
                                            "part": nm}
                     ev("criterion", "contact", f"'{nm}' touches the base platform")
-                xs = st.x[:-1, 0]
+                # the bridge itself, not debris flying off it (loose fragments)
+                xs = st.x[:-1, 0][~st.loose[:-1]]
                 if (xs < m.frame_x[0]).any() or (xs > m.frame_x[1]).any():
                     criteria["contact"] = {"t_s": st.t, "travel_mm": travel,
                                            "load_N": force, "part": "press frame"}

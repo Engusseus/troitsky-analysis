@@ -121,10 +121,18 @@ def test_three_point_bending():
 
 def test_lap_shear_reproduces_tau_g():
     """With the calibrated peak/average factor, the simulated 20 x 10 mm single-lap test
-    gives the material's tau_g (what the bridge model assumes for every joint)."""
-    f = SP["glue.tau_peak_over_avg"]
-    r = lab.lap_shear(2.0 * f)
-    assert r.peak / 200 == pytest.approx(2.0, rel=0.05)
+    gives the material's tau_g (what the bridge model assumes for every joint), whether
+    its glue points hang on 9 nodes per side or on 1, 2, 3 or 5 (as in a coarse bridge
+    mesh): the factor the bridge model uses for that node count gives tau_g within 5 %,
+    so a joint's strength does not jump when the mesh changes."""
+    import math
+
+    P = SP["glue.tau_peak_over_avg"]
+    assert lab.lap_shear(2.0 * P).peak / 200 == pytest.approx(2.0, rel=0.02)
+    for n_ov, one, nodes in ((2, True, 1), (1, False, 2), (2, False, 3), (4, False, 5)):
+        f = 1.0 + (P - 1.0) * (1.0 - math.exp(-2.2 * (nodes - 1)))
+        r = lab.lap_shear(2.0 * f, n_ov=n_ov, one_node=one)
+        assert r.peak / 200 == pytest.approx(2.0, rel=0.05), nodes
 
 
 def test_energy_is_conserved_without_damping():
@@ -213,6 +221,41 @@ def test_compiled_shell_damage_matches_numpy():
     assert (st.s_gone == st2.s_gone).all()
     assert np.abs(F - F2).max() <= 1e-8 * max(1.0, np.abs(F2).max())
     assert np.abs(Mo - Mo2).max() <= 1e-8 * max(1.0, np.abs(Mo2).max())
+
+
+def test_glue_line_crushing_densifies():
+    """Wood pressed at a glue line crushes at f_c (permanent set), hardens as it compacts
+    and locks up once crushed by the densification strain of its depth: a block cannot
+    push through a 4 mm plate. Compiled kernel = NumPy reference."""
+    from bridgesim.sim.lab import blank_model
+
+    pytest.importorskip("numba")
+    out = {}
+    for impl in (S.internal_and_contact, S.internal_and_contact_numpy):
+        m = blank_model(np.zeros((2, 3)))
+        m.mass[:], m.rot_inertia[:] = 1.0, 1.0
+        m.a_node, m.a_r0 = np.array([0, 1]), np.zeros((2, 3))
+        m.c_a, m.c_b, m.c_area = np.array([0]), np.array([1]), np.array([1.0])
+        m.c_n0, m.c_Kn, m.c_Ks = np.array([[0.0, 1.0, 0.0]]), np.array([150.0]), np.array([60.0])
+        m.c_sig, m.c_tau = np.array([1.0]), np.array([2.0])
+        m.c_GIc, m.c_GIIc, m.c_mu = np.array([0.25]), np.array([0.6]), np.array([0.4])
+        m.c_patch, m.c_breakable = np.array([0]), np.array([True])
+        m.params.update(glue_fc=np.array([5.0]), glue_cdep=np.array([4.0]),
+                        densification_strain=0.45, densified_E=500.0)
+        st = S.initial_state(m, 1e12)
+        F, Mo = np.zeros((2, 3)), np.zeros((2, 3))
+        rec = []
+        for push in np.linspace(0, 3.0, 301):
+            st.x[1, 1] = -push
+            impl(m, st, S.Settings(dt=1e-6, beta_frac=0.0), F, Mo)
+            rec.append((abs(F[1, 1]), -st.c_crush[0]))
+        out[impl.__name__] = np.array(rec)
+    a, b = out.values()
+    np.testing.assert_allclose(a, b, atol=1e-9)
+    stress, crush = a[:, 0], a[:, 1]
+    assert stress[10] == pytest.approx(5.0 * (1 + crush[10] / 4), rel=0.02)  # crushing
+    assert 5.0 < stress[100] < 7.0  # 1 mm: hardening as it compacts
+    assert stress[-1] > 50 and crush[-1] < 2.6  # densified: no pushing through
 
 
 def test_shell_fracture_energy_is_mesh_independent():
@@ -389,6 +432,86 @@ def test_next_steps_and_job_commands_parse(synthetic_crush, tmp_path):
     for cmd in cmds:
         assert cmd[1:3] == ["-m", "bridgesim.cli"]
         _parse_cli(cmd[3:])
+
+
+def test_section_scale_what_if(tmp_path):
+    """A what-if without the CAD: section_scale thickens a member (area x s^2) or a plate
+    (thickness x s), adds its mass to the bridge and the mass rule, and is refused on a
+    rigid block; bad values are reported."""
+    from bridgesim.sim import study
+
+    write_stl(simple_beam_bridge(), tmp_path / "b.stl")
+    r0 = study.inspect(tmp_path / "b.stl")
+    bars = [b for b in r0.bodies if b.kind == "bar"]
+    shells = [b for b in r0.bodies if b.kind == "shell"]
+    ov = {"bodies": {bars[0].name: {"section_scale": 1.5},
+                     shells[0].name: {"section_scale": 2.0}}}
+    r1 = study.inspect(tmp_path / "b.stl", ov)
+    b1 = {b.name: b for b in r1.bodies}
+    assert b1[bars[0].name].mass_g == pytest.approx(bars[0].mass_g * 2.25, rel=1e-3)
+    assert b1[shells[0].name].thickness_mm == pytest.approx(2 * shells[0].thickness_mm)
+    added = (b1[bars[0].name].mass_g - bars[0].mass_g + b1[shells[0].name].mass_g
+             - shells[0].mass_g) / 1000
+    assert r1.mass_kg == pytest.approx(r0.mass_kg + added, abs=2e-3)
+    assert any(w.startswith("what-if:") for w in r1.warnings)
+    bad = study.inspect(tmp_path / "b.stl", {"bodies": {bars[0].name: {"section_scale": -1}}})
+    assert any("section_scale" in w and "above 0" in w for w in bad.warnings)
+
+
+def test_compare_against_a_montecarlo_range(tmp_path):
+    """compare places a real test inside or outside a montecarlo spread."""
+    from bridgesim.sim import study
+    from bridgesim.sim.report import MonteCarloReport
+
+    mc = MonteCarloReport(file="b.stl", n=5, Fu_kgf=[90, 95, 100, 105, 110], p05_kgf=91,
+                          p50_kgf=100, p95_kgf=109, failure_modes={"collapse": 5},
+                          recommended_prediction_kgf=98)
+    (tmp_path / "montecarlo.json").write_text(mc.model_dump_json())
+    for load, inside in ((103, True), (140, False)):
+        (tmp_path / "t.csv").write_text("test,load_kgf,event,notes\n"
+                                        f"T1,{load},failure,top chord\n")
+        gap = study.compare(tmp_path / "montecarlo.json", tmp_path / "t.csv")
+        assert ("inside" in gap.metrics[0].meaning) == inside
+        assert gap.competition_prediction_error == pytest.approx(abs(load - 98) / load,
+                                                                 abs=1e-3)
+    assert "too strong" not in gap.advice[0] and "too weak" in gap.advice[0]
+
+
+def test_bridge_calibration_recovers_known_factors(tmp_path):
+    """A 'test' made by crushing a laminated beam on two piers with its stiffness x0.8:
+    calibrate-bridge finds the stiffness factor, leaves the strength alone (the beam
+    breaks at its bending strength either way) and matches F_u and the stiffness."""
+    import csv as _csv
+
+    from bridgesim.cad.synthetic import box
+    from bridgesim.sim import study
+
+    pytest.importorskip("numba")
+    write_stl([box("Pier L", (-550, 0, -40), (-540, 150, 40)),
+               box("Pier R", (540, 0, -40), (550, 150, 40)),
+               box("Beam", (-550, 150, -25), (550, 179.4, 25))], tmp_path / "beam.stl")
+    ov = {"bodies": {"Pier*": {"kind": "block"},
+                     "Beam": {"layup": "14-ply UD", "butt_stagger_mm": 0}}}
+    true = json.loads(json.dumps(ov))
+    true["params"] = {k: v * 0.8 for k, v in (
+        ("material.E_MPa", MAT.E_MPa.value), ("material.G_MPa", MAT.G_MPa.value),
+        ("wood.E_T_MPa", SP["wood.E_T_MPa"]), ("glue.K_n_N_per_mm3", SP["glue.K_n_N_per_mm3"]),
+        ("glue.K_s_N_per_mm3", SP["glue.K_s_N_per_mm3"]))}
+    rep, _ = study.crush(tmp_path / "beam.stl", true, seed=None, fidelity="quick",
+                         replay=False, options=study._screening("quick"))
+    L, D = rep.curve.load_kgf, rep.curve.deflection_mm
+    k = int(np.argmax(np.array(L) >= 0.999 * rep.Fu_kgf))
+    with (tmp_path / "test.csv").open("w", newline="") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["test", "load_kgf", "midspan_deflection_mm", "event", "notes"])
+        for i in range(k + 1):
+            w.writerow(["T1", L[i], D[i], "failure" if i == k else "", "Beam"])
+    cal = study.calibrate_bridge(tmp_path / "beam.stl", tmp_path / "test.csv", ov,
+                                 fidelity="quick", seed=None, iterations=4)
+    assert cal.converged, cal.steps
+    assert cal.stiffness_factor == pytest.approx(0.8, rel=0.05)
+    assert cal.strength_factor == pytest.approx(1.0, rel=0.05)
+    assert "material.E_MPa" in cal.overrides["params"] and "bodies" in cal.overrides
 
 
 def test_synthetic_bridge_crush(synthetic_crush):
@@ -780,9 +903,10 @@ def test_background_jobs_survive_a_server_restart(tmp_path):
     assert json.loads(M.job_status_impl(str(tmp_path / "nothing")))["status"] == "unknown"
 
 
-def test_compare_with_real_competition_records(synthetic_crush, tmp_path):
-    """A peak-only record (what the competition gives) is compared; a much softer, weaker
-    test curve scores low; the failure location respects the side."""
+def test_compare_with_competition_style_records(synthetic_crush, tmp_path):
+    """Records shaped like the competition's (synthetic data: no physical test is in the
+    repository): a peak-only record is compared; a much softer, weaker test curve scores
+    low; the failure location respects the side."""
     from bridgesim.sim import study
     from bridgesim.sim.study import _part_match
 
@@ -848,7 +972,7 @@ def test_agent_docs_match_the_code():
     rows = re.findall(r"^\| `(bridgesim [^`]+)`", doc, flags=re.M)
     assert len(rows) >= 9
     for row in rows:
-        cmd = row.replace("\\|", "|")
+        cmd = row.replace("\\|", "|").replace("]...", "]")  # "..." marks a repeatable option
         for variant in (re.sub(r"\[([^\[\]]*)\]", r"\1", cmd), re.sub(r"\[[^\[\]]*\]", "", cmd)):
             argv = [{"N": "0"}.get(t, t).split("|")[0] for t in variant.split()]
             _parse_cli(argv[1:])

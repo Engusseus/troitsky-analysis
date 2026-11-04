@@ -96,6 +96,9 @@ class NextStep(BaseModel):
     where_mm: list[list[float]] = Field([], description="Where those parts are (x, y, z)")
     ids: list[str] = Field([], description="Question ids concerned")
     cli: str | None = Field(None, description="The command to run (MCP: the matching tool)")
+    overrides: dict[str, Any] = Field({}, description=(
+        "A what-if to try before changing the CAD (strengthen): merge it into a copy of "
+        "your overrides, save it as the file the `cli` names (whatif.yaml), and run it"))
 
 
 class InspectReport(BaseModel):
@@ -211,8 +214,10 @@ class CrushReport(BaseModel):
     Fu_N: float
     failure_mode: FailureMode = Field(description="collapse (the load fell to half its "
                                                   "peak), deflection (> 50 mm), contact "
-                                                  "(with the platform), instability "
-                                                  "(collapsed under self-weight, F_u = 0), "
+                                                  "(with the platform other than at the "
+                                                  "supports, or with the press uprights), "
+                                                  "instability (collapsed under "
+                                                  "self-weight, F_u = 0), "
                                                   "none (no failure within the jack travel)")
     failure_detail: str
     deflection_at_Fu_mm: float
@@ -354,6 +359,7 @@ class SensitivityReport(BaseModel):
     file: str
     fidelity: str
     seed: int | None
+    seeds: int = Field(1, description="F_u is averaged over seeds seed, seed + 1, ...")
     rel: float = Field(description="Each value is varied by -rel and +rel")
     Fu_base_kgf: float
     items: list[SensitivityItem] = Field(description="Most influential first")
@@ -362,7 +368,41 @@ class SensitivityReport(BaseModel):
     note: str = ""
 
 
+class CalibrationStep(BaseModel):
+    stiffness_factor: float
+    strength_factor: float
+    Fu_kgf: float
+    stiffness_kgf_per_mm: float | None
+    Fu_error: float = Field(description="(simulated - test) / test")
+    stiffness_error: float | None = None
+    first_failure: str = ""
+
+
+class BridgeCalibration(BaseModel):
+    """Global stiffness and strength factors fitted so the simulated crush of a bridge
+    reproduces a physical crush test of it (model updating, not validation)."""
+
+    schema_version: str = SCHEMA_VERSION
+    kind: Literal["bridge_calibration"] = "bridge_calibration"
+    file: str
+    test: str
+    fidelity: str
+    seed: int | None
+    test_Fu_kgf: float
+    test_stiffness_kgf_per_mm: float | None
+    test_failure: str = ""
+    stiffness_factor: float = Field(description="Multiplies E, G, E_T and the glue "
+                                                "stiffness")
+    strength_factor: float = Field(description="Multiplies every strength: f_t, f_c, f_v, "
+                                               "f_b, tau_g, f_c90, f_t90")
+    converged: bool
+    steps: list[CalibrationStep]
+    overrides: dict[str, Any] = Field(description="Your overrides with the fitted params: "
+                                                  "use them for the next crushes")
+    note: str = ""
+
+
 SCHEMAS = {"inspect": InspectReport, "crush": CrushReport, "reality_gap": RealityGap,
            "lab": LabReport, "montecarlo": MonteCarloReport, "question": Question,
            "design_comparison": DesignComparison,
-           "sensitivity": SensitivityReport}
+           "sensitivity": SensitivityReport, "bridge_calibration": BridgeCalibration}

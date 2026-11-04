@@ -62,7 +62,9 @@ class Overrides:
     strength of every glue line on that body, e.g. 0.5 for a poorly glued part) and
     ``strength_factor``; ``butt_stagger_mm`` is the distance between the butt joints of
     adjacent plies of a laminated member longer than one stick (0: no butt joints, e.g.
-    built from full-length strips). ``params`` overrides values of ``materials/simulation.yaml``
+    built from full-length strips). ``section_scale`` is a what-if: it scales a member's
+    cross-section (both sides) or a plate's thickness, and its mass, without changing the
+    CAD or its glued areas. ``params`` overrides values of ``materials/simulation.yaml``
     (e.g. ``floss.strands: 6``). ``glue`` maps ``"Body A | Body B"`` to a factor.
     """
 
@@ -74,7 +76,8 @@ class Overrides:
     used: set = field(default_factory=set)  # patterns and glue keys that matched
 
     KINDS = ("bar", "shell", "block", "cable", "ignore")
-    FIELDS = ("kind", "layup", "grain", "glue_factor", "strength_factor", "butt_stagger_mm")
+    FIELDS = ("kind", "layup", "grain", "glue_factor", "strength_factor", "butt_stagger_mm",
+              "section_scale")
 
     def for_body(self, name: str) -> dict:
         out: dict = {}
@@ -114,6 +117,12 @@ class Overrides:
                                "e.g. '10-ply UD', '2-ply 0-90', '4-ply +-45')")
                 elif k == "grain" and v not in ("long", "span"):
                     out.append(f"overrides: grain {v!r} for {pat!r} must be long or span")
+                elif k in ("section_scale", "glue_factor", "strength_factor") and not (
+                        isinstance(v, (int, float)) and 0 <= v <= 10
+                        and (k != "section_scale" or v > 0)):
+                    out.append(f"overrides: {k} {v!r} for {pat!r} must be a number "
+                               + ("above 0" if k == "section_scale" else ">= 0")
+                               + " (at most 10)")
         for key in self.glue:
             if key not in self.used:
                 out.append(f"overrides: glue joint {key!r} not found (write 'Body A | Body "
@@ -656,9 +665,26 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     snap_modes: set = set()
     G_f = sp["wood.G_f_N_per_mm"]
 
+    mass_change_t = 0.0
     for bi, (b, sh) in enumerate(zip(bodies, shapes, strict=True)):
         o = ov.for_body(b.name)
         vol = b.mesh.volume
+        # what-if: a member's section (both sides) or a plate's thickness scaled
+        ssc = o.get("section_scale", 1.0)
+        ssc = float(ssc) if isinstance(ssc, (int, float)) and ssc > 0 else 1.0
+        if ssc != 1.0:
+            if sh.kind in ("bar", "shell"):
+                vfac = ssc * ssc if sh.kind == "bar" else ssc
+                dm = rho * vol * (vfac - 1) * (1 + glue_frac)
+                mass_change_t += dm
+                what = "section" if sh.kind == "bar" else "thickness"
+                notes.append(f"what-if: '{b.name}' {what} x{ssc:g} (mass "
+                             f"{dm / TONNE_PER_KG * 1000:+.1f} g); the CAD and its glued "
+                             "areas are unchanged")
+                vol *= vfac
+            else:
+                notes.append(f"overrides: section_scale has no effect on '{b.name}' "
+                             f"(a {sh.kind}; only members and plates can be scaled)")
         mass_t = rho * vol * (1 + glue_frac)
         info = BodyInfo(b.name, sh.kind, sh.layup.label, sh.layup.source,
                         mass_t / TONNE_PER_KG, vol)
@@ -673,7 +699,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         Sf = scatter(sp["scatter.strength_cov"], f"S:{b.name}") * float(
             o.get("strength_factor", 1.0))
         if sh.kind == "bar":
-            T, Wp = sh.T, sh.Wp
+            T, Wp = sh.T * ssc, sh.Wp * ssc
             if sh.layup.kind == "toothpick":
                 Wp = T = math.sqrt(4 * vol / max(sh.Lp, 1e-9) / math.pi)
                 lam = laminate(ply, [0.0], T)
@@ -780,7 +806,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             info.length_mm = L
             info.nodes = list(ids)
         elif sh.kind == "shell":
-            T = sh.T
+            T = sh.T * ssc
             lam_ref = laminate(ply, sh.layup.angles, T)
             o_mid = sh.origin - sh.n * T / 2
             area = sh.poly.area
@@ -918,14 +944,29 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     sp_glue = {k: sp[f"glue.{k}"] for k in ("K_n_N_per_mm3", "K_s_N_per_mm3",
                                             "peel_to_shear", "G_Ic_N_per_mm",
                                             "G_IIc_N_per_mm", "friction")}
-    # peak cohesive strength such that the simulated 20 mm lap test gives tau_g
-    # (ratio found with `bridgesim lab`; tests/test_sim.py checks it)
-    peak_over_avg = sp.values.get("glue.tau_peak_over_avg", 1.17)
-    tau_max = mat.glue.tau_g_MPa.value * peak_over_avg
+    # peak cohesive strength such that the simulated 20 mm lap test gives tau_g. How
+    # much the peak exceeds the average depends on how many nodes the glue points hang
+    # on: with one node per side the glue shears uniformly (1.0); as soon as a side's
+    # stretching is resolved the shear-lag peak appears. Fitted to the lap coupon with
+    # its glue on 1, 2, 3, 4, 5 and 9 nodes per side (1.01, 1.11, 1.20, 1.15, 1.16, 1.15;
+    # tests/test_sim.py checks it), so a joint's strength does not jump with the mesh
+    peak_over_avg = sp.values.get("glue.tau_peak_over_avg", 1.155)
+
+    def peak_factor(n_nodes: int) -> float:
+        return 1.0 + (peak_over_avg - 1.0) * (1.0 - math.exp(-2.2 * (n_nodes - 1)))
+
     end_factor = sp.values.get("glue.end_grain_factor", 0.5)
+    zone = sp.values.get("wood.crush_zone_depth_factor", 3.0)
+
+    def crush_depth(i: int, n: np.ndarray) -> float:
+        ext = float(np.ptp(bodies[i].mesh.vertices @ n))
+        sh = shapes[i]
+        dims = [x for x in (sh.T, sh.Wp) if x and x > 0]
+        return max(0.5, min(ext, zone * min(dims)) if dims else ext)
+
     springs: dict[str, list] = {k: [] for k in ("a", "b", "area", "n0", "Kn", "Ks", "sig",
                                                 "tau", "GIc", "GIIc", "mu", "patch",
-                                                "breakable", "d0", "fc")}
+                                                "breakable", "d0", "fc", "cdep")}
     end_grain_joints: list[tuple[str, str, float]] = []
     patches: list[Patch] = []
     for ia, ib, pts3, na, area, _inter, wts in patch_pts3:
@@ -949,18 +990,19 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         fa, ea = grain_bearing(shapes[ia], na, ply.f_c, ply.f_c90)
         fb, eb = grain_bearing(shapes[ib], na, ply.f_c, ply.f_c90)
         f_bear = min(fa, fb)
+        # the depth of wood that can crush: the weaker side's extent along the normal,
+        # at most a few times its thickness (the zone a local load compacts)
+        c_dep = min(crush_depth(i, na) for i, f in ((ia, fa), (ib, fb))
+                    if f <= 1.05 * f_bear)
         e_end = max(ea, eb)  # share of the plies on a side meeting the glue end-on
         gf *= 1.0 - e_end * (1.0 - end_factor)
         if e_end > 0.5:
             end_grain_joints.append((bodies[ia].name, bodies[ib].name, float(area)))
         att_a = [attach(ia, p) for p in pts3]
         att_b = [attach(ib, p) for p in pts3]
-        # glue points that all hang on one or two nodes of each part (rigid arms): the
-        # joint has no shear lag, so it takes the lap test's average strength tau_g; on
-        # plates the glue points spread over the nodes and 1.17 tau_g is the peak
-        rigid = len({bld.att_node[a] for a in att_a}) <= 2 and \
-            len({bld.att_node[b] for b in att_b}) <= 2
-        tau_p = tau_max / peak_over_avg if rigid else tau_max
+        n_nodes = max(len({bld.att_node[a] for a in att_a}),
+                      len({bld.att_node[b] for b in att_b}))
+        tau_p = mat.glue.tau_g_MPa.value * peak_factor(n_nodes)
         for wa, a_, b_ in zip(wts, att_a, att_b, strict=True):
             springs["d0"].append(1.0 if gf <= 0 else 0.0)  # glue_factor 0: not glued
             springs["a"].append(a_)
@@ -978,6 +1020,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             springs["patch"].append(pid)
             springs["breakable"].append(True)
             springs["fc"].append(f_bear)
+            springs["cdep"].append(c_dep)
             patches[pid].springs.append(len(springs["a"]) - 1)
     if end_grain_joints:
         names = sorted({f"{a} | {b}" for a, b, _ in end_grain_joints})
@@ -1044,6 +1087,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             springs["breakable"].append(False)
             springs["d0"].append(0.0)
             springs["fc"].append(1e30)
+            springs["cdep"].append(1e30)
             patches[pid].springs.append(len(springs["a"]) - 1)
         questions.append({
             "id": f"loose:{b.name}", "body": b.name, "topic": "connection",
@@ -1286,7 +1330,11 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 "c_d0": np.array(springs["d0"], float),
                 "fmax_p": np.array(p_fmax, float), "fmax_q": np.array(q_fmax, float),
                 "p_lift": p_lift, "seating_mm": sp["contact.seating_mm"],
+                "mass_change_kg": mass_change_t / TONNE_PER_KG,
                 "glue_fc": np.array(springs["fc"], float),
+                "glue_cdep": np.array(springs["cdep"], float),
+                "densification_strain": sp.values.get("wood.densification_strain", 0.45),
+                "densified_E": sp["wood.E_T_MPa"],
                 "plate_offset_mm": [float(off[0]), float(off[1])],
                 "seed": seed},
         questions=_merge_butt_questions(questions), notes=notes)

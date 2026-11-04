@@ -26,6 +26,10 @@ wood:
                  note: "Fracture energy of a ply failing in shear along the grain (mode II). Wood: 0.5-2 N/mm."}
   crush_softening: {value: 0.3, source: assumed,
                     note: "Compressive strength lost after crushing (0.3 = strength drops to 70 % of f_c)."}
+  densification_strain: {value: 0.45, source: assumed,
+                         note: "Wood crushed at a glue line or under a load compacts until its cells have collapsed, at about this share of the crushed depth (birch, relative density ~0.4: 0.4-0.5); past it, densified wood is about as stiff as wood across the grain."}
+  crush_zone_depth_factor: {value: 3.0, source: assumed,
+                            note: "Depth of wood a local load compacts, in thicknesses of the part being crushed (the crushed depth is also at most the part's own extent)."}
 
 glue:
   K_n_N_per_mm3: {value: 150, source: assumed,
@@ -39,8 +43,8 @@ glue:
                      note: "Strength of a glue line on end grain (a member's end, a plate's edge) / on side grain. End grain soaks up the glue; 0.3-0.6 without sizing. Glue two sticks end to end and pull them apart to measure it."}
   friction: {value: 0.4, source: assumed,
              note: "Wood-on-wood friction once a glue line has broken (pieces still bear and rub)."}
-  tau_peak_over_avg: {value: 1.17, source: assumed,
-                      note: "Peak cohesive strength / average lap-joint strength tau_g. 1.17 makes the simulated 20 x 10 mm single-lap test (bridgesim lab) reproduce tau_g; recompute it if you change the glue stiffness or fracture energies."}
+  tau_peak_over_avg: {value: 1.155, source: assumed,
+                      note: "Peak cohesive strength / average lap-joint strength tau_g, for a joint whose glue points hang on several nodes per side. 1.155 makes the simulated 20 x 10 mm single-lap test (bridgesim lab) reproduce tau_g; with the glue on one node per side the factor falls smoothly to 1 (uniform shear). Recompute it if you change the glue stiffness or fracture energies."}
 
 floss:
   strands: {value: 4, source: assumed,

@@ -69,23 +69,33 @@ assumed tight in compression (they bear).
 * Glue law: penalty stiffness K_n, K_s (glue line + adjacent wood), quadratic initiation
   (sigma/sigma_max)^2 + (tau/tau_max)^2 = 1, linear softening with mixed-mode fracture
   energy (Benzeggagh-Kenane, G_Ic, G_IIc). tau_max is tau_g of the material file times
-  1.17, the ratio found by the simulated 20 mm lap test (`bridgesim lab`), so the
-  simulated lap test reproduces the measured tau_g (checked in the tests). Peel strength = 0.5 tau_max.
+  the peak/average ratio of the simulated 20 mm lap test (`bridgesim lab`), so a joint
+  reproduces the measured tau_g (checked in the tests). Peel strength = 0.5 tau_max.
 * A broken glue line keeps **bearing in compression** and **slides with friction**
   (mu = 0.4): pieces still lean on each other after the glue lets go.
 * The wood at a glue line **crushes** when the joint is pressed together, at the
   strength of each side for the direction of the joint (Hankinson's formula between f_c
   along the grain and f_c90 across it, averaged over the plies; the weaker side governs),
   and keeps the permanent set: a member's end pressed into the face of a plate crushes
-  the plate across its grain (f_c90), two members end to end bear at f_c.
+  the plate across its grain (f_c90), two members end to end bear at f_c. Crushed wood
+  **compacts**: the crushing stress rises with the crushed share of the depth that can
+  crush (the weaker part's extent along the joint normal, at most
+  `wood.crush_zone_depth_factor` = 3 times its thickness), and once crushed by
+  `wood.densification_strain` (0.45) of it the wood is densified and about as stiff as
+  wood across the grain: a block cannot push through a plate
+  (`test_glue_line_crushing_densifies`). A crushed pair keeps bearing; the crushed part's
+  own section is not reduced.
 * **End grain** holds glue poorly: the glue strength of a joint is multiplied by
   1 - e (1 - `glue.end_grain_factor`), e being the share of a side's plies meeting the
   joint end-on (0.5 placeholder: a member's end glued flat gets half, a 0/90 plate's edge
   three quarters). Joints that are mostly end grain are listed in a question.
-* Where all the glue points of a joint hang on one or two nodes of each part (bars and
-  blocks: rigid arms, no shear lag inside the joint), the cohesive strength is tau_g
-  itself; on plates the glue points are spread over the plate's nodes and the joint
-  shows the shear lag of the lap test, so the peak strength is 1.17 tau_g.
+* **Shear lag and the mesh.** The glue points of a joint hang on the nearest nodes of
+  each part (rigid arms), so how much shear lag a joint shows depends on how many nodes
+  that is. The lap coupon with its glue hung on 1, 2, 3, 4, 5 and 9 nodes per side needs a
+  peak/average ratio of 1.01, 1.11, 1.20, 1.15, 1.16 and 1.15 to give tau_g; the model
+  uses 1 + 0.155 (1 - exp(-2.2 (n - 1))) with n the larger node count of the two sides
+  (within 4 % of each), so a joint's capacity (tau_g times its area) does not jump
+  when the mesh changes.
 * A joint is reported **cracking** when 30 % of its glued area has let go and
   **separated** (`joint_failure`) at 90 % (area-weighted over its glue points); the
   first separation sets `Fu_first_joint_failure_kgf`.

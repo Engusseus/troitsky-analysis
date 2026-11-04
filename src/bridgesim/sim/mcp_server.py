@@ -290,7 +290,7 @@ def build_server():
     @srv.tool()
     @_safe
     def start_montecarlo(cad_path: str, out_dir: str, n: int = 8, overrides_yaml: str = "",
-                         fidelity: str = "quick", material: str = "") -> str:
+                         fidelity: str = "standard", material: str = "") -> str:
         """Start n crushes with different imperfections and material scatter in the
         background (spread of F_u and the value for the Load Prediction Form). Poll
         job_status(out_dir)."""
@@ -331,15 +331,44 @@ def build_server():
     @srv.tool()
     @_safe
     def start_sensitivity(cad_path: str, out_dir: str, overrides_yaml: str = "",
-                          rel: float = 0.2, fidelity: str = "quick", material: str = "") -> str:
+                          rel: float = 0.2, fidelity: str = "quick", material: str = "",
+                          params: list[str] | None = None, seeds: int = 1) -> str:
         """Which material values move F_u most? Starts, in the background, crushes with
         each placeholder value lowered and raised by rel; the report (job_status) ranks
-        them and lists what to measure first."""
+        them and lists what to measure first. params: the values to vary (keys of
+        materials/simulation.yaml or material.<key>; default the 9 that usually matter
+        most); seeds > 1 averages over that many seeds."""
         cad_path = _infile(cad_path, "CAD file")
         out = _outpath(out_dir)
         out.mkdir(parents=True, exist_ok=True)
         cmd = [sys.executable, "-m", "bridgesim.cli", "sensitivity", cad_path, "--rel",
-               str(rel), "--fidelity", fidelity, "--json"]
+               str(rel), "--fidelity", fidelity, "--seeds", str(seeds), "--json"]
+        for p_ in params or []:
+            cmd += ["--param", p_]
+        if overrides_yaml:
+            (out / "overrides.yaml").write_text(overrides_yaml, encoding="utf-8")
+            cmd += ["--overrides", str(out / "overrides.yaml")]
+        if material:
+            cmd += ["--material", material]
+        return _start(cmd, out)
+
+    @srv.tool()
+    @_safe
+    def start_calibrate_bridge(cad_path: str, test_csv_path: str, out_dir: str,
+                               overrides_yaml: str = "", fidelity: str = "standard",
+                               seed: int = 0, material: str = "") -> str:
+        """After a physical crush test of this bridge: fit a global stiffness and a
+        global strength factor so its simulated crush reproduces the test (up to 4
+        crushes, in the background). The report (job_status) has the factors, each step,
+        and `overrides` (also written to out_dir/fitted.overrides.yaml) to use for the
+        next crushes. The test is then used up for validation."""
+        cad_path = _infile(cad_path, "CAD file")
+        test_csv_path = _infile(test_csv_path, "test record")
+        out = _outpath(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        cmd = [sys.executable, "-m", "bridgesim.cli", "calibrate-bridge", cad_path,
+               test_csv_path, "--fidelity", fidelity, "--seed", str(seed), "--out",
+               str(out / "fitted.overrides.yaml"), "--json"]
         if overrides_yaml:
             (out / "overrides.yaml").write_text(overrides_yaml, encoding="utf-8")
             cmd += ["--overrides", str(out / "overrides.yaml")]
@@ -360,7 +389,9 @@ def build_server():
         """Reality gap between a simulated crush (crush.json) and a physical crush test
         CSV (columns load_kgf, midspan_deflection_mm, event, notes; a row with event
         'failure' and the broken part in notes). Returns per-metric errors, a 0-100 score
-        and advice on what to measure to close the gap."""
+        and advice on what to measure to close the gap. crush_json_path may also be a
+        montecarlo.json (start_montecarlo's out_dir): the test is then placed in the
+        predicted range."""
         return study.compare(_infile(crush_json_path, "crush report"),
                              _infile(test_csv_path, "test record")).model_dump_json()
 
@@ -396,7 +427,7 @@ def build_server():
     @_safe
     def get_schema(name: str) -> str:
         """JSON Schema of a report: inspect, crush, reality_gap, lab, montecarlo,
-        design_comparison, sensitivity or question."""
+        design_comparison, sensitivity, bridge_calibration or question."""
         if name not in SCHEMAS:
             raise ValueError(f"unknown schema {name!r}; use one of {', '.join(SCHEMAS)}")
         return json.dumps(SCHEMAS[name].model_json_schema())

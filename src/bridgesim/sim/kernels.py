@@ -576,7 +576,7 @@ def _add(F, Mo, nd, arm, f, sign):
 @njit(cache=True, fastmath=True, error_model="numpy")
 def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GIIc, mu,
                 breakable, dmax, dd, slip, F, Mo, update, beta, dt, prev, alive, crush,
-                fc90):
+                fc90, cdep, eps_d, E_d):
     nc = ca.shape[0]
     pa = np.empty(3)
     pb = np.empty(3)
@@ -610,12 +610,22 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
         s = math.sqrt(s2)
         kn = Kn[i]
         # the wood at a glue line crushes (permanent set) at fc90[i]: across or along
-        # its grain depending on the joint (Hankinson)
+        # its grain depending on the joint (Hankinson). It hardens as the crushed zone
+        # (depth cdep[i]) compacts, and once its cells have collapsed (eps_d of the depth)
+        # it is densified wood, about as stiff as wood across the grain (E_d)
         dn = dn - crush[i]
-        if kn * dn < -fc90[i]:
+        q = -crush[i] / cdep[i]
+        if q < eps_d:
+            fy = fc90[i] * (1.0 + q)
+            hh = fc90[i] / cdep[i]
+        else:
+            fy = fc90[i] * (1.0 + eps_d) + E_d * (q - eps_d)
+            hh = E_d / cdep[i]
+        if kn * dn < -fy:
+            dp = (-kn * dn - fy) / (kn + hh)
             if update:
-                crush[i] += dn + fc90[i] / kn
-            dn = -fc90[i] / kn
+                crush[i] -= dp
+            dn = dn + dp
         dnp = dn if dn > 0.0 else 0.0
         ks = Ks[i]
         d = 0.0
@@ -647,9 +657,9 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
             if update:
                 dmax[i] = dmx
                 dd[i] = d
-            # a debonded pair that has turned, parted or passed through: the two points
-            # no longer face each other, so the pair stops acting as a contact
-            if d >= 0.999 and (nn < 1.6 or crush[i] < -3.0 or dn * dn + s2 > 9.0):
+            # a debonded pair that has turned, parted, or crushed through its whole depth:
+            # the two points no longer face each other, so the pair stops acting
+            if d >= 0.999 and (nn < 1.6 or crush[i] < -cdep[i] or dn * dn + s2 > 9.0):
                 if update:
                     alive[i] = False
                 continue

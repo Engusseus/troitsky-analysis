@@ -439,13 +439,20 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     ds = delta - dn[:, None] * n
     s = np.linalg.norm(ds, axis=1)
     Kn, Ks = m.c_Kn, m.c_Ks
-    # the wood under a glue line crushes across the grain at fc90 (permanent set)
+    # the wood under a glue line crushes (permanent set), hardening as it compacts and
+    # densified past eps_d of its depth (see kernels.glue_kernel)
     fc90 = _glue_fc90(m)
+    cdep, eps_d, E_d = _glue_crush(m)
     dn = dn - st.c_crush
-    over = Kn * dn < -fc90
+    q = -st.c_crush / cdep
+    lo = q < eps_d
+    fy = np.where(lo, fc90 * (1 + q), fc90 * (1 + eps_d) + E_d * (q - eps_d))
+    hh = np.where(lo, fc90 / cdep, E_d / cdep)
+    over = Kn * dn < -fy
+    dp = np.where(over, (-Kn * dn - fy) / (Kn + hh), 0.0)
     if update:
-        st.c_crush = np.where(over, st.c_crush + dn + fc90 / Kn, st.c_crush)
-    dn = np.where(over, -fc90 / Kn, dn)
+        st.c_crush = st.c_crush - dp
+    dn = dn + dp
     dnp = np.maximum(dn, 0.0)
     dn0 = m.c_sig / Kn
     ds0 = m.c_tau / Ks
@@ -466,7 +473,7 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
         st.c_dmax = np.where(m.c_breakable, dmax, 0.0)
         st.c_d = d
     # a debonded pair that has turned, parted or passed through stops acting as contact
-    gone = m.c_breakable & (d >= 0.999) & ((nn < 1.6) | (st.c_crush < -3.0)
+    gone = m.c_breakable & (d >= 0.999) & ((nn < 1.6) | (st.c_crush < -cdep)
                                            | (dn**2 + s**2 > 9.0))
     live = st.c_alive & ~gone
     if update:
@@ -673,6 +680,17 @@ def _kc(m: Model, key: str, s: Settings) -> np.ndarray:
     return k
 
 
+def _glue_crush(m: Model) -> tuple[np.ndarray, float, float]:
+    """Depth of wood that can crush at each glue point (mm), the strain at which crushed
+    wood is densified, and its stiffness then (MPa)."""
+    d = m.params.get("glue_cdep")
+    if d is None or len(d) != len(m.c_a):
+        d = np.full(len(m.c_a), 1e30)
+        m.params["glue_cdep"] = d
+    return d, float(m.params.get("densification_strain", 0.45)), \
+        float(m.params.get("densified_E", 500.0))
+
+
 def _glue_fc90(m: Model) -> np.ndarray:
     """Crushing strength of the wood at each glue point (MPa), by grain direction."""
     f = m.params.get("glue_fc")
@@ -749,7 +767,7 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
                       m.c_Ks, m.c_sig, m.c_tau, m.c_GIc, m.c_GIIc, m.c_mu, m.c_breakable,
                       st.c_dmax, st.c_d, st.c_slip, F, Mo, update,
                       s.beta if update else 0.0, s.dt, st.c_prev, st.c_alive, st.c_crush,
-                      _glue_fc90(m))
+                      _glue_fc90(m), *_glue_crush(m))
     if len(m.k_a):
         K.cable_kernel(x, R, m.a_node, m.a_r0, m.k_a, m.k_b, m.k_L0, m.k_EA, m.k_Fb,
                        st.k_alive, F, Mo, update)
