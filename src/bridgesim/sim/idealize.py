@@ -662,7 +662,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                                             "G_IIc_N_per_mm", "friction")}
     # peak cohesive strength such that the simulated 20 mm lap test gives tau_g
     # (ratio found with `bridgesim lab`; tests/test_sim.py checks it)
-    tau_max = mat.glue.tau_g_MPa.value * sp.values.get("glue.tau_peak_over_avg", 1.02)
+    tau_max = mat.glue.tau_g_MPa.value * sp.values.get("glue.tau_peak_over_avg", 1.17)
     springs: dict[str, list] = {k: [] for k in ("a", "b", "area", "n0", "Kn", "Ks", "sig",
                                                 "tau", "GIc", "GIIc", "mu", "patch",
                                                 "breakable")}
@@ -865,7 +865,9 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                        + [deck_y])
     deck_bodies = sorted({bodies[u[2]].name for u in up_faces if abs(u[0] - deck_y) < 0.5})
     q_att = []
-    region_lo = np.array([mid_x - PL / 2 - 20, plate_bottom - 15, deck_z - PW / 2 - 20])
+    # down to 40 mm below the deck: if the deck under the plate breaks, the plate bears on
+    # what is underneath (ribs, stringers, a saddle)
+    region_lo = np.array([mid_x - PL / 2 - 20, plate_bottom - 40, deck_z - PW / 2 - 20])
     region_hi = np.array([mid_x + PL / 2 + 20, plate_bottom + PT + 150, deck_z + PW / 2 + 20])
     for bi in active:
         if shapes[bi].kind == "cable":

@@ -42,8 +42,8 @@ X with "along the span"; for non-rectangular UD plates, along the nearest long e
 * Glue law: penalty stiffness K_n, K_s (glue line + adjacent wood), quadratic initiation
   (sigma/sigma_max)^2 + (tau/tau_max)^2 = 1, linear softening with mixed-mode fracture
   energy (Benzeggagh-Kenane, G_Ic, G_IIc). tau_max is tau_g of the material file times
-  1.02, the ratio found by the simulated 20 mm lap test (`bridgesim lab`), so the
-  simulated lap test reproduces the measured tau_g. Peel strength = 0.5 tau_max.
+  1.17, the ratio found by the simulated 20 mm lap test (`bridgesim lab`), so the
+  simulated lap test reproduces the measured tau_g (checked in the tests). Peel strength = 0.5 tau_max.
 * A broken glue line keeps **bearing in compression** and **slides with friction**
   (mu = 0.4): pieces still lean on each other after the glue lets go.
 * Bodies that touch nothing are tied to the nearest part (and reported); floss ends
@@ -51,7 +51,12 @@ X with "along the span"; for non-rectangular UD plates, along the nearest long e
 
 ## 4. Materials (placeholders until measured)
 
-Wood along the grain: E, f_t, f_c, f_v from `materials/popsicle_birch.yaml`. In the fibre
+Wood along the grain: E, f_t, f_c, f_v from `materials/popsicle_birch.yaml`. For scale,
+the USDA *Wood Handbook* (FPL-GTR-190, Table 5-3a, clear wood at 12 % moisture) gives
+paper birch E = 11.0 GPa, modulus of rupture 85 MPa, compression parallel to grain 39 MPa,
+shear 8.3 MPa (yellow birch: 13.9 GPa, 114, 56, 13 MPa). Craft sticks are thin, cut across
+growth rings and have defects, so the placeholders (10 GPa; f_b 50, f_c 30, f_v 6 MPa)
+are deliberately lower. Your own stick tests replace them (`bridgesim calibrate`). In the fibre
 sections: linear elastic; tension softens to zero after f_t with fracture energy G_f
 (3 N/mm, element-length regularised); compression yields at f_c and softens to 70 %
 (crushing). Members split when 1.5 V/A + T/W_t > f_v. Plates crack when a ply strain

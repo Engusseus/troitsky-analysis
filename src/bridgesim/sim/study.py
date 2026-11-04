@@ -489,7 +489,7 @@ def lab(material=None, sim_params=None, csv_dir: str | Path | None = None) -> La
                   "modulus_of_rupture_MPa": round(mor, 1),
                   "material_f_b_MPa": mat.f_b_MPa.value})
     ov, wd = mat.glue.overlap_mm.value, st.width_mm
-    tau_peak = mat.glue.tau_g_MPa.value * sp.values.get("glue.tau_peak_over_avg", 1.02)
+    tau_peak = mat.glue.tau_g_MPa.value * sp.values.get("glue.tau_peak_over_avg", 1.17)
     g = labmod.lap_shear(tau_peak, sp["glue.peel_to_shear"], sp["glue.K_n_N_per_mm3"],
                          sp["glue.K_s_N_per_mm3"], sp["glue.G_Ic_N_per_mm"],
                          sp["glue.G_IIc_N_per_mm"], overlap=ov, width=wd,
@@ -556,7 +556,7 @@ def _lab_gaps(d: Path, mat: Material, sp: SimParams) -> list[RealityGap]:
             if not (ov and w and Ff):
                 continue
             tau_peak = mat.glue.tau_g_MPa.value * sp.values.get("glue.tau_peak_over_avg",
-                                                                 1.02)
+                                                                 1.17)
             sim = labmod.lap_shear(tau_peak, sp["glue.peel_to_shear"],
                                    sp["glue.K_n_N_per_mm3"], sp["glue.K_s_N_per_mm3"],
                                    sp["glue.G_Ic_N_per_mm"], sp["glue.G_IIc_N_per_mm"],

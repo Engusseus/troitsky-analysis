@@ -102,10 +102,12 @@ def test_three_point_bending():
     assert 30 < mor < 55
 
 
-def test_lap_shear_average_strength():
-    r = lab.lap_shear(2.0)
-    tau_avg = r.peak / 200
-    assert 0.85 * 2.0 < tau_avg <= 1.02 * 2.0
+def test_lap_shear_reproduces_tau_g():
+    """With the calibrated peak/average factor, the simulated 20 x 10 mm single-lap test
+    gives the material's tau_g (what the bridge model assumes for every joint)."""
+    f = SP["glue.tau_peak_over_avg"]
+    r = lab.lap_shear(2.0 * f)
+    assert r.peak / 200 == pytest.approx(2.0, rel=0.05)
 
 
 def _glued_pair():

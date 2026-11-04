@@ -426,13 +426,36 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             return float(p[touch, 1].mean())
         return float(st.x[P, 1] - m.plate_half[1])
 
+    # nodes that carry elements: when all of a node's elements are broken it is debris
+    has_el = np.zeros(m.n_nodes, bool)
+    has_el[m.b_i] = True
+    has_el[m.b_j] = True
+    has_el[m.s_nodes.ravel()] = True
+    spring_nodes = np.c_[m.a_node[m.c_a], m.a_node[m.c_b]] if len(m.c_a) else \
+        np.zeros((0, 2), int)
+
     # developer aid: BRIDGESIM_DUMP_UNSTABLE=path keeps the last state before any node
     # first moved faster than 20 m/s
     dump_path = os.environ.get("BRIDGESIM_DUMP_UNSTABLE")
     snaps: list = [None, False]
 
+    def mark_debris() -> None:
+        """Nodes whose elements have all broken become debris: they fall under gravity
+        and no longer interact (like eroded nodes in explicit codes)."""
+        live = np.zeros(m.n_nodes, bool)
+        ok_b = st.b_alive
+        live[m.b_i[ok_b]] = True
+        live[m.b_j[ok_b]] = True
+        live[m.s_nodes[st.s_dmg < 0.9].ravel()] = True
+        newly = has_el & ~live & ~st.loose
+        if newly.any():
+            st.loose |= newly
+            if len(spring_nodes):
+                st.c_alive &= ~(st.loose[spring_nodes[:, 0]] | st.loose[spring_nodes[:, 1]])
+
     def do_step(grav: float, alpha: float) -> dict:
         nonlocal steps
+        mark_debris()
         info = S.internal_and_contact(m, st, s, F, Mo)
         if s.use_numba and S.K.HAVE_NUMBA:
             S.K.integrate(st.x, st.v, st.w, st.R, F, Mo, mass, phys_mass,
@@ -507,13 +530,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     seat = st.x[P] + st.R[P] @ np.array([0, m.plate_half[1], 0])
     st.jack_y = float(seat[1])  # the jack is brought onto the seat, then starts moving
     jack0 = st.jack_y
-    # nodes that carry elements: when all of a node's elements are broken it is debris
-    has_el = np.zeros(m.n_nodes, bool)
-    has_el[m.b_i] = True
-    has_el[m.b_j] = True
-    has_el[m.s_nodes.ravel()] = True
-    spring_nodes = np.c_[m.a_node[m.c_a], m.a_node[m.c_b]] if len(m.c_a) else \
-        np.zeros((0, 2), int)
+
     support_mask = m.p_support.copy()
 
     # ------------------------------------------------------------ 2. load
@@ -612,20 +629,6 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             prev_b, prev_bs, prev_s = st.b_fractured.copy(), st.b_shear.copy(), st.s_dmg > 0.5
             prev_k = st.k_alive.copy()
             prev_patch_started, prev_patch_broken = started, broken
-            # debris: nodes whose elements have all broken become plain particles (no
-            # rotation, no glue arms): a fragment that has come off
-            live = np.zeros(m.n_nodes, bool)
-            ok_b = st.b_alive
-            live[m.b_i[ok_b]] = True
-            live[m.b_j[ok_b]] = True
-            ok_s = st.s_dmg < 0.9  # a node held only by cracked elements is debris
-            live[m.s_nodes[ok_s].ravel()] = True
-            newly = has_el & ~live & ~st.loose
-            if newly.any():
-                st.loose |= newly
-                if len(spring_nodes):
-                    st.c_alive &= ~(st.loose[spring_nodes[:, 0]]
-                                    | st.loose[spring_nodes[:, 1]])
             # ---- §12.5 criteria
             if criteria["deflection"] is None and defl > opt.deflection_limit_mm:
                 criteria["deflection"] = {"t_s": st.t, "travel_mm": travel, "load_N": force}
@@ -704,7 +707,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     KE = np.array(curve["kinetic"]) if curve["kinetic"] else np.zeros(1)
     i_pk = int(np.argmax(curve["force"])) if curve["force"] else 0
     w_ref = 0.1 * (W[i_pk] if len(W) > i_pk else 0.0)
-    sel = W > max(w_ref, 1.0)
+    # judged on the loading up to the peak: the collapse after it is meant to be dynamic
+    sel = (W > max(w_ref, 1.0)) & (np.arange(len(W)) <= i_pk)
     max_ke_ratio = float((KE[sel] / W[sel]).max()) if sel.any() else 0.0
     res = CrushResult(
         Fu_N=float(Fu_at_fail), Fu_kgf=float(Fu_at_fail) / KGF, failure_mode=fail_mode,

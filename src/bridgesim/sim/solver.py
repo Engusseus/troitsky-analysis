@@ -379,7 +379,7 @@ def platform_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray, k: float
                     mu: float, update: bool = True, cdamp=0.0) -> None:
     p, arm = _attach_pos(m, st, m.p_att)
     pen = m.table_y - p[:, 1]
-    touch = pen > 0
+    touch = (pen > 0) & ~st.loose[m.a_node[m.p_att]]
     nd = m.a_node[m.p_att]
     vy = st.v[nd, 1] + st.w[nd, 2] * arm[:, 0] - st.w[nd, 0] * arm[:, 2]
     fn = np.where(touch, np.maximum(k * pen - cdamp * vy, 0.0), 0.0)
@@ -414,7 +414,7 @@ def plate_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray, k: float,
     k = np.broadcast_to(np.asarray(k, float), (len(p),))
     h = m.plate_half
     depth = h[None, :] - np.abs(loc)
-    inside = (depth > 0).all(axis=1)
+    inside = (depth > 0).all(axis=1) & ~st.loose[m.a_node[m.q_att]]
     ax = np.argmin(depth, axis=1)
     sgn = np.sign(loc[np.arange(len(loc)), ax])
     sgn[sgn == 0] = -1.0
@@ -565,13 +565,13 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
     Mc[:] = 0.0
     K.platform_kernel(x, R, m.a_node, m.a_r0, m.p_att, m.table_y, _kc(m, "p", s),
                       s.mu_platform, st.p_anchor, st.p_touch, Fc, Mc, update, st.v, st.w,
-                      _cd(m, "p", s, update))
+                      _cd(m, "p", s, update), st.loose)
     plate_load = 0.0
     if len(m.q_att) and m.plate_node >= 0:
         plate_load = K.plate_kernel(x, R, m.a_node, m.a_r0, m.q_att, m.plate_node,
                                     m.plate_half, _kc(m, "q", s), s.mu_plate, st.q_anchor,
                                     st.q_touch, Fc, Mc, update, st.v, st.w,
-                                    _cd(m, "q", s, update))
+                                    _cd(m, "q", s, update), st.loose)
     jack_forces(m, st, Fc, Mc, s.k_jack, s.k_jack_lat, s.contact_damping, st.jack_v)
     F -= Fc
     Mo -= Mc

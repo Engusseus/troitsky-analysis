@@ -550,11 +550,14 @@ def cable_kernel(x, R, a_node, a_r0, ka, kb, L0, EA, Fb, alive, F, Mo, update):
 
 @njit(cache=True, fastmath=True, error_model="numpy")
 def platform_kernel(x, R, a_node, a_r0, att, table_y, kk_, mu, anchor, touch, F, Mo, update,
-                    vel, omg, cdamp):
+                    vel, omg, cdamp, loose):
     p = np.empty(3)
     arm = np.empty(3)
     f = np.empty(3)
     for i in range(att.shape[0]):
+        if loose[a_node[att[i]]]:
+            touch[i] = False
+            continue
         nd = _apos(x, R, a_node, a_r0, att[i], p, arm)
         pen = table_y - p[1]
         if pen <= 0.0:
@@ -590,7 +593,7 @@ def platform_kernel(x, R, a_node, a_r0, att, table_y, kk_, mu, anchor, touch, F,
 
 @njit(cache=True, fastmath=True, error_model="numpy")
 def plate_kernel(x, R, a_node, a_r0, att, P, h, kk_, mu, anchor, touch, F, Mo, update,
-                 vel, omg, cdamp):
+                 vel, omg, cdamp, loose):
     p = np.empty(3)
     arm = np.empty(3)
     loc = np.empty(3)
@@ -599,6 +602,9 @@ def plate_kernel(x, R, a_node, a_r0, att, P, h, kk_, mu, anchor, touch, F, Mo, u
     f = np.empty(3)
     total_down = 0.0
     for i in range(att.shape[0]):
+        if loose[a_node[att[i]]]:
+            touch[i] = False
+            continue
         nd = _apos(x, R, a_node, a_r0, att[i], p, arm)
         for j in range(3):
             v = 0.0
@@ -712,6 +718,15 @@ def integrate(x, v, w, R, F, Mo, mass, gmass, rot, gy, alpha, dt, loose):
     """One central-difference update of all nodes (velocities at half steps), with
     mass-proportional damping; gravity acts on ``gmass`` (the physical mass)."""
     for i in range(x.shape[0]):
+        if loose[i]:  # debris: falls under gravity, nothing else acts on it
+            v[i, 1] += dt * gmass[i] * gy / mass[i]
+            x[i, 0] += dt * v[i, 0]
+            x[i, 1] += dt * v[i, 1]
+            x[i, 2] += dt * v[i, 2]
+            w[i, 0] = 0.0
+            w[i, 1] = 0.0
+            w[i, 2] = 0.0
+            continue
         im = 1.0 / mass[i]
         v[i, 0] += dt * (-F[i, 0] * im - alpha * v[i, 0])
         v[i, 1] += dt * ((-F[i, 1] + gmass[i] * gy) * im - alpha * v[i, 1])
@@ -719,11 +734,6 @@ def integrate(x, v, w, R, F, Mo, mass, gmass, rot, gy, alpha, dt, loose):
         x[i, 0] += dt * v[i, 0]
         x[i, 1] += dt * v[i, 1]
         x[i, 2] += dt * v[i, 2]
-        if loose[i]:
-            w[i, 0] = 0.0
-            w[i, 1] = 0.0
-            w[i, 2] = 0.0
-            continue
         ir = 1.0 / rot[i]
         w[i, 0] += dt * (-Mo[i, 0] * ir - alpha * w[i, 0])
         w[i, 1] += dt * (-Mo[i, 1] * ir - alpha * w[i, 1])

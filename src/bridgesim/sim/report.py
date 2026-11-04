@@ -121,8 +121,8 @@ class Quality(BaseModel):
     added_mass_fraction: float = Field(description="Mass added for numerical stability "
                                                    "(<= 0.05 is fine).")
     kinetic_to_work_max: float = Field(description="Peak kinetic energy / work done by the "
-                                                   "jack after 1 J; < 0.1 means "
-                                                   "quasi-static.")
+                                                   "jack, up to the peak load; < 0.1 means "
+                                                   "the loading was quasi-static.")
     settle_sag_mm: float
     notes: list[str] = []
 

@@ -30,8 +30,8 @@ glue:
   G_IIc_N_per_mm: {value: 0.6, source: assumed, note: "Fracture energy, sliding (shear)."}
   friction: {value: 0.4, source: assumed,
              note: "Wood-on-wood friction once a glue line has broken (pieces still bear and rub)."}
-  calibrate_to_lap_test: {value: 1, source: assumed,
-                          note: "1: scale the glue strength so a simulated 20 mm single-lap test reproduces tau_g of the material file."}
+  tau_peak_over_avg: {value: 1.17, source: assumed,
+                      note: "Peak cohesive strength / average lap-joint strength tau_g. 1.17 makes the simulated 20 x 10 mm single-lap test (bridgesim lab) reproduce tau_g; recompute it if you change the glue stiffness or fracture energies."}
 
 floss:
   strands: {value: 4, source: assumed,
