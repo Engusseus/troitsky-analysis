@@ -21,8 +21,10 @@ agent can answer it in an overrides file and run again.
 
 from __future__ import annotations
 
+import difflib
 import fnmatch
 import math
+import zlib
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -64,12 +66,51 @@ class Overrides:
     bodies: dict[str, dict] = field(default_factory=dict)
     params: dict[str, float] = field(default_factory=dict)
     glue: dict[str, float] = field(default_factory=dict)
+    used: set = field(default_factory=set)  # patterns and glue keys that matched
+
+    KINDS = ("bar", "shell", "block", "cable", "ignore")
+    FIELDS = ("kind", "layup", "grain", "glue_factor", "strength_factor")
 
     def for_body(self, name: str) -> dict:
         out: dict = {}
         for pat, val in self.bodies.items():
             if pat == name or fnmatch.fnmatchcase(name, pat):
                 out.update(val)
+                self.used.add(pat)
+        return out
+
+    def problems(self, body_names: list[str]) -> list[str]:
+        """Everything in the overrides that had no effect (a typo, an unknown kind, a
+        layup bridgesim cannot read, a joint that does not exist)."""
+        out = []
+        for pat, val in self.bodies.items():
+            if pat not in self.used:
+                stem = pat.rstrip("*").lower()
+                close = difflib.get_close_matches(
+                    stem, [n.lower()[: len(stem)] for n in body_names], n=1, cutoff=0.7)
+                close = sorted({n for n in body_names if close and
+                                n.lower().startswith(close[0])})[:3]
+                out.append(f"overrides: body pattern {pat!r} matches no body"
+                           + (f" (did you mean {close}?)" if close else ""))
+            if not isinstance(val, dict):
+                out.append(f"overrides: body {pat!r} must map to fields, got {val!r}")
+                continue
+            for k, v in val.items():
+                if k not in self.FIELDS:
+                    out.append(f"overrides: unknown field {k!r} for {pat!r} "
+                               f"(known: {', '.join(self.FIELDS)})")
+                elif k == "kind" and v not in self.KINDS:
+                    out.append(f"overrides: kind {v!r} for {pat!r} is not one of "
+                               f"{', '.join(self.KINDS)}")
+                elif k == "layup" and parse_layup(str(v)) is None:
+                    out.append(f"overrides: layup {v!r} for {pat!r} cannot be read (write "
+                               "e.g. '10-ply UD', '2-ply 0-90', '4-ply +-45')")
+                elif k == "grain" and v not in ("long", "span"):
+                    out.append(f"overrides: grain {v!r} for {pat!r} must be long or span")
+        for key in self.glue:
+            if key not in self.used:
+                out.append(f"overrides: glue joint {key!r} not found (write 'Body A | Body "
+                           "B' with two bodies that are glued to each other)")
         return out
 
     @classmethod
@@ -368,19 +409,31 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     (faster, coarser: ``--fidelity quick``), < 1 smaller."""
     ov = ov or Overrides()
     if ov.params:
-        sp = sp.updated(ov.params)
+        try:
+            sp = sp.updated({k: v for k, v in ov.params.items()
+                             if not k.startswith("material.")})
+        except KeyError as exc:
+            raise ValueError(str(exc).strip("'\"")) from None
     rng = np.random.default_rng(seed) if seed is not None else None
+
+    def rng_for(key: str):
+        """A random stream per named thing (body, joint, plate), so that editing one part
+        of a design does not reshuffle the imperfections of all the others."""
+        if seed is None:
+            return None
+        return np.random.default_rng([int(seed), zlib.crc32(key.encode("utf-8"))])
     ply = Ply.from_material(mat, sp)
     rho = mat.density_kg_m3.value * 1e-9 * TONNE_PER_KG  # t/mm^3
     glue_frac = mat.glue.mass_fraction.value
     questions: list[dict] = []
     notes: list[str] = []
 
-    def scatter(cov: float) -> float:
-        if rng is None or cov <= 0:
+    def scatter(cov: float, key: str = "") -> float:
+        r = rng_for(key) if key else rng
+        if r is None or cov <= 0:
             return 1.0
         s = math.sqrt(math.log(1 + cov * cov))
-        return float(np.exp(rng.normal(-0.5 * s * s, s)))
+        return float(np.exp(r.normal(-0.5 * s * s, s)))
 
     # ---------------------------------------------------------------- body analysis
     shapes: list[Shape] = []
@@ -400,12 +453,28 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 "question": f"What is '{b.name}' made of (number of stick plies and their "
                             "direction)? Its name does not say.",
                 "assumed": "solid sticks along its long axis (UD)",
-                "answer_with": {"bodies": {b.name: {"layup": "10-ply UD"}}},
+                "answer_with": {"bodies": {b.name: {
+                    "layup": "<N>-ply <UD | 0-90 | +-45>, or block"}}},
             })
         if o.get("grain"):
             lay.grain = str(o["grain"])
+        if lay.orientation_assumed and lay.source == "name" and not o.get("layup"):
+            questions.append({
+                "id": f"orientation:{b.name}", "body": b.name, "topic": "material",
+                "severity": "check",
+                "question": f"'{b.name}' says how many plies but not their direction. Do "
+                            "all its sticks run along it (UD), or is it cross-laminated?",
+                "assumed": "all sticks along its long direction (UD)",
+                "answer_with": {"bodies": {b.name: {
+                    "layup": f"{len(lay.angles)}-ply <UD | 0-90 | +-45>"}}}})
         forced = o.get("kind")
         sh = analyse_shape(b, lay, forced)
+        if lay.source == "default" and sh.kind == "block" and questions and \
+                questions[-1].get("body") == b.name:
+            questions[-1]["question"] += (" It is compact, so it is modelled as a rigid "
+                                          "block whatever it is made of; if it is built "
+                                          "from plates or members, set its kind too.")
+            questions[-1]["answer_with"]["bodies"][b.name]["kind"] = "<block | shell | bar>"
         if forced == "ignore":
             sh.kind = "ignore"
         shapes.append(sh)
@@ -436,12 +505,16 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         mass_t = rho * vol * (1 + glue_frac)
         info = BodyInfo(b.name, sh.kind, sh.layup.label, sh.layup.source,
                         mass_t / TONNE_PER_KG, vol)
+        info.centroid_mm = tuple(float(v) for v in b.mesh.centroid)
+        info.bbox_mm = (b.mesh.bbox[0].copy(), b.mesh.bbox[1].copy())
+        info.axis = tuple(float(v) for v in (sh.n if sh.kind == "shell" else sh.u))
         info.notes.append(f"{sh.kind}: {sh.why}")
         if sh.kind == "ignore":
             infos.append(info)
             continue
-        Ef = scatter(sp["scatter.E_cov"])
-        Sf = scatter(sp["scatter.strength_cov"]) * float(o.get("strength_factor", 1.0))
+        Ef = scatter(sp["scatter.E_cov"], f"E:{b.name}")
+        Sf = scatter(sp["scatter.strength_cov"], f"S:{b.name}") * float(
+            o.get("strength_factor", 1.0))
         if sh.kind == "bar":
             T, Wp = sh.T, sh.Wp
             if sh.layup.kind == "toothpick":
@@ -464,9 +537,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             ratio = sp["scatter.bow_L_over"]
             amp = 0.0
             ang = 0.0
-            if rng is not None and ratio > 0:
-                amp = L / ratio * rng.uniform(0.3, 1.7)
-                ang = rng.uniform(0, 2 * math.pi)
+            rb = rng_for(f"bow:{b.name}")
+            if rb is not None and ratio > 0:
+                amp = L / ratio * rb.uniform(0.3, 1.7)
+                ang = rb.uniform(0, 2 * math.pi)
             bow_dir = math.cos(ang) * w + math.sin(ang) * nrm
             ids = []
             for s in st2:
@@ -526,7 +600,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             o_mid = sh.origin - sh.n * T / 2
             area = sh.poly.area
             h = _shell_h(sh) * mesh_scale
-            P2, tri = mesh_polygon(sh.poly, h)  # glue points attach by rigid arms
+            P2, tri, h = _mesh_robust(sh.poly, h, b.name)  # glue attaches by rigid arms
             ids = np.array([bld.node(o_mid + p[0] * sh.e1 + p[1] * sh.e2, bi) for p in P2])
             body_nodes[bi] = ids
             shell_tree[bi] = cKDTree(np.array([bld.X[i] for i in ids]))
@@ -665,32 +739,37 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     tau_max = mat.glue.tau_g_MPa.value * sp.values.get("glue.tau_peak_over_avg", 1.17)
     springs: dict[str, list] = {k: [] for k in ("a", "b", "area", "n0", "Kn", "Ks", "sig",
                                                 "tau", "GIc", "GIIc", "mu", "patch",
-                                                "breakable")}
+                                                "breakable", "d0")}
     patches: list[Patch] = []
     for ia, ib, pts3, na, area, _inter, wts in patch_pts3:
-        gf = scatter(sp["scatter.glue_cov"])
+        key = "|".join(sorted((bodies[ia].name, bodies[ib].name)))
+        gf = scatter(sp["scatter.glue_cov"],
+                     f"glue:{key}:{np.round(pts3.mean(0)).astype(int).tolist()}")
         gf *= float(ov.for_body(bodies[ia].name).get("glue_factor", 1.0))
         gf *= float(ov.for_body(bodies[ib].name).get("glue_factor", 1.0))
         for key, val in ov.glue.items():
             names = {x.strip() for x in key.split("|")}
             if names == {bodies[ia].name, bodies[ib].name}:
                 gf *= val
+                ov.used.add(key)
         pid = len(patches)
         cen = pts3.mean(0)
         poly3 = None
         pc = patches.append(Patch(ia, ib, float(area), cen, na, polygon=poly3))
         del pc
         for p, wa in zip(pts3, wts, strict=True):
+            springs["d0"].append(1.0 if gf <= 0 else 0.0)  # glue_factor 0: not glued
             springs["a"].append(attach(ia, p))
             springs["b"].append(attach(ib, p))
             springs["area"].append(float(wa))
             springs["n0"].append(na)
             springs["Kn"].append(sp_glue["K_n_N_per_mm3"])
             springs["Ks"].append(sp_glue["K_s_N_per_mm3"])
-            springs["tau"].append(tau_max * gf)
-            springs["sig"].append(tau_max * gf * sp_glue["peel_to_shear"])
-            springs["GIc"].append(sp_glue["G_Ic_N_per_mm"] * gf)
-            springs["GIIc"].append(sp_glue["G_IIc_N_per_mm"] * gf)
+            gq = max(gf, 1e-3)  # glue_factor 0 is handled as "already broken" (d0 = 1)
+            springs["tau"].append(tau_max * gq)
+            springs["sig"].append(tau_max * gq * sp_glue["peel_to_shear"])
+            springs["GIc"].append(sp_glue["G_Ic_N_per_mm"] * gq)
+            springs["GIIc"].append(sp_glue["G_IIc_N_per_mm"] * gq)
             springs["mu"].append(sp_glue["friction"])
             springs["patch"].append(pid)
             springs["breakable"].append(True)
@@ -739,6 +818,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             springs["mu"].append(0.5)
             springs["patch"].append(pid)
             springs["breakable"].append(False)
+            springs["d0"].append(0.0)
             patches[pid].springs.append(len(springs["a"]) - 1)
         questions.append({
             "id": f"loose:{b.name}", "body": b.name, "topic": "connection",
@@ -786,7 +866,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         cables["b"].append(att[1])
         cables["L0"].append(float(np.linalg.norm(ends[1] - ends[0])))
         cables["EA"].append(n_str * sp["floss.strand_EA_N"])
-        cables["Fb"].append(n_str * sp["floss.strand_break_N"] * scatter(0.1))
+        cables["Fb"].append(n_str * sp["floss.strand_break_N"] * scatter(0.1, f"floss:{b.name}"))
         cables["body"].append(bi)
         for a_ in att:  # the floss's own (tiny) mass goes to the parts it is tied to
             bld.mass[bld.att_node[a_]] += 0.5 * rho * b.mesh.volume
@@ -799,7 +879,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             "question": "How many strands of floss does each modelled floss tie have?",
             "assumed": f"{sp['floss.strands']:g} strands of "
                        f"{sp['floss.strand_break_N']:g} N each",
-            "answer_with": {"params": {"floss.strands": 6}}})
+            "answer_with": {"params": {"floss.strands": "<number of strands>"}}})
 
     # ---------------------------------------------------------------- table & plate
     Vall = np.vstack(allV)
@@ -832,8 +912,9 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         raise ValueError("the bridge does not rest on supports at both ends")
     # the plate is placed by hand: off-centre by up to scatter.placement_mm each way
     off = np.asarray(plate_offset_mm, float)
-    if rng is not None and sp["scatter.placement_mm"] > 0 and not off.any():
-        off = rng.uniform(-1, 1, 2) * sp["scatter.placement_mm"]
+    rp = rng_for("plate")
+    if rp is not None and sp["scatter.placement_mm"] > 0 and not off.any():
+        off = rp.uniform(-1, 1, 2) * sp["scatter.placement_mm"]
     mid_x = 0.5 * (left[:, 0].mean() + right[:, 0].mean()) + off[0]
     zmin, zmax = Vall[:, 2].min(), Vall[:, 2].max()
     deck_z = 0.5 * (zmin + zmax) + off[1]
@@ -944,10 +1025,55 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 "friction_plate": sp["contact.friction_plate"],
                 "deck_bodies": deck_bodies, "deck_y": deck_y,
                 "test_rate_mm_per_min": sp["crusher.test_rate_mm_per_min"],
+                "c_d0": np.array(springs["d0"], float),
                 "plate_offset_mm": [float(off[0]), float(off[1])],
                 "seed": seed},
         questions=questions, notes=notes)
+    model.notes += ov.problems([b.name for b in bodies])
+    # a rigid (unbreakable) piece directly under the loading plate takes the load without
+    # any crushing: say so
+    for bi, sh in enumerate(shapes):
+        if sh.kind != "block":
+            continue
+        lo_, hi_ = bodies[bi].mesh.bbox
+        if (lo_[0] < mid_x + PL / 2 and hi_[0] > mid_x - PL / 2 and lo_[2] < deck_z + PW / 2
+                and hi_[2] > deck_z - PW / 2 and hi_[1] > plate_bottom - 45):
+            model.questions.insert(0, {
+                "id": f"rigid_under_plate:{bodies[bi].name}", "body": bodies[bi].name,
+                "topic": "design", "severity": "important",
+                "question": f"'{bodies[bi].name}' sits under the loading plate and is "
+                            "modelled as a rigid block (it is compact, so it is neither a "
+                            "member nor a plate): it cannot crush or split. Is it really a "
+                            "solid block of glued sticks? If it is built from plates or "
+                            "members, model it as such.",
+                "assumed": "rigid, unbreakable (bearing under the plate is limited to the "
+                           "wood's crushing strength across the grain)",
+                "answer_with": {"bodies": {bodies[bi].name: {"kind": "<shell | bar>"}}}})
+    capped = [f"{b.name}: {b.mesh.capped_loops} face(s) could not be decoded from the CAD "
+              "and were closed over (usually a small hole)" for b in bodies
+              if b.mesh.capped_loops]
+    model.notes += capped
     return model
+
+
+def _mesh_robust(poly, h: float, name: str):
+    """Mesh a plate outline; if the element size is too coarse for the outline (a narrow
+    plate at --fidelity quick), refine until the mesh covers the plate."""
+    last = None
+    for _ in range(6):
+        try:
+            P2, tri = mesh_polygon(poly, h)
+            if len(tri) >= 2:
+                a = P2[tri]
+                area = 0.5 * np.abs((a[:, 1, 0] - a[:, 0, 0]) * (a[:, 2, 1] - a[:, 0, 1])
+                                    - (a[:, 2, 0] - a[:, 0, 0]) * (a[:, 1, 1] - a[:, 0, 1]))
+                if area.sum() >= 0.8 * poly.area:
+                    return P2, tri, h
+        except (ValueError, IndexError) as exc:  # too few points for a triangulation
+            last = exc
+        h *= 0.6
+    raise ValueError(f"model build failed: could not mesh the plate '{name}' "
+                     f"({poly.area:.0f} mm^2){': ' + str(last) if last else ''}")
 
 
 def _shell_h(sh: Shape) -> float:

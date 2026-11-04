@@ -25,7 +25,7 @@ from typing import Any
 
 import numpy as np
 
-from bridgesim.cad import CadBody, load_cad
+from bridgesim.cad import CadBody, load_cad, orientation_check
 from bridgesim.cad.rules_cad import measure_cad
 from bridgesim.materials import load_material
 from bridgesim.rules import RuleSet, evaluate_values
@@ -73,17 +73,29 @@ def load_overrides(overrides: str | Path | dict | None) -> tuple[Overrides, dict
     return Overrides.from_dict(d), d
 
 
-def _inputs(cad: str | Path, overrides, material, sim_params, ruleset):
+def _inputs(cad: str | Path, overrides, material, sim_params, ruleset, units=None,
+            up: str = "y", span: str = "x"):
     path = Path(cad)
-    bodies = load_cad(path)
+    if not path.exists():
+        raise FileNotFoundError(f"no such file: {path}")
+    bodies = load_cad(path, units=units, up=up, span=span)
     ov, ov_raw = load_overrides(overrides)
     mat = material if isinstance(material, Material) else load_material(
         material or "popsicle_birch")
     sp = sim_params if isinstance(sim_params, SimParams) else SimParams.load(sim_params)
-    if ov.params:
-        sp = sp.updated(ov.params)
+    sim_over = {k: v for k, v in ov.params.items() if not k.startswith("material.")}
+    if sim_over:
+        try:
+            sp = sp.updated(sim_over)
+        except KeyError as exc:
+            raise ValueError(str(exc).strip("'\"")) from None
     mat_over = {k.split(".", 1)[1]: v for k, v in ov.params.items() if k.startswith("material.")}
     if mat_over:
+        known = set(mat.props())
+        bad = [k for k in mat_over if k not in known]
+        if bad:
+            raise ValueError(f"unknown material parameter(s) {bad}; known: "
+                             f"{sorted('material.' + k for k in known)}")
         mat = _material_with(mat, mat_over)
     rs = ruleset if isinstance(ruleset, RuleSet) else RuleSet.load(ruleset or "troitsky_2027")
     return path, bodies, ov, ov_raw, mat, sp, rs
@@ -233,8 +245,13 @@ def _body_reports(model: Model) -> list[BodyReport]:
     out = []
     for b in model.bodies:
         why = b.notes[0].split(": ", 1)[-1] if b.notes else ""
+        lo, hi = (b.bbox_mm if b.bbox_mm is not None else (np.zeros(3), np.zeros(3)))
         out.append(BodyReport(
             name=b.name, kind=b.kind, layup=b.layup, layup_source=b.layup_source,
+            centroid_mm=[round(float(v), 1) for v in b.centroid_mm],
+            bbox_min_mm=[round(float(v), 1) for v in lo],
+            bbox_max_mm=[round(float(v), 1) for v in hi],
+            axis=[round(float(v), 3) for v in b.axis] if b.axis is not None else None,
             mass_g=round(b.mass_kg * 1000, 2), volume_mm3=round(b.volume_mm3, 1),
             length_mm=round(b.length_mm, 1), section_mm=b.section_mm,
             thickness_mm=round(b.thickness_mm, 2), E_eff_MPa=round(b.E_eff_MPa, 1),
@@ -252,12 +269,13 @@ def _joint_reports(model: Model, mat: Material) -> list[JointReport]:
 
 
 def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
-            ruleset=None, seed: int | None = 0) -> InspectReport:
+            ruleset=None, seed: int | None = 0, units=None, up: str = "y",
+            span: str = "x", strict: bool = False) -> InspectReport:
     """Read the CAD file and report what bridgesim understood, the rule check and the
     questions to ask the designer. No simulation is run (a few seconds)."""
     path, bodies, ov, ov_raw, mat, sp, rs = _inputs(cad, overrides, material, sim_params,
-                                                     ruleset)
-    model = build_model(bodies, mat, sp, ov, seed=seed)
+                                                     ruleset, units, up, span)
+    model = _build(bodies, mat, sp, ov, seed, 1.0, strict)
     rules = _rules(bodies, mat, rs, model)
     qs = [Question(**q) for q in model.questions] + design_questions(bodies, model, mat,
                                                                        sp, rules)
@@ -280,6 +298,35 @@ def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
                "platform_contact_points": int(len(model.p_att)),
                "plate_contact_points": int(len(model.q_att))},
         warnings=list(model.notes))
+
+
+def _build(bodies, mat, sp, ov, seed, mesh_scale, strict):
+    """Build the model, with orientation problems explained, and overrides problems
+    raised as input errors with ``strict``."""
+    problems = orientation_check(bodies)
+    try:
+        model = build_model(bodies, mat, sp, ov, seed=seed, mesh_scale=mesh_scale)
+    except ValueError as exc:
+        hint = ("; also: " + "; ".join(problems)) if problems else ""
+        raise ValueError(f"{exc}{hint}") from None
+    except Exception as exc:  # noqa: BLE001 - a wrongly oriented model breaks anywhere
+        if not problems:
+            raise
+        raise ValueError("the model could not be built, probably because its orientation "
+                         "or units are wrong: " + "; ".join(problems)
+                         + f" (error: {type(exc).__name__})") from None
+    model.notes = problems + model.notes
+    for p in problems:
+        model.questions.insert(0, {
+            "id": "geometry:orientation", "topic": "geometry", "severity": "important",
+            "question": f"Orientation or units look wrong: {p}.",
+            "assumed": "X along the span, Y up, millimetres",
+            "answer_with": {"cli": "--up-axis/--span-axis/--units"}})
+    if strict:
+        bad = [n for n in model.notes if n.startswith("overrides:")]
+        if bad:
+            raise ValueError("; ".join(bad))
+    return model
 
 
 # ------------------------------------------------------------------------------- crush
@@ -310,7 +357,8 @@ def _sequence(events: list) -> list[str]:
 def crush(cad: str | Path, overrides=None, material=None, sim_params=None, ruleset=None,
           seed: int | None = 0, out_dir: str | Path | None = None,
           options: CrushOptions | None = None, progress=None,
-          replay: bool = True, fidelity: str = "standard") -> tuple[CrushReport, CrushResult]:
+          replay: bool = True, fidelity: str = "standard", units=None, up: str = "y",
+          span: str = "x", strict: bool = False) -> tuple[CrushReport, CrushResult]:
     """Simulate the §12.5 crushing test of a CAD bridge. Writes ``crush.json``,
     ``curve.csv`` and ``replay.html`` (interactive 3D replay) to ``out_dir`` if given."""
     from bridgesim.sim.crush import FIDELITY
@@ -319,8 +367,8 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         raise ValueError(f"fidelity must be one of {', '.join(FIDELITY)}")
     scale, speed = FIDELITY[fidelity]
     path, bodies, ov, ov_raw, mat, sp, rs = _inputs(cad, overrides, material, sim_params,
-                                                     ruleset)
-    model = build_model(bodies, mat, sp, ov, seed=seed, mesh_scale=scale)
+                                                     ruleset, units, up, span)
+    model = _build(bodies, mat, sp, ov, seed, scale, strict)
     rules = _rules(bodies, mat, rs, model)
     opt = options or CrushOptions(speed_mm_s=speed)
     if progress is not None:
@@ -342,14 +390,12 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         failure_detail=res.failure_detail, deflection_at_Fu_mm=round(res.deflection_at_Fu_mm, 2),
         mass_kg=round(mass, 3), efficiency_kgf_per_kg=round(res.Fu_kgf / mass, 2),
         criteria=res.criteria,
-        events=[EventOut(**e.as_dict()) for e in res.events],
+        events=_compact_events(res.events), n_events_total=len(res.events),
         failure_sequence=_sequence(res.events), curve=curve,
-        quality=Quality(dt_s=res.dt, steps=res.steps, wall_s=round(res.wall_s, 1),
-                        added_mass_fraction=round(res.added_mass_frac, 4),
-                        kinetic_to_work_max=round(res.kinetic_ratio_max, 4),
-                        settle_sag_mm=round(res.settle_sag_mm, 3), notes=res.notes),
+        quality=_quality(res, mat, sp),
         rules=rules, questions=qs, assumed_parameters=_assumed(mat, sp),
-        fidelity=fidelity)
+        fidelity=fidelity, Fu_first_joint_failure_kgf=_first_joint(res),
+        warnings=list(model.notes))
     if out_dir:
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
@@ -363,6 +409,16 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
                             f"{c['deflection'][i]:.4f}", c["glue_broken"][i],
                             c["members_broken"][i]])
         rep.artifacts["curve_csv"] = str(out / "curve.csv")
+        with (out / "events.csv").open("w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["t_s", "jack_travel_mm", "load_kgf", "kind", "what", "detail",
+                        "x_mm", "y_mm", "z_mm"])
+            for e in res.events:
+                d = e.as_dict()
+                p = d.get("where_mm") or ["", "", ""]
+                w.writerow([d["t_s"], d["jack_travel_mm"], d["load_kgf"], d["kind"],
+                            d["what"], d["detail"], *p])
+        rep.artifacts["events_csv"] = str(out / "events.csv")
         if replay:
             from bridgesim.sim.replay import replay_html
             (out / "replay.html").write_text(
@@ -372,6 +428,50 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         rep.artifacts["report_json"] = str(out / "crush.json")
         (out / "crush.json").write_text(rep.model_dump_json(indent=2), encoding="utf-8")
     return rep, res
+
+
+def _compact_events(events) -> list[EventOut]:
+    """The report keeps the first event of each kind for each part (the full log is in
+    events.csv): 'glue line starts to fail' and repeated 'plate cracked' lines on the same
+    part are summarised."""
+    seen: dict[tuple[str, str], int] = {}
+    out: list[EventOut] = []
+    for e in events:
+        key = (e.kind, e.what)
+        if key in seen:
+            seen[key] += 1
+            continue
+        seen[key] = 1
+        out.append(EventOut(**e.as_dict()))
+    for o in out:
+        n = seen[(o.kind, o.what)]
+        if n > 1:
+            o.detail = (o.detail + f" (+{n - 1} more)").strip()
+    return out
+
+
+def _first_joint(res: CrushResult) -> float | None:
+    hit = [e for e in res.events if e.kind in ("joint_failure", "member_shear")]
+    return round(hit[0].force_N / KGF, 2) if hit else None
+
+
+def _quality(res: CrushResult, mat: Material, sp: SimParams) -> Quality:
+    reasons = []
+    if res.kinetic_ratio_max > 0.1:
+        reasons.append(f"loading not quasi-static (peak kinetic/work {res.kinetic_ratio_max:.2f}"
+                       " > 0.1): run slower")
+    if res.added_mass_frac > 0.05:
+        reasons.append(f"{res.added_mass_frac:.1%} mass added for stability (> 5 %)")
+    if res.failure_mode == "none":
+        reasons.append("the bridge did not fail within the jack travel")
+    if res.notes:
+        reasons.append("the run was restarted with a smaller time step")
+    return Quality(dt_s=res.dt, steps=res.steps, wall_s=round(res.wall_s, 1),
+                   added_mass_fraction=round(res.added_mass_frac, 4),
+                   kinetic_to_work_max=round(res.kinetic_ratio_max, 4),
+                   settle_sag_mm=round(res.settle_sag_mm, 3), notes=res.notes,
+                   trustworthy=not reasons, reasons=reasons,
+                   speed_mm_s=getattr(res, "speed_mm_s", 0.0))
 
 
 # ----------------------------------------------------------------------------- compare
@@ -407,9 +507,13 @@ def compare(sim: CrushReport | str | Path, test_csv: str | Path) -> RealityGap:
     d_s, d_t = float(rep.deflection_at_Fu_mm), float(td[i_t])
 
     def slope(load, defl, pk):
-        sel = (load > 0.05 * pk) & (load < 0.4 * pk) & (defl > 0)
+        """Secant stiffness on the rising branch only (before the peak), between 10 % and
+        50 % of the peak, so neither the seating toe nor the post-peak drop enters."""
+        ipk = int(np.argmax(load))
+        load, defl = load[: ipk + 1], defl[: ipk + 1]
+        sel = (load > 0.1 * pk) & (load < 0.5 * pk) & (defl > 0)
         if sel.sum() < 2:
-            sel = (load < 0.5 * pk) & (defl > 0)
+            sel = (load < 0.6 * pk) & (defl > 0)
         if sel.sum() < 2:
             return math.nan
         return float(np.polyfit(defl[sel], load[sel], 1)[0])
@@ -435,13 +539,17 @@ def compare(sim: CrushReport | str | Path, test_csv: str | Path) -> RealityGap:
         GapMetric(name="curve shape", simulated="", measured="", error=curve_err,
                   meaning="RMS load difference along the test's curve / test peak"),
     ]
-    parts_sim = " ".join(rep.failure_sequence[:5]).lower()
     if t["fail_parts"]:
-        hit = any(p.lower() in parts_sim for p in t["fail_parts"])
-        metrics.append(GapMetric(name="failure location", simulated=rep.failure_sequence[0]
-                                 if rep.failure_sequence else "", measured="; ".join(
-                                     t["fail_parts"]), error=0.0 if hit else 1.0,
-                                 meaning="did the simulation break the same part first"))
+        # what the simulation broke within 15 % of the peak load, compared by keywords
+        near = [e for e in rep.events
+                if e.kind in ("joint_failure", "member_fracture", "member_shear",
+                              "plate_crack", "floss_break")
+                and e.load_kgf >= 0.85 * rep.Fu_kgf][:12]
+        hit = any(_same_part(p, e.what) for p in t["fail_parts"] for e in near)
+        metrics.append(GapMetric(
+            name="failure location", simulated="; ".join(e.what for e in near[:3]),
+            measured="; ".join(t["fail_parts"]), error=0.0 if hit else 1.0,
+            meaning="did the simulation break the same part near the peak"))
     w = {"ultimate load": 0.45, "initial stiffness": 0.2, "deflection at ultimate load": 0.1,
          "curve shape": 0.1, "failure location": 0.15}
     num = den = 0.0
@@ -465,6 +573,28 @@ def compare(sim: CrushReport | str | Path, test_csv: str | Path) -> RealityGap:
                       score_0_100=round(score, 1),
                       competition_prediction_error=round(abs(peak_t - peak_s) / peak_t, 4),
                       advice=advice)
+
+
+_STOP = {"the", "a", "of", "and", "at", "side", "ply", "plate", "near", "far", "left",
+         "right", "broke", "failed", "joint", "glue"}
+
+
+def _words(s: str) -> set[str]:
+    import re
+
+    w = set(re.findall(r"[a-z]+", s.lower()))
+    side = {"l": "left", "r": "right"}
+    w |= {side[x] for x in re.findall(r"\b([lr])\b", s.lower())}
+    return w
+
+
+def _same_part(observed: str, simulated: str) -> bool:
+    """Keyword match: 'top chord far side' vs 'Top Chord (10-ply UD) - Far'."""
+    o = _words(observed) - _STOP
+    s_ = _words(simulated)
+    if not o:
+        return False
+    return len(o & s_) / len(o) >= 0.6
 
 
 # --------------------------------------------------------------------------- lab tests
@@ -627,32 +757,70 @@ def calibrate(csv_dir: str | Path, material=None) -> tuple[Material, list[str]]:
 
 def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
                sim_params=None, ruleset=None, options: CrushOptions | None = None,
-               processes: int | None = None) -> MonteCarloReport:
-    """Crush the bridge ``n`` times with different random imperfections and material
-    scatter (seeds 1..n) and report the spread of the ultimate load."""
+               processes: int | None = None, fidelity: str = "standard",
+               out_dir: str | Path | None = None, progress=None, units=None,
+               up: str = "y", span: str = "x") -> MonteCarloReport:
+    """Crush the bridge ``n`` times with different random imperfections, material scatter
+    and plate placement (seeds 1..n) and report the spread of the ultimate load. Runs
+    ``processes`` crushes at a time (default: one per two CPU cores), splitting the
+    cores between them."""
     import concurrent.futures as cf
+    import os
 
-    args = [(str(cad), overrides, material, sim_params, ruleset, s, options)
+    cpus = os.cpu_count() or 1
+    procs = max(1, min(n, processes or max(1, cpus // 2)))
+    threads = max(1, cpus // procs)
+    if out_dir:
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+    args = [(str(cad), overrides, material, sim_params, ruleset, s, options, fidelity,
+             str(Path(out_dir) / f"seed_{s}") if out_dir else None, units, up, span)
             for s in range(1, n + 1)]
-    with cf.ProcessPoolExecutor(max_workers=processes) as ex:
-        res = list(ex.map(_mc_one, args))
+    res = []
+    import multiprocessing as mp
+
+    # spawn, not fork: numba's thread pool must not be forked
+    with cf.ProcessPoolExecutor(max_workers=procs, initializer=_mc_init,
+                                initargs=(threads,), mp_context=mp.get_context("spawn")) as ex:
+        futs = [ex.submit(_mc_one, a) for a in args]
+        for k, fu in enumerate(cf.as_completed(futs)):
+            res.append(fu.result())
+            if progress:
+                progress((k + 1) / n, f"run {k + 1}/{n}: F_u {res[-1][0]:.1f} kgf")
     F = sorted(r[0] for r in res)
     modes: dict[str, int] = {}
     for r in res:
         modes[r[1]] = modes.get(r[1], 0) + 1
     p = np.percentile(F, [5, 50, 95])
-    return MonteCarloReport(file=Path(cad).name, n=n, Fu_kgf=[round(x, 2) for x in F],
-                            p05_kgf=round(float(p[0]), 2), p50_kgf=round(float(p[1]), 2),
-                            p95_kgf=round(float(p[2]), 2), failure_modes=modes,
-                            recommended_prediction_kgf=round(float(p[1]), 1))
+    rep = MonteCarloReport(file=Path(cad).name, n=n, Fu_kgf=[round(x, 2) for x in F],
+                           p05_kgf=round(float(p[0]), 2), p50_kgf=round(float(p[1]), 2),
+                           p95_kgf=round(float(p[2]), 2), failure_modes=modes,
+                           recommended_prediction_kgf=round(float(p[1]), 1),
+                           fidelity=fidelity,
+                           untrustworthy_runs=sum(1 for r in res if not r[2]))
+    if out_dir:
+        (Path(out_dir) / "montecarlo.json").write_text(rep.model_dump_json(indent=2),
+                                                      encoding="utf-8")
+    return rep
+
+
+def _mc_init(threads: int) -> None:
+    try:
+        import numba
+
+        numba.set_num_threads(threads)
+    except Exception:  # noqa: BLE001 - numba missing or fewer cores
+        pass
 
 
 def _mc_one(a):
-    cad, overrides, material, sim_params, ruleset, seed, options = a
+    cad, overrides, material, sim_params, ruleset, seed, options, fidelity, out, units, \
+        up, span = a
     rep, _ = crush(cad, overrides, material, sim_params, ruleset, seed=seed,
-                   options=options, replay=False)
+                   options=options, replay=False, fidelity=fidelity, out_dir=out,
+                   units=units, up=up, span=span)
     first = rep.failure_sequence[0] if rep.failure_sequence else rep.failure_mode
-    return rep.Fu_kgf, first.split(": ", 1)[-1] if ": " in first else first
+    where = first.split(": ", 2)[-1] if ": " in first else first
+    return rep.Fu_kgf, where, rep.quality.trustworthy
 
 
 def dump(model_obj) -> str:

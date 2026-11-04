@@ -12,7 +12,7 @@ node in the element axes (u, v, w, rx, ry, rz):
 
 The explicit solver (:mod:`bridgesim.sim.solver`) uses this stiffness in a corotational
 frame that follows the element, so large rotations are exact while strains stay small.
-``tests/test_sim_validation.py`` checks the element against plate theory.
+``tests/test_sim.py`` (test_dkt_patch_test) checks the element against plate theory.
 """
 
 from __future__ import annotations

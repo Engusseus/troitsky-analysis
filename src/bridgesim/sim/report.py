@@ -31,6 +31,12 @@ class Question(BaseModel):
 
 class BodyReport(BaseModel):
     name: str
+    centroid_mm: list[float] = Field(default_factory=list, description="X along the span, "
+                                                                       "Y up, Z across")
+    bbox_min_mm: list[float] = Field(default_factory=list)
+    bbox_max_mm: list[float] = Field(default_factory=list)
+    axis: list[float] | None = Field(None, description="Long axis (bars) or plate normal "
+                                                       "(shells), unit vector")
     kind: Literal["bar", "shell", "block", "cable", "ignore"] = Field(
         description="bar = fibre beam member, shell = plate, block = rigid piece, "
                     "cable = floss, ignore = left out.")
@@ -102,6 +108,8 @@ class EventOut(BaseModel):
                                   "instability")
     what: str
     detail: str = ""
+    where_mm: list[float] | None = Field(None, description="Where it happened (centroid "
+                                                           "of the part or glued patch)")
 
 
 class Curve(BaseModel):
@@ -125,6 +133,10 @@ class Quality(BaseModel):
                                                    "the loading was quasi-static.")
     settle_sag_mm: float
     notes: list[str] = []
+    trustworthy: bool = Field(True, description="False if any of `reasons` applies: then "
+                                                "treat F_u with suspicion")
+    reasons: list[str] = []
+    speed_mm_s: float = 0.0
 
 
 class CrushReport(BaseModel):
@@ -144,7 +156,14 @@ class CrushReport(BaseModel):
     efficiency_kgf_per_kg: float = Field(description="§12.6: Fu / mass")
     criteria: dict[str, Any] = Field(description="First time each §12.5 failure criterion "
                                                  "was met (null if never).")
-    events: list[EventOut]
+    events: list[EventOut] = Field(description="First event of each kind per part (full log: "
+                                               "events.csv)")
+    n_events_total: int = 0
+    Fu_first_joint_failure_kgf: float | None = Field(
+        None, description="Jack load when the first glued joint fully separated (or a member "
+                          "split in shear). §12.5 counts joint failure as failure, so a "
+                          "strict judge could stop the test here.")
+    warnings: list[str] = []
     failure_sequence: list[str] = Field(description="Plain-language order in which things "
                                                     "broke.")
     curve: Curve
@@ -199,6 +218,9 @@ class MonteCarloReport(BaseModel):
     recommended_prediction_kgf: float = Field(
         description="Value for the Load Prediction Form (§12.7): the median, which "
                     "minimises the expected relative error.")
+    fidelity: str = "standard"
+    untrustworthy_runs: int = Field(0, description="Runs whose quality.trustworthy is "
+                                                   "false")
 
 
 SCHEMAS = {"inspect": InspectReport, "crush": CrushReport, "reality_gap": RealityGap,

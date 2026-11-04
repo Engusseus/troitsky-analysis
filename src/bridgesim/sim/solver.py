@@ -112,6 +112,11 @@ class State:
     work_ext: float = 0.0
 
 
+def _d0(m: Model, nc: int) -> np.ndarray:
+    d0 = m.params.get("c_d0")
+    return np.array(d0, float) if d0 is not None and len(d0) == nc else np.zeros(nc)
+
+
 def initial_state(m: Model, jack_y: float) -> State:
     n = m.n_nodes
     nb, nf = m.b_fA.shape if m.b_fA.size else (0, 0)
@@ -121,7 +126,7 @@ def initial_state(m: Model, jack_y: float) -> State:
         w=np.zeros((n, 3)), eps_p=np.zeros((nb, 2, nf)), dmg_t=np.zeros((nb, 2, nf)),
         b_alive=np.ones(nb, bool), b_fractured=np.zeros(nb, bool),
         b_shear=np.zeros(nb, bool), s_dmg=np.zeros(len(m.s_nodes)),
-        c_dmax=np.zeros(nc), c_d=np.zeros(nc), c_slip=np.zeros((nc, 3)),
+        c_dmax=np.zeros(nc), c_d=_d0(m, nc), c_slip=np.zeros((nc, 3)),
         k_alive=np.ones(len(m.k_a), bool), p_anchor=np.zeros((len(m.p_att), 3)),
         p_touch=np.zeros(len(m.p_att), bool), q_anchor=np.zeros((len(m.q_att), 3)),
         q_touch=np.zeros(len(m.q_att), bool), jack_y=jack_y,

@@ -11,7 +11,7 @@ testing machine:
 * :func:`euler_column` - a pin-ended column with a small initial bow (buckling);
 * :func:`cantilever` - tip-loaded cantilever, small or large deflection (elastica).
 
-They serve three purposes: validation against textbook answers (tests/), calibration of
+They serve three purposes: verification against textbook answers (tests/), calibration of
 the simulation to a team's own test data (:mod:`bridgesim.sim.calibrate`), and a direct
 comparison "simulated test vs your test" that measures how close the model is to reality.
 """

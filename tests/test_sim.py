@@ -313,5 +313,80 @@ def test_mcp_server_exposes_the_tools():
 
     tools = asyncio.run(build_server().list_tools())
     names = {getattr(t, "name", None) for t in getattr(tools, "tools", tools)}
-    assert {"inspect_bridge", "crush_bridge", "start_crush", "crush_status",
+    assert {"inspect_bridge", "crush_bridge", "start_crush", "job_status", "start_montecarlo",
             "compare_with_test", "lab_tests", "calibrate_material", "get_schema"} <= names
+
+
+# ------------------------------------------------------------- agent-facing contract
+
+
+def test_cli_error_contract(tmp_path):
+    """Bad input: exit 2 and one JSON error object on stderr, nothing on stdout."""
+    from typer.testing import CliRunner
+
+    from bridgesim.cli import app
+
+    r = CliRunner().invoke(app, ["inspect", str(tmp_path / "missing.SLDPRT"), "--json"])
+    assert r.exit_code == 2
+    assert r.stdout == ""
+    err = json.loads(r.stderr.strip().splitlines()[-1])
+    assert err["kind"] == "bad_input" and "missing.SLDPRT" in err["error"]
+
+
+def test_overrides_are_validated(tmp_path):
+    """Typos in overrides are reported (with a suggestion), and are errors with strict."""
+    from bridgesim.sim import study
+
+    write_stl(simple_beam_bridge(), tmp_path / "b.stl")
+    ov = {"bodies": {"Stringr*": {"layup": "3-ply UD"}}}
+    rep = study.inspect(tmp_path / "b.stl", overrides=ov)
+    assert any("Stringr*" in w for w in rep.warnings)
+    with pytest.raises(ValueError, match="Stringr"):
+        study.inspect(tmp_path / "b.stl", overrides=ov, strict=True)
+    with pytest.raises(ValueError, match="no_such_key"):
+        study.inspect(tmp_path / "b.stl", overrides={"params": {"no_such_key": 1}})
+
+
+def test_orientation_and_units(tmp_path):
+    """A bridge drawn with Z up (and in metres) is flagged, and the axis/unit options fix
+    it so the same model is built."""
+    from bridgesim.sim import study
+
+    bodies = simple_beam_bridge()
+    write_stl(bodies, tmp_path / "y_up.stl")
+    for b in bodies:  # file (x, y, z) = (X, -Z, Y): Z up
+        V = b.mesh.vertices
+        b.mesh.vertices = np.c_[V[:, 0], -V[:, 2], V[:, 1]] / 1000.0
+    write_stl(bodies, tmp_path / "z_up_m.stl")
+    ref = study.inspect(tmp_path / "y_up.stl")
+    with pytest.raises(ValueError, match="--units m"):
+        study.inspect(tmp_path / "z_up_m.stl")
+    with pytest.raises(ValueError, match="--up-axis z"):  # still lying on its side
+        study.inspect(tmp_path / "z_up_m.stl", units="m")
+    good = study.inspect(tmp_path / "z_up_m.stl", units="m", up="z", span="x")
+    assert not any(q.id == "geometry:orientation" for q in good.questions)
+    for k in ("glued_patches", "beam_elements", "floss_cables"):
+        assert good.model[k] == ref.model[k], k
+    assert good.model["nodes"] == pytest.approx(ref.model["nodes"], rel=0.1)
+    assert good.mass_kg == pytest.approx(ref.mass_kg, rel=1e-3)
+
+
+def test_compare_ignores_the_post_peak_branch(synthetic_crush, tmp_path):
+    """The stiffness of the reality gap uses the rising branch only, so a test curve that
+    drops after the peak still gives a positive stiffness close to the simulated one."""
+    from bridgesim.sim import study
+
+    _, rep, _ = synthetic_crush
+    c = rep.curve
+    ipk = int(np.argmax(c.load_kgf))
+    rows = ["test,bridge_file,load_kgf,midspan_deflection_mm,event,notes"]
+    idx = sorted(set(range(0, len(c.load_kgf), max(1, len(c.load_kgf) // 60))) | {ipk})
+    for i in idx:  # the whole record, the drop after the peak included
+        ev = "failure" if i == ipk else ""
+        rows.append(f"T1,b.stl,{c.load_kgf[i]:.3f},{c.deflection_mm[i]:.3f},{ev},")
+    (tmp_path / "t.csv").write_text("\n".join(rows))
+    gap = study.compare(Path(rep.artifacts["report_json"]), tmp_path / "t.csv")
+    k = {m.name: m for m in gap.metrics}["initial stiffness"]
+    assert k.simulated > 0 and k.measured > 0
+    assert k.measured == pytest.approx(k.simulated, rel=0.25)
+    assert gap.score_0_100 > 60

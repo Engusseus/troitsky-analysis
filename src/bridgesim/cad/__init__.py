@@ -169,20 +169,112 @@ def _planar_faces(V: np.ndarray, T: np.ndarray) -> list[Face]:
     return faces
 
 
-def load_cad(path: str | Path, stl_units_mm: float = 1.0) -> list[CadBody]:
+AXES = {"x": 0, "y": 1, "z": 2, "-x": 0, "-y": 1, "-z": 2}
+UNITS_MM = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4}
+
+
+def orientation_matrix(up: str = "y", span: str = "x") -> np.ndarray:
+    """Rotation taking the file's axes to bridgesim's (X along the span, Y up, Z across):
+    ``up`` and ``span`` name the file axes ('x', 'y', 'z', optionally '-z' etc.)."""
+    if up.lstrip("-") == span.lstrip("-"):
+        raise ValueError("--up-axis and --span-axis must be different axes")
+    if up not in AXES or span not in AXES:
+        raise ValueError(f"axes must be one of {', '.join(AXES)}")
+    u = np.zeros(3)
+    u[AXES[up]] = -1.0 if up.startswith("-") else 1.0
+    sx = np.zeros(3)
+    sx[AXES[span]] = -1.0 if span.startswith("-") else 1.0
+    z = np.cross(sx, u)
+    return np.stack([sx, u, z])  # rows: new X, Y, Z in file coordinates
+
+
+def transform_bodies(bodies: list[CadBody], M: np.ndarray, scale: float = 1.0) -> None:
+    """Rotate (rows of M = new axes) and scale bodies in place, faces included."""
+    from bridgesim.cad.mesh import mass_properties
+
+    for b in bodies:
+        b.mesh.vertices = scale * b.mesh.vertices @ M.T
+        vol, cen, inertia = mass_properties(b.mesh.vertices, b.mesh.triangles)
+        b.mesh.volume, b.mesh.centroid, b.mesh.inertia = vol, cen, inertia
+        for f in b.faces:
+            f.loops = [scale * lp @ M.T for lp in f.loops]
+            if f.normal is not None:
+                f.normal = M @ f.normal
+            if f.axis is not None:
+                f.axis = M @ f.axis
+            if f.origin is not None:
+                f.origin = scale * (M @ f.origin)
+            f.radius *= scale
+
+
+def orientation_check(bodies: list[CadBody]) -> list[str]:
+    """Problems with the orientation or units of a model meant to be in mm with X along
+    the span and Y up (the SolidWorks default with the bridge drawn on the Top Plane)."""
+    V = np.vstack([b.mesh.vertices for b in bodies])
+    ext = np.ptp(V, axis=0)
+    out = []
+    if ext.max() < 20:
+        out.append(f"the model is only {ext.max():.3g} units long: it looks like metres or "
+                   "inches, not mm (use --units m or --units in)")
+    elif ext.max() > 20000:
+        out.append(f"the model is {ext.max():.0f} mm long: wrong units? (use --units)")
+    if int(np.argmax(ext)) != 0:
+        ax = "xyz"[int(np.argmax(ext))]
+        out.append(f"the longest dimension is along {ax.upper()}, not X: is the span along "
+                   f"{ax.upper()}? (use --span-axis {ax})")
+    lo = V[:, 1].min()
+    near = V[:, 1] < lo + 0.5
+    if near.mean() < 1e-4 or np.ptp(V[near, 0]) < 0.5 * ext[0]:
+        out.append("nothing rests on the lowest Y plane at both ends of the span: is Y up? "
+                   "(use --up-axis z if the bridge was drawn standing on the Front Plane)")
+    else:
+        mid = 0.5 * (V[:, 0].min() + V[:, 0].max())
+        band = (mid - 0.15 * ext[0], mid + 0.15 * ext[0])
+        on_floor = False
+        for b in bodies:  # triangles lying on the lowest plane that reach mid-span
+            P = b.mesh.vertices[b.mesh.triangles]
+            low = (P[:, :, 1] < lo + 0.5).all(axis=1)
+            if low.any():
+                x0, x1 = P[low, :, 0].min(axis=1), P[low, :, 0].max(axis=1)
+                if ((x0 < band[1]) & (x1 > band[0])).any():
+                    on_floor = True
+                    break
+        if on_floor:
+            out.append("the bridge rests on the lowest Y plane at mid-span, not only at its "
+                       "ends: it is probably lying on its side (use --up-axis z if it was "
+                       "drawn standing on the Front Plane, or --up-axis -z / x)")
+    return out
+
+
+def load_cad(path: str | Path, stl_units_mm: float = 1.0, units: str | None = None,
+             up: str = "y", span: str = "x") -> list[CadBody]:
+    """Read a CAD file. ``units`` (mm, cm, m, in) scales the model to mm (SolidWorks parts
+    are always read in mm); ``up``/``span`` say which file axes are up and along the span
+    (bridgesim uses X along the span, Y up)."""
     p = Path(path)
     ext = p.suffix.lower()
+    scale = UNITS_MM[units] if units else 1.0
+    if units and units not in UNITS_MM:
+        raise ValueError(f"units must be one of {', '.join(UNITS_MM)}")
     if ext == ".sldprt":
         stream, _ = read_part(p)
-        return bodies_from_parasolid(stream)
-    if ext == ".x_b":
-        return bodies_from_parasolid(p.read_bytes())
-    if ext == ".stl":
-        return bodies_from_stl(p, stl_units_mm)
+        bodies = bodies_from_parasolid(stream)
+        scale = 1.0  # the Parasolid model is in metres and read as mm already
+    elif ext == ".x_b":
+        bodies = bodies_from_parasolid(p.read_bytes())
+        scale = 1.0
+    elif ext == ".stl":
+        bodies = bodies_from_stl(p, stl_units_mm)
+    else:
+        bodies = None
+    if bodies is not None:
+        if (up, span) != ("y", "x") or scale != 1.0:
+            transform_bodies(bodies, orientation_matrix(up, span), scale)
+        return bodies
     raise ValueError(f"unsupported CAD file {p.name}: use one of {', '.join(SUPPORTED)} "
                      "(SolidWorks: save the part as .SLDPRT, or export STL with all bodies "
                      "in one file). Assemblies (.SLDASM) are not read: save the assembly as "
                      "a multi-body part first.")
 
 
-__all__ = ["CadBody", "load_cad", "SUPPORTED"]
+__all__ = ["CadBody", "load_cad", "SUPPORTED", "orientation_check", "orientation_matrix"]

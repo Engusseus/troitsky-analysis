@@ -36,6 +36,9 @@ class BodyInfo:
     thickness_mm: float = 0.0
     section_mm: tuple[float, float] = (0.0, 0.0)
     length_mm: float = 0.0
+    centroid_mm: tuple = (0.0, 0.0, 0.0)
+    bbox_mm: tuple | None = None
+    axis: tuple | None = None
 
 
 @dataclass

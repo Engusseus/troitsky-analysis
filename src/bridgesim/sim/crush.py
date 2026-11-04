@@ -72,13 +72,16 @@ class Event:
     kind: str
     what: str
     detail: str = ""
+    where: tuple[float, float, float] | None = None
 
     def as_dict(self) -> dict:
         return {"t_s": round(float(self.t), 5),
                 "jack_travel_mm": round(float(self.travel_mm), 2),
                 "load_N": round(float(self.force_N), 1),
                 "load_kgf": round(float(self.force_N) / KGF, 2),
-                "kind": self.kind, "what": self.what, "detail": self.detail}
+                "kind": self.kind, "what": self.what, "detail": self.detail,
+                "where_mm": [round(float(v), 1) for v in self.where] if self.where is not None
+                else None}
 
 
 @dataclass
@@ -102,6 +105,7 @@ class CrushResult:
     kinetic_ratio_max: float
     model: Model = field(repr=False)
     notes: list[str] = field(default_factory=list)
+    speed_mm_s: float = 0.0
 
 
 def _quat(R: np.ndarray) -> np.ndarray:
@@ -321,7 +325,7 @@ def choose_dt(m: Model, s: S.Settings, max_added: float = 0.05,
 
 
 FIDELITY = {  # mesh scale, simulated jack speed (mm/s)
-    "quick": (1.6, 200.0),     # screening a design change: ~3-5x faster, +-10 % on F_u
+    "quick": (1.6, 200.0),     # screening design changes (rank designs at one fidelity)
     "standard": (1.0, 100.0),
     "fine": (0.75, 50.0),      # convergence check
 }
@@ -596,36 +600,44 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             if force > peak:
                 peak, peak_travel, peak_defl = force, travel, defl
             # ---- events
-            def ev(kind, what, detail="", _tr=travel, _f=force):
-                events.append(Event(st.t, _tr, _f, kind, what, detail))
+            def ev(kind, what, detail="", where=None, _tr=travel, _f=force):
+                events.append(Event(st.t, _tr, _f, kind, what, detail,
+                                    None if where is None else tuple(where)))
+
+            def mid(nodes):  # current position of a group of nodes
+                return st.x[np.asarray(nodes)].mean(0)
 
             nb = st.b_fractured & ~prev_b
             for e in np.where(nb)[0]:
                 ev("member_fracture", m.bodies[m.b_body[e]].name,
-                   "member broke (fibres cracked through the section)")
+                   "member broke (fibres cracked through the section)",
+                   mid([m.b_i[e], m.b_j[e]]))
             ns = st.b_shear & ~prev_bs
             for e in np.where(ns)[0]:
-                ev("member_shear", m.bodies[m.b_body[e]].name, "member split in shear")
+                ev("member_shear", m.bodies[m.b_body[e]].name, "member split in shear",
+                   mid([m.b_i[e], m.b_j[e]]))
             sd = (st.s_dmg > 0.5) & ~prev_s
             if sd.any():
                 for bid in np.unique(m.s_body[sd]):
+                    els = np.where(sd & (m.s_body == bid))[0]
                     ev("plate_crack", m.bodies[bid].name,
-                       f"{int((m.s_body[sd] == bid).sum())} shell element(s) cracked")
+                       f"{len(els)} shell element(s) cracked", mid(m.s_nodes[els].ravel()))
             kb = ~st.k_alive & prev_k
             for c in np.where(kb)[0]:
-                ev("floss_break", m.bodies[m.k_body[c]].name, "floss snapped")
+                ev("floss_break", m.bodies[m.k_body[c]].name, "floss snapped",
+                   mid([m.a_node[m.k_a[c]], m.a_node[m.k_b[c]]]))
             started = pdmg > 0.0
             broken = pdmg >= 0.999
             for pid in np.where(started & ~prev_patch_started)[0]:
                 pa = m.patches[pid]
                 ev("glue_damage", f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
-                   f"glue line starts to fail ({pa.area_mm2:.0f} mm^2)")
+                   f"glue line starts to fail ({pa.area_mm2:.0f} mm^2)", pa.centroid)
             for pid in np.where(broken & ~prev_patch_broken)[0]:
                 pa = m.patches[pid]
                 frac = float((st.c_d[pa.springs] >= 0.999).mean()) if pa.springs else 1
                 ev("joint_failure", f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
                    f"glued joint fully separated ({pa.area_mm2:.0f} mm^2, "
-                   f"{frac:.0%} of it)")
+                   f"{frac:.0%} of it)", pa.centroid)
             prev_b, prev_bs, prev_s = st.b_fractured.copy(), st.b_shear.copy(), st.s_dmg > 0.5
             prev_k = st.k_alive.copy()
             prev_patch_started, prev_patch_broken = started, broken
@@ -716,7 +728,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         deflection_at_Fu_mm=float(peak_defl), curve=curve, events=events, frames=frames,
         criteria=criteria, dt=dt, steps=steps, wall_s=time.time() - t0,
         added_mass_kg=added * 1000, added_mass_frac=added / phys_mass.sum(),
-        settle_sag_mm=sag, kinetic_ratio_max=max_ke_ratio, model=m)
+        settle_sag_mm=sag, kinetic_ratio_max=max_ke_ratio, model=m,
+        speed_mm_s=float(opt.speed_mm_s))
     del ke
     return res
 

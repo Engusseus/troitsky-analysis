@@ -141,6 +141,7 @@ class Layup:
     grain: str = "long"  # "long" (body's long axis / local edges), "span" (global X), ...
     source: str = "default"  # "name", "override" or "default"
     text: str = ""
+    orientation_assumed: bool = False  # "10-ply" without UD / 0-90 / +-45
 
     @property
     def label(self) -> str:
@@ -179,7 +180,9 @@ def parse_layup(name: str) -> Layup | None:
     if "block" in t:
         return Layup("block", [0.0] * (n or 1), grain, "name", name)
     if n:  # "10-ply" with no orientation: sticks all along the member, the usual case
-        return Layup("laminate", [0.0] * n, grain, "name", name)
+        lay = Layup("laminate", [0.0] * n, grain, "name", name)
+        lay.orientation_assumed = True
+        return lay
     return None
 
 
