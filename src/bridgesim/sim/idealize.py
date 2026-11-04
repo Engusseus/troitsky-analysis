@@ -715,9 +715,15 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             continue
         pid = len(patches)
         patches.append(Patch(bi, best, 4.0, bp, np.array([0.0, 1, 0]), kind="tie"))
-        for _ in range(1):
-            springs["a"].append(attach(bi, bp))
-            springs["b"].append(attach(best, bp))
+        # three tie points spread over the loose part (one would let it swing)
+        Vb = allV[bi]
+        far = Vb[np.argsort(np.linalg.norm(Vb - bp, axis=1))[::-1]]
+        ties = [bp, far[0]]
+        d2 = np.linalg.norm(np.cross(far - bp, far[0] - bp), axis=1)
+        ties.append(far[int(np.argmax(d2))])
+        for tp in ties:
+            springs["a"].append(attach(bi, tp))
+            springs["b"].append(attach(best, tp))
             springs["area"].append(4.0)
             springs["n0"].append(np.array([0.0, 1.0, 0.0]))
             springs["Kn"].append(sp_glue["K_n_N_per_mm3"])

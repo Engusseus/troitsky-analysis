@@ -30,17 +30,24 @@ def _yaml_or_none(text: str | None):
 
 
 def build_server():
-    try:
-        from mcp.server.fastmcp import FastMCP
-    except ImportError as exc:  # pragma: no cover - depends on the optional extra
-        raise SystemExit("The MCP server needs the 'mcp' package: "
-                         "pip install 'bridgesim[mcp]' (or uv sync --extra mcp)") from exc
+    try:  # mcp >= 2
+        from mcp.server.mcpserver import MCPServer as Server
+    except ImportError:
+        try:  # mcp 1.x
+            from mcp.server.fastmcp import FastMCP as Server
+        except ImportError as exc:  # pragma: no cover - depends on the optional extra
+            raise SystemExit("The MCP server needs the 'mcp' package: "
+                             "pip install 'bridgesim[mcp]' (or uv sync --extra mcp)") from exc
 
     from bridgesim.sim import study
     from bridgesim.sim.crush import CrushOptions
     from bridgesim.sim.report import SCHEMAS
 
-    srv = FastMCP("bridgesim")
+    srv = Server("bridgesim", instructions=(
+        "Simulates the Troitsky popsicle-stick bridge crushing test on SolidWorks parts. "
+        "Call inspect_bridge first, ask the designer its `questions`, pass the answers as "
+        "overrides_yaml to crush_bridge. After a real test, compare_with_test gives the "
+        "reality gap. Full guide: AGENTS.md in the repository."))
 
     @srv.tool()
     def inspect_bridge(cad_path: str, overrides_yaml: str = "", material: str = "") -> str:

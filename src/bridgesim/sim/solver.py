@@ -100,6 +100,7 @@ class State:
     s_prev: np.ndarray = field(default_factory=lambda: np.zeros((0, 18)))
     c_prev: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     work: tuple | None = None  # scratch arrays of the compiled shell kernel
+    scratch: tuple | None = None  # contact force scratch arrays
     c_alive: np.ndarray = field(default_factory=lambda: np.zeros(0, bool))
     loose: np.ndarray = field(default_factory=lambda: np.zeros(0, bool))  # debris nodes
     t: float = 0.0
@@ -540,8 +541,11 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
     if len(m.k_a):
         K.cable_kernel(x, R, m.a_node, m.a_r0, m.k_a, m.k_b, m.k_L0, m.k_EA, m.k_Fb,
                        st.k_alive, F, Mo, update)
-    Fc = np.zeros_like(F)
-    Mc = np.zeros_like(Mo)
+    if st.scratch is None or st.scratch[0].shape != F.shape:
+        st.scratch = (np.zeros_like(F), np.zeros_like(Mo))
+    Fc, Mc = st.scratch
+    Fc[:] = 0.0
+    Mc[:] = 0.0
     K.platform_kernel(x, R, m.a_node, m.a_r0, m.p_att, m.table_y, s.k_platform,
                       s.mu_platform, st.p_anchor, st.p_touch, Fc, Mc, update, st.v, st.w,
                       _cd(m, "p", s, update))

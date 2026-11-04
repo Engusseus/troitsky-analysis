@@ -703,3 +703,27 @@ def expmap_update(R, w, dt):
         for r in range(3):
             for cc in range(3):
                 R[i, r, cc] = M[r, cc]
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
+def integrate(x, v, w, R, F, Mo, mass, gmass, rot, gy, alpha, dt, loose):
+    """One central-difference update of all nodes (velocities at half steps), with
+    mass-proportional damping; gravity acts on ``gmass`` (the physical mass)."""
+    for i in range(x.shape[0]):
+        im = 1.0 / mass[i]
+        v[i, 0] += dt * (-F[i, 0] * im - alpha * v[i, 0])
+        v[i, 1] += dt * ((-F[i, 1] + gmass[i] * gy) * im - alpha * v[i, 1])
+        v[i, 2] += dt * (-F[i, 2] * im - alpha * v[i, 2])
+        x[i, 0] += dt * v[i, 0]
+        x[i, 1] += dt * v[i, 1]
+        x[i, 2] += dt * v[i, 2]
+        if loose[i]:
+            w[i, 0] = 0.0
+            w[i, 1] = 0.0
+            w[i, 2] = 0.0
+            continue
+        ir = 1.0 / rot[i]
+        w[i, 0] += dt * (-Mo[i, 0] * ir - alpha * w[i, 0])
+        w[i, 1] += dt * (-Mo[i, 1] * ir - alpha * w[i, 1])
+        w[i, 2] += dt * (-Mo[i, 2] * ir - alpha * w[i, 2])
+    expmap_update(R, w, dt)

@@ -146,6 +146,7 @@ def _point_in_mesh(P: np.ndarray, V: np.ndarray, T: np.ndarray) -> np.ndarray:
 def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: SimParams,
                      rules: RulesSummary) -> list[Question]:
     qs: list[Question] = []
+    rng = np.random.default_rng(0)
     # interference: bodies overlapping in the CAD (a modelling error or a joint drawn as
     # an overlap)
     lo = np.array([b.mesh.bbox[0] for b in bodies]) + 0.5
@@ -155,18 +156,22 @@ def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: Sim
             if (lo[i] > hi[j]).any() or (lo[j] > hi[i]).any():
                 continue
             small, big = (i, j) if bodies[i].mesh.volume < bodies[j].mesh.volume else (j, i)
-            Vs = bodies[small].mesh.vertices
-            cen = Vs.mean(0)
-            probe = cen + 0.9 * (Vs - cen)  # just inside the small body's own surface
-            probe = probe[:: max(1, len(probe) // 40)]
-            inside = _point_in_mesh(probe, bodies[big].mesh.vertices,
-                                    bodies[big].mesh.triangles)
-            if inside.mean() > 0.2:
+            # points really inside the smaller body (non-convex bodies are common), then
+            # the fraction of them that is also inside the bigger one
+            ms = bodies[small].mesh
+            P = rng.uniform(*ms.bbox, size=(300, 3))
+            P = P[_point_in_mesh(P, ms.vertices, ms.triangles)]
+            if len(P) < 20:
+                continue
+            frac = float(_point_in_mesh(P, bodies[big].mesh.vertices,
+                                        bodies[big].mesh.triangles).mean())
+            if frac * ms.volume > 50.0 and frac > 0.03:
                 qs.append(Question(
                     id=f"overlap:{bodies[small].name}|{bodies[big].name}", topic="geometry",
                     question=f"'{bodies[small].name}' overlaps '{bodies[big].name}' in the "
-                             "CAD. Two solid parts cannot occupy the same space: is one "
-                             "cut into the other (a notch), or is this a modelling error?",
+                             f"CAD (about {frac * ms.volume:.0f} mm^3, {frac:.0%} of it). Two "
+                             "solid parts cannot occupy the same space: should one be cut "
+                             "into the other (a notch), or is this a modelling error?",
                     assumed="they are treated as separate parts joined only where their "
                             "faces touch",
                     severity="important"))

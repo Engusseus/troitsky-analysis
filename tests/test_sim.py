@@ -301,3 +301,15 @@ def test_read_solidworks_part():
         assert (c == 2).all(), b.name
     names = {b.name for b in bodies}
     assert any(n.startswith("Top Chord (10-ply UD") for n in names)
+
+
+def test_mcp_server_exposes_the_tools():
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from bridgesim.sim.mcp_server import build_server
+
+    tools = asyncio.run(build_server().list_tools())
+    names = {getattr(t, "name", None) for t in getattr(tools, "tools", tools)}
+    assert {"inspect_bridge", "crush_bridge", "compare_with_test", "lab_tests",
+            "calibrate_material", "get_schema"} <= names

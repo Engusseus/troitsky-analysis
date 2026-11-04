@@ -420,15 +420,19 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     def do_step(grav: float, alpha: float) -> dict:
         nonlocal steps
         info = S.internal_and_contact(m, st, s, F, Mo)
-        fext = np.zeros_like(F)
-        fext[:, 1] = -mass * s.gravity * grav * grav_ratio
-        acc = (fext - F) / mass[:, None] - alpha * st.v
-        st.v += dt * acc
-        st.x += dt * st.v
-        st.w += dt * (-Mo / rot[:, None] - alpha * st.w)
-        if st.loose.any():
-            st.w[st.loose] = 0.0
-        S.rotate(st, dt, s.use_numba)
+        if s.use_numba and S.K.HAVE_NUMBA:
+            S.K.integrate(st.x, st.v, st.w, st.R, F, Mo, mass, phys_mass,
+                          rot, -s.gravity * grav, alpha, dt, st.loose)
+        else:
+            fext = np.zeros_like(F)
+            fext[:, 1] = -mass * s.gravity * grav * grav_ratio
+            acc = (fext - F) / mass[:, None] - alpha * st.v
+            st.v += dt * acc
+            st.x += dt * st.v
+            st.w += dt * (-Mo / rot[:, None] - alpha * st.w)
+            if st.loose.any():
+                st.w[st.loose] = 0.0
+            S.rotate(st, dt, s.use_numba)
         st.t += dt
         steps += 1
         if steps % 2000 == 0:
@@ -457,13 +461,16 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         k += 1
         if k > n_ramp and k % 200 == 0:
             vmax_s = float(np.abs(st.v).max())
+            # at rest: mass-weighted RMS speed below 0.5 mm/s (a light toggle still
+            # swinging a little does not hold up the test)
+            vrms = float(np.sqrt((mass * (st.v**2).sum(1)).sum() / mass.sum()))
             if opt.progress and k % 4000 == 0:
                 iv = int(np.argmax(np.abs(st.v).max(1)))
                 bid = int(m.node_body[iv])
                 opt.progress(0.0, f"settling under self-weight: t {st.t:.3f} s, "
                                   f"fastest node {vmax_s:.1f} mm/s ("
                                   f"{m.bodies[bid].name if bid >= 0 else 'plate'})")
-            if vmax_s < 0.5 or st.t > opt.settle_max_s:
+            if vrms < 0.5 or st.t > opt.settle_max_s:
                 break
     sag = float(np.max(y_ref[:-1] - st.x[:-1, 1]))
     ke = S.kinetic_energy(m, st)
