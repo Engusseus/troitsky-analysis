@@ -13,7 +13,7 @@ SolidWorks needed), a Parasolid `.x_b`, or an STL with all bodies in one file.
 1. inspect   -> what bridgesim understood + the questions it could not answer
 2. ask       -> put the questions to the designer, write the answers in overrides.yaml
 3. crush     -> simulated §12.5 crushing test: ultimate load, failure sequence, replay
-4. improve   -> change the CAD (or overrides) and crush again; compare designs
+4. improve   -> change the CAD (or overrides); `ab` says whether the change really helps
 5. calibrate -> after coupon tests (sticks, glue joints): fit the material
 6. compare   -> after a real crush test: reality-gap score and what to measure next
 ```
@@ -27,8 +27,9 @@ SolidWorks needed), a Parasolid `.x_b`, or an STL with all bodies in one file.
 | `bridgesim compare DIR/crush.json my_test.csv --json` | Reality gap vs a physical crush test | seconds |
 | `bridgesim lab [--data validation/physical] --json` | Simulated coupon tests (stick bending, lap joint, stick column) and their gap to the team's coupon data | ~20 s |
 | `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, strengths, glue strength from coupon CSVs | seconds |
-| `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity quick] [--processes 4] --json` | Spread of F_u over imperfections and material scatter; value for the Load Prediction Form | n x crush / processes |
-| `bridgesim schema inspect\|crush\|reality_gap\|lab\|montecarlo\|question` | JSON Schema of each report | instant |
+| `bridgesim ab A.SLDPRT B.SLDPRT [-n 3] [--overrides-a a.yaml] [--overrides-b b.yaml] [--fidelity quick] --json` | Is B better than A? Both crushed with the same seeds: change of F_u and efficiency with a 90 % interval, `significant`, `verdict`, first failure of each. B may be A with other overrides | 2n x crush / processes |
+| `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity quick] [--processes 4] --json` | Spread of F_u over imperfections and material scatter; `recommended_prediction_kgf` for the Load Prediction Form (the 1/F-weighted median, which minimises the §12.7 error) | n x crush / processes |
+| `bridgesim schema inspect\|crush\|reality_gap\|lab\|montecarlo\|design_comparison\|question` | JSON Schema of each report | instant |
 | `bridgesim mcp` | The same as MCP tools (`uv sync --extra mcp`) | - |
 
 Fidelity: `quick` (coarser mesh, jack 200 mm/s) to screen design changes, `standard`
@@ -78,6 +79,7 @@ claude mcp add bridgesim -- uv run --directory /path/to/troitsky-analysis bridge
 | `crush_bridge(cad_path, overrides_yaml, seed, fidelity, out_dir, strict, rate_check, ...)` | blocking, minutes |
 | `start_crush(cad_path, out_dir, ...)` then `job_status(out_dir)` | background: poll until `status` is `done` (report included) or `failed` (error included). Use this when tool calls time out |
 | `start_montecarlo(cad_path, out_dir, n, fidelity)` then `job_status(out_dir)` | background spread of F_u |
+| `start_compare_designs(cad_a, cad_b, out_dir, n, overrides_a_yaml, overrides_b_yaml)` then `job_status(out_dir)` | background A/B comparison |
 | `compare_with_test(crush_json_path, test_csv_path)` | reality gap |
 | `lab_tests(material, data_dir)`, `calibrate_material(data_dir, out_path)` | coupon level |
 | `get_schema(name)` | JSON Schemas |
@@ -95,7 +97,9 @@ reported `failed`, never left `running`.
 placement. Each random value is drawn from a stream named after its body or joint, so
 editing one part of the CAD does not reshuffle the imperfections of the others: two
 designs crushed with the same seed differ only by the design change. `--seed -1` gives
-the perfect, centred bridge. Use `montecarlo` for the spread.
+the perfect, centred bridge. Use `montecarlo` for the spread, and `ab` to decide between
+two designs: one seed each can mislead, because the scatter between seeds (glue strength
+varies 30 % joint to joint) is often larger than a small design change.
 
 ## Questions: when the design is not what it should be
 

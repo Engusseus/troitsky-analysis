@@ -393,6 +393,7 @@ def test_mcp_server_exposes_the_tools():
     tools = asyncio.run(build_server().list_tools())
     names = {getattr(t, "name", None) for t in getattr(tools, "tools", tools)}
     assert {"inspect_bridge", "crush_bridge", "start_crush", "job_status", "start_montecarlo",
+            "start_compare_designs",
             "compare_with_test", "lab_tests", "calibrate_material", "get_schema"} <= names
 
 
@@ -469,3 +470,49 @@ def test_compare_ignores_the_post_peak_branch(synthetic_crush, tmp_path):
     assert k.simulated > 0 and k.measured > 0
     assert k.measured == pytest.approx(k.simulated, rel=0.25)
     assert gap.score_0_100 > 60
+
+
+def test_load_prediction_minimises_the_competition_error():
+    """§12.7 scores E = |F_u - F_p| / F_u: the best prediction is the 1/F-weighted median,
+    which beats the plain median on a skewed spread."""
+    from bridgesim.sim.study import best_prediction
+
+    F = np.array([800.0, 900, 1000, 1100, 2400])
+    p = best_prediction(F)
+
+    def err(q):
+        return float(np.mean(np.abs(F - q) / F))
+
+    grid = np.linspace(700, 2500, 1801)
+    assert err(p) == pytest.approx(min(err(q) for q in grid), rel=1e-6)
+    assert err(p) <= err(float(np.median(F)))
+
+
+def test_design_comparison_statistics():
+    from bridgesim.sim.study import summarize_pairs
+
+    def run(seed, F):
+        return {"seed": seed, "Fu_kgf": F, "mass_kg": 2.0, "efficiency_kgf_per_kg": F / 2,
+                "first_failure": "x", "trustworthy": True}
+
+    a = [run(s, F) for s, F in enumerate([1000.0, 1200, 900, 1100], 1)]
+    b = [run(s, F * 1.2) for s, F in enumerate([1000.0, 1200, 900, 1100], 1)]
+    rep = summarize_pairs(a, b, "A", "B", "quick")
+    assert rep.Fu_change == pytest.approx(0.2) and rep.significant
+    assert "stronger" in rep.verdict and "4 of 4" in rep.verdict
+    noisy = [run(s, F) for s, F in enumerate([1100.0, 1000, 1000, 1000], 1)]
+    rep = summarize_pairs(a, noisy, "A", "B", "quick")
+    assert not rep.significant and "not proven" in rep.verdict
+    with pytest.raises(ValueError, match="same seeds"):
+        summarize_pairs(a, b[:2], "A", "B", "quick")
+
+
+def test_ab_cli_rejects_missing_designs(tmp_path):
+    from typer.testing import CliRunner
+
+    from bridgesim.cli import app
+
+    write_stl(simple_beam_bridge(), tmp_path / "a.stl")
+    r = CliRunner().invoke(app, ["ab", str(tmp_path / "a.stl"), str(tmp_path / "nope.stl"),
+                                 "--json"])
+    assert r.exit_code == 2 and json.loads(r.stderr.strip())["kind"] == "bad_input"

@@ -232,6 +232,30 @@ def build_server():
 
     @srv.tool()
     @_safe
+    def start_compare_designs(cad_a: str, cad_b: str, out_dir: str, n: int = 3,
+                              overrides_a_yaml: str = "", overrides_b_yaml: str = "",
+                              fidelity: str = "quick", material: str = "") -> str:
+        """Is design B really better than design A? Starts, in the background, n crushes
+        of each with the same seeds; the report (job_status(out_dir)) gives the change of
+        F_u and efficiency with a 90 % confidence interval, `significant`, a `verdict`
+        and what fails first in each. cad_b may be cad_a with other overrides."""
+        for c in (cad_a, cad_b):
+            if not Path(c).exists():
+                raise FileNotFoundError(f"no such file: {c}")
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        cmd = [sys.executable, "-m", "bridgesim.cli", "ab", cad_a, cad_b, "-n", str(n),
+               "--fidelity", fidelity, "--out", str(out), "--json"]
+        for tag, y in (("a", overrides_a_yaml), ("b", overrides_b_yaml)):
+            if y:
+                (out / f"overrides_{tag}.yaml").write_text(y, encoding="utf-8")
+                cmd += [f"--overrides-{tag}", str(out / f"overrides_{tag}.yaml")]
+        if material:
+            cmd += ["--material", material]
+        return _start(cmd, out)
+
+    @srv.tool()
+    @_safe
     def job_status(out_dir: str) -> str:
         """Status of a background job: running (with the latest progress line), done
         (with the report), failed (with the error and exit code)."""

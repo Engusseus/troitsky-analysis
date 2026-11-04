@@ -222,12 +222,50 @@ class MonteCarloReport(BaseModel):
     p95_kgf: float
     failure_modes: dict[str, int]
     recommended_prediction_kgf: float = Field(
-        description="Value for the Load Prediction Form (§12.7): the median, which "
-                    "minimises the expected relative error.")
+        description="Value for the Load Prediction Form (§12.7): the median of the runs "
+                    "weighted by 1/F_u, which minimises the expected prediction error "
+                    "E = |F_u - F_p| / F_u.")
     fidelity: str = "standard"
     untrustworthy_runs: int = Field(0, description="Runs whose quality.trustworthy is "
                                                    "false")
 
 
+class DesignRun(BaseModel):
+    seed: int
+    Fu_kgf: float
+    mass_kg: float
+    efficiency_kgf_per_kg: float
+    first_failure: str
+    trustworthy: bool
+
+
+class DesignComparison(BaseModel):
+    """Paired comparison of two designs (or one design with two sets of overrides):
+    both are crushed with the same seeds, so each pair shares imperfections and material
+    scatter wherever the designs share bodies, and the difference is the design's."""
+
+    schema_version: str = SCHEMA_VERSION
+    kind: Literal["design_comparison"] = "design_comparison"
+    a: str
+    b: str
+    n: int
+    fidelity: str
+    runs_a: list[DesignRun]
+    runs_b: list[DesignRun]
+    Fu_mean_a_kgf: float
+    Fu_mean_b_kgf: float
+    Fu_change: float = Field(description="Mean of (F_u,B - F_u,A) / F_u,A over the seeds")
+    Fu_change_ci90: tuple[float, float] = Field(
+        description="90 % confidence interval of Fu_change (paired t; wide with few seeds)")
+    efficiency_change: float = Field(description="Same for F_u / mass (§12.6)")
+    efficiency_change_ci90: tuple[float, float]
+    significant: bool = Field(description="True if the F_u confidence interval excludes 0")
+    verdict: str
+    governing_a: str = Field(description="Most frequent first failure of A")
+    governing_b: str
+    untrustworthy_runs: int = 0
+
+
 SCHEMAS = {"inspect": InspectReport, "crush": CrushReport, "reality_gap": RealityGap,
-           "lab": LabReport, "montecarlo": MonteCarloReport, "question": Question}
+           "lab": LabReport, "montecarlo": MonteCarloReport, "question": Question,
+           "design_comparison": DesignComparison}

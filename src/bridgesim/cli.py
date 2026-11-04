@@ -490,8 +490,45 @@ def montecarlo(cad: CadArg, n: Annotated[int, typer.Option(help="Number of runs"
 
 
 @app.command()
+def ab(cad_a: CadArg, cad_b: Annotated[Path, typer.Argument(
+           metavar="CAD_B", help="The other design (may be the same file with other "
+                                 "overrides)")],
+       n: Annotated[int, typer.Option("-n", help="Seeds per design")] = 3,
+       overrides_a: Annotated[Path | None, typer.Option("--overrides-a",
+                                                        help="Overrides YAML for A")] = None,
+       overrides_b: Annotated[Path | None, typer.Option("--overrides-b",
+                                                        help="Overrides YAML for B")] = None,
+       material: MaterialOpt = None,
+       fidelity: Annotated[str, typer.Option(help="quick, standard, fine")] = "quick",
+       processes: Annotated[int | None, typer.Option(
+           help="Crushes in parallel (default: one per 2 CPU cores)")] = None,
+       out: Annotated[Path | None, typer.Option("--out", help="Folder for the crush "
+                                                              "reports and comparison.json")]
+       = None,
+       units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
+       json_out: JsonOpt = False) -> None:
+    """Is design B really better than design A? Crushes both with the same seeds and
+    reports the change of F_u and of the efficiency with a 90 % confidence interval."""
+    from bridgesim.sim import study
+
+    rep = _guard(json_out, lambda: study.compare_designs(
+        cad_a, cad_b, n, overrides_a, overrides_b, material or "popsicle_birch",
+        fidelity=fidelity, processes=processes, out_dir=out, progress=_progress,
+        units=units, up=up_axis, span=span_axis))
+    if json_out:
+        typer.echo(rep.model_dump_json(indent=2))
+        return
+    typer.echo(f"A {rep.a}: mean F_u {rep.Fu_mean_a_kgf:.1f} kgf, first failure: "
+               f"{rep.governing_a}")
+    typer.echo(f"B {rep.b}: mean F_u {rep.Fu_mean_b_kgf:.1f} kgf, first failure: "
+               f"{rep.governing_b}")
+    typer.echo(rep.verdict)
+
+
+@app.command()
 def schema(name: Annotated[str, typer.Argument(help="inspect, crush, reality_gap, lab, "
-                                                     "montecarlo or question")]) -> None:
+                                                     "montecarlo, design_comparison or "
+                                                     "question")]) -> None:
     """Print the JSON Schema of a report (for scripts and AI agents)."""
     import json as _json
 

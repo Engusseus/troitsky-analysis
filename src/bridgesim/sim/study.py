@@ -803,18 +803,18 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
         for k, fu in enumerate(cf.as_completed(futs)):
             res.append(fu.result())
             if progress:
-                progress((k + 1) / n, f"run {k + 1}/{n}: F_u {res[-1][0]:.1f} kgf")
-    F = sorted(r[0] for r in res)
+                progress((k + 1) / n, f"run {k + 1}/{n}: F_u {res[-1]['Fu_kgf']:.1f} kgf")
+    F = sorted(r["Fu_kgf"] for r in res)
     modes: dict[str, int] = {}
     for r in res:
-        modes[r[1]] = modes.get(r[1], 0) + 1
+        modes[r["first_failure"]] = modes.get(r["first_failure"], 0) + 1
     p = np.percentile(F, [5, 50, 95])
     rep = MonteCarloReport(file=Path(cad).name, n=n, Fu_kgf=[round(x, 2) for x in F],
                            p05_kgf=round(float(p[0]), 2), p50_kgf=round(float(p[1]), 2),
                            p95_kgf=round(float(p[2]), 2), failure_modes=modes,
-                           recommended_prediction_kgf=round(float(p[1]), 1),
+                           recommended_prediction_kgf=round(best_prediction(F), 1),
                            fidelity=fidelity,
-                           untrustworthy_runs=sum(1 for r in res if not r[2]))
+                           untrustworthy_runs=sum(1 for r in res if not r["trustworthy"]))
     if out_dir:
         (Path(out_dir) / "montecarlo.json").write_text(rep.model_dump_json(indent=2),
                                                       encoding="utf-8")
@@ -838,7 +838,137 @@ def _mc_one(a):
                    units=units, up=up, span=span)
     first = rep.failure_sequence[0] if rep.failure_sequence else rep.failure_mode
     where = first.split(": ", 2)[-1] if ": " in first else first
-    return rep.Fu_kgf, where, rep.quality.trustworthy
+    return {"seed": seed, "Fu_kgf": rep.Fu_kgf, "first_failure": where,
+            "trustworthy": rep.quality.trustworthy, "mass_kg": rep.mass_kg,
+            "efficiency_kgf_per_kg": rep.efficiency_kgf_per_kg}
+
+
+def best_prediction(F) -> float:
+    """Prediction minimising the expected §12.7 error E = |F - p| / F over the runs F:
+    the median of F weighted by 1/F (lower than the plain median)."""
+    F = np.sort(np.asarray(F, float))
+    if not len(F):
+        return 0.0
+    w = 1.0 / np.maximum(F, 1e-9)
+    c = np.cumsum(w) / w.sum()
+    return float(F[int(np.searchsorted(c, 0.5))])
+
+
+def _pool_runs(args, n_runs, processes, progress, label):
+    import concurrent.futures as cf
+    import multiprocessing as mp
+    import os
+
+    cpus = os.cpu_count() or 1
+    procs = max(1, min(n_runs, processes or max(1, cpus // 2)))
+    threads = max(1, cpus // procs)
+    out = []
+    with cf.ProcessPoolExecutor(max_workers=procs, initializer=_mc_init,
+                                initargs=(threads,), mp_context=mp.get_context("spawn")) as ex:
+        futs = {ex.submit(_mc_one, a): tag for tag, a in args}
+        for k, fu in enumerate(cf.as_completed(futs)):
+            r = fu.result()
+            r["tag"] = futs[fu]
+            out.append(r)
+            if progress:
+                progress((k + 1) / n_runs, f"{label} {k + 1}/{n_runs}: {r['tag']} seed "
+                                           f"{r['seed']} F_u {r['Fu_kgf']:.1f} kgf")
+    return out
+
+
+def summarize_pairs(ra: list[dict], rb: list[dict], name_a: str, name_b: str,
+                    fidelity: str):
+    """Paired statistics of crush runs of two designs with the same seeds (dicts with
+    seed, Fu_kgf, mass_kg, efficiency_kgf_per_kg, first_failure, trustworthy)."""
+    from scipy import stats
+
+    from bridgesim.sim.report import DesignComparison, DesignRun
+
+    ra = sorted(ra, key=lambda r: r["seed"])
+    rb = sorted(rb, key=lambda r: r["seed"])
+    if [r["seed"] for r in ra] != [r["seed"] for r in rb] or not ra:
+        raise ValueError("the two designs must have runs with the same seeds")
+    n = len(ra)
+
+    def change(key):
+        d = np.array([(b[key] - a[key]) / max(a[key], 1e-9) for a, b in zip(ra, rb,
+                                                                           strict=True)])
+        mean = float(d.mean())
+        if len(d) < 2:
+            return mean, (math.nan, math.nan), d
+        half = float(stats.t.ppf(0.95, len(d) - 1) * d.std(ddof=1) / math.sqrt(len(d)))
+        return mean, (round(mean - half, 4), round(mean + half, 4)), d
+
+    dF, ciF, d = change("Fu_kgf")
+    dE, ciE, _ = change("efficiency_kgf_per_kg")
+    sig = bool(ciF[0] > 0 or ciF[1] < 0) if not math.isnan(ciF[0]) else False
+    wins = int((d > 0).sum())
+
+    def gov(rs):
+        cnt: dict[str, int] = {}
+        for r in rs:
+            cnt[r["first_failure"]] = cnt.get(r["first_failure"], 0) + 1
+        return max(cnt, key=cnt.get) if cnt else ""
+
+    seeds = f"B stronger with {wins} of {n} seeds"
+    if math.isnan(ciF[0]):
+        verdict = (f"B differs from A by {dF:+.1%} in F_u with one seed: run n >= 3 to know "
+                   "whether that is more than the scatter")
+    elif sig:
+        verdict = (f"B is {'stronger' if dF > 0 else 'weaker'} than A: F_u {dF:+.1%} (90 % "
+                   f"interval {ciF[0]:+.1%} to {ciF[1]:+.1%}; {seeds}); efficiency "
+                   f"{dE:+.1%}")
+    else:
+        verdict = (f"F_u changes by {dF:+.1%} ({seeds}), but the 90 % interval "
+                   f"{ciF[0]:+.1%} to {ciF[1]:+.1%} includes 0: not proven with {n} seeds; "
+                   "run more seeds if the difference matters")
+    runs = [[DesignRun(seed=r["seed"], Fu_kgf=r["Fu_kgf"], mass_kg=r["mass_kg"],
+                       efficiency_kgf_per_kg=r["efficiency_kgf_per_kg"],
+                       first_failure=r["first_failure"], trustworthy=r["trustworthy"])
+             for r in rs] for rs in (ra, rb)]
+    return DesignComparison(
+        a=name_a, b=name_b, n=n, fidelity=fidelity, runs_a=runs[0], runs_b=runs[1],
+        Fu_mean_a_kgf=round(float(np.mean([r["Fu_kgf"] for r in ra])), 2),
+        Fu_mean_b_kgf=round(float(np.mean([r["Fu_kgf"] for r in rb])), 2),
+        Fu_change=round(dF, 4), Fu_change_ci90=ciF, efficiency_change=round(dE, 4),
+        efficiency_change_ci90=ciE, significant=sig, verdict=verdict,
+        governing_a=gov(ra), governing_b=gov(rb),
+        untrustworthy_runs=sum(1 for r in ra + rb if not r["trustworthy"]))
+
+
+def compare_designs(cad_a: str | Path, cad_b: str | Path, n: int = 3, overrides_a=None,
+                    overrides_b=None, material=None, sim_params=None, ruleset=None,
+                    fidelity: str = "quick", processes: int | None = None,
+                    out_dir: str | Path | None = None, progress=None, units=None,
+                    up: str = "y", span: str = "x"):
+    """Crush design A and design B with the same seeds 1..n and report whether B is
+    really stronger (paired differences with a 90 % confidence interval), with the mass,
+    the §12.6 efficiency and what fails first in each."""
+    if n < 1:
+        raise ValueError("n must be at least 1")
+    for c in (cad_a, cad_b):
+        if not Path(c).exists():
+            raise FileNotFoundError(f"no such file: {c}")
+    # check both inputs before spending minutes on them
+    _inputs(cad_a, overrides_a, material, sim_params, ruleset, units, up, span)
+    _inputs(cad_b, overrides_b, material, sim_params, ruleset, units, up, span)
+    args = []
+    for tag, cad, ov in (("A", cad_a, overrides_a), ("B", cad_b, overrides_b)):
+        for sd in range(1, n + 1):
+            args.append((tag, (str(cad), ov, material, sim_params, ruleset, sd, None,
+                               fidelity, str(Path(out_dir) / f"{tag}_seed_{sd}")
+                               if out_dir else None, units, up, span)))
+    res = _pool_runs(args, 2 * n, processes, progress, "crush")
+    rep = summarize_pairs([r for r in res if r["tag"] == "A"],
+                          [r for r in res if r["tag"] == "B"],
+                          Path(cad_a).name + (" (overrides)" if overrides_a else ""),
+                          Path(cad_b).name + (" (overrides)" if overrides_b else ""),
+                          fidelity)
+    if out_dir:
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        (Path(out_dir) / "comparison.json").write_text(rep.model_dump_json(indent=2),
+                                                      encoding="utf-8")
+    return rep
 
 
 def dump(model_obj) -> str:
