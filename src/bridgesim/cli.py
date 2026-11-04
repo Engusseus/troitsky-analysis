@@ -391,7 +391,7 @@ def crush(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = N
     typer.echo(f"  mass {rep.mass_kg:.2f} kg, efficiency {rep.efficiency_kgf_per_kg:.1f} "
                f"kgf/kg, deck deflection at F_u {rep.deflection_at_Fu_mm:.1f} mm")
     if rep.Fu_first_joint_failure_kgf is not None:
-        typer.echo(f"  first glued joint fully separated at "
+        typer.echo(f"  first joint separated (or member split in shear) at "
                    f"{rep.Fu_first_joint_failure_kgf:.1f} kgf")
     typer.echo("Failure sequence:")
     for line in rep.failure_sequence[:15]:

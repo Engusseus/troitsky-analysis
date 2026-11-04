@@ -33,10 +33,12 @@ SolidWorks needed), a Parasolid `.x_b`, or an STL with all bodies in one file.
 | `bridgesim schema inspect\|crush\|reality_gap\|lab\|montecarlo\|design_comparison\|sensitivity\|question` | JSON Schema of each report | instant |
 | `bridgesim mcp` | The same as MCP tools (`uv sync --extra mcp`) | - |
 
-Fidelity: `quick` (coarser mesh, jack 200 mm/s) to screen design changes, `standard`
-(100 mm/s) for the answer, `fine` (finer mesh, 50 mm/s) to check that the answer has
-converged. Rank designs with one fidelity and one seed; never compare F_u across
-fidelities.
+Fidelity: `quick` (coarser mesh, jack 200 mm/s, ~1-2 min) to screen design changes,
+`standard` (100 mm/s, ~4-6 min) for the answer, `fine` (finer mesh, 50 mm/s, ~10 min) to
+check that the answer has converged. On Bridge_v6 (seed 0): quick 2329, standard 2035,
+fine 1940 kgf, standard and fine failing at the same joint; so quick can be ~15 % off and
+is only for ranking, and the standard F_u is within ~5 % of the converged one. Rank designs
+with one fidelity and one seed (or `ab`); never compare F_u across fidelities.
 
 ### Orientation and units
 

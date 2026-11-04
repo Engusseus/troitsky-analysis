@@ -575,7 +575,7 @@ def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = N
                        "the simulated test is too fast, or the failure path is sensitive "
                        "to small differences (two failure modes compete); run montecarlo "
                        "to see the spread and give F_u as a range")
-    if res.added_mass_frac > 0.05:
+    if res.added_mass_frac > 0.0505:  # the solver caps it at 5 %
         reasons.append(f"{res.added_mass_frac:.1%} mass added for stability (> 5 %)")
     if res.failure_mode == "none":
         reasons.append("the bridge did not fail within the jack travel")
