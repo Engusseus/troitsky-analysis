@@ -407,6 +407,35 @@ def inspect(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt =
 
 
 @app.command()
+def screen(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = None,
+           rules: RulesOpt = "troitsky_2027", sim_params: SimOpt = None,
+           load: Annotated[float, typer.Option(
+               "--load", help="Reference plate load, kgf")] = 100.0,
+           top: Annotated[int, typer.Option(
+               "--top", help="Most utilised parts to list")] = 25,
+           units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
+           strict: StrictOpt = False, json_out: JsonOpt = False) -> None:
+    """Linear pre-screen in seconds: the bridge's stiffness under the plate and how close
+    each joint, member and plate is to its limit (where damage starts). Ranks the weak
+    spots and shows in seconds how a what-if moves them; F_u needs crush."""
+    from bridgesim.sim import study
+
+    rep = _guard(json_out, lambda: study.screen(
+        cad, overrides, material or "popsicle_birch", sim_params, rules, load_kgf=load,
+        units=units, up=up_axis, span=span_axis, strict=strict, n_limits=top))
+    if json_out:
+        typer.echo(rep.model_dump_json(indent=2))
+        return
+    typer.echo(f"{rep.file}: stiffness {rep.stiffness_kgf_per_mm:.0f} kgf/mm under the "
+               f"plate; damage starts at {rep.first_limit_kgf:.0f} kgf ({rep.first_limit})"
+               f" [{rep.wall_s:.1f} s, linear]")
+    for lm in rep.limits:
+        typer.echo(f"  {lm.load_kgf:9.0f} kgf  {lm.utilisation:6.3f}  {lm.mode}: {lm.part}")
+    typer.echo(rep.note)
+    _print_next(rep.next_steps)
+
+
+@app.command()
 def crush(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = None,
           rules: RulesOpt = "troitsky_2027", sim_params: SimOpt = None,
           seed: Annotated[int, typer.Option(help="Random imperfections/scatter seed "
@@ -708,7 +737,7 @@ def sensitivity(cad: CadArg, overrides: OverridesOpt = None, material: MaterialO
 
 
 @app.command()
-def schema(name: Annotated[str, typer.Argument(help="inspect, crush, reality_gap, lab, "
+def schema(name: Annotated[str, typer.Argument(help="inspect, crush, screen, reality_gap, lab, "
                                                      "montecarlo, design_comparison, "
                                                      "sensitivity, bridge_calibration or "
                                                      "question")],

@@ -82,10 +82,11 @@ class RulesSummary(BaseModel):
 
 class NextStep(BaseModel):
     """One thing to do next, most useful first: the loop an agent drives."""
-    action: Literal["ask_designer", "fix_cad", "crush", "rerun", "strengthen", "confirm",
-                    "measure", "predict", "compare"] = Field(description=(
+    action: Literal["ask_designer", "fix_cad", "screen", "crush", "rerun", "strengthen",
+                    "confirm", "measure", "predict", "compare"] = Field(description=(
         "ask_designer: put the open questions to the designer; fix_cad: change the "
-        "SolidWorks model (a failing rule); crush: run the crushing test; rerun: the "
+        "SolidWorks model (a failing rule); screen: the linear pre-screen (seconds: "
+        "stiffness and the most loaded parts); crush: run the crushing test; rerun: the "
         "result is not trustworthy, run it again as `cli` says; strengthen: the parts "
         "that broke at the peak, then check the change with `ab`; confirm: check the "
         "answer at a finer fidelity; measure: test sticks and glue (placeholders); "
@@ -418,7 +419,47 @@ class BridgeCalibration(BaseModel):
     note: str = ""
 
 
+class ScreenLimit(BaseModel):
+    part: str = Field(description="A body, or 'A | B' for a glued joint")
+    mode: str = Field(description="glue (the joint's resultant against its capacity), "
+                                  "tension, compression, shear, buckling (Euler, the "
+                                  "member's length, pinned), plate fibre tension, plate "
+                                  "fibre crushing, plate across-grain tension, plate "
+                                  "across-grain crushing, plate shear")
+    utilisation: float = Field(description="At the reference load (1 = at its limit)")
+    load_kgf: float = Field(description="Plate load at which it reaches its limit if the "
+                                        "bridge stayed linear")
+    where_mm: list[float]
+
+
+class ScreenReport(BaseModel):
+    """Linear pre-screen (seconds): the elastic response to the plate load, and how
+    close each joint, member and plate is to its limit. Ranks weak spots and compares
+    design variants; F_u needs crush (load redistributes after the first joint goes)."""
+
+    schema_version: str = SCHEMA_VERSION
+    kind: Literal["screen"] = "screen"
+    file: str
+    sha256: str
+    overrides: dict[str, Any] = {}
+    load_kgf: float = Field(description="Reference plate load")
+    stiffness_kgf_per_mm: float = Field(description="Plate load / plate displacement")
+    first_limit_kgf: float = Field(description="Plate load at which the most utilised "
+                                               "part reaches its limit: where damage "
+                                               "starts (linear), far below F_u when the "
+                                               "load can find another path")
+    first_limit: str = Field(description="That part and how it fails")
+    limits: list[ScreenLimit] = Field(description="Most utilised first (up to 25)")
+    n_limits: int
+    mass_kg: float
+    wall_s: float
+    note: str = ""
+    warnings: list[str] = []
+    next_steps: list[NextStep] = []
+
+
 SCHEMAS = {"inspect": InspectReport, "crush": CrushReport, "reality_gap": RealityGap,
            "lab": LabReport, "montecarlo": MonteCarloReport, "question": Question,
            "design_comparison": DesignComparison,
-           "sensitivity": SensitivityReport, "bridge_calibration": BridgeCalibration}
+           "sensitivity": SensitivityReport, "bridge_calibration": BridgeCalibration,
+           "screen": ScreenReport}

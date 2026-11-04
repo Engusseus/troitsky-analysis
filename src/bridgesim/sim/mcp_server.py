@@ -289,6 +289,23 @@ def build_server():
 
     @srv.tool()
     @_safe
+    def screen_bridge(cad_path: str, overrides_yaml: str = "", load_kgf: float = 100.0,
+                      top: int = 25, material: str = "", up_axis: str = "y",
+                      span_axis: str = "x", units: str = "", strict: bool = False) -> str:
+        """Linear pre-screen in seconds (no simulation): the bridge's stiffness under
+        the plate and how close each joint, member and plate is to its limit at
+        load_kgf (utilisation, and the load at which it would reach it if the bridge
+        stayed linear): where damage starts. Ranks the weak spots and shows in seconds
+        how a what-if (overrides_yaml) moves them; F_u needs crush_bridge or
+        start_crush. Use absolute paths."""
+        rep = study.screen(_infile(cad_path, "CAD file"), None, material or "popsicle_birch",
+                           load_kgf=load_kgf, units=units or None, up=up_axis,
+                           span=span_axis, strict=strict, n_limits=top,
+                           overrides_data=_yaml_or_none(overrides_yaml))
+        return rep.model_dump_json()
+
+    @srv.tool()
+    @_safe
     def crush_bridge(cad_path: str, overrides_yaml: str = "", seed: int = 0,
                      fidelity: str = "standard", out_dir: str = "", material: str = "",
                      up_axis: str = "y", span_axis: str = "x", units: str = "",
@@ -500,7 +517,7 @@ def build_server():
     @srv.tool()
     @_safe
     def get_schema(name: str) -> str:
-        """JSON Schema of a report: inspect, crush, reality_gap, lab, montecarlo,
+        """JSON Schema of a report: inspect, crush, screen, reality_gap, lab, montecarlo,
         design_comparison, sensitivity, bridge_calibration or question."""
         if name not in SCHEMAS:
             raise ValueError(f"unknown schema {name!r}; use one of {', '.join(SCHEMAS)}")

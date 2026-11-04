@@ -56,6 +56,8 @@ from bridgesim.sim.report import (
     RealityGap,
     RuleLine,
     RulesSummary,
+    ScreenLimit,
+    ScreenReport,
 )
 from bridgesim.yamlio import load_yaml
 
@@ -377,6 +379,65 @@ def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
                "plate_contact_points": int(len(model.q_att))},
         warnings=list(model.notes))
     rep.next_steps = _next_inspect(rep, path, _ov_ref(overrides, ov_raw))
+    return rep
+
+
+def screen(cad: str | Path, overrides=None, material=None, sim_params=None, ruleset=None,
+           load_kgf: float = 100.0, units=None, up: str = "y", span: str = "x",
+           strict: bool = False, overrides_data: dict | None = None,
+           n_limits: int = 25) -> ScreenReport:
+    """Linear pre-screen (seconds): the perfect bridge's elastic response to ``load_kgf``
+    on the plate, and the load at which each joint, member and plate would reach its
+    limit if it stayed linear (:mod:`bridgesim.sim.screen`). Ranks the weak spots and
+    compares design variants (the same overrides as crush, what-ifs included); F_u
+    needs crush."""
+    import time
+
+    from bridgesim.sim import screen as scr
+
+    t0 = time.time()
+    path, bodies, ov, ov_raw, mat, sp, rs = _inputs(cad, overrides, material, sim_params,
+                                                     ruleset, units, up, span,
+                                                     doc=overrides_data)
+    model = _build(bodies, mat, sp, ov, None, 1.0, strict)
+    rules = _rules(bodies, mat, rs, model)
+    F = load_kgf * KGF
+    sol = scr.solve(model, F)
+    lims = scr.utilisations(model, sol, F,
+                            peak_over_avg=sp.values.get("glue.tau_peak_over_avg", 1.155))
+    mass = rules.measurements.get("mass_kg", model.bridge_mass_kg)
+    first = lims[0] if lims else None
+    rep = ScreenReport(
+        file=path.name, sha256=_sha(path), overrides=ov_raw, load_kgf=load_kgf,
+        stiffness_kgf_per_mm=round(load_kgf / max(sol["plate_dy"], 1e-12), 2),
+        first_limit_kgf=round(first.load_kgf, 1) if first else 0.0,
+        first_limit=f"{first.mode}: {first.part}" if first else "none",
+        limits=[ScreenLimit(part=lm.part, mode=lm.mode,
+                            utilisation=round(lm.utilisation, 4),
+                            load_kgf=round(lm.load_kgf, 1), where_mm=list(lm.where_mm))
+                for lm in lims[:n_limits]],
+        n_limits=len(lims), mass_kg=round(mass, 3),
+        wall_s=round(time.time() - t0, 1),
+        note="Linear and elastic (contacts compression only): no damage, no load "
+             "redistribution, no imperfections, small displacements; the perfect bridge. "
+             "first_limit_kgf is where damage starts, often far below F_u: a joint that "
+             "starts to give way early can be harmless when the load finds another path, "
+             "which only crush follows. Use the screen for the bridge's stiffness and its "
+             "most loaded joints and members, and to see in seconds how a what-if moves "
+             "them; judge F_u and design changes with crush and ab.",
+        warnings=list(model.notes))
+    f, ov_arg = shlex.quote(str(path.resolve())), _ov_arg(_ov_ref(overrides, ov_raw))
+    weak = list(dict.fromkeys(lm.part for lm in lims[:5]))
+    rep.next_steps = [
+        NextStep(action="crush", why="the screen ranks the weak spots; the crush follows "
+                                     "the bridge to its collapse and gives F_u",
+                 parts=weak, cli=f"bridgesim crush {f}{ov_arg} --fidelity quick "
+                                 "--stop-at-failure --out results --json --brief"),
+        NextStep(action="strengthen", parts=weak[:3],
+                 why="the most loaded parts, where damage starts: whether strengthening "
+                     "them raises F_u depends on what governs the collapse; crush shows "
+                     "it, then test a what-if (overrides: glue_factor, section_scale) "
+                     "with ab")]
     return rep
 
 
@@ -705,6 +766,9 @@ def _next_inspect(rep: InspectReport, path: Path, overrides) -> list[NextStep]:
     f, ov = shlex.quote(str(path.resolve())), _ov_arg(overrides)
     steps = _rule_step(rep.rules, rep.questions, rep.acknowledged_questions) \
         + _ask_steps(rep.questions)
+    steps.append(NextStep(action="screen", why="in seconds, linear: the bridge's stiffness "
+                          "and its most loaded joints and members (where damage starts)",
+                          cli=f"bridgesim screen {f}{ov} --json"))
     steps.append(NextStep(action="crush", why="simulate the §12.5 crushing test (standard "
                           "fidelity, ~5 min; --fidelity quick ~2 min to screen variants)",
                           cli=f"bridgesim crush {f}{ov} --out results --json --brief"))

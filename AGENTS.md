@@ -13,6 +13,7 @@ SolidWorks needed), a Parasolid `.x_b`, or an STL with all bodies in one file.
 1. inspect   -> what bridgesim understood + the questions it could not answer
 2. ask       -> put the questions to the designer, write the answers in overrides.yaml
 3. crush     -> simulated §12.5 crushing test: ultimate load, failure sequence, replay
+              (screen first, in seconds: stiffness and the most loaded parts, linear)
 4. improve   -> change the CAD (or overrides); `ab` says whether the change really helps
 5. calibrate -> after coupon tests (sticks, glue joints): fit the material
 6. compare   -> after a real crush test: reality-gap score and what to measure next
@@ -21,7 +22,7 @@ SolidWorks needed), a Parasolid `.x_b`, or an STL with all bodies in one file.
 
 Every `inspect` and `crush` report ends with **`next_steps`**: this loop worked out for
 the report in hand, most useful first. Each step has an `action` (`fix_cad`,
-`ask_designer`, `crush`, `rerun`, `strengthen`, `confirm`, `measure`, `predict`,
+`ask_designer`, `screen`, `crush`, `rerun`, `strengthen`, `confirm`, `measure`, `predict`,
 `compare`), `why` in plain words, the `ids` of the questions concerned, the `parts` and
 `where_mm` to point the designer at, and the exact `cli` to run (the MCP tool of the
 same name otherwise). E.g. after a crush: `strengthen` the parts that broke at the peak
@@ -40,6 +41,7 @@ gets both factors), ready for its `ab ... --overrides-b DIR/whatif.yaml` command
 |---|---|---|
 | `bridgesim inspect BRIDGE.SLDPRT [-o overrides.yaml] [--strict] [--body PATTERN]... [--joint PATTERN]... --json [--brief]` | Bodies (how each is modelled, centroid and bounding box, layup, mass), glued joints, loading position, rule check from the solids, `warnings`, `questions`, `next_steps`. `--brief` (and the MCP default): questions, counts, failed rules, warnings and next steps only (~25 kB for a 100-body bridge instead of ~100 kB). `--body`/`--joint` (glob, case ignored; MCP `body`, `joint`): only those bodies, the joints with such a part, and the questions about them, in full | seconds |
 | `bridgesim crush BRIDGE.SLDPRT [-o overrides.yaml] [--seed N] [--fidelity quick\|standard\|fine] [--rate-check] [--stop-at-failure] [--out DIR] --json [--brief]` | Simulated crushing test; with `--out`: `crush.json`, `curve.csv`, `events.csv` (every event), `replay.html`. `--rate-check` runs it again at half the jack speed (3x the time). `--stop-at-failure` (the MCP default; `full_collapse=true` to follow the collapse): stop 2 mm of jack travel after the bridge is judged failed, ~1/3 faster, the replay ends there. `--brief`: what an agent needs for its next step, ~12 kB instead of ~200 kB (the MCP crush tools return this by default): no curve, event log or failure sequence; the first 10 `failures` (kind, `what`, load, travel, `where_mm`); the `important` questions in full and `n_questions` by severity (the `check` ids are in the `ask_designer` step; `inspect` has their text and `answer_with`); `next_steps` without empty fields. `crush.json` has everything. A what-if to test: `DIR/whatif.yaml` | minutes |
+| `bridgesim screen BRIDGE.SLDPRT [-o overrides.yaml] [--load 100] [--top 25] --json` | Linear pre-screen, no simulation: the bridge's stiffness under the plate (`stiffness_kgf_per_mm`) and every joint, member (tension, compression, shear, Euler buckling over its length) and plate (per ply and mode) with its `utilisation` at `--load` and the plate load at which it reaches its limit if the bridge stayed linear (`limits`, most loaded first; `first_limit_kgf`: where damage starts, often far below F_u, since the load then finds other paths, which only crush follows). For the stiffness, the most loaded parts, and how a what-if moves them in seconds; judge F_u and design changes with crush and `ab` | seconds |
 | `bridgesim compare DIR/crush.json my_test.csv --json` | Reality gap vs a physical crush test. Given `montecarlo.json` instead of `crush.json`: where the test falls in the predicted range | seconds |
 | `bridgesim calibrate-bridge BRIDGE.SLDPRT my_test.csv [-o overrides.yaml] [--fidelity standard] [--out fitted.overrides.yaml] --json` | After a physical crush test of this bridge: a global stiffness and a global strength factor fitted so the simulated crush reproduces it (one crush per step, up to 4); writes your overrides plus the fitted `params`. The test is then used up for validation | 2-4 x crush |
 | `bridgesim sensitivity BRIDGE.SLDPRT [--rel 0.2] [--fidelity quick] [--seeds 1] [--param KEY]... --json` | Which material values move F_u most: each one lowered and raised by `rel`; `measure_first` lists the tests that would narrow the prediction most. `--param` (repeat it) chooses the values, any key of `materials/simulation.yaml` or `material.<key>` (default: the 9 that usually matter most); `--seeds 3` averages over seeds | (1 + 2 x params) x seeds x crush / processes |
@@ -47,7 +49,7 @@ gets both factors), ready for its `ab ... --overrides-b DIR/whatif.yaml` command
 | `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, f_t/f_c and tau_g so the *simulated* coupons reproduce the measured ones (`lab --data` then shows ~0 % error); f_t, f_c, f_c90, the end-grain factor and the glue's shear stiffness and toughness from the direct coupon tests; with 3+ specimens of a kind also the scatter (`my_material.overrides.yaml`, `params:`). A folder without any test results is an input error (exit 2) | ~1 min |
 | `bridgesim ab A.SLDPRT B.SLDPRT [-n 3] [--overrides-a a.yaml] [--overrides-b b.yaml] [--fidelity standard] --json` | Is B better than A? Both crushed with the same seeds: change of F_u and efficiency with a 90 % interval, `significant`, `verdict`, first failure of each. B may be A with other overrides: a what-if (`section_scale`, `glue_factor`) before changing the CAD | 2n x crush / processes |
 | `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity standard] [--processes 4] [--sample-placeholders] [--out DIR] --json` | Spread of F_u over imperfections and material scatter (`min_kgf`, `max_kgf`, p05/p50/p95: below 20 runs read min and max); `recommended_prediction_kgf` for the Load Prediction Form (the 1/F-weighted median, which minimises the §12.7 error). `note` says what the spread leaves out: the placeholder material values, unless `--sample-placeholders` (MCP `sample_placeholders`) draws them per run (lognormal, 20 %; `sampled_placeholders`) so the range includes them | n x crush / processes |
-| `bridgesim schema inspect\|crush\|reality_gap\|lab\|montecarlo\|design_comparison\|sensitivity\|bridge_calibration\|question` | JSON Schema of each report | instant |
+| `bridgesim schema inspect\|crush\|screen\|reality_gap\|lab\|montecarlo\|design_comparison\|sensitivity\|bridge_calibration\|question` | JSON Schema of each report | instant |
 | `bridgesim mcp` | The same as MCP tools (`uv sync --extra mcp`) | - |
 
 Fidelity: `quick` (coarser mesh, jack 200 mm/s, ~3 min for a 100-body bridge on 4 cores)
@@ -110,6 +112,7 @@ claude mcp add bridgesim -- uv run --directory /path/to/troitsky-analysis bridge
 | Tool | Use |
 |---|---|
 | `inspect_bridge(cad_path, overrides_yaml, up_axis, span_axis, units, strict, brief=true, body, joint)` | seconds |
+| `screen_bridge(cad_path, overrides_yaml, load_kgf, top, ...)` | seconds: linear pre-screen |
 | `crush_bridge(cad_path, overrides_yaml, seed, fidelity, out_dir, strict, rate_check, full_collapse=false, ...)` | blocking, minutes; stops 2 mm after the failure unless `full_collapse` |
 | `start_crush(cad_path, out_dir, ...)` then `job_status(out_dir)` | background: poll until `status` is `done` (report included) or `failed` (error included). Use this when tool calls time out |
 | `start_montecarlo(cad_path, out_dir, n, fidelity, sample_placeholders)` then `job_status(out_dir)` | background spread of F_u |

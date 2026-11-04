@@ -623,6 +623,8 @@ def test_agent_loop_through_mcp(tmp_path):
     ins2 = call("inspect_bridge", cad_path=str(cad), overrides_yaml=ov_yaml, strict=True)
     assert not [q for q in ins2["questions"] if q["severity"] == "important"], \
         ins2["questions"]
+    scr = call("screen_bridge", cad_path=str(cad), overrides_yaml=ov_yaml)  # seconds
+    assert scr["kind"] == "screen" and scr["limits"] and scr["stiffness_kgf_per_mm"] > 0
     rep = call("crush_bridge", cad_path=str(cad), overrides_yaml=ov_yaml, fidelity="quick",
                seed=1, out_dir=str(tmp_path / "A"))
     assert rep["kind"] == "crush_brief" and rep["Fu_kgf"] > 50
@@ -1487,3 +1489,45 @@ def test_geometry_the_model_cannot_represent_well_is_asked_about():
     q = qs["cad_approximated:Pier L (block)"]
     assert q["severity"] == "important" and "10.0%" in q["question"]  # 50x150 of 75000
     assert "cad_approximated:Pier R (block)" not in qs
+
+
+def test_linear_screen_matches_beam_theory(tmp_path):
+    """screen (seconds, linear): a laminated beam on two piers under the plate has the
+    stiffness of beam theory with the plate bearing at its two edges (the contacts are
+    compression only), and its extreme fibre reaches f_c, then f_t, at the loads beam
+    theory gives; the CLI prints the report as JSON."""
+    from typer.testing import CliRunner
+
+    from bridgesim.cad.synthetic import box
+    from bridgesim.cli import app
+    from bridgesim.sim import study
+
+    T = 29.4
+    cad = tmp_path / "beam.stl"
+    write_stl([box("Pier L", (-550, 0, -40), (-540, 150, 40)),
+               box("Pier R", (540, 0, -40), (550, 150, 40)),
+               box("Beam", (-550, 150, -25), (550, 150 + T, 25))], cad)
+    kinds = {b.name: b.kind for b in study.inspect(cad).bodies}
+    ov = {"bodies": {n: ({"layup": "14-ply UD", "butt_stagger_mm": 0} if k == "bar"
+                         else {"kind": "block"}) for n, k in kinds.items()}}
+    rep = study.screen(cad, overrides=ov)
+    E, I, Ls, S = MAT.E_MPa.value, 50 * T**3 / 12, 1090.0, 50 * T**2 / 6
+    a = Ls / 2 - 100  # the plate's edges, 100 mm either side of mid-span
+    # deflection under each of two loads P/2 at a and Ls - a (unit P), plus shear
+    d = 0.5 * a**2 * (3 * Ls - 4 * a) / (6 * E * I) * 2 / 2 \
+        + 0.5 * a / (5 / 6 * MAT.G_MPa.value * 50 * T)
+    assert rep.stiffness_kgf_per_mm == pytest.approx(1 / d / 9.80665, rel=0.03)
+    lim = {lm.mode: lm.load_kgf for lm in rep.limits}
+    for mode, f in (("compression", MAT.f_c_MPa.value), ("tension", MAT.f_t_MPa.value)):
+        assert lim[mode] == pytest.approx(f * S / (0.5 * a) / 9.80665, rel=0.03)
+    assert rep.first_limit.startswith("compression") and rep.wall_s < 30
+    assert [lm.utilisation for lm in rep.limits] == sorted(
+        (lm.utilisation for lm in rep.limits), reverse=True)
+    import yaml
+
+    (tmp_path / "ov.yaml").write_text(yaml.safe_dump(ov))
+    r = CliRunner().invoke(app, ["screen", str(cad), "-o", str(tmp_path / "ov.yaml"),
+                                 "--top", "3", "--json"])
+    assert r.exit_code == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["kind"] == "screen" and len(out["limits"]) == 3
