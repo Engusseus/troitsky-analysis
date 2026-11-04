@@ -21,6 +21,7 @@ import fnmatch
 import hashlib
 import json
 import math
+import os
 import shlex
 from pathlib import Path
 from typing import Any
@@ -375,8 +376,7 @@ def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
                "platform_contact_points": int(len(model.p_att)),
                "plate_contact_points": int(len(model.q_att))},
         warnings=list(model.notes))
-    rep.next_steps = _next_inspect(rep, path, (overrides if overrides is not None
-                                               else overrides_data) if ov_raw else None)
+    rep.next_steps = _next_inspect(rep, path, _ov_ref(overrides, ov_raw))
     return rep
 
 
@@ -522,8 +522,7 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         assumed_parameters=_assumed(mat, sp),
         fidelity=fidelity, Fu_first_joint_failure_kgf=_first_joint(res),
         warnings=list(model.notes))
-    rep.next_steps = _next_crush(rep, path, (overrides if overrides is not None
-                                             else overrides_data) if ov_raw else None,
+    rep.next_steps = _next_crush(rep, path, _ov_ref(overrides, ov_raw),
                                  out_dir)
     if out_dir:
         out = Path(out_dir).resolve()
@@ -638,11 +637,20 @@ def _ask_steps(qs: list[Question]) -> list[NextStep]:
     return out
 
 
+def _ov_ref(overrides, ov_raw: dict):
+    """What next_steps say about the overrides: the file the CLI user named, True when
+    they came inline (typed in the app or sent over MCP: never their content, which is
+    not a file name), None without overrides."""
+    if not ov_raw:
+        return None
+    return overrides if isinstance(overrides, (str, Path)) and str(overrides) else True
+
+
 def _ov_arg(overrides) -> str:
     """The overrides as a command-line option: the file the caller gave, a placeholder
     when they came as a dict, nothing without overrides."""
     if isinstance(overrides, (str, Path)) and str(overrides):
-        return " -o " + shlex.quote(str(Path(overrides).resolve()))
+        return " -o " + shlex.quote(os.path.abspath(overrides))
     return " -o overrides.yaml" if overrides else ""
 
 
