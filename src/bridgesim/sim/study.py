@@ -425,6 +425,11 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
     if progress is not None:
         progress(0.0, f"read {len(bodies)} bodies; building the structural model")
     model = _build(bodies, mat, sp, ov, seed, scale, strict)
+    if scale < 0.75:
+        model.notes.append(f"mesh_scale {scale:g} is finer than the fine fidelity (0.75): "
+                           "plate elements may be thinner than their plates, and a crack "
+                           "starts earlier at a stress concentration the finer the mesh "
+                           "(local damage; ASSUMPTIONS-SIM.md)")
     rules = _rules(bodies, mat, rs, model)
     # the fine mesh needs a smaller time step, or too much mass scaling would be added
     opt = options or CrushOptions(speed_mm_s=speed,

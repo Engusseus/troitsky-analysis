@@ -234,9 +234,19 @@ seeds gives the spread of F_u.
   designs with `ab` (paired seeds), and read `failure_sequence` to see which modes
   compete.
 * **Mesh convergence** (`validation/convergence_study.py`; Bridge_v6 in
-  `validation/README.md` §3.4): over seeds 0-2 the mean F_u of the standard mesh is
-  within 2 % of the fine mesh (quick: 3 % high), but one seed's F_u moved up to 14 %
-  between meshes, because three failure sites of that design compete within ~15 %.
+  `validation/README.md` §3.4): the perfect bridge converges from element size x2 to
+  x0.75 (2717, 2686, 2657 kgf); over seeds 0-2 the mean F_u of the standard mesh is
+  within 1.3 % of the fine mesh, but one seed's F_u moved up to 14 % between meshes,
+  because three failure sites of that design compete within ~15 % and where a crack
+  starts at a stress concentration depends on the mesh.
+* **Crack onset is local.** A plate cracks where its strain first reaches the strength
+  in one element; the crack band makes the energy of the crack independent of the mesh,
+  not its onset at a sharp stress raiser (the end of a glued lap, a re-entrant corner),
+  which comes at a lower load the finer the mesh: at element size x0.5 the Bridge_v6 tie
+  strap starts cracking at 1339 kgf instead of 1760 at x0.75. Do not refine beyond
+  `fine` (x0.75, elements still larger than the plate thickness). A nonlocal
+  process-zone onset was tried and not adopted (it doubled the strength of off-axis
+  plies; `validation/README.md` §3.4).
 * Time is compressed: the simulated jack moves at ~100 mm/s instead of the real
   mm/min. The material laws have no rate effect, so this changes nothing as long as the
   run stays quasi-static; the replay converts back to real test time.

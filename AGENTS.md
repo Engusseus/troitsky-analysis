@@ -49,13 +49,15 @@ passed (`overrides.yaml` when they came inline, e.g. through MCP).
 Fidelity: `quick` (coarser mesh, jack 200 mm/s, ~3 min for a 100-body bridge on 4 cores)
 to screen design changes, `standard` (100 mm/s, ~5-8 min) for the answer, `fine` (finer
 mesh, 50 mm/s, ~15 min) to check that the answer has converged. Mesh convergence on
-Bridge_v6 (all at 100 mm/s, seeds 0-2, `validation/README.md` §3.4): mean F_u quick 2199,
-standard 2096, fine 2128 kgf, so on average standard is within 2 % of the fine mesh and
-quick 3 % high. But one seed's F_u moved by up to 14 % between meshes: three failure sites
-(the deck stringers under the plate, the end-post joint, the hub tie strap) compete within
-~15 % of each other, and the mesh can decide which goes first. So rank designs with one
-fidelity and the same seeds (`ab`, n >= 3), give F_u as the `montecarlo` range, and never
-compare F_u across fidelities. `ab`, `montecarlo`, `sensitivity` and `calibrate-bridge`
+Bridge_v6 (`validation/README.md` §3.4, all at 100 mm/s): the perfect bridge gives 2717,
+2686, 2657 kgf with elements x2, x1, x0.75 (-1.1 % per step); over seeds 0-2 the mean
+F_u is quick 2193, standard 2073, fine 2100 kgf (standard within 1.3 % of fine, quick
+4 % high). But one seed's F_u moved by up to 14 % between standard and fine: three
+failure sites (the deck stringers under the plate, the end-post joint, the hub tie
+strap) compete within ~15 % of each other, and where a crack starts at a stress
+concentration depends on the mesh (a local damage model: do not go finer than `fine`).
+So rank designs with one fidelity and the same seeds (`ab`, n >= 3), give F_u as the
+`montecarlo` range, and never compare F_u across fidelities. `ab`, `montecarlo`, `sensitivity` and `calibrate-bridge`
 stop each crush 2 mm of jack travel after the bridge is judged failed (F_u and the
 failures are known by then; no replay), which saves about a third of the time.
 

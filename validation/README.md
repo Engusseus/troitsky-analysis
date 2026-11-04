@@ -88,35 +88,67 @@ of the placeholder material values (`bridgesim sensitivity` shows how much).
 ### 3.4 Bridge_v6: mesh convergence and time compression
 
 `validation/convergence_study.py examples/cad/Bridge_v6.SLDPRT` (a real team design, 100
-bodies, 7.15 kg; placeholder materials), all meshes at a jack speed of 100 mm/s:
+bodies, 7.15 kg; placeholder materials), every mesh at a jack speed of 100 mm/s.
+
+**The perfect bridge** (`--seeds -1`: no imperfections, no scatter, so a change between
+meshes is discretisation alone):
+
+| element size | x2 | x1 (standard) | x0.75 (fine) | x0.5 |
+|---|---|---|---|---|
+| F_u (kgf) | 2717 | 2686 | 2657 | 2359 |
+| deflection at F_u (mm) | 12.2 | 11.8 | 10.7 | 4.0 |
+| first part to fail (load, kgf) | deck stringer shear (2297) | hub tie strap joint (2068) | hub tie strap crack (1760) | hub tie strap crack (1339) |
+
+From x2 to x0.75 F_u converges (-1.1 % per step), and the load-deflection curves agree
+up to 4 mm (2340-2410 kgf there). At x0.5 the bridge collapses early: the first crack,
+in the hub tie strap at the end of its glued lap to the hub spreader, starts at a lower
+load the finer the mesh (2068, 1760, 1339 kgf). That is the known limit of a **local**
+damage model at a stress concentration: the crack band makes the *energy* of a crack
+independent of the mesh, not *where and when it starts* at a sharp stress raiser,
+whose resolved peak grows as the elements shrink. The same holds in LS-DYNA's MAT_054
+or Ansys' progressive damage: the element size is tied to the material's scale and not
+refined below it. bridgesim's finest fidelity is therefore x0.75, where every plate
+element is still larger than the plate is thick; x0.5 puts plate elements below their
+own thickness (the 6.2 mm tie strap gets 4.7 mm elements), outside the model's range.
+
+A nonlocal (process-zone) crack onset was tried: on a plate pulled through a third of
+its end (`lab.shell_strip_tension(h, L=40, W=30, angles=(90,), weak=1, grip=1/3)`), the
+local peak load falls 48.1, 36.3, 28.8 N with 5, 2.5, 1.25 mm elements, the process-zone
+version stays at 59.8, 59.2, 58.4 N. But holding the across-grain and shear modes at
+their strengths until the zone cracks doubled the strength of a 45 degree strip (where
+those modes interact), so it was not adopted.
+
+**Three seeds** (imperfections and scatter):
 
 | mesh (element size) | F_u by seed 0 / 1 / 2 (kgf) | mean | spread |
 |---|---|---|---|
-| quick (x1.6) | 2380 / 2287 / 1930 | 2199 | 451 |
-| standard (x1.0) | 2036 / 1905 / 2347 | 2096 | 441 |
-| fine (x0.75) | 2022 / 2164 / 2199 | 2128 | 177 |
+| quick (x1.6) | 2408 / 2238 / 1933 | 2193 | 475 |
+| standard (x1.0) | 2029 / 1902 / 2286 | 2073 | 384 |
+| fine (x0.75) | 1940 / 2168 / 2192 | 2100 | 252 |
 
 | mesh | seed | F_u (kgf) | deflection at F_u (mm) | first part to fail |
 |---|---|---|---|---|
-| quick | 0 | 2380 | 5.50 | member shear: Deck Stringer - R Far |
-| quick | 1 | 2287 | 3.51 | member shear: Deck Stringer - R Far |
-| quick | 2 | 1930 | 5.47 | joint failure: End Post - R Far \| T1 Cover - R Far |
-| standard | 0 | 2036 | 3.22 | joint failure: End Post - L Near \| T1 Cover - L Near |
-| standard | 1 | 1905 | 2.87 | plate crack: Hub Tie Strap In - Far |
-| standard | 2 | 2347 | 3.78 | joint failure: Hub Tie Strap In - Near \| Hub Spreader - L |
-| fine | 0 | 2022 | 3.15 | plate crack: Hub Tie Strap In - Near |
-| fine | 1 | 2164 | 3.35 | plate crack: Hub Tie Strap In - Near |
-| fine | 2 | 2199 | 3.68 | member shear: Deck Stringer - L Near |
+| quick | 0 | 2408 | 4.47 | member shear: Deck Stringer - R Far |
+| quick | 1 | 2238 | 3.32 | joint failure: End Post - R Far \| T1 Gusset - R Far |
+| quick | 2 | 1933 | 6.43 | joint failure: End Post - R Far \| T1 Cover - R Far |
+| standard | 0 | 2029 | 3.21 | joint failure: End Post - L Near \| T1 Cover - L Near |
+| standard | 1 | 1902 | 2.86 | plate crack: Hub Tie Strap In - Far |
+| standard | 2 | 2286 | 3.67 | joint failure: Hub Tie Strap In - Near \| Hub Spreader - L |
+| fine | 0 | 1940 | 3.06 | plate crack: Hub Tie Strap In - Near |
+| fine | 1 | 2168 | 3.36 | plate crack: Hub Tie Strap In - Near |
+| fine | 2 | 2192 | 3.65 | member shear: Deck Stringer - L Near |
 
-* The **mean** F_u converges: standard is 1.5 % below the fine mesh, quick 3.3 % above.
-* **One seed's** F_u can move by up to 14 % between meshes. Three failure sites compete
-  within ~15 % of each other: the deck stringers under the plate (shear), the end-post
-  joint to its locating plate, and the hub tie strap. Which one goes first depends on the
-  imperfections (seed) and, near a tie, on the mesh. This is a property of the design (a
-  real bridge would show the same scatter between nominally equal copies), so predictions
-  are given as the `montecarlo` range and design changes are judged with `ab` over
-  several seeds.
+* The mean F_u of the standard mesh is within 1.3 % of the fine mesh (quick: 4 % high).
+* One seed's F_u moves by up to 14 % between standard and fine (seed 1: 1902 and 2168
+  kgf, both a crack in the hub tie strap, on opposite sides). Three failure sites compete
+  within ~15 %: the deck stringers under the plate, the end-post joint to its locating
+  plate, and the hub tie strap. Which one goes first depends on the imperfections (the
+  seed: real scatter between built copies) and, at the tie strap, on the mesh (the
+  local-onset limit above: discretisation error). Give F_u as the `montecarlo` range and
+  judge design changes with `ab` over several seeds at one fidelity.
+* The imperfect bridge fails at ~2100 kgf, the perfect one at ~2690: imperfections (bow,
+  out-of-level supports, plate placement) and glue/strength scatter cost ~20 %.
 * Every run passed the quasi-static check (kinetic / external work < 0.1) with < 1 %
   added mass.
-* **Time compression** (`crush --fidelity standard --seed 0 --rate-check`): F_u 2036 kgf
-  at 100 mm/s, 2004 kgf at 50 mm/s (-1.6 %); kinetic / external work 0.002.
+* **Time compression** (`crush --fidelity standard --seed 0 --rate-check`): F_u 2029 kgf
+  at 100 mm/s, 1997 kgf at 50 mm/s (-1.6 %); kinetic / external work 0.002.

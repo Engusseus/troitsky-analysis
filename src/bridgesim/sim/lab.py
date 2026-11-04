@@ -339,12 +339,15 @@ def lap_shear(tau_max: float, peel_to_shear: float = 0.5, Kn: float = 150.0,
 
 def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2.0,
                         angles: tuple = (0.0,), weak: float = 0.95, rate: float = 40.0,
-                        material=None, sim_params=None) -> TestResult:
+                        material=None, sim_params=None, grip: float = 1.0,
+                        max_disp: float = 1.0) -> TestResult:
     """A plate strip (L along X, W across, thickness t, ply ``angles`` from X) meshed with
     right triangles of size ``h``, clamped at x = 0 and pulled along X at x = L until it
     breaks. The column of elements at mid-length is ``weak`` x as strong, so the crack
     forms there. With the crack-band regularisation the work to break the strip is
-    G_f W t whatever ``h`` is (the mesh-convergence check of the shell damage)."""
+    G_f W t whatever ``h`` is (the mesh-convergence check of the shell damage).
+    ``grip`` < 1 pulls only the middle share of the end (a stress concentration at the
+    grip's edges)."""
     from bridgesim.schema import Material
     from bridgesim.sim.materials import Ply, SimParams
 
@@ -396,7 +399,8 @@ def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2
     m.s_body = np.zeros(len(nodes), int)
     m.params["crush_softening"] = sp["wood.crush_softening"]
     left = [nid(0, j) for j in range(ny + 1)]
-    right = [nid(nx, j) for j in range(ny + 1)]
+    right = [nid(nx, j) for j in range(ny + 1)
+             if abs(ys[j] - W / 2) <= grip * W / 2 + 1e-9]
     fixed = {n: "xyzr" for n in left} | {n: "yzr" for n in right}
-    return drive(m, fixed, right, 0, rate, max_disp=1.0, stop_drop=0.01, alpha=2000.0,
+    return drive(m, fixed, right, 0, rate, max_disp=max_disp, stop_drop=0.01, alpha=2000.0,
                  record_every=5)
