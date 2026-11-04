@@ -44,6 +44,7 @@ from bridgesim.sim.materials import (
     SimParams,
     laminate,
     parse_layup,
+    parse_override_layup,
 )
 from bridgesim.sim.materials import fibre_spread as _exact
 from bridgesim.sim.model import G_MM_S2, TONNE_PER_KG, BodyInfo, Model, Patch
@@ -112,9 +113,9 @@ class Overrides:
                 elif k == "kind" and v not in self.KINDS:
                     out.append(f"overrides: kind {v!r} for {pat!r} is not one of "
                                f"{', '.join(self.KINDS)}")
-                elif k == "layup" and parse_layup(str(v)) is None:
+                elif k == "layup" and parse_override_layup(str(v)) is None:
                     out.append(f"overrides: layup {v!r} for {pat!r} cannot be read (write "
-                               "e.g. '10-ply UD', '2-ply 0-90', '4-ply +-45')")
+                               "e.g. '10-ply UD', '2-ply 0-90', '4-ply +-45', 'block')")
                 elif k == "grain" and v not in ("long", "span"):
                     out.append(f"overrides: grain {v!r} for {pat!r} must be long or span")
                 elif k in ("section_scale", "glue_factor", "strength_factor") and not (
@@ -132,10 +133,24 @@ class Overrides:
     @classmethod
     def from_dict(cls, d: dict | None) -> Overrides:
         d = d or {}
+        ph = list(_placeholders(d))
+        if ph:
+            raise ValueError("overrides: still the placeholders of a question's answer_with "
+                             "(fill them in with the designer's answer): "
+                             + "; ".join(f"{k} = {v!r}" for k, v in ph))
         ack = d.get("acknowledge", []) or []
+
+        def num(section, k, v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                raise ValueError(f"overrides: {section}.{k} must be a number, got {v!r}") \
+                    from None
+
         return cls(bodies=dict(d.get("bodies", {}) or {}),
-                   params={k: float(v) for k, v in (d.get("params", {}) or {}).items()},
-                   glue={k: float(v) for k, v in (d.get("glue", {}) or {}).items()},
+                   params={k: num("params", k, v)
+                           for k, v in (d.get("params", {}) or {}).items()},
+                   glue={k: num("glue", k, v) for k, v in (d.get("glue", {}) or {}).items()},
                    acknowledge=[str(a) for a in (ack if isinstance(ack, list) else [ack])],
                    unknown=[str(k) for k in d if k not in ("bodies", "params", "glue",
                                                            "acknowledge")])
@@ -143,6 +158,35 @@ class Overrides:
     def acknowledged(self, qid: str) -> bool:
         """Whether a question was acknowledged ('the design is as drawn', 'confirmed')."""
         return any(qid == a or fnmatch.fnmatchcase(qid, a) for a in self.acknowledge)
+
+
+def _joint_matches(key: str, a: str, b: str) -> bool:
+    """A glue override key 'A | B' (exact names or glob patterns, either order) against
+    the joint between bodies a and b."""
+    parts = [x.strip() for x in key.split("|")]
+    if len(parts) != 2:
+        return False
+    p, q = parts
+    return (fnmatch.fnmatchcase(a, p) and fnmatch.fnmatchcase(b, q)) or \
+        (fnmatch.fnmatchcase(a, q) and fnmatch.fnmatchcase(b, p))
+
+
+_PLACEHOLDER = re.compile(r"<[^<>]+>")
+
+
+def _placeholders(d, path: str = ""):
+    """(key, value) of every string in an overrides document that still holds a '<...>'
+    placeholder of a question's answer_with."""
+    if isinstance(d, dict):
+        for k, v in d.items():
+            yield from _placeholders(v, f"{path}.{k}" if path else str(k))
+            if isinstance(k, str) and _PLACEHOLDER.search(k):
+                yield (path or "(top)", k)
+    elif isinstance(d, list):
+        for i, v in enumerate(d):
+            yield from _placeholders(v, f"{path}[{i}]")
+    elif isinstance(d, str) and _PLACEHOLDER.search(d):
+        yield (path, d)
 
 
 @dataclass
@@ -586,7 +630,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         o = ov.for_body(b.name)
         lay = None
         if o.get("layup"):
-            lay = parse_layup(str(o["layup"]))
+            lay = parse_override_layup(str(o["layup"]))
             if lay:
                 lay.source = "override"
         if lay is None:
@@ -914,7 +958,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             return min(30.0, sh.Lp / 4) * mesh_scale
         return 20.0
 
-    patch_pts3: list[tuple[int, int, np.ndarray, np.ndarray, float, Polygon, np.ndarray]] = []
+    patch_pts3: list[tuple[int, int, np.ndarray, np.ndarray, float, np.ndarray,
+                           np.ndarray]] = []
     for ia, ib, inter, oa, e1, e2, na in raw_patches:
         if shapes[ia].kind in ("ignore", "cable") or shapes[ib].kind in ("ignore", "cable"):
             continue
@@ -938,7 +983,11 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             pts2 = _sample_polygon(inter, sp_, max_pts=400)
             pts3 = oa + np.outer(pts2[:, 0], e1) + np.outer(pts2[:, 1], e2)
             wts = np.full(len(pts3), inter.area / len(pts3))
-        patch_pts3.append((ia, ib, pts3, na, inter.area, inter, wts))
+        # where the joint is, from the CAD overlap alone (not from the mesh): the key of
+        # its random glue strength, so a seed draws the same bridge at every fidelity
+        cc = inter.centroid
+        cad_c = oa + cc.x * e1 + cc.y * e2
+        patch_pts3.append((ia, ib, pts3, na, inter.area, cad_c, wts))
 
     # ---------------------------------------------------------------- glue springs
     sp_glue = {k: sp[f"glue.{k}"] for k in ("K_n_N_per_mm3", "K_s_N_per_mm3",
@@ -969,15 +1018,14 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                                                 "breakable", "d0", "fc", "cdep")}
     end_grain_joints: list[tuple[str, str, float]] = []
     patches: list[Patch] = []
-    for ia, ib, pts3, na, area, _inter, wts in patch_pts3:
+    for ia, ib, pts3, na, area, cad_c, wts in patch_pts3:
         key = "|".join(sorted((bodies[ia].name, bodies[ib].name)))
         gf = scatter(sp["scatter.glue_cov"],
-                     f"glue:{key}:{np.round(pts3.mean(0)).astype(int).tolist()}")
+                     f"glue:{key}:{np.round(cad_c).astype(int).tolist()}")
         gf *= float(ov.for_body(bodies[ia].name).get("glue_factor", 1.0))
         gf *= float(ov.for_body(bodies[ib].name).get("glue_factor", 1.0))
         for key, val in ov.glue.items():
-            names = {x.strip() for x in key.split("|")}
-            if names == {bodies[ia].name, bodies[ib].name}:
+            if _joint_matches(key, bodies[ia].name, bodies[ib].name):
                 gf *= val
                 ov.used.add(key)
         pid = len(patches)

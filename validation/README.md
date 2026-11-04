@@ -72,7 +72,7 @@ already computes, so it can be repeated after every change of material or method
 
 | Level | Physical test | Template | Command | Accept when |
 |---|---|---|---|---|
-| Coupon | 3-point bending of single sticks (5+), glued single-lap joints (5+) | `stick_bending_template.csv`, `glue_joint_template.csv` | `bridgesim calibrate` then `bridgesim lab --data` | lab reality-gap score >= 90 on the calibration set, >= 75 on specimens not used to calibrate |
+| Coupon | 3-point bending of single sticks (5+), glued single-lap joints (5+); stick tension, short-stack compression, a block pressed flat, end-to-end joints and lap load-slip records (3+ each) | `stick_bending_template.csv`, `glue_joint_template.csv`, `stick_tension_template.csv`, `stick_compression_template.csv`, `crush_across_template.csv`, `end_grain_template.csv`, `lap_slip_template.csv` | `bridgesim calibrate` then `bridgesim lab --data` | lab reality-gap score >= 90 on the calibration set, >= 75 on specimens not used to calibrate |
 | Joint | a node (two members and their gusset) pulled or crushed to failure | `crush_test_template.csv` | crush the joint's CAD, `bridgesim compare` | failure load within 15 %, same failure mode |
 | Sub-assembly or prototype | a truss panel or a scaled bridge crushed to failure | `crush_test_template.csv` | `bridgesim compare` | F_u within 15 %, stiffness within 25 %, same part fails first |
 | Competition bridge | the §12.5 test itself (peak load and the part that broke) | `crush_test_template.csv` | `bridgesim compare` | F_u inside the `montecarlo` range |
@@ -118,35 +118,36 @@ version stays at 59.8, 59.2, 58.4 N. But holding the across-grain and shear mode
 their strengths until the zone cracks doubled the strength of a 45 degree strip (where
 those modes interact), so it was not adopted.
 
-**Three seeds** (imperfections and scatter):
+**Three seeds** (imperfections and scatter; each seed is the same imperfect bridge at
+every mesh, its random values being keyed on the CAD, not the mesh):
 
 | mesh (element size) | F_u by seed 0 / 1 / 2 (kgf) | mean | spread |
 |---|---|---|---|
-| quick (x1.6) | 2408 / 2238 / 1933 | 2193 | 475 |
-| standard (x1.0) | 2029 / 1902 / 2286 | 2073 | 384 |
-| fine (x0.75) | 1940 / 2168 / 2192 | 2100 | 252 |
+| quick (x1.6) | 2234 / 2389 / 1972 | 2198 | 417 |
+| standard (x1.0) | 2163 / 2288 / 1883 | 2111 | 405 |
+| fine (x0.75) | 2157 / 2310 / 1898 | 2122 | 412 |
 
 | mesh | seed | F_u (kgf) | deflection at F_u (mm) | first part to fail |
 |---|---|---|---|---|
-| quick | 0 | 2408 | 4.47 | member shear: Deck Stringer - R Far |
-| quick | 1 | 2238 | 3.32 | joint failure: End Post - R Far \| T1 Gusset - R Far |
-| quick | 2 | 1933 | 6.43 | joint failure: End Post - R Far \| T1 Cover - R Far |
-| standard | 0 | 2029 | 3.21 | joint failure: End Post - L Near \| T1 Cover - L Near |
-| standard | 1 | 1902 | 2.86 | plate crack: Hub Tie Strap In - Far |
-| standard | 2 | 2286 | 3.67 | joint failure: Hub Tie Strap In - Near \| Hub Spreader - L |
-| fine | 0 | 1940 | 3.06 | plate crack: Hub Tie Strap In - Near |
-| fine | 1 | 2168 | 3.36 | plate crack: Hub Tie Strap In - Near |
-| fine | 2 | 2192 | 3.65 | member shear: Deck Stringer - L Near |
+| quick | 0 | 2234 | 3.39 | joint failure: End Post - L Near \| T1 Cover - L Near |
+| quick | 1 | 2389 | 4.26 | member shear: Deck Stringer - R Far |
+| quick | 2 | 1972 | 3.02 | joint failure: End Post - L Near \| T1 Cover - L Near |
+| standard | 0 | 2163 | 3.36 | joint failure: Hub Tie Strap In - Far \| Hub Spreader - L |
+| standard | 1 | 2288 | 3.50 | plate crack: Hub Tie Strap In - Far |
+| standard | 2 | 1883 | 3.02 | joint failure: End Post - L Near \| T1 Cover - L Near |
+| fine | 0 | 2157 | 3.45 | joint failure: Hub Tie Strap In - Far \| Hub Spreader - L |
+| fine | 1 | 2310 | 3.69 | plate crack: Hub Tie Strap In - Near |
+| fine | 2 | 1898 | 3.09 | member shear: Deck Stringer - L Near |
 
-* The mean F_u of the standard mesh is within 1.3 % of the fine mesh (quick: 4 % high).
-* One seed's F_u moves by up to 14 % between standard and fine (seed 1: 1902 and 2168
-  kgf, both a crack in the hub tie strap, on opposite sides). Three failure sites compete
-  within ~15 %: the deck stringers under the plate, the end-post joint to its locating
-  plate, and the hub tie strap. Which one goes first depends on the imperfections (the
-  seed: real scatter between built copies) and, at the tie strap, on the mesh (the
-  local-onset limit above: discretisation error). Give F_u as the `montecarlo` range and
-  judge design changes with `ab` over several seeds at one fidelity.
-* The imperfect bridge fails at ~2100 kgf, the perfect one at ~2690: imperfections (bow,
+* **Per seed**, the standard mesh is within 1 % of the fine one (-0.3 %, +1.0 %, +0.8 %);
+  quick is 3.4-3.9 % high, and all three meshes rank the seeds in the same order. (An
+  earlier version keyed each joint's random glue strength on its mesh points, so a seed
+  drew a different bridge at each fidelity and seemed to move 14 % between meshes.)
+* The spread between seeds (~400 kgf, ~20 %) is real: three failure sites compete within
+  ~15 % (the deck stringers under the plate, the end-post joint to its locating plate, the
+  hub tie strap), and the imperfections decide which goes first. Give F_u as the
+  `montecarlo` range and judge design changes with `ab` over several seeds.
+* The imperfect bridge fails at ~2110 kgf, the perfect one at ~2690: imperfections (bow,
   out-of-level supports, plate placement) and glue/strength scatter cost ~20 %.
 * Every run passed the quasi-static check (kinetic / external work < 0.1) with < 1 %
   added mass.

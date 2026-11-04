@@ -231,13 +231,20 @@ def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: Sim
         if info.kind != "bar" or info.f_t_eff_MPa <= 0:
             continue
         cap_member = info.f_t_eff_MPa * info.section_mm[0] * info.section_mm[1]
-        glue = sum(p.area_mm2 for p in by_body.get(bi, []) if p.kind == "glue") * tau
+        # the load goes in at one end and out at the other: the weaker end governs
+        ends = [0.0, 0.0]
+        ax = np.asarray(info.axis if info.axis is not None else (1.0, 0.0, 0.0), float)
+        for p in by_body.get(bi, []):
+            if p.kind == "glue":
+                s_ = float((np.asarray(p.centroid) - np.asarray(info.centroid_mm)) @ ax)
+                ends[int(s_ >= 0)] += p.area_mm2
+        glue = min(e for e in ends if e > 0) * tau if any(ends) else 0.0
         if glue and glue < 0.5 * cap_member and _group(info.name) not in weak_seen:
             weak_seen.add(_group(info.name))
             qs.append(Question(
                 id=f"weak_joint:{info.name}", topic="design", body=info.name,
-                question=f"The glued area on '{info.name}' (and its copies) carries about "
-                         f"{glue / KGF:.0f} kgf "
+                question=f"The glued area at the weaker end of '{info.name}' (and its "
+                         f"copies) carries about {glue / KGF:.0f} kgf "
                          f"in shear, much less than the member itself "
                          f"({cap_member / KGF:.0f} kgf in tension). Is the joint really this "
                          "small, or is a gusset or lap missing from the CAD?",
@@ -658,17 +665,26 @@ def _next_inspect(rep: InspectReport, path: Path, overrides) -> list[NextStep]:
     return steps + _measure_step(rep.assumed_parameters, f, ov)
 
 
+def _copies(name: str) -> str:
+    """A glob matching a part and its copies on the other sides ('Top Chord - Far' ->
+    'Top Chord*'): a design change is made on every copy, not on the one this seed broke."""
+    import glob as _glob
+
+    return _glob.escape(_group(name)) + "*"
+
+
 def _whatif(gov: list[EventOut]) -> dict:
-    """Overrides that strengthen the parts that broke at the peak: a joint's glue (a
-    bigger glued area or a gusset), a member's section or a plate's thickness."""
+    """Overrides that strengthen the parts that broke at the peak, on every copy of them:
+    a joint's glue (a bigger glued area or a gusset), a member's section or a plate's
+    thickness."""
     bodies: dict[str, dict] = {}
     glue: dict[str, float] = {}
     for e in gov:
         if e.kind in ("joint_failure", "joint_cracking") and len(e.parts) == 2:
-            glue[f"{e.parts[0]} | {e.parts[1]}"] = 1.5
+            glue[f"{_copies(e.parts[0])} | {_copies(e.parts[1])}"] = 1.5
         elif e.kind in ("member_shear", "member_fracture", "plate_crack"):
             for p in e.parts or [e.what]:
-                bodies[p] = {"section_scale": 1.25}
+                bodies[_copies(p)] = {"section_scale": 1.25}
     return {k: v for k, v in (("bodies", bodies), ("glue", glue)) if v}
 
 
@@ -713,16 +729,17 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
                           f"({e.load_kgf / max(rep.Fu_kgf, 1e-9):.0%} of F_u)" for e in gov)
             + ". The bridge failed there: strengthen it (glued area, a gusset, a deeper "
               "member). Try it first as a what-if (`overrides`: 1.5x the glue of a joint "
-              "that separated, 1.25x the section of a part that broke) with ab on the same "
-              "seeds; if it helps, make the change in the CAD and compare the two files",
+              "that separated, 1.25x the section of a part that broke, on every copy of "
+              "it) with ab on the same seeds; if it helps, make the change in the CAD and "
+              "compare the two files",
             overrides=wi,
             cli=(f"bridgesim ab {f} {f}{ova} --overrides-b whatif.yaml -n 3 --json" if wi
                  else f"bridgesim ab {f} <changed design> -n 3 --json")))
         close = {e.what for e in gov if e.load_kgf <= 1.03 * gov[0].load_kgf}
         if rep.fidelity == "quick":
             steps.append(NextStep(
-                action="confirm", why="quick fidelity is for ranking designs: one seed's F_u "
-                "can be ~15 % off and the governing failure can differ at standard",
+                action="confirm", why="quick fidelity is for ranking designs: its F_u is "
+                "~3.5 % high and the part that breaks first can differ at standard",
                 cli=f"bridgesim crush {f}{ov} --fidelity standard --out {out}_standard "
                     "--json --brief"))
         elif rep.fidelity == "standard" and len(close) > 1:
@@ -760,7 +777,7 @@ def inspect_brief(rep: InspectReport) -> dict:
     d["n_joints"] = len(rep.joints)
     r = d.get("rules") or {}
     if "lines" in r:
-        r["lines"] = [ln for ln in r["lines"] if not ln.get("passed", True)
+        r["lines"] = [ln for ln in r["lines"] if ln.get("passed") is False
                       or ln.get("penalty") or ln.get("bans")]
     order = {"important": 0, "check": 1, "info": 2}
     d["questions"] = sorted(d["questions"], key=lambda q: order.get(q["severity"], 3))
@@ -770,7 +787,7 @@ def inspect_brief(rep: InspectReport) -> dict:
 def brief(rep: CrushReport, n_sequence: int = 12, n_failures: int = 15) -> dict:
     """The crush report without the curve and the event log (they are in the files of
     ``artifacts``), and with the first ``n_failures`` failures: what an agent needs to
-    decide, in ~25 kB."""
+    decide, in ~30 kB."""
     d = rep.model_dump(mode="json", exclude={"curve", "events"})
     d["kind"] = "crush_brief"
     d["n_failures_total"] = len(d["failures"])
@@ -779,12 +796,13 @@ def brief(rep: CrushReport, n_sequence: int = 12, n_failures: int = 15) -> dict:
     d["failure_sequence"] = seq[:n_sequence] + (
         [f"... {len(seq) - n_sequence} more (events.csv)"] if len(seq) > n_sequence else [])
     r = d["rules"]
-    r["lines"] = [ln for ln in r.get("lines", []) if not ln.get("passed", True)
+    r["lines"] = [ln for ln in r.get("lines", []) if ln.get("passed") is False
                   or ln.get("penalty") or ln.get("bans")]
     order = {"important": 0, "check": 1, "info": 2}
     d["questions"] = sorted(
         ({"id": q["id"], "severity": q["severity"], "question": q["question"],
-          "answer_with": q.get("answer_with")} for q in d["questions"]),
+          "assumed": q.get("assumed"), "answer_with": q.get("answer_with")}
+         for q in d["questions"]),
         key=lambda q: order.get(q["severity"], 3))
     c = rep.curve
     if c.load_kgf and rep.Fu_kgf > 0:  # where F_u was reached (not a later spike)
@@ -1297,10 +1315,12 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
             if len(joints) >= 3:
                 tj = [F_ / (ov * w) for ov, w, F_ in joints]
                 params["scatter.glue_cov"] = float(np.std(tj, ddof=1) / np.mean(tj))
-    if not changes:
+    _direct_coupons(d, mat, sp, changes, notes, params, log)
+    if not changes and not params:
         return mat, ["no test data found in " + str(d)], {}
     for k, v in params.items():
-        log.append(f"{k} = {v:.3f} from the scatter of the specimens")
+        if k.startswith("scatter."):
+            log.append(f"{k} = {v:.3f} from the scatter of the specimens")
     new = _material_with(mat, changes, notes)
     if assumed_changes:
         new = _material_with(new, assumed_changes, notes, source="assumed")
@@ -1309,6 +1329,85 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
         "description": f"Calibrated by bridgesim from the coupon tests in {d.name}: "
                        + "; ".join(log)})
     return new, log, params
+
+
+def _rows(f: Path) -> list[dict]:
+    return list(csv.DictReader(f.read_text(encoding="utf-8").splitlines())) \
+        if f.exists() else []
+
+
+def _direct_coupons(d: Path, mat: Material, sp: SimParams, changes: dict, notes: dict,
+                    params: dict, log: list) -> None:
+    """Strength and glue values measured directly (no inverse fit): stick tension and
+    short-stack compression (f_t, f_c, replacing the ratio-scaled pair from bending), a
+    stick block pressed flat (f_c90), sticks glued end to end and pulled (the end-grain
+    factor) and the load-slip record of a lap joint (glue shear stiffness and
+    toughness)."""
+    vals = [_float(r, "failure_load_N") / (_float(r, "width_mm") * _float(r, "thickness_mm"))
+            for r in _rows(d / "stick_tension_template.csv")
+            if _float(r, "failure_load_N") and _float(r, "width_mm") and _float(r, "thickness_mm")]
+    if vals:
+        changes["f_t_MPa"] = float(np.mean(vals))
+        notes["f_t_MPa"] = f"measured: {len(vals)} stick tension tests (calibrate)"
+        log.append(f"f_t = {changes['f_t_MPa']:.1f} MPa from {len(vals)} tension tests")
+    comp = []
+    for r in _rows(d / "stick_compression_template.csv"):
+        F, w, t, L = (_float(r, k) for k in ("failure_load_N", "width_mm", "thickness_mm",
+                                            "length_mm"))
+        if F and w and t:
+            if L and L > 5 * min(w, t):
+                log.append(f"compression specimen {r.get('specimen', '?')} skipped: longer "
+                           "than 5 x its smallest side, it buckles instead of crushing")
+                continue
+            comp.append(F / (w * t))
+    if comp:
+        changes["f_c_MPa"] = float(np.mean(comp))
+        notes["f_c_MPa"] = f"measured: {len(comp)} short-stack compression tests (calibrate)"
+        log.append(f"f_c = {changes['f_c_MPa']:.1f} MPa from {len(comp)} compression tests")
+    c90 = [_float(r, "plateau_load_N") / (_float(r, "contact_length_mm") * _float(r,
+                                                                               "width_mm"))
+           for r in _rows(d / "crush_across_template.csv")
+           if _float(r, "plateau_load_N") and _float(r, "contact_length_mm")
+           and _float(r, "width_mm")]
+    if c90:
+        params["wood.f_c90_MPa"] = float(np.mean(c90))
+        log.append(f"wood.f_c90_MPa = {params['wood.f_c90_MPa']:.2f} from {len(c90)} blocks "
+                   "pressed flat")
+    ends = [_float(r, "failure_load_N") / (_float(r, "width_mm") * _float(r, "thickness_mm"))
+            for r in _rows(d / "end_grain_template.csv")
+            if _float(r, "failure_load_N") and _float(r, "width_mm") and _float(r, "thickness_mm")]
+    if ends:
+        tau = changes.get("glue.tau_g_MPa", mat.glue.tau_g_MPa.value)
+        fac = float(np.mean(ends)) / (sp["glue.peel_to_shear"] * tau)
+        params["glue.end_grain_factor"] = float(np.clip(fac, 0.05, 1.5))
+        log.append(f"glue.end_grain_factor = {params['glue.end_grain_factor']:.2f} from "
+                   f"{len(ends)} end-to-end joints (their strength over the peel strength "
+                   "of a face joint)")
+    ks, gs = [], []
+    by_spec: dict[str, list] = {}
+    for r in _rows(d / "lap_slip_template.csv"):
+        if _float(r, "load_N") is not None and _float(r, "slip_mm") is not None:
+            by_spec.setdefault(r.get("specimen", ""), []).append(r)
+    for rows in by_spec.values():
+        A = _float(rows[0], "overlap_mm") * _float(rows[0], "width_mm") \
+            if _float(rows[0], "overlap_mm") and _float(rows[0], "width_mm") else None
+        F = np.array([_float(r, "load_N") for r in rows], float)
+        x = np.array([_float(r, "slip_mm") for r in rows], float)
+        if A is None or len(F) < 3 or F.max() <= 0:
+            continue
+        k_sec = _secant(F, x, float(F.max()))
+        if math.isfinite(k_sec):
+            ks.append(k_sec / A)
+        gs.append(float(np.trapezoid(F, x)) / A)
+    if ks:
+        params["glue.K_s_N_per_mm3"] = float(np.mean(ks))
+        log.append(f"glue.K_s_N_per_mm3 = {params['glue.K_s_N_per_mm3']:.1f} from {len(ks)} "
+                   "lap load-slip records (secant 10-50 % of the peak / glued area; it "
+                   "includes the sticks' own stretching over the overlap)")
+    if gs:
+        params["glue.G_IIc_N_per_mm"] = float(np.mean(gs))
+        log.append(f"glue.G_IIc_N_per_mm = {params['glue.G_IIc_N_per_mm']:.2f} from "
+                   f"{len(gs)} lap load-slip records (work to break / glued area)")
 
 
 # ------------------------------------------------------------------------- monte carlo
@@ -1358,6 +1457,10 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
                            recommended_prediction_kgf=round(best_prediction(F), 1),
                            fidelity=fidelity,
                            untrustworthy_runs=sum(1 for r in res if not r["trustworthy"]))
+    Fs = sorted(r["Fu_strict_kgf"] for r in res)
+    rep.Fu_strict_kgf = [round(x, 2) for x in Fs]
+    rep.p50_strict_kgf = round(float(np.percentile(Fs, 50)), 2)
+    rep.recommended_prediction_strict_kgf = round(best_prediction(Fs), 1)
     _, _, _, _, mat_, sp_, _ = _inputs(cad, overrides, material, sim_params, ruleset, units,
                                        up, span)
     rep.assumed_parameters = _assumed(mat_, sp_)
@@ -1403,7 +1506,9 @@ def _mc_one(a):
                    fidelity=fidelity, out_dir=out, units=units, up=up, span=span)
     major = next((e for e in rep.failures if e.kind != "joint_cracking"), None)
     where = f"{e_kind(major)}: {major.what}" if major else rep.failure_mode
+    strict = rep.Fu_first_joint_failure_kgf
     return {"seed": seed, "Fu_kgf": rep.Fu_kgf, "first_failure": where,
+            "Fu_strict_kgf": min(strict, rep.Fu_kgf) if strict else rep.Fu_kgf,
             "trustworthy": rep.quality.trustworthy, "mass_kg": rep.mass_kg,
             "efficiency_kgf_per_kg": rep.efficiency_kgf_per_kg}
 
@@ -1512,19 +1617,21 @@ SENSITIVITY = {  # key: (meaning, how to measure)
     "material.E_MPa": ("stiffness of a stick along the grain",
                        "3-point bending of single sticks (stick_bending_template.csv)"),
     "material.f_t_MPa": ("tension strength of a stick",
-                         "pull single sticks to failure, or bend them (MOR)"),
+                         "pull single sticks to failure (stick_tension_template.csv)"),
     "material.f_c_MPa": ("crushing strength of a stick along the grain",
-                         "short glued stack in compression"),
+                         "short glued stack in compression (stick_compression_template.csv)"),
     "material.f_v_MPa": ("shear strength of a stick", "short-span bending of a stick stack"),
     "material.glue.tau_g_MPa": ("glue joint strength",
                                 "single-lap joints pulled apart (glue_joint_template.csv)"),
     "glue.G_IIc_N_per_mm": ("toughness of a glue line in shear",
-                            "the area under the force-slip curve of a lap test"),
-    "wood.f_c90_MPa": ("crushing strength across the grain", "press a block of sticks flat"),
+                            "the load-slip record of a lap test (lap_slip_template.csv)"),
+    "wood.f_c90_MPa": ("crushing strength across the grain",
+                       "press a block of sticks flat (crush_across_template.csv)"),
     "wood.G_f_N_per_mm": ("fracture energy of a stick in tension",
                           "area under the load-extension curve of a tension test"),
     "glue.end_grain_factor": ("glue strength on end grain / on side grain",
-                              "glue two sticks end to end and pull them apart"),
+                              "glue two sticks end to end and pull them apart "
+                              "(end_grain_template.csv)"),
 }
 # other values worth a --param (meaning, how to measure); any key of
 # materials/simulation.yaml or material.<key> works
@@ -1532,6 +1639,8 @@ SENSITIVITY_MORE = {
     "glue.peel_to_shear": ("peel strength of a glue line / its shear strength",
                            "T-peel test of two glued sticks"),
     "glue.K_n_N_per_mm3": ("stiffness of a glue line", "the slope of a lap test's curve"),
+    "glue.K_s_N_per_mm3": ("shear stiffness of a glue line",
+                           "the load-slip record of a lap test (lap_slip_template.csv)"),
     "glue.G_Ic_N_per_mm": ("toughness of a glue line in peel", "T-peel test"),
     "wood.f_t90_MPa": ("tension strength across the grain", "pull two sticks glued edge to edge"),
     "wood.densification_strain": ("how far crushed wood compacts",

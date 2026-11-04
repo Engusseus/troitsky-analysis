@@ -17,8 +17,9 @@ Tools:
   questions to ask the designer (seconds);
 * ``crush_bridge`` - the simulated §12.5 crushing test (minutes, blocking);
 * ``start_crush`` / ``start_montecarlo`` / ``start_compare_designs`` /
-  ``start_sensitivity`` / ``start_calibrate_bridge`` + ``job_status`` - in the background
-  (jobs survive a restart of this server), for clients whose tool calls time out;
+  ``start_sensitivity`` / ``start_calibrate_bridge`` + ``job_status`` / ``cancel_job`` -
+  in the background (jobs survive a restart of this server, and queue for a share of the
+  cores), for clients whose tool calls time out;
 * ``compare_with_test`` - reality gap between a simulation (or a montecarlo spread) and
   a physical crush test;
 * ``lab_tests`` - simulated coupon tests, and their gap to the team's coupon data;
@@ -99,9 +100,12 @@ def _tool_error_cls():
     return ToolError
 
 
-def _safe(fn):
+def _safe(fn=None, *, model=None):
     """Wrap a tool so any exception comes back as a flagged MCP error (isError) whose
-    text is a JSON object the agent can read."""
+    text is a JSON object the agent can read. ``model``: the report model the tool always
+    returns, published as its output schema (otherwise a JSON object)."""
+    if fn is None:
+        return lambda f: _safe(f, model=model)
     import functools
 
     @functools.wraps(fn)
@@ -111,14 +115,16 @@ def _safe(fn):
         except Exception as exc:  # noqa: BLE001
             raise _tool_error_cls()(_error(exc)) from None
         # a JSON object, so clients get structured content (and the same JSON as text)
-        return json.loads(out) if isinstance(out, str) else out
+        out = json.loads(out) if isinstance(out, str) else out
+        return model.model_validate(out) if model is not None else out
 
     import inspect
     from typing import Any
 
     # dict[str, Any] (not a bare dict) so the SDK publishes it as structured output
-    wrapper.__annotations__ = {**fn.__annotations__, "return": dict[str, Any]}
-    wrapper.__signature__ = inspect.signature(fn).replace(return_annotation=dict[str, Any])
+    ret = model if model is not None else dict[str, Any]
+    wrapper.__annotations__ = {**fn.__annotations__, "return": ret}
+    wrapper.__signature__ = inspect.signature(fn).replace(return_annotation=ret)
     return wrapper
 
 
@@ -161,9 +167,10 @@ def _progress_of(lines: list[str]) -> tuple[float | None, str]:
 
 
 def job_status_impl(out_dir: str) -> str:
-    """{"status": running | done | failed | unknown, "progress": 0..1 or null,
-    "message": last progress message, "report": the report when done, "error": the error
-    object when failed}. Read from the job's files, so it works from any server."""
+    """{"status": queued | running | done | failed | cancelled | unknown, "progress": 0..1
+    or null, "message": last progress message, "report": the report when done, "error":
+    the error object when failed}. Read from the job's files, so it works from any
+    server."""
     out = _outpath(out_dir)
     log = (out / "progress.log").read_text(encoding="utf-8", errors="replace") \
         if (out / "progress.log").exists() else ""
@@ -186,11 +193,16 @@ def job_status_impl(out_dir: str) -> str:
             return reply("unknown", error={"error": "no job was started in that folder",
                                            "kind": "bad_input"})
         if _alive(int(job["pid"])):
+            if (out / "queued").exists():
+                return reply("queued", message="waiting for a free job slot (the machine "
+                                               "runs a few crushes at a time)")
             return reply("running")
         return reply("failed", error={"error": "the job's process died without finishing "
                                                "(killed, or the machine restarted)",
                                       "kind": "simulation_failed"})
     code = status.get("exit_code")
+    if status.get("cancelled"):
+        return reply("cancelled", exit_code=code)
     res = (out / "result.json").read_text(encoding="utf-8") \
         if (out / "result.json").exists() else ""
     if code == 0 and res.strip().startswith("{"):
@@ -205,6 +217,29 @@ def job_status_impl(out_dir: str) -> str:
                  error=err or {"error": "\n".join(lines[-20:]), "kind": "simulation_failed"})
 
 
+def cancel_job_impl(out_dir: str) -> str:
+    """Stop a background job (its whole process group) and mark it cancelled."""
+    import signal
+
+    out = _outpath(out_dir)
+    job = json.loads((out / "job.json").read_text()) if (out / "job.json").exists() else None
+    if job is None:
+        raise ValueError(f"no job was started in {out}")
+    if (out / "status.json").exists():
+        return json.dumps({"status": "finished already", "out_dir": str(out)})
+    pid = int(job["pid"])
+    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+    proc = _JOBS.pop(str(out.resolve()), None)
+    if proc is not None:
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=10)
+    (out / "queued").unlink(missing_ok=True)
+    (out / "status.json").write_text(json.dumps({"exit_code": -15, "cancelled": True,
+                                                 "finished": time.time()}))
+    return json.dumps({"status": "cancelled", "out_dir": str(out)})
+
+
 def build_server():
     try:  # mcp >= 2
         from mcp.server.mcpserver import MCPServer as Server
@@ -216,7 +251,7 @@ def build_server():
                              "pip install 'bridgesim[mcp]' (or uv sync --extra mcp)") from exc
 
     from bridgesim.sim import study
-    from bridgesim.sim.report import SCHEMAS
+    from bridgesim.sim.report import SCHEMAS, LabReport, RealityGap
 
     srv = Server("bridgesim", instructions=(
         "Simulates the Troitsky popsicle-stick bridge crushing test on SolidWorks parts. "
@@ -393,12 +428,20 @@ def build_server():
     @srv.tool()
     @_safe
     def job_status(out_dir: str) -> str:
-        """Status of a background job: running (with the latest progress line), done
-        (with the report), failed (with the error and exit code)."""
+        """Status of a background job: queued (waiting for a free slot: the machine runs
+        a few crushes at a time, each with its share of the cores), running (with the
+        latest progress line), done (with the report), failed (with the error and exit
+        code) or cancelled."""
         return job_status_impl(out_dir)
 
     @srv.tool()
     @_safe
+    def cancel_job(out_dir: str) -> str:
+        """Stop a background job started with a start_* tool (queued or running)."""
+        return cancel_job_impl(out_dir)
+
+    @srv.tool()
+    @_safe(model=RealityGap)
     def compare_with_test(crush_json_path: str, test_csv_path: str) -> str:
         """Reality gap between a simulated crush (crush.json) and a physical crush test
         CSV (columns load_kgf, midspan_deflection_mm, event, notes; a row with event
@@ -410,7 +453,7 @@ def build_server():
                              _infile(test_csv_path, "test record")).model_dump_json()
 
     @srv.tool()
-    @_safe
+    @_safe(model=LabReport)
     def lab_tests(material: str = "", data_dir: str = "") -> str:
         """Simulate stick 3-point bending, a glued lap joint and a stick column; with
         data_dir (folder of the team's coupon CSVs) also the reality gap per specimen."""

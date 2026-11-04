@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import io
 import json
@@ -409,12 +410,21 @@ def crush(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = N
               "--brief", help="With --json: leave out the curve and the event log (they "
                               "are in curve.csv / events.csv with --out); a few kB")
           ] = False,
+          threads: Annotated[int | None, typer.Option(
+              help="CPU threads for this crush (default: all cores; give each of two "
+                   "crushes run side by side half of them)")] = None,
           json_out: JsonOpt = False) -> None:
     """Simulate the §12.5 crushing test of a CAD bridge (nonlinear, dynamic): joints
     break, members buckle and crack, the bridge collapses. Writes an interactive 3D
     replay with --out."""
     from bridgesim.sim import study
     from bridgesim.sim.crush import CrushOptions
+
+    if threads:
+        with contextlib.suppress(Exception):  # numba missing: nothing to limit
+            import numba
+
+            numba.set_num_threads(max(1, min(int(threads), numba.config.NUMBA_NUM_THREADS)))
 
     rep, _ = _guard(json_out, lambda: study.crush(
         cad, overrides, material or "popsicle_birch", sim_params, rules,

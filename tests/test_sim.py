@@ -169,6 +169,24 @@ def test_energy_is_conserved_without_damping():
     assert np.ptp(E) < 0.005 * E.mean()
 
 
+def test_a_seed_is_the_same_bridge_at_every_fidelity():
+    """The random glue strength of each joint is drawn from a stream keyed on the CAD
+    (the two bodies and their overlap), not on the mesh: a seed is the same imperfect
+    bridge at quick, standard and fine fidelity."""
+    from bridgesim.sim.idealize import build_model
+
+    out = []
+    for scale in (1.6, 1.0, 0.75):
+        m = build_model(simple_beam_bridge(), MAT, SP, seed=3, mesh_scale=scale)
+        out.append({tuple(sorted((m.bodies[p.body_a].name, m.bodies[p.body_b].name))):
+                    float(m.c_GIc[(m.c_patch == k) & m.c_breakable].mean())
+                    for k, p in enumerate(m.patches)
+                    if ((m.c_patch == k) & m.c_breakable).any()})
+    assert out[0] and out[0].keys() == out[1].keys() == out[2].keys()
+    for o in out[1:]:
+        assert o == pytest.approx(out[0], rel=1e-12)
+
+
 def test_compiled_kernels_match_numpy():
     from bridgesim.sim.idealize import build_model
 
@@ -456,6 +474,20 @@ def test_section_scale_what_if(tmp_path):
     assert any(w.startswith("what-if:") for w in r1.warnings)
     bad = study.inspect(tmp_path / "b.stl", {"bodies": {bars[0].name: {"section_scale": -1}}})
     assert any("section_scale" in w and "above 0" in w for w in bad.warnings)
+    # a glue what-if on every copy of a joint at once: glob patterns, either order
+    from bridgesim.sim.idealize import build_model
+
+    base = build_model(simple_beam_bridge(), MAT, SP, seed=None)
+    from bridgesim.sim.idealize import Overrides
+
+    ov = Overrides.from_dict({"glue": {"Stringer* | Pier*": 2.0}})
+    m2 = build_model(simple_beam_bridge(), MAT, SP, ov, seed=None)
+    hit = [k for k, p in enumerate(base.patches)
+           if {base.bodies[p.body_a].name[:4], base.bodies[p.body_b].name[:4]} == {"Stri", "Pier"}]
+    assert len(hit) == 4 and not [w for w in m2.notes if "glue joint" in w]
+    for k in hit:
+        sel = base.c_patch == k
+        assert m2.c_GIc[sel].mean() == pytest.approx(2 * base.c_GIc[sel].mean())
 
 
 def test_compare_against_a_montecarlo_range(tmp_path):
@@ -746,6 +778,33 @@ def test_overrides_never_read_an_arbitrary_file(tmp_path):
         assert "mapping" in str(e) and "TOP-SECRET" not in str(e)
 
 
+def test_unfilled_answers_are_refused(tmp_path):
+    """Feeding the questions' answer_with back without filling them in is an error that
+    names the key (never read as '1-ply UD'); a layup override must follow the strict
+    form, and a non-number in params names its key."""
+    from bridgesim.sim import study
+    from bridgesim.sim.materials import parse_override_layup
+
+    write_stl(simple_beam_bridge(), tmp_path / "b.stl")
+    rep = study.inspect(tmp_path / "b.stl")
+    merged: dict = {}
+    for q in rep.questions:
+        for sec in ("bodies", "glue", "params"):
+            for k, v in (q.answer_with or {}).get(sec, {}).items():
+                merged.setdefault(sec, {})[k] = v
+    assert merged, "the synthetic bridge asks questions with answer_with"
+    with pytest.raises(ValueError, match="placeholders") as exc:
+        study.inspect(tmp_path / "b.stl", merged)
+    assert "<" in str(exc.value)
+    assert parse_override_layup("10-ply UD").angles == [0.0] * 10
+    assert parse_override_layup("4-ply +-45 along the span").grain == "span"
+    for bad in ("<N>-ply <UD | 0-90 | +-45>, or block", "10-ply <UD | 0-90 | +-45>",
+                "10 plies", "UD"):
+        assert parse_override_layup(bad) is None, bad
+    with pytest.raises(ValueError, match="params.floss.strands"):
+        study.inspect(tmp_path / "b.stl", {"params": {"floss.strands": "six"}})
+
+
 def test_overrides_are_validated(tmp_path):
     """Typos in overrides are reported (with a suggestion), and are errors with strict."""
     from bridgesim.sim import study
@@ -882,6 +941,44 @@ def test_calibration_closes_the_loop(tmp_path):
     assert errs and max(abs(e) for e in errs) < 0.01
 
 
+def test_direct_coupon_tests_calibrate_their_values(tmp_path):
+    """Tension, short-stack compression, a block pressed flat, end-to-end joints and a
+    lap load-slip record each set their value; the templates as shipped set nothing."""
+    import shutil
+
+    from bridgesim.sim import study
+
+    for f in (ROOT / "validation" / "physical").glob("*_template.csv"):
+        shutil.copy(f, tmp_path / f.name)
+    _, log, params = study.calibrate(tmp_path)
+    assert not params and "no test data" in log[0]
+    (tmp_path / "stick_tension_template.csv").write_text(
+        "specimen,width_mm,thickness_mm,failure_load_N\nT1,10,2,1600\nT2,10,2,1700\n")
+    (tmp_path / "stick_compression_template.csv").write_text(
+        "specimen,length_mm,width_mm,thickness_mm,failure_load_N\n"
+        "C1,30,10,10,4000\nC2,200,10,10,1000\n")  # C2 is a column: skipped
+    (tmp_path / "crush_across_template.csv").write_text(
+        "specimen,contact_length_mm,width_mm,plateau_load_N\nP1,30,10,1800\n")
+    (tmp_path / "end_grain_template.csv").write_text(
+        "specimen,width_mm,thickness_mm,failure_load_N\nE1,10,2,20\n")
+    slip = np.linspace(0, 0.4, 9)
+    load = np.where(slip <= 0.2, 2000 * slip, 400 - 2000 * (slip - 0.2))
+    (tmp_path / "lap_slip_template.csv").write_text(
+        "specimen,overlap_mm,width_mm,load_N,slip_mm\n"
+        + "".join(f"L1,20,10,{f_:.3f},{x:.3f}\n" for f_, x in zip(load, slip, strict=True)))
+    mat, log, params = study.calibrate(tmp_path)
+    assert mat.f_t_MPa.value == pytest.approx(82.5) and mat.f_t_MPa.source == "measured"
+    assert mat.f_c_MPa.value == pytest.approx(40.0)
+    assert params["wood.f_c90_MPa"] == pytest.approx(6.0)
+    tau = MAT.glue.tau_g_MPa.value
+    assert params["glue.end_grain_factor"] == pytest.approx(1.0 / (SP["glue.peel_to_shear"]
+                                                                   * tau), rel=1e-6) or \
+        params["glue.end_grain_factor"] == 1.5
+    assert params["glue.K_s_N_per_mm3"] == pytest.approx(2000 / 200, rel=1e-6)
+    assert params["glue.G_IIc_N_per_mm"] == pytest.approx(0.5 * 400 * 0.4 / 200, rel=1e-6)
+    assert any("skipped" in ln for ln in log)
+
+
 def test_simply_supported_beam_matches_beam_theory(tmp_path):
     """End to end (CAD -> idealisation -> crushing test): one laminated beam on two
     narrow piers under the rigid plate. The plate bears on the bending beam at its two
@@ -990,6 +1087,36 @@ def test_background_jobs_survive_a_server_restart(tmp_path):
     st = json.loads(M.job_status_impl(str(tmp_path / "j2")))
     assert st["status"] == "failed" and "died" in st["error"]["error"]
     assert json.loads(M.job_status_impl(str(tmp_path / "nothing")))["status"] == "unknown"
+
+
+def test_background_jobs_queue_and_cancel(tmp_path, monkeypatch):
+    """With one job slot, a second background job waits as 'queued' instead of fighting
+    the first for the cores, and cancel_job stops it."""
+    import sys
+    import time
+
+    from bridgesim.sim import mcp_server as M
+
+    monkeypatch.setenv("BRIDGESIM_JOB_SLOTS", "1")
+    monkeypatch.setenv("BRIDGESIM_JOB_SLOT_DIR", str(tmp_path / "slots"))
+    M._start([sys.executable, "-c", "import time; time.sleep(30)"], tmp_path / "j1")
+    time.sleep(3.0)  # j1 takes the only slot
+    M._start([sys.executable, "-c", "print('{}')"], tmp_path / "j2")
+    for _ in range(60):
+        st2 = json.loads(M.job_status_impl(str(tmp_path / "j2")))
+        if st2["status"] == "queued":
+            break
+        time.sleep(0.25)
+    assert st2["status"] == "queued", st2
+    assert json.loads(M.job_status_impl(str(tmp_path / "j1")))["status"] == "running"
+    assert json.loads(M.cancel_job_impl(str(tmp_path / "j1")))["status"] == "cancelled"
+    assert json.loads(M.job_status_impl(str(tmp_path / "j1")))["status"] == "cancelled"
+    for _ in range(80):  # the queued job gets the slot and finishes
+        st2 = json.loads(M.job_status_impl(str(tmp_path / "j2")))
+        if st2["status"] not in ("queued", "running"):
+            break
+        time.sleep(0.25)
+    assert st2["status"] == "done", st2
 
 
 def test_compare_with_competition_style_records(synthetic_crush, tmp_path):

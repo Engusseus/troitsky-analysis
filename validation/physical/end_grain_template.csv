@@ -1,0 +1,2 @@
+specimen,width_mm,thickness_mm,failure_load_N,cure_hours,notes
+E01,10.0,2.0,,24,example row: two sticks glued end to end (butt joint) and pulled apart

@@ -296,6 +296,15 @@ class MonteCarloReport(BaseModel):
                     "weighted by 1/F_u, which minimises the expected prediction error "
                     "E = |F_u - F_p| / F_u.")
     fidelity: str = "standard"
+    Fu_strict_kgf: list[float] = Field([], description=(
+        "The same runs judged strictly: the load when the first glued joint separated or a "
+        "member split (§12.5 'shear, including joint failure'), if that came before the "
+        "peak"))
+    p50_strict_kgf: float | None = None
+    recommended_prediction_strict_kgf: float | None = Field(
+        None, description="The Load Prediction Form value if the judges stop the test at "
+                          "the first visible joint failure; recommended_prediction_kgf is "
+                          "for judges who stop at the collapse (the usual practice)")
     untrustworthy_runs: int = Field(0, description="Runs whose quality.trustworthy is "
                                                    "false")
     assumed_parameters: list[str] = Field([], description="Material values still "

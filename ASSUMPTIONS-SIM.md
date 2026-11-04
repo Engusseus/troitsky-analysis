@@ -146,8 +146,10 @@ counted in the warnings. An element is removed only when every ply is torn wide 
 **Scatter** (seeded, `--seed`; `--seed -1` for a perfect bridge): per body, E (CoV 12 %)
 and strength (CoV 18 %); per joint, glue strength (CoV 30 %); per bar, an initial bow of
 L/400 on average (0.3-1.7 of that) in a random direction; per bridge, the plate placed up
-to 3 mm off-centre and the support corners up to 0.5 mm out of level. Monte Carlo over
-seeds gives the spread of F_u.
+to 3 mm off-centre and the support corners up to 0.5 mm out of level. Each value is drawn
+from a stream named after its body or joint (a joint by its two bodies and where they
+overlap in the CAD), so a seed is the same imperfect bridge at every fidelity and after
+an edit elsewhere in the design. Monte Carlo over seeds gives the spread of F_u.
 
 ## 5. The test
 
@@ -224,7 +226,9 @@ seeds gives the spread of F_u.
   and contact damping. The kinetic energy of the bridge (falling debris excluded) is
   reported against the work done by the jack while the load rises to 95 % of its peak
   (`kinetic_to_work_max`): below 0.1 the loading is quasi-static. The collapse after the
-  peak is dynamic, as in the real test. `--rate-check` crushes the bridge again at half
+  peak is dynamic, as in the real test: once the bridge is judged failed (F_u is known)
+  the mass damping drops to 2 1/s, so the wreckage falls at its real speed in the replay
+  instead of the ~0.4 m/s that the loading-phase damping (g / alpha) would allow. `--rate-check` crushes the bridge again at half
   the jack speed and reports how much F_u changes (`quality.rate_check`).
 * **Bifurcations.** When two failure modes compete (say a joint at one heel and a
   gusset at mid-span reach their strength at similar loads), a small difference - the
@@ -235,10 +239,8 @@ seeds gives the spread of F_u.
   compete.
 * **Mesh convergence** (`validation/convergence_study.py`; Bridge_v6 in
   `validation/README.md` §3.4): the perfect bridge converges from element size x2 to
-  x0.75 (2717, 2686, 2657 kgf); over seeds 0-2 the mean F_u of the standard mesh is
-  within 1.3 % of the fine mesh, but one seed's F_u moved up to 14 % between meshes,
-  because three failure sites of that design compete within ~15 % and where a crack
-  starts at a stress concentration depends on the mesh.
+  x0.75 (2717, 2686, 2657 kgf); seed by seed the standard mesh is within 1 % of the fine
+  mesh and quick ~3.5 % high, with the seeds ranked alike at every fidelity.
 * **Crack onset is local.** A plate cracks where its strain first reaches the strength
   in one element; the crack band makes the energy of the crack independent of the mesh,
   not its onset at a sharp stress raiser (the end of a glued lap, a re-entrant corner),

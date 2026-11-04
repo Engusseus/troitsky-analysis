@@ -354,6 +354,9 @@ class CrushOptions:
     after_failure_mm: float = 15.0  # keep going this far past failure (collapse replay)
     frame_mm: float = 0.15  # replay frame every this much jack travel
     alpha: float = 25.0
+    # after the bridge is judged failed (F_u is known) the collapse runs with light damping
+    # so wreckage falls at its real speed in the replay (alpha caps it at about g / alpha)
+    alpha_collapse: float = 2.0
     max_added_mass: float = 0.05
     dt_target: float = 3e-6
     max_steps: int = 400_000
@@ -647,7 +650,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         v = opt.speed_mm_s * min(1.0, tl / ramp) * throttle
         st.jack_y -= v * dt
         st.jack_v = -v
-        do_step(1.0, opt.alpha)
+        do_step(1.0, opt.alpha if fail_at is None else opt.alpha_collapse)
         k += 1
         travel = jack0 - st.jack_y
         raw = st.jack_force

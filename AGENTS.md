@@ -34,13 +34,13 @@ passed (`overrides.yaml` when they came inline, e.g. through MCP).
 
 | Command | What it does | Time |
 |---|---|---|
-| `bridgesim inspect BRIDGE.SLDPRT [-o overrides.yaml] [--strict] --json [--brief]` | Bodies (how each is modelled, centroid and bounding box, layup, mass), glued joints, loading position, rule check from the solids, `warnings`, `questions`, `next_steps`. `--brief` (and the MCP default): questions, counts, failed rules, warnings and next steps only (~20 kB for a 100-body bridge instead of ~100 kB) | seconds |
-| `bridgesim crush BRIDGE.SLDPRT [-o overrides.yaml] [--seed N] [--fidelity quick\|standard\|fine] [--rate-check] [--out DIR] --json [--brief]` | Simulated crushing test; with `--out`: `crush.json`, `curve.csv`, `events.csv` (every event), `replay.html`. `--rate-check` runs it again at half the jack speed (3x the time). `--brief`: the report without the curve and event log and with the first 15 failures (~25 kB instead of ~200 kB; the MCP crush tools return this by default) | minutes |
+| `bridgesim inspect BRIDGE.SLDPRT [-o overrides.yaml] [--strict] --json [--brief]` | Bodies (how each is modelled, centroid and bounding box, layup, mass), glued joints, loading position, rule check from the solids, `warnings`, `questions`, `next_steps`. `--brief` (and the MCP default): questions, counts, failed rules, warnings and next steps only (~25 kB for a 100-body bridge instead of ~100 kB) | seconds |
+| `bridgesim crush BRIDGE.SLDPRT [-o overrides.yaml] [--seed N] [--fidelity quick\|standard\|fine] [--rate-check] [--out DIR] --json [--brief]` | Simulated crushing test; with `--out`: `crush.json`, `curve.csv`, `events.csv` (every event), `replay.html`. `--rate-check` runs it again at half the jack speed (3x the time). `--brief`: the report without the curve and event log and with the first 15 failures (~30 kB instead of ~200 kB; the MCP crush tools return this by default) | minutes |
 | `bridgesim compare DIR/crush.json my_test.csv --json` | Reality gap vs a physical crush test. Given `montecarlo.json` instead of `crush.json`: where the test falls in the predicted range | seconds |
 | `bridgesim calibrate-bridge BRIDGE.SLDPRT my_test.csv [-o overrides.yaml] [--fidelity standard] [--out fitted.overrides.yaml] --json` | After a physical crush test of this bridge: a global stiffness and a global strength factor fitted so the simulated crush reproduces it (one crush per step, up to 4); writes your overrides plus the fitted `params`. The test is then used up for validation | 2-4 x crush |
 | `bridgesim sensitivity BRIDGE.SLDPRT [--rel 0.2] [--fidelity quick] [--seeds 1] [--param KEY]... --json` | Which material values move F_u most: each one lowered and raised by `rel`; `measure_first` lists the tests that would narrow the prediction most. `--param` (repeat it) chooses the values, any key of `materials/simulation.yaml` or `material.<key>` (default: the 9 that usually matter most); `--seeds 3` averages over seeds | (1 + 2 x params) x seeds x crush / processes |
 | `bridgesim lab [--data validation/physical] --json` | Simulated coupon tests (stick bending, lap joint, stick column) and their gap to the team's coupon data | ~1 min |
-| `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, f_t/f_c and tau_g so the *simulated* coupons reproduce the measured ones (`lab --data` then shows ~0 % error); with 3+ specimens of a kind also the scatter (`my_material.overrides.yaml`, `params: scatter.*`) | ~1 min |
+| `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, f_t/f_c and tau_g so the *simulated* coupons reproduce the measured ones (`lab --data` then shows ~0 % error); f_t, f_c, f_c90, the end-grain factor and the glue's shear stiffness and toughness from the direct coupon tests; with 3+ specimens of a kind also the scatter (`my_material.overrides.yaml`, `params:`) | ~1 min |
 | `bridgesim ab A.SLDPRT B.SLDPRT [-n 3] [--overrides-a a.yaml] [--overrides-b b.yaml] [--fidelity standard] --json` | Is B better than A? Both crushed with the same seeds: change of F_u and efficiency with a 90 % interval, `significant`, `verdict`, first failure of each. B may be A with other overrides: a what-if (`section_scale`, `glue_factor`) before changing the CAD | 2n x crush / processes |
 | `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity standard] [--processes 4] [--out DIR] --json` | Spread of F_u over imperfections and material scatter; `recommended_prediction_kgf` for the Load Prediction Form (the 1/F-weighted median, which minimises the §12.7 error). `note` says what the spread leaves out (placeholder material values) | n x crush / processes |
 | `bridgesim schema inspect\|crush\|reality_gap\|lab\|montecarlo\|design_comparison\|sensitivity\|bridge_calibration\|question` | JSON Schema of each report | instant |
@@ -50,14 +50,14 @@ Fidelity: `quick` (coarser mesh, jack 200 mm/s, ~3 min for a 100-body bridge on 
 to screen design changes, `standard` (100 mm/s, ~5-8 min) for the answer, `fine` (finer
 mesh, 50 mm/s, ~15 min) to check that the answer has converged. Mesh convergence on
 Bridge_v6 (`validation/README.md` §3.4, all at 100 mm/s): the perfect bridge gives 2717,
-2686, 2657 kgf with elements x2, x1, x0.75 (-1.1 % per step); over seeds 0-2 the mean
-F_u is quick 2193, standard 2073, fine 2100 kgf (standard within 1.3 % of fine, quick
-4 % high). But one seed's F_u moved by up to 14 % between standard and fine: three
-failure sites (the deck stringers under the plate, the end-post joint, the hub tie
-strap) compete within ~15 % of each other, and where a crack starts at a stress
-concentration depends on the mesh (a local damage model: do not go finer than `fine`).
-So rank designs with one fidelity and the same seeds (`ab`, n >= 3), give F_u as the
-`montecarlo` range, and never compare F_u across fidelities. `ab`, `montecarlo`, `sensitivity` and `calibrate-bridge`
+2686, 2657 kgf with elements x2, x1, x0.75 (-1.1 % per step); seed by seed (a seed is the
+same imperfect bridge at every fidelity) the standard mesh is within 1 % of the fine one
+and quick ~3.5 % high, all three ranking the seeds alike. The spread *between* seeds is
+~20 %: three failure sites (the deck stringers under the plate, the end-post joint, the
+hub tie strap) compete within ~15 %. So rank designs with one fidelity and the same seeds
+(`ab`, n >= 3), give F_u as the `montecarlo` range, and never compare F_u across
+fidelities. Do not go finer than `fine`: crack onset at a stress concentration is local
+(ASSUMPTIONS-SIM.md). `ab`, `montecarlo`, `sensitivity` and `calibrate-bridge`
 stop each crush 2 mm of jack travel after the bridge is judged failed (F_u and the
 failures are known by then; no replay), which saves about a third of the time.
 
@@ -112,13 +112,18 @@ claude mcp add bridgesim -- uv run --directory /path/to/troitsky-analysis bridge
 | `start_calibrate_bridge(cad_path, test_csv_path, out_dir, overrides_yaml, fidelity)` then `job_status(out_dir)` | background: fit stiffness and strength to a physical crush test (writes `out_dir/fitted.overrides.yaml`) |
 | `compare_with_test(crush_json_path, test_csv_path)` | reality gap (a `montecarlo.json` as the first argument: the test against the predicted range) |
 | `lab_tests(material, data_dir)`, `calibrate_material(data_dir, out_path)` | coupon level |
+| `cancel_job(out_dir)` | stop a background job |
 | `get_schema(name)` | JSON Schemas |
 
-`job_status` returns `{"status": "running" | "done" | "failed" | "unknown", "progress":
-0..1 | null, "message": ..., "report": {...} | null, "error": ... | null}`. Jobs run
-detached and record their exit in `out_dir/status.json`, so any server (a restarted one
-too) reports them: a finished job is `done` with its report, a job whose process died is
-`failed`, never left `running`.
+`job_status` returns `{"status": "queued" | "running" | "done" | "failed" | "cancelled" |
+"unknown", "progress": 0..1 | null, "message": ..., "report": {...} | null, "error": ... |
+null}`. Jobs run detached and record their exit in `out_dir/status.json`, so any server (a
+restarted one too) reports them: a finished job is `done` with its report, a job whose
+process died is `failed`, never left `running`. Jobs share the machine: a few run at once
+(half the CPU cores, `BRIDGESIM_JOB_SLOTS` to change it), each with its share of the cores,
+and the others wait as `queued`, so starting several is safe. `cancel_job(out_dir)` stops
+one. From the CLI, give each of two crushes run side by side `--threads 2` (on 4 cores):
+without it each takes every core and both crawl.
 
 ## Speed and determinism
 
@@ -127,9 +132,10 @@ too) reports them: a finished job is `done` with its report, a job whose process
 `quick`; a small bridge takes under a minute. Results are deterministic for a given
 `--seed`, which sets the imperfections (member bow, support corners out of level), the
 material scatter and the plate placement. Each random value is drawn from a stream
-named after its body or joint, so editing one part of the CAD does not reshuffle the
-imperfections of the others: two
-designs crushed with the same seed differ only by the design change. `--seed -1` gives
+named after its body or joint (a joint by its bodies and where they overlap in the CAD,
+never by the mesh), so a seed is the same imperfect bridge at quick, standard and fine
+fidelity, and editing one part of the CAD does not reshuffle the imperfections of the
+others: two designs crushed with the same seed differ only by the design change. `--seed -1` gives
 the perfect, centred bridge. Use `montecarlo` for the spread, and `ab` to decide between
 two designs: one seed each can mislead, because the scatter between seeds (glue strength
 varies 30 % joint to joint) is often larger than a small design change.
@@ -201,12 +207,17 @@ things to do, not overrides).
 (both sides) or a plate's thickness, and its mass (the mass rule is checked with it);
 `glue` / `glue_factor` above 1 stands for a bigger glued area or a gusset at a joint. The
 CAD and its glued areas are unchanged, and each what-if is listed in `warnings`. A
-`strengthen` step in `next_steps` comes with such a what-if in its `overrides` and the
-`ab` command that tests it on the same seeds: if it helps, make the change in SolidWorks
-and compare the two files with `ab`.
+`strengthen` step in `next_steps` comes with such a what-if in its `overrides` (on every
+copy of the parts that broke, since a design change is made on all of them) and the `ab`
+command that tests it on the same seeds: if it helps, make the change in SolidWorks and
+compare the two files with `ab`.
 
 Body names are exactly as `inspect` lists them (SolidWorks body names; mirrored copies
-get "(mirror copy)"). Joint names are `A | B` as listed in the inspect `joints`.
+get "(mirror copy)"). Joint names are `A | B` as listed in the inspect `joints`; both
+sides may be glob patterns (`"End Post* | T1 Cover*": 1.5` is the joint on all four
+corners). A value still holding an answer_with placeholder (`<...>`) is an error that
+names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +-45`
+(optionally `along the span`), `block`, `toothpick` or `floss`.
 
 ## What the crush report means
 
@@ -223,8 +234,11 @@ get "(mirror copy)"). Joint names are `A | B` as listed in the inspect `joints`.
   `--fidelity fine` before redesigning around one part, and use `ab` to confirm.
 * `events`: the first event of each kind per part, with `where_mm`; `events.csv` in the
   output folder has every event (`n_events_total`).
-* `Fu_first_joint_failure_kgf`: load at the first glue-joint failure (§12.5 counts a
-  joint failure as a failure when the judges see it).
+* `Fu_first_joint_failure_kgf`: load when the first glued joint separated or a member
+  split in shear: §12.5 counts "shear, including joint failure" as failure, so a strict
+  judge who sees it could stop the test there. `montecarlo` gives both readings:
+  `recommended_prediction_kgf` (judged at the collapse, the usual practice) and
+  `recommended_prediction_strict_kgf` (at the first visible joint failure).
 * `criteria`: when each §12.5 criterion (deflection, contact, joint/shear, instability)
   was first met.
 * `quality.trustworthy`: `false` when the loading was not quasi-static
@@ -243,10 +257,17 @@ get "(mirror copy)"). Joint names are `A | B` as listed in the inspect `joints`.
 
 0. Decide what to measure: `bridgesim sensitivity` ranks the placeholder values by how
    much they move F_u for *this* design (`measure_first`).
-1. Coupon level: fill `validation/physical/stick_bending_template.csv` and
-   `glue_joint_template.csv`, run `bridgesim lab --data validation/physical --json`:
-   each specimen gets simulated-vs-measured errors and a 0-100 reality-gap score.
-   `bridgesim calibrate` then fits the material; re-run `lab` to confirm.
+1. Coupon level: fill the templates in `validation/physical/` for the tests you made:
+   `stick_bending_template.csv` (E, bending strength) and `glue_joint_template.csv`
+   (tau_g), which `calibrate` fits through the simulated coupons, and the direct ones:
+   `stick_tension_template.csv` (f_t), `stick_compression_template.csv` (f_c, short
+   stacks), `crush_across_template.csv` (f_c90), `end_grain_template.csv` (the
+   end-grain glue factor) and `lap_slip_template.csv` (a lap test's load-slip record:
+   glue shear stiffness and toughness). Run `bridgesim lab --data validation/physical
+   --json` for each specimen's simulated-vs-measured errors and a 0-100 reality-gap
+   score, then `bridgesim calibrate validation/physical --out my_material.yaml`: the
+   material YAML plus `my_material.overrides.yaml` (the measured simulation values and
+   the scatter as `params:`); re-run `lab` to confirm.
 2. Bridge level: crush a prototype (or a sub-assembly), log load against mid-span
    deflection (`midspan_deflection_mm`) or the jack stroke (`jack_travel_mm`) in
    `crush_test_template.csv` (the whole record; mark the row of the failure with

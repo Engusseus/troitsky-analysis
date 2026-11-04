@@ -186,6 +186,26 @@ def parse_layup(name: str) -> Layup | None:
     return None
 
 
+_OV_LAYUP = re.compile(
+    r"^\s*(?P<n>\d+)\s*-?\s*ply\s+(?P<o>ud|unidirectional|0\s*[-/]\s*90|"
+    r"(?:\+-|±|\+/-)\s*45)(?P<span>\s+along\s+the\s+span)?\s*$")
+_OV_SPECIAL = re.compile(r"^\s*(block|(round\s+)?toothpick|(waxed\s+)?floss)\s*$")
+
+
+def parse_override_layup(text: str) -> Layup | None:
+    """A layup written in an overrides file, in a strict form: 'N-ply UD', 'N-ply 0-90',
+    'N-ply +-45' (optionally followed by 'along the span'), 'block', 'toothpick' or
+    'floss'. Anything else (a typo, an unfilled '<...>' placeholder) is None: unlike a
+    body name, an override is never guessed at."""
+    t = str(text).strip().lower()
+    if _OV_SPECIAL.match(t):
+        return parse_layup(t)
+    m = _OV_LAYUP.match(t)
+    if not m or int(m.group("n")) < 1:
+        return None
+    return parse_layup(t)
+
+
 @dataclass
 class LaminateProps:
     """Membrane (A, per unit width) and bending (D) stiffness of a laminate of total
