@@ -18,6 +18,15 @@ SolidWorks needed), a Parasolid `.x_b`, or an STL with all bodies in one file.
 6. compare   -> after a real crush test: reality-gap score and what to measure next
 ```
 
+Every `inspect` and `crush` report ends with **`next_steps`**: this loop worked out for
+the report in hand, most useful first. Each step has an `action` (`fix_cad`,
+`ask_designer`, `crush`, `rerun`, `strengthen`, `confirm`, `measure`, `predict`,
+`compare`), `why` in plain words, the `ids` of the questions concerned, the `parts` and
+`where_mm` to point the designer at, and the exact `cli` to run (the MCP tool of the
+same name otherwise). E.g. after a crush: `strengthen` the parts that broke at the peak
+(then `ab`), `confirm` a quick result at standard fidelity, `rerun` an untrustworthy one,
+`predict` with `montecarlo`. Placeholders in a `cli` are in `<angle brackets>`.
+
 ## Commands (all accept `--json`: one JSON document on stdout, nothing else)
 
 | Command | What it does | Time |
@@ -33,12 +42,16 @@ SolidWorks needed), a Parasolid `.x_b`, or an STL with all bodies in one file.
 | `bridgesim schema inspect\|crush\|reality_gap\|lab\|montecarlo\|design_comparison\|sensitivity\|question` | JSON Schema of each report | instant |
 | `bridgesim mcp` | The same as MCP tools (`uv sync --extra mcp`) | - |
 
-Fidelity: `quick` (coarser mesh, jack 200 mm/s, ~1-2 min) to screen design changes,
-`standard` (100 mm/s, ~4-6 min) for the answer, `fine` (finer mesh, 50 mm/s, ~10 min) to
-check that the answer has converged. On Bridge_v6 (seed 0): quick 2329, standard 2035,
-fine 1940 kgf, standard and fine failing at the same joint; so quick can be ~15 % off and
-is only for ranking, and the standard F_u is within ~5 % of the converged one. Rank designs
-with one fidelity and one seed (or `ab`); never compare F_u across fidelities.
+Fidelity: `quick` (coarser mesh, jack 200 mm/s, ~3 min for a 100-body bridge on 4 cores)
+to screen design changes, `standard` (100 mm/s, ~5-8 min) for the answer, `fine` (finer
+mesh, 50 mm/s, ~15 min) to check that the answer has converged. Mesh convergence on
+Bridge_v6 (all at 100 mm/s, seeds 0-2, `validation/README.md` §3.4): mean F_u quick 2199,
+standard 2096, fine 2128 kgf, so on average standard is within 2 % of the fine mesh and
+quick 3 % high. But one seed's F_u moved by up to 14 % between meshes: three failure sites
+(the deck stringers under the plate, the end-post joint, the hub tie strap) compete within
+~15 % of each other, and the mesh can decide which goes first. So rank designs with one
+fidelity and the same seeds (`ab`, n >= 3), give F_u as the `montecarlo` range, and never
+compare F_u across fidelities.
 
 ### Orientation and units
 
@@ -100,11 +113,11 @@ too) reports them: a finished job is `done` with its report, a job whose process
 
 ## Speed and determinism
 
-`inspect` takes seconds. A crush of a 100-body bridge takes roughly 5-20 minutes at
-`standard` fidelity on a laptop with numba (`uv sync --extra sim`), a few minutes at
+`inspect` takes seconds. A crush of a 100-body bridge takes roughly 5-10 minutes at
+`standard` fidelity on 4 cores with numba (`uv sync --extra sim`), about 3 minutes at
 `quick`; a small bridge takes under a minute. Results are deterministic for a given
-`--seed`, which sets the imperfections (member bow), the material scatter and the plate
-placement. Each random value is drawn from a stream named after its body or joint, so
+`--seed`, which sets the imperfections (member bow, support corners out of level), the
+material scatter and the plate placement. Each random value is drawn from a stream named after its body or joint, so
 editing one part of the CAD does not reshuffle the imperfections of the others: two
 designs crushed with the same seed differ only by the design change. `--seed -1` gives
 the perfect, centred bridge. Use `montecarlo` for the spread, and `ab` to decide between

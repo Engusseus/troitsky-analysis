@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import math
 import sys
 from pathlib import Path
@@ -21,8 +22,32 @@ from bridgesim.schema import Bridge, Material
 from bridgesim.textsafe import csv_row, friendly_error, printable
 from bridgesim.units import n_to_kgf
 
-app = typer.Typer(help="Troitsky popsicle-stick bridge analysis (bridgesim).",
-                  no_args_is_help=True, add_completion=False)
+
+class _App(typer.Typer):
+    """With --json, a usage error (unknown option, missing argument) is also one JSON
+    object on stderr and exit code 2, like every other bad input."""
+
+    def __call__(self, *args, **kwargs):
+        if args or kwargs or "--json" not in sys.argv[1:]:
+            return super().__call__(*args, **kwargs)
+        try:  # typer >= 0.20 carries its own click
+            from typer._click import exceptions as cx
+        except ImportError:  # pragma: no cover
+            from click import exceptions as cx
+        try:
+            rv = super().__call__(standalone_mode=False)
+        except cx.UsageError as exc:
+            if type(exc).__name__ == "NoArgsIsHelpError":
+                exc.show()
+                sys.exit(2)
+            sys.stderr.write(json.dumps({"error": exc.format_message(), "kind": "bad_input",
+                                         "exit_code": 2, "type": "UsageError"}) + "\n")
+            sys.exit(2)
+        sys.exit(rv if isinstance(rv, int) else 0)
+
+
+app = _App(help="Troitsky popsicle-stick bridge analysis (bridgesim).",
+           no_args_is_help=True, add_completion=False)
 
 MaterialOpt = Annotated[
     str | None, typer.Option("--material", "-m", help="Material YAML path or bundled name")
@@ -309,6 +334,16 @@ def _print_questions(qs) -> None:
         typer.echo(f"      assumed: {q.assumed}")
 
 
+def _print_next(steps) -> None:
+    if not steps:
+        return
+    typer.echo("\nNext steps:")
+    for k, st in enumerate(steps, 1):
+        typer.echo(f"  {k}. {st.action}: {st.why}")
+        if st.cli:
+            typer.echo(f"       {st.cli}")
+
+
 @app.command()
 def inspect(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = None,
             rules: RulesOpt = "troitsky_2027", sim_params: SimOpt = None,
@@ -349,6 +384,7 @@ def inspect(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt =
     for w in rep.warnings:
         typer.secho(f"  warning: {w}", fg=typer.colors.YELLOW)
     _print_questions(rep.questions)
+    _print_next(rep.next_steps)
 
 
 @app.command()
@@ -415,6 +451,7 @@ def crush(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = N
     for k, v in rep.artifacts.items():
         typer.echo(f"  {k}: {v}")
     _print_questions(rep.questions)
+    _print_next(rep.next_steps)
 
 
 @app.command()
@@ -490,7 +527,8 @@ def calibrate(data: Annotated[Path, typer.Argument(help="Folder with your test C
 
 
 @app.command()
-def montecarlo(cad: CadArg, n: Annotated[int, typer.Option(help="Number of runs")] = 8,
+def montecarlo(cad: CadArg, n: Annotated[int, typer.Option("--n", "-n",
+                                                            help="Number of runs")] = 8,
                overrides: OverridesOpt = None, material: MaterialOpt = None,
                fidelity: Annotated[str, typer.Option(help="quick, standard, fine")]
                = "standard",
@@ -588,16 +626,18 @@ def sensitivity(cad: CadArg, overrides: OverridesOpt = None, material: MaterialO
 @app.command()
 def schema(name: Annotated[str, typer.Argument(help="inspect, crush, reality_gap, lab, "
                                                      "montecarlo, design_comparison, "
-                                                     "sensitivity or question")]) -> None:
+                                                     "sensitivity or question")],
+           json_out: Annotated[bool, typer.Option("--json", help="Errors as JSON too (the "
+                                                  "schema is always JSON)")] = False) -> None:
     """Print the JSON Schema of a report (for scripts and AI agents)."""
-    import json as _json
-
     from bridgesim.sim.report import SCHEMAS
 
-    if name not in SCHEMAS:
-        _fail("schema name", ValueError(f"unknown schema {name!r}; use one of "
-                                        f"{', '.join(SCHEMAS)}"))
-    typer.echo(_json.dumps(SCHEMAS[name].model_json_schema(), indent=2))
+    def body():
+        if name not in SCHEMAS:
+            raise ValueError(f"unknown schema {name!r}; use one of {', '.join(SCHEMAS)}")
+        typer.echo(json.dumps(SCHEMAS[name].model_json_schema(), indent=2))
+
+    _guard(json_out, body)
 
 
 @app.command()

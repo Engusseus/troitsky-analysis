@@ -330,6 +330,67 @@ def synthetic_crush(tmp_path_factory):
     return d, rep, res
 
 
+def _parse_cli(argv: list[str]) -> None:
+    """Parse a bridgesim command line exactly as the CLI would, without running it: an
+    unknown option or a missing argument raises the CLI's usage error."""
+    import typer
+
+    from bridgesim.cli import app
+
+    group = typer.main.get_command(app)
+    ctx = group.make_context("bridgesim", list(argv), resilient_parsing=False)
+    sub = group.get_command(ctx, argv[0])
+    assert sub is not None, argv[0]
+    sub.make_context(argv[0], list(argv[1:]))
+
+
+def test_next_steps_and_job_commands_parse(synthetic_crush, tmp_path):
+    """The commands the reports suggest (next_steps) and the ones the MCP server starts in
+    the background are valid command lines of this CLI (a wrong option would only show
+    when an agent ran them)."""
+    import asyncio
+    import shlex
+
+    from bridgesim.sim import mcp_server as M
+    from bridgesim.sim import study
+
+    d, rep, _ = synthetic_crush
+    cad = str(d / "bridge.stl")
+    ins = study.inspect(cad)
+    steps = ins.next_steps + rep.next_steps
+    assert {s.action for s in rep.next_steps} >= {"strengthen", "predict", "compare"}
+    assert [s.action for s in ins.next_steps].count("crush") == 1
+    for s in steps:
+        if s.cli:
+            argv = shlex.split(s.cli.replace("<changed design>", cad))
+            assert argv[0] == "bridgesim"
+            _parse_cli(argv[1:])
+    strengthen = next(s for s in rep.next_steps if s.action == "strengthen")
+    assert strengthen.why and (not strengthen.parts or strengthen.where_mm)
+
+    pytest.importorskip("mcp")
+    cmds = []
+    real = M._start
+    M._start = lambda cmd, out: cmds.append(cmd) or "{}"
+    try:
+        srv = M.build_server()
+        for tool, args in (
+                ("start_crush", {"rate_check": True, "strict": True}),
+                ("start_montecarlo", {"n": 2}),
+                ("start_sensitivity", {"rel": 0.1}),
+                ("start_compare_designs", {"cad_a": cad, "cad_b": cad, "n": 2})):
+            a = {"out_dir": str(tmp_path / tool), "overrides_yaml": "params: {}\n", **args}
+            if "cad_a" not in a:
+                a["cad_path"] = cad
+            asyncio.run(srv.call_tool(tool, a))
+    finally:
+        M._start = real
+    assert len(cmds) == 4
+    for cmd in cmds:
+        assert cmd[1:3] == ["-m", "bridgesim.cli"]
+        _parse_cli(cmd[3:])
+
+
 def test_synthetic_bridge_crush(synthetic_crush):
     d, rep, res = synthetic_crush
     # two 6.2 x 19 stringers + a 4.1 mm deck over 1 m: tens of kgf, not hundreds
@@ -783,6 +844,14 @@ def test_agent_docs_match_the_code():
     doc_schema = src_mcp[j: src_mcp.index("if name not in SCHEMAS", j)]
     for name in SCHEMAS:
         assert name in doc_schema, name
+    # every command line in the AGENTS.md table parses, with and without its options
+    rows = re.findall(r"^\| `(bridgesim [^`]+)`", doc, flags=re.M)
+    assert len(rows) >= 9
+    for row in rows:
+        cmd = row.replace("\\|", "|")
+        for variant in (re.sub(r"\[([^\[\]]*)\]", r"\1", cmd), re.sub(r"\[[^\[\]]*\]", "", cmd)):
+            argv = [{"N": "0"}.get(t, t).split("|")[0] for t in variant.split()]
+            _parse_cli(argv[1:])
 
 
 def test_questions_can_be_acknowledged(tmp_path):

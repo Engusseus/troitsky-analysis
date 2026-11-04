@@ -21,6 +21,7 @@ import fnmatch
 import hashlib
 import json
 import math
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,7 @@ from bridgesim.sim.report import (
     JointReport,
     LabReport,
     MonteCarloReport,
+    NextStep,
     Quality,
     Question,
     RealityGap,
@@ -315,7 +317,7 @@ def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
     rules = _rules(bodies, mat, rs, model)
     qs, acked = _open_questions([Question(**q) for q in model.questions]
                                 + design_questions(bodies, model, mat, sp, rules), ov, model)
-    return InspectReport(
+    rep = InspectReport(
         file=path.name, sha256=_sha(path), n_bodies=len(bodies),
         mass_kg=round(rules.measurements.get("mass_kg", model.bridge_mass_kg), 3),
         bodies=_body_reports(model), joints=_joint_reports(model, mat),
@@ -335,6 +337,8 @@ def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
                "platform_contact_points": int(len(model.p_att)),
                "plate_contact_points": int(len(model.q_att))},
         warnings=list(model.notes))
+    rep.next_steps = _next_inspect(rep, path, bool(ov_raw))
+    return rep
 
 
 def _build(bodies, mat, sp, ov, seed, mesh_scale, strict):
@@ -459,6 +463,7 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         assumed_parameters=_assumed(mat, sp),
         fidelity=fidelity, Fu_first_joint_failure_kgf=_first_joint(res),
         warnings=list(model.notes))
+    rep.next_steps = _next_crush(rep, path, bool(ov_raw), out_dir)
     if out_dir:
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
@@ -546,6 +551,124 @@ def _compact_events(events) -> list[EventOut]:
         if n > 1:
             o.detail = (o.detail + f" (+{n - 1} more)").strip()
     return out
+
+
+def _ask_steps(qs: list[Question]) -> list[NextStep]:
+    out = []
+    for sev, what in (("important", "the answers change the model or the result"),
+                      ("check", "worth confirming with the designer")):
+        sel = [q for q in qs if q.severity == sev and not q.id.startswith("rule:")
+               and q.id != "material:measure"]
+        if sel:
+            out.append(NextStep(
+                action="ask_designer", ids=[q.id for q in sel],
+                why=f"{len(sel)} {sev} question(s) open ({what}): answer them in the "
+                    "overrides (answer_with), or acknowledge the ones that are as drawn"))
+    return out
+
+
+def _rule_step(rules: RulesSummary, qs: list[Question]) -> list[NextStep]:
+    bad = [ln for ln in rules.lines if ln.passed is False or ln.bans]
+    if not bad:
+        return []
+    def say(ln: RuleLine) -> str:
+        out = f"§{ln.section} {ln.title} fails: {ln.measured}"
+        if ln.bans:
+            out += f" (bans: {', '.join(ln.bans)})"
+        elif ln.penalty:
+            out += f" (penalty {ln.penalty:g})"
+        return out + (f"; {ln.cause}" if ln.cause else "")
+
+    return [NextStep(action="fix_cad", ids=[q.id for q in qs if q.id.startswith("rule:")],
+                     why="; ".join(say(ln) for ln in bad))]
+
+
+def _measure_step(assumed: list[str], f: str, ov: str) -> list[NextStep]:
+    if not assumed:
+        return []
+    return [NextStep(action="measure",
+                     why=f"{len(assumed)} material values are placeholders, so the absolute "
+                         "F_u is uncertain (design comparisons much less so): sensitivity "
+                         "ranks what to measure first; then coupon tests, lab and "
+                         "calibrate", cli=f"bridgesim sensitivity {f}{ov} --json")]
+
+
+def _next_inspect(rep: InspectReport, path: Path, has_ov: bool) -> list[NextStep]:
+    f, ov = shlex.quote(str(path)), " -o overrides.yaml" if has_ov else ""
+    steps = _rule_step(rep.rules, rep.questions) + _ask_steps(rep.questions)
+    steps.append(NextStep(action="crush", why="simulate the §12.5 crushing test (standard "
+                          "fidelity, ~5 min; --fidelity quick ~2 min to screen variants)",
+                          cli=f"bridgesim crush {f}{ov} --out results --json --brief"))
+    return steps + _measure_step(rep.assumed_parameters, f, ov)
+
+
+def _next_crush(rep: CrushReport, path: Path, has_ov: bool, out_dir) -> list[NextStep]:
+    f, ov = shlex.quote(str(path)), " -o overrides.yaml" if has_ov else ""
+    out = shlex.quote(str(out_dir)) if out_dir else "results"
+    steps: list[NextStep] = []
+    q = rep.quality
+    if not q.trustworthy:
+        steps.append(NextStep(
+            action="rerun", why="not trustworthy: " + "; ".join(q.reasons),
+            cli=f"bridgesim crush {f}{ov} --fidelity {rep.fidelity} --rate-check "
+                f"--out {out}_check --json --brief"))
+    broke = [e for e in rep.failures if e.kind != "joint_cracking"]
+    gov = [e for e in broke if e.load_kgf >= 0.9 * rep.Fu_kgf][:3] or broke[:3]
+    if rep.failure_mode == "instability":
+        steps.append(NextStep(action="strengthen", why="the bridge collapses under its own "
+                              "weight: " + rep.failure_detail,
+                              parts=sorted({p for e in broke[:3] for p in e.parts})))
+    elif not gov and rep.failure_mode in ("collapse", "deflection", "contact"):
+        what = {"collapse": "no part broke: " + rep.failure_detail + ". Brace the members "
+                            "in compression and against sway (the replay shows which one "
+                            "buckled)",
+                "deflection": f"it deflected more than 50 mm (§12.5) at {rep.Fu_kgf:.0f} kgf "
+                              "without breaking: make it stiffer (a deeper truss, stiffer "
+                              "chords)",
+                "contact": "it touched the platform (§12.5) before anything broke: "
+                           + rep.failure_detail}[rep.failure_mode]
+        steps.append(NextStep(action="strengthen", why=what + "; then check the change "
+                              "against this design with ab (same seeds)",
+                              cli=f"bridgesim ab {f} <changed design> -n 3 --json"))
+    elif gov:
+        parts: list[str] = []
+        for e in gov:
+            parts += [p for p in (e.parts or [e.what]) if p not in parts]
+        steps.append(NextStep(
+            action="strengthen", parts=parts,
+            where_mm=[e.where_mm for e in gov if e.where_mm],
+            why="; ".join(f"{e.what}: {e.kind.replace('_', ' ')} at {e.load_kgf:.0f} kgf "
+                          f"({e.load_kgf / max(rep.Fu_kgf, 1e-9):.0%} of F_u)" for e in gov)
+            + ". The bridge failed there: strengthen it (glued area, a gusset, a deeper "
+              "member), then check the change against this design with ab (same seeds)",
+            cli=f"bridgesim ab {f} <changed design> -n 3 --json"))
+        close = {e.what for e in gov if e.load_kgf <= 1.03 * gov[0].load_kgf}
+        if rep.fidelity == "quick":
+            steps.append(NextStep(
+                action="confirm", why="quick fidelity is for ranking designs: one seed's F_u "
+                "can be ~15 % off and the governing failure can differ at standard",
+                cli=f"bridgesim crush {f}{ov} --fidelity standard --out {out}_standard "
+                    "--json --brief"))
+        elif rep.fidelity == "standard" and len(close) > 1:
+            steps.append(NextStep(
+                action="confirm", parts=sorted(close),
+                why="several parts fail within 3 % of each other: which goes first can "
+                    "change with the mesh; check with the fine mesh before redesigning",
+                cli=f"bridgesim crush {f}{ov} --fidelity fine --out {out}_fine "
+                    "--json --brief"))
+    steps += _rule_step(rep.rules, rep.questions) + _ask_steps(rep.questions)
+    steps += _measure_step(rep.assumed_parameters, f, ov)
+    if rep.Fu_kgf > 0:
+        steps.append(NextStep(
+            action="predict", why="one seed is one possible build: the spread over "
+                                  "imperfections and scatter gives recommended_prediction_kgf "
+                                  "for the Load Prediction Form",
+            cli=f"bridgesim montecarlo {f}{ov} -n 8 --json"))
+    steps.append(NextStep(
+        action="compare", why="after a real crush test (a prototype or the competition): "
+                              "the reality gap and what to measure next",
+        cli=f"bridgesim compare {out}/crush.json my_test.csv --json"))
+    return steps
 
 
 def inspect_brief(rep: InspectReport) -> dict:

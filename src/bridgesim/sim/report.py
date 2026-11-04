@@ -80,6 +80,24 @@ class RulesSummary(BaseModel):
     measurements: dict[str, float]
 
 
+class NextStep(BaseModel):
+    """One thing to do next, most useful first: the loop an agent drives."""
+    action: Literal["ask_designer", "fix_cad", "crush", "rerun", "strengthen", "confirm",
+                    "measure", "predict", "compare"] = Field(description=(
+        "ask_designer: put the open questions to the designer; fix_cad: change the "
+        "SolidWorks model (a failing rule); crush: run the crushing test; rerun: the "
+        "result is not trustworthy, run it again as `cli` says; strengthen: the parts "
+        "that broke at the peak, then check the change with `ab`; confirm: check the "
+        "answer at a finer fidelity; measure: test sticks and glue (placeholders); "
+        "predict: the value for the Load Prediction Form; compare: after a real test"))
+    why: str
+    parts: list[str] = Field([], description="Body or joint names concerned (as inspect "
+                                             "lists them)")
+    where_mm: list[list[float]] = Field([], description="Where those parts are (x, y, z)")
+    ids: list[str] = Field([], description="Question ids concerned")
+    cli: str | None = Field(None, description="The command to run (MCP: the matching tool)")
+
+
 class InspectReport(BaseModel):
     schema_version: str = SCHEMA_VERSION
     kind: Literal["inspect"] = "inspect"
@@ -98,6 +116,7 @@ class InspectReport(BaseModel):
         description="Material/simulation values still marked 'assumed' (not measured).")
     model: dict[str, Any] = Field(description="Size of the structural model.")
     warnings: list[str] = []
+    next_steps: list[NextStep] = Field([], description="What to do next, most useful first")
 
 
 EventKind = Literal["member_fracture", "member_shear", "plate_crack", "glue_damage",
@@ -223,6 +242,7 @@ class CrushReport(BaseModel):
         [], description="Question ids the overrides acknowledged (acknowledge:), not asked")
     assumed_parameters: list[str]
     fidelity: str = Field("standard", description="quick (screening), standard or fine")
+    next_steps: list[NextStep] = Field([], description="What to do next, most useful first")
     artifacts: dict[str, str] = {}
 
 

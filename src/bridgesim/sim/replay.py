@@ -275,7 +275,7 @@ function drawChart(f){const w=cv.clientWidth,h=cv.clientHeight;cv.width=w*device
  const tr=D.curve.travel,fo=D.curve.force,xm=Math.max(...tr,1),ym=Math.max(...fo,1)*1.1,l=44,b=26;cx.clearRect(0,0,w,h);const css=getComputedStyle(document.body);
  cx.strokeStyle=css.getPropertyValue('--line');cx.fillStyle=css.getPropertyValue('--muted');cx.font='11px system-ui';
  for(let i=0;i<=4;i++){const y=h-b-(h-b-10)*i/4;cx.beginPath();cx.moveTo(l,y);cx.lineTo(w-8,y);cx.stroke();cx.fillText((ym*i/4).toFixed(0),4,y+4);}
- cx.fillText('jack travel (mm) →',l,h-6);cx.fillText('kgf',4,10);
+ cx.fillText('jack travel (mm) →',l,h-6);cx.fillText('load (kgf)',l+4,12);
  cx.strokeStyle=css.getPropertyValue('--fg');cx.lineWidth=1.5;cx.beginPath();tr.forEach((t,i)=>{const x=l+(w-l-8)*t/xm,y=h-b-(h-b-10)*fo[i]/ym;i?cx.lineTo(x,y):cx.moveTo(x,y)});cx.stroke();
  const x=l+(w-l-8)*D.travel[f]/xm;cx.strokeStyle=css.getPropertyValue('--accent');cx.beginPath();cx.moveTo(x,10);cx.lineTo(x,h-b);cx.stroke();}
 // events

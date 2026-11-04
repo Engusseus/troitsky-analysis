@@ -135,8 +135,9 @@ counted in the warnings. An element is removed only when every ply is torn wide 
 
 **Scatter** (seeded, `--seed`; `--seed -1` for a perfect bridge): per body, E (CoV 12 %)
 and strength (CoV 18 %); per joint, glue strength (CoV 30 %); per bar, an initial bow of
-L/400 on average (0.3-1.7 of that) in a random direction. Monte Carlo over seeds gives
-the spread of F_u.
+L/400 on average (0.3-1.7 of that) in a random direction; per bridge, the plate placed up
+to 3 mm off-centre and the support corners up to 0.5 mm out of level. Monte Carlo over
+seeds gives the spread of F_u.
 
 ## 5. The test
 
@@ -221,12 +222,17 @@ the spread of F_u.
   design fail at different loads. So give F_u as the range from `montecarlo`, compare
   designs with `ab` (paired seeds), and read `failure_sequence` to see which modes
   compete.
+* **Mesh convergence** (`validation/convergence_study.py`; Bridge_v6 in
+  `validation/README.md` §3.4): over seeds 0-2 the mean F_u of the standard mesh is
+  within 2 % of the fine mesh (quick: 3 % high), but one seed's F_u moved up to 14 %
+  between meshes, because three failure sites of that design compete within ~15 %.
 * Time is compressed: the simulated jack moves at ~100 mm/s instead of the real
   mm/min. The material laws have no rate effect, so this changes nothing as long as the
   run stays quasi-static; the replay converts back to real test time.
 * **Verified** (the equations are solved right) in `tests/test_sim.py`: cantilever
   (0.04 % vs PL^3/3EI), large-deflection elastica (Bisshopp-Drucker, < 1 %), Euler
-  buckling of a stick, 3-point bending stiffness (0.03 %; the lab coupon starts slowly so
+  buckling of a stick, a deep beam with shear deformation (Timoshenko, < 1 % on 4 or 16
+  elements), 3-point bending stiffness (0.03 %; the lab coupon starts slowly so
   its stiffness is quasi-static), a stick's bending strength = f_b, lap-joint strength,
   energy conservation (kinetic + strain energy constant to 0.5 % in free vibration of a
   bridge with beams, shells and glue), DKT patch test, layered shell = exact laminate
