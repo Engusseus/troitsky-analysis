@@ -108,8 +108,8 @@ inside it; no SolidWorks licence needed). Every solid body is rebuilt with its n
 body becomes what an engineer would model it as: a **member** (corotational
 shear-flexible beam with a fibre section that cracks in tension and crushes in
 compression; tapered members follow their profile), a **plate** (shell
-elements meshed on its real outline, holes included, that crack ply by ply with
-mesh-independent fracture energy), a **rigid block**, or **floss** (a tension-only cable
+elements meshed on its real outline, holes included, that bend in and out of their plane
+and crack ply by ply with mesh-independent fracture energy), a **rigid block**, or **floss** (a tension-only cable
 that snaps). The layup comes from the body name: `10-ply UD`, `2-ply 0-90`, `4-ply +-45`,
 `block`, `round toothpick`, `waxed floss`. Laminates use classical lamination theory;
 members longer than one stick lose tension strength at their butt joints. Every place

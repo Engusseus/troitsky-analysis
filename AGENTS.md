@@ -165,7 +165,7 @@ meanwhile, and `answer_with`: how to answer, as an overrides fragment (`bodies`,
   twentieth of the body's surface): a spline, cone or freeform surface flattened, or a
   face that could not be decoded closed over;
 * plates made of narrow arms (`narrow_plates`: an X, a frame), with about one shell
-  element across an arm: their arms are too stiff in in-plane bending; if the part is
+  element across an arm: their arms are ~1.5x too stiff in in-plane bending; if the part is
   really members, draw each as its own body (it becomes a bar);
 * a member whose glued area is much weaker than the member (`weak_joint:`) - a missing
   gusset?

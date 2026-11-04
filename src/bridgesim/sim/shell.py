@@ -1,14 +1,20 @@
-"""Flat triangular shell element: constant-strain membrane + DKT plate bending.
+"""Flat triangular shell element: Allman membrane (drilling rotations) + DKT bending.
 
 Local stiffness (18 x 18) of a triangle in its own plane, with 6 degrees of freedom per
 node in the element axes (u, v, w, rx, ry, rz):
 
-* membrane: constant-strain triangle (CST) with the laminate's in-plane stiffness A
-  (N/mm, from classical lamination theory, so orthotropic sticks are handled);
+* membrane: Allman's triangle with drilling rotations (Allman, *Comput. Struct.* 19,
+  1984): the edges of a constant-strain triangle bend with the corners' in-plane
+  rotations rz, a quadratic displacement field and a linear strain field, so a plate
+  bends in its own plane (a gusset, the arm of a frame) without the shear locking of a
+  constant-strain triangle; with the laminate's in-plane stiffness A (N/mm, from
+  classical lamination theory, so orthotropic sticks are handled);
 * bending: Discrete Kirchhoff Triangle (Batoz, Bathe & Ho, *Int. J. Numer. Meth. Eng.*
   15, 1980), 3-point integration, with the laminate's bending stiffness D (N mm). Its
   rotations are theta_x = w,y = rx and theta_y = -w,x = ry;
-* drilling (rz): a small stiffness so a node shared with a beam is not a mechanism.
+* drilling: a small penalty ties each corner's rz to the element's rigid rotation
+  (Hughes & Brezzi 1989), which removes the one zero-energy mode of Allman's triangle
+  (all three corners turning alike).
 
 The explicit solver (:mod:`bridgesim.sim.solver`) uses this stiffness in a corotational
 frame that follows the element, so large rotations are exact while strains stay small.
@@ -19,8 +25,9 @@ from __future__ import annotations
 
 import numpy as np
 
-DRILL = 0.05  # drilling stiffness, as a fraction of E t A (keeps a node's in-plane rotation
-#              tied to its element once the glue around it has gone)
+DRILL = 0.002  # drilling penalty, as a fraction of E t A: small enough not to stiffen
+#               in-plane bending (Allman's rotations carry it), large enough to hold the
+#               zero-energy mode and a node whose glue has gone
 
 
 def cst_B(xy: np.ndarray) -> tuple[np.ndarray, float]:
@@ -97,12 +104,42 @@ IM = np.array([[6 * a + 0, 6 * a + 1] for a in range(3)]).ravel()  # membrane do
 IB = np.array([[6 * a + 2, 6 * a + 3, 6 * a + 4] for a in range(3)]).ravel()  # bending
 
 
-def operators(xy: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
-    """Membrane strain operator Bm (3 x 6, dofs u, v per node), DKT curvature operators
-    at the 3 integration points (3, 3, 9; dofs w, rx, ry per node) and the area."""
+def allman_Bt(xy: np.ndarray, L) -> np.ndarray:
+    """Membrane strains (ex, ey, gxy) from the corner in-plane rotations rz (3 x 3) at
+    area coordinates ``L``: Allman's triangle is the 6-node quadratic triangle whose
+    mid-side displacements are the corners' mean plus, for the edge from i to j,
+    (y_j - y_i, x_i - x_j) (rz_j - rz_i) / 8. The corners' mean gives the constant-strain
+    part (``cst_B``); this is the rest."""
+    _, area = cst_B(xy)
+    (x1, y1), (x2, y2), (x3, y3) = xy
+    dLx = np.array([y2 - y3, y3 - y1, y1 - y2]) / (2 * area)
+    dLy = np.array([x3 - x2, x1 - x3, x2 - x1]) / (2 * area)
+    Bt = np.zeros((3, 3))
+    for i, j in ((0, 1), (1, 2), (2, 0)):
+        nx = 4 * (L[i] * dLx[j] + L[j] * dLx[i])  # gradient of the mid-side function
+        ny = 4 * (L[i] * dLy[j] + L[j] * dLy[i])  # 4 L_i L_j
+        cu = (xy[j][1] - xy[i][1]) / 8
+        cv = (xy[i][0] - xy[j][0]) / 8
+        for k, sgn in ((j, 1.0), (i, -1.0)):
+            Bt[0, k] += sgn * nx * cu
+            Bt[1, k] += sgn * ny * cv
+            Bt[2, k] += sgn * (ny * cu + nx * cv)
+    return Bt
+
+
+def _area_coords(s: float, e: float) -> tuple[float, float, float]:
+    return (1.0 - s - e, s, e)
+
+
+def operators(xy: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """Membrane strain operators: the constant part Bm (3 x 6, dofs u, v per node) and
+    the part from the drilling rotations at the 3 integration points Bt (3, 3, 3; dof rz
+    per node); DKT curvature operators at the same points (3, 3, 9; dofs w, rx, ry per
+    node); the area."""
     Bm, area = cst_B(xy)
     Bb = np.stack([dkt_B(xy, s, e)[0] for s, e in _GP])
-    return Bm, Bb, area
+    Bt = np.stack([allman_Bt(xy, _area_coords(s, e)) for s, e in _GP])
+    return Bm, Bb, Bt, area
 
 
 def drill_stiffness(E_t: float, area: float) -> float:
@@ -114,19 +151,20 @@ def local_stiffness(xy: np.ndarray, A: np.ndarray, D: np.ndarray, E_t: float,
     """18 x 18 stiffness in element axes, dofs per node (u, v, w, rx, ry, rz). ``B`` is
     the laminate's membrane-bending coupling (zero for symmetric layups)."""
     K = np.zeros((18, 18))
-    Bm, Bbs, area = operators(xy)
-    K[np.ix_(IM, IM)] += area * Bm.T @ A @ Bm
+    Bm, Bbs, Bts, area = operators(xy)
+    idr = np.array([5, 11, 17])
+    imr = np.r_[IM, idr]  # membrane dofs: u, v of the 3 nodes, then their rz
     Kb = np.zeros((9, 9))
-    Kmb = np.zeros((6, 9))
-    for Bb in Bbs:
+    for Bb, Bt in zip(Bbs, Bts, strict=True):
+        Bf = np.hstack([Bm, Bt])  # membrane strains at this point from (u, v, rz)
+        K[np.ix_(imr, imr)] += area / 3 * Bf.T @ A @ Bf
         Kb += area / 3 * Bb.T @ D @ Bb
         if B is not None:
-            Kmb += area / 3 * Bm.T @ B @ Bb
+            Kmb = area / 3 * Bf.T @ B @ Bb
+            K[np.ix_(imr, IB)] += Kmb
+            K[np.ix_(IB, imr)] += Kmb.T
     K[np.ix_(IB, IB)] += Kb
-    K[np.ix_(IM, IB)] += Kmb
-    K[np.ix_(IB, IM)] += Kmb.T
     kd = drill_stiffness(E_t, area)
-    idr = np.array([5, 11, 17])
     # drilling: each node's in-plane rotation is tied to the element's in-plane rigid
     # rotation omega = (v,x - u,y) / 2 (Hughes & Brezzi 1989), energy
     # kd/2 sum_a (theta_a - omega)^2, so no rotation about the normal is free
@@ -157,6 +195,7 @@ def recovery(xy: np.ndarray) -> np.ndarray:
     im = np.array([[6 * a + 0, 6 * a + 1] for a in range(3)]).ravel()
     ib = np.array([[6 * a + 2, 6 * a + 3, 6 * a + 4] for a in range(3)]).ravel()
     R[:3, im] = Bm
+    R[:3, [5, 11, 17]] = allman_Bt(xy, (1 / 3, 1 / 3, 1 / 3))
     R[3:, ib] = Bb
     return R
 
@@ -189,7 +228,7 @@ def element_data(xy: np.ndarray, angles: list[float], t: float, ply, Ef: float, 
 
     lam = laminate(ply, angles, t)
     K = local_stiffness(xy, lam.A * Ef, lam.D * Ef, E_t_drill, lam.B * Ef)
-    Bm, Bb, area = operators(xy)
+    Bm, Bb, Bt, area = operators(xy)
     lay = [(zb, zt, np.cos(np.radians(th)), np.sin(np.radians(th)))
            for zb, zt, th in ply_layers(angles, t)]
     Q = ply.Q() * Ef
@@ -200,7 +239,7 @@ def element_data(xy: np.ndarray, angles: list[float], t: float, ply, Ef: float, 
     e0 = lim[[0, 2, 4]]
     rf_raw = 2.0 * np.asarray(G, float) / (Em * e0**2 * lc)
     rf = np.maximum(rf_raw, 1.05)  # element too large for the fracture energy: snap-back
-    return {"K": K, "Bm": Bm, "Bb": Bb, "area": area,
+    return {"K": K, "Bm": Bm, "Bb": Bb, "Bt": Bt, "area": area,
             "kd": drill_stiffness(E_t_drill, area), "lay": lay,
             "Q": np.array([Q[0, 0], Q[1, 1], Q[0, 1], Q[2, 2]]), "lim": lim, "rf": rf,
             "lc": lc, "snapback": bool((rf_raw < 1.05).any()),
@@ -221,14 +260,16 @@ def pack(elems: list[dict]) -> dict[str, np.ndarray]:
         return np.array([e[key] for e in elems], float).reshape(shape)
 
     return {"s_K": st("K", (ns, 18, 18)), "s_Bm": st("Bm", (ns, 3, 6)),
-            "s_Bb": st("Bb", (ns, 3, 3, 9)), "s_area": st("area", (ns,)),
+            "s_Bb": st("Bb", (ns, 3, 3, 9)), "s_Bt": st("Bt", (ns, 3, 3, 3)),
+            "s_area": st("area", (ns,)),
             "s_kd": st("kd", (ns,)), "s_lay": lay,
             "s_nl": np.array([len(e["lay"]) for e in elems], np.int64),
             "s_Q": st("Q", (ns, 4)), "s_lim": st("lim", (ns, 5)), "s_rf": st("rf", (ns, 3)),
             "s_lc": st("lc", (ns,))}
 
 
-EMPTY = {"s_K": (0, 18, 18), "s_Bm": (0, 3, 6), "s_Bb": (0, 3, 3, 9), "s_area": (0,),
+EMPTY = {"s_K": (0, 18, 18), "s_Bm": (0, 3, 6), "s_Bb": (0, 3, 3, 9), "s_Bt": (0, 3, 3, 3),
+         "s_area": (0,),
          "s_kd": (0,), "s_lay": (0, 1, 4), "s_Q": (0, 4), "s_lim": (0, 5), "s_rf": (0, 3),
          "s_lc": (0,)}
 
