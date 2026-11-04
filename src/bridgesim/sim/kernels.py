@@ -52,8 +52,8 @@ def _log3(R, out):
 
 @njit(cache=True, fastmath=True, error_model="numpy")
 def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv3, Wt, nply,
-                s2, s3, soft, eps_p, dmg_t, alive, fractured, shear, F, Mo, update, beta, dt,
-                prev):
+                kGA, gam, s2, s3, soft, eps_p, dmg_t, alive, fractured, shear, F, Mo, update,
+                beta, dt, prev):
     nb = bi.shape[0]
     nf = fA.shape[1]
     Ti = np.empty((3, 3))
@@ -115,6 +115,27 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
         if eu < 1.5 * et0:
             eu = 1.5 * et0
         ec0 = fc[e] / E_
+        # Timoshenko shear flexibility: a constant shear strain gz (gy) takes part of the
+        # end rotations, so the fibres bend by th - g. phi = 12 EI / (k G A L^2); the
+        # elastic split phi/(2(1+phi)) (th_i + th_j) is exact (interdependent
+        # interpolation), gam[e] corrects it when the fibres are no longer elastic so the
+        # shear force k G A g stays equal to the bending shear (M_i + M_j) / L.
+        EIz = 0.0
+        EIy = 0.0
+        for f in range(nf):
+            EIz += E_ * fA[e, f] * fy[e, f] * fy[e, f] * s2[e] * s2[e]
+            EIy += E_ * fA[e, f] * fz[e, f] * fz[e, f] * s3[e] * s3[e]
+        phz = 0.0
+        phy = 0.0
+        if kGA[e] > 0.0:
+            phz = 12.0 * EIz / (kGA[e] * L * L)
+            phy = 12.0 * EIy / (kGA[e] * L * L)
+        gz = 0.5 * phz / (1.0 + phz) * (thi[2] + thj[2]) + gam[e, 0]
+        gy = 0.5 * phy / (1.0 + phy) * (thi[1] + thj[1]) + gam[e, 1]
+        bzi = thi[2] - gz
+        bzj = thj[2] - gz
+        byi = thi[1] - gy
+        byj = thj[1] - gy
         N = 0.0
         Mzi = 0.0
         Mzj = 0.0
@@ -122,10 +143,12 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
         Myj = 0.0
         Atot = 0.0
         cracked_max = 0.0
+        EIzt = 0.0  # tangent (secant in tension) bending stiffness of the fibres
+        EIyt = 0.0
         for g in range(2):
             xi = _GP0 if g == 0 else _GP1
-            kz = ((-4.0 + 6.0 * xi) * thi[2] + (-2.0 + 6.0 * xi) * thj[2]) / L
-            ky = ((-4.0 + 6.0 * xi) * thi[1] + (-2.0 + 6.0 * xi) * thj[1]) / L
+            kz = ((-4.0 + 6.0 * xi) * bzi + (-2.0 + 6.0 * xi) * bzj) / L
+            ky = ((-4.0 + 6.0 * xi) * byi + (-2.0 + 6.0 * xi) * byj) / L
             Ng = 0.0
             Mz = 0.0
             My = 0.0
@@ -153,13 +176,17 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
                 elif r < 0.0:
                     r = 0.0
                 fce = fc[e] * (1.0 - soft * r)
+                Et = E_ if ee <= 0.0 else (1.0 - dm) * E_
                 if sig < -fce:
                     ep = eps + fce / E_
                     sig = -fce
+                    Et = 0.0
                 if update:
                     dmg_t[e, g, f] = dm
                     eps_p[e, g, f] = ep
                 A = fA[e, f]
+                EIzt += 0.5 * Et * A * fy[e, f] * fy[e, f] * s2[e] * s2[e]
+                EIyt += 0.5 * Et * A * fz[e, f] * fz[e, f] * s3[e] * s3[e]
                 if dm > 0.99:
                     crk += A
                 if g == 0:
@@ -174,17 +201,19 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
             Mzj += 0.5 * Mz * (-2.0 + 6.0 * xi)
             Myi += 0.5 * My * (-4.0 + 6.0 * xi)
             Myj += 0.5 * My * (-2.0 + 6.0 * xi)
+        if update and kGA[e] > 0.0:
+            # one Newton step on the shear equilibrium, with the fibres' current tangent
+            # (k G A (1 + phi) while elastic)
+            gam[e, 0] += ((Mzi + Mzj) / L - kGA[e] * gz) / (kGA[e] + 12.0 * EIzt / (L * L))
+            gam[e, 1] += ((Myi + Myj) / L - kGA[e] * gy) / (kGA[e] + 12.0 * EIyt / (L * L))
         sj = (s2[e] * s3[e]) ** 2
         T = sj * GJ[e] / L * (thj[0] - thi[0])
         if beta > 0.0:
-            # material (stiffness-proportional) damping on the local deformation rates
+            # material (stiffness-proportional) damping on the local deformation rates,
+            # with the Timoshenko element's elastic stiffness
             EA = 0.0
-            EIz = 0.0
-            EIy = 0.0
             for f in range(nf):
                 EA += E_ * fA[e, f]
-                EIz += E_ * fA[e, f] * fy[e, f] * fy[e, f] * s2[e] * s2[e]
-                EIy += E_ * fA[e, f] * fz[e, f] * fz[e, f] * s3[e] * s3[e]
             r0 = (l - L - prev[e, 0]) / dt
             rxi = (thi[0] - prev[e, 1]) / dt
             ryi = (thi[1] - prev[e, 2]) / dt
@@ -194,10 +223,12 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
             rzj = (thj[2] - prev[e, 6]) / dt
             N += beta * EA / L * r0
             T += beta * sj * GJ[e] / L * (rxj - rxi)
-            Mzi += beta * EIz / L * (4.0 * rzi + 2.0 * rzj)
-            Mzj += beta * EIz / L * (2.0 * rzi + 4.0 * rzj)
-            Myi += beta * EIy / L * (4.0 * ryi + 2.0 * ryj)
-            Myj += beta * EIy / L * (2.0 * ryi + 4.0 * ryj)
+            cz = beta * EIz / (L * (1.0 + phz))
+            cy = beta * EIy / (L * (1.0 + phy))
+            Mzi += cz * ((4.0 + phz) * rzi + (2.0 - phz) * rzj)
+            Mzj += cz * ((2.0 - phz) * rzi + (4.0 + phz) * rzj)
+            Myi += cy * ((4.0 + phy) * ryi + (2.0 - phy) * ryj)
+            Myj += cy * ((2.0 - phy) * ryi + (4.0 + phy) * ryj)
         if update:
             prev[e, 0] = l - L
             prev[e, 1] = thi[0]
@@ -578,12 +609,13 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
             s2 += ds[k] * ds[k]
         s = math.sqrt(s2)
         kn = Kn[i]
-        # the wood under a glue line crushes across the grain at fc90 (permanent set)
+        # the wood at a glue line crushes (permanent set) at fc90[i]: across or along
+        # its grain depending on the joint (Hankinson)
         dn = dn - crush[i]
-        if kn * dn < -fc90:
+        if kn * dn < -fc90[i]:
             if update:
-                crush[i] += dn + fc90 / kn
-            dn = -fc90 / kn
+                crush[i] += dn + fc90[i] / kn
+            dn = -fc90[i] / kn
         dnp = dn if dn > 0.0 else 0.0
         ks = Ks[i]
         d = 0.0
@@ -688,8 +720,20 @@ def cable_kernel(x, R, a_node, a_r0, ka, kb, L0, EA, Fb, alive, F, Mo, update):
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
+def _seated(k, pen, seat):
+    """Normal force of a bearing face pressed ``pen`` into the steel: its stiffness grows
+    from 0 to k over the first ``seat`` mm (roughness, glue beads, fibres crushing at the
+    first touch), the soft start of a real load-deflection curve."""
+    if seat <= 0.0:
+        return k * pen
+    if pen < seat:
+        return 0.5 * k * pen * pen / seat
+    return k * (pen - 0.5 * seat)
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
 def platform_kernel(x, R, a_node, a_r0, att, table_y, kk_, mu, anchor, touch, F, Mo, update,
-                    vel, omg, cdamp, loose, fmax):
+                    vel, omg, cdamp, loose, fmax, lift, seat):
     p = np.empty(3)
     arm = np.empty(3)
     f = np.empty(3)
@@ -698,7 +742,7 @@ def platform_kernel(x, R, a_node, a_r0, att, table_y, kk_, mu, anchor, touch, F,
             touch[i] = False
             continue
         nd = _apos(x, R, a_node, a_r0, att[i], p, arm)
-        pen = table_y - p[1]
+        pen = table_y - p[1] - lift[i]
         if pen <= 0.0:
             if update:
                 touch[i] = False
@@ -708,7 +752,7 @@ def platform_kernel(x, R, a_node, a_r0, att, table_y, kk_, mu, anchor, touch, F,
         k = kk_[i]
         # contact damping on the approach speed (never pulls the point down)
         vy = vel[nd, 1] + omg[nd, 2] * arm[0] - omg[nd, 0] * arm[2]
-        fn = k * pen - cdamp[i] * vy
+        fn = _seated(k, pen, seat) - cdamp[i] * vy
         if fn > fmax[i]:
             fn = fmax[i]  # the wood crushes locally (bearing)
         if fn < 0.0:
@@ -734,7 +778,7 @@ def platform_kernel(x, R, a_node, a_r0, att, table_y, kk_, mu, anchor, touch, F,
 
 @njit(cache=True, fastmath=True, error_model="numpy")
 def plate_kernel(x, R, a_node, a_r0, att, P, h, kk_, mu, anchor, touch, F, Mo, update,
-                 vel, omg, cdamp, loose, fmax):
+                 vel, omg, cdamp, loose, fmax, seat):
     p = np.empty(3)
     arm = np.empty(3)
     loc = np.empty(3)
@@ -783,7 +827,7 @@ def plate_kernel(x, R, a_node, a_r0, att, P, h, kk_, mu, anchor, touch, F, Mo, u
                 - omg[nd, (j + 2) % 3] * arm[(j + 1) % 3]
             gn = R[P, j, 0] * nl[0] + R[P, j, 1] * nl[1] + R[P, j, 2] * nl[2]
             vr += (vb_ - vp_) * gn
-        fn = k * best - cdamp[i] * vr
+        fn = _seated(k, best, seat) - cdamp[i] * vr
         if fn > fmax[i]:
             fn = fmax[i]  # the wood crushes locally under the plate (bearing)
         if fn < 0.0:

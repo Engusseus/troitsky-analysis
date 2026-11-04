@@ -17,6 +17,7 @@ Typical agent loop::
 from __future__ import annotations
 
 import csv
+import fnmatch
 import hashlib
 import json
 import math
@@ -103,13 +104,16 @@ def _inputs(cad: str | Path, overrides, material, sim_params, ruleset, units=Non
     return path, bodies, ov, ov_raw, mat, sp, rs
 
 
-def _material_with(mat: Material, changes: dict[str, float]) -> Material:
+def _material_with(mat: Material, changes: dict[str, float],
+                   notes: dict[str, str] | None = None, source: str = "measured") -> Material:
     d = mat.model_dump()
+    notes = notes or {}
     for k, v in changes.items():
+        entry = {"value": float(v), "source": source, "note": notes.get(k, "")}
         if k.startswith("glue."):
-            d["glue"][k[5:]] = {"value": float(v), "source": "measured"}
+            d["glue"][k[5:]] = entry
         else:
-            d[k] = {"value": float(v), "source": "measured"}
+            d[k] = entry
     return Material.model_validate(d)
 
 
@@ -258,6 +262,21 @@ def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: Sim
 # ----------------------------------------------------------------------------- inspect
 
 
+def _open_questions(qs: list[Question], ov: Overrides, model: Model
+                    ) -> tuple[list[Question], list[str]]:
+    """Questions still open, and the ids the overrides acknowledged (``acknowledge:``).
+    Acknowledge patterns that match no question become warnings."""
+    open_, acked = [], []
+    for q in qs:
+        (acked if ov.acknowledged(q.id) else open_).append(q)
+    ids = [q.id for q in qs]
+    for a in ov.acknowledge:
+        if not any(i == a or fnmatch.fnmatchcase(i, a) for i in ids):
+            model.notes.append(f"overrides: acknowledge {a!r} matches no question (ids: "
+                               f"{', '.join(sorted(ids)[:8])}{' ...' if len(ids) > 8 else ''})")
+    return open_, [q.id for q in acked]
+
+
 def _body_reports(model: Model) -> list[BodyReport]:
     out = []
     for b in model.bodies:
@@ -294,8 +313,8 @@ def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
                                                      ruleset, units, up, span)
     model = _build(bodies, mat, sp, ov, seed, 1.0, strict)
     rules = _rules(bodies, mat, rs, model)
-    qs = [Question(**q) for q in model.questions] + design_questions(bodies, model, mat,
-                                                                       sp, rules)
+    qs, acked = _open_questions([Question(**q) for q in model.questions]
+                                + design_questions(bodies, model, mat, sp, rules), ov, model)
     return InspectReport(
         file=path.name, sha256=_sha(path), n_bodies=len(bodies),
         mass_kg=round(rules.measurements.get("mass_kg", model.bridge_mass_kg), 3),
@@ -308,7 +327,8 @@ def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
                  "deck_bodies": model.params.get("deck_bodies", []),
                  "supports": "both ends rest on the press's flat base platform "
                              "(friction, no anchorage)"},
-        rules=rules, questions=qs, assumed_parameters=_assumed(mat, sp),
+        rules=rules, questions=qs, acknowledged_questions=acked,
+        assumed_parameters=_assumed(mat, sp),
         model={"nodes": int(model.n_nodes), "beam_elements": int(len(model.b_i)),
                "shell_elements": int(len(model.s_nodes)), "glue_points": int(len(model.c_a)),
                "glued_patches": len(model.patches), "floss_cables": int(len(model.k_a)),
@@ -393,7 +413,9 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         progress(0.0, f"read {len(bodies)} bodies; building the structural model")
     model = _build(bodies, mat, sp, ov, seed, scale, strict)
     rules = _rules(bodies, mat, rs, model)
-    opt = options or CrushOptions(speed_mm_s=speed)
+    # the fine mesh needs a smaller time step, or too much mass scaling would be added
+    opt = options or CrushOptions(speed_mm_s=speed,
+                                  dt_target=2.2e-6 if fidelity == "fine" else 3e-6)
     if progress is not None:
         opt.progress = progress
     res = run_crush(model, opt)
@@ -408,8 +430,8 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         rc = {"speed_mm_s": slow.speed_mm_s, "Fu_kgf": round(res2.Fu_kgf, 2),
               "change": round((res.Fu_kgf - res2.Fu_kgf) / max(res2.Fu_kgf, 1e-9), 4),
               "failure_mode": res2.failure_mode}
-    qs = [Question(**q) for q in model.questions] + design_questions(bodies, model, mat, sp,
-                                                                       rules)
+    qs, acked = _open_questions([Question(**q) for q in model.questions]
+                                + design_questions(bodies, model, mat, sp, rules), ov, model)
     c = res.curve
     step = max(1, len(c["t"]) // 400)
     keep = set(range(0, len(c["t"]), step))
@@ -433,7 +455,8 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         events=_compact_events(res.events), n_events_total=len(res.events),
         failure_sequence=_sequence(res.events), curve=curve,
         quality=_quality(res, mat, sp, rc),
-        rules=rules, questions=qs, assumed_parameters=_assumed(mat, sp),
+        rules=rules, questions=qs, acknowledged_questions=acked,
+        assumed_parameters=_assumed(mat, sp),
         fidelity=fidelity, Fu_first_joint_failure_kgf=_first_joint(res),
         warnings=list(model.notes))
     if out_dir:
@@ -525,6 +548,25 @@ def _compact_events(events) -> list[EventOut]:
     return out
 
 
+def inspect_brief(rep: InspectReport) -> dict:
+    """The inspect report without the per-body and per-joint lists: counts of each kind,
+    the questions, failed rules and warnings (a few kB). Bodies and joints: full report."""
+    d = rep.model_dump(mode="json", exclude={"bodies", "joints"})
+    d["kind"] = "inspect_brief"
+    kinds: dict[str, int] = {}
+    for b in rep.bodies:
+        kinds[b.kind] = kinds.get(b.kind, 0) + 1
+    d["bodies_by_kind"] = kinds
+    d["n_joints"] = len(rep.joints)
+    r = d.get("rules") or {}
+    if "lines" in r:
+        r["lines"] = [ln for ln in r["lines"] if not ln.get("passed", True)
+                      or ln.get("penalty") or ln.get("bans")]
+    order = {"important": 0, "check": 1, "info": 2}
+    d["questions"] = sorted(d["questions"], key=lambda q: order.get(q["severity"], 3))
+    return d
+
+
 def brief(rep: CrushReport, n_sequence: int = 12) -> dict:
     """The crush report without the curve and the event log (they are in the files of
     ``artifacts``): what an agent needs to decide, in a few kB."""
@@ -575,7 +617,7 @@ def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = N
                        "the simulated test is too fast, or the failure path is sensitive "
                        "to small differences (two failure modes compete); run montecarlo "
                        "to see the spread and give F_u as a range")
-    if res.added_mass_frac > 0.0505:  # the solver caps it at 5 %
+    if res.added_mass_frac > 0.05:
         reasons.append(f"{res.added_mass_frac:.1%} mass added for stability (> 5 %)")
     if res.failure_mode == "none":
         reasons.append("the bridge did not fail within the jack travel")
@@ -893,19 +935,24 @@ def _lab_gaps(d: Path, mat: Material, sp: SimParams) -> list[RealityGap]:
 
 
 def calibrate(csv_dir: str | Path, material=None, sim_params=None
-              ) -> tuple[Material, list[str]]:
+              ) -> tuple[Material, list[str], dict[str, float]]:
     """Fit the material to the team's coupon tests so that the *simulated* coupons
     (``bridgesim lab``) reproduce them: E from the bending stiffness (the simulated
     coupon matches 48 E I / L^3), the strengths f_t and f_c (scaled together, keeping
     their ratio) so the simulated sticks break at the measured loads, and tau_g so the
-    simulated lap joints of the measured overlaps break at the measured loads. Returns the
-    new material (values marked ``measured``) and what was changed."""
+    simulated lap joints of the measured overlaps break at the measured loads. With three
+    or more specimens of a kind, their scatter gives the coefficients of variation of
+    ``materials/simulation.yaml`` (scatter.*). Returns the new material, what was changed,
+    and those simulation parameters (for an overrides file's ``params:``)."""
     mat = material if isinstance(material, Material) else load_material(
         material or "popsicle_birch")
     sp = sim_params if isinstance(sim_params, SimParams) else SimParams.load(sim_params)
     d = Path(csv_dir)
     log = []
     changes: dict[str, float] = {}
+    assumed_changes: dict[str, float] = {}
+    notes: dict[str, str] = {}
+    params: dict[str, float] = {}
     f = d / "stick_bending_template.csv"
     if f.exists():
         Es, fails = [], []
@@ -921,7 +968,18 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
         E = float(np.mean(Es)) if Es else mat.E_MPa.value
         if Es:
             changes["E_MPa"] = E
+            notes["E_MPa"] = f"from {len(Es)} 3-point bending tests (calibrate)"
             log.append(f"E = {E:.0f} MPa from {len(Es)} bending tests")
+            # G is not measured by a bending test: keep its ratio to E (still assumed)
+            g_new = mat.G_MPa.value * E / mat.E_MPa.value
+            assumed_changes["G_MPa"] = g_new
+            notes["G_MPa"] = (f"assumed: scaled with the measured E (E/G = "
+                              f"{mat.E_MPa.value / mat.G_MPa.value:.0f} kept)")
+            if len(Es) >= 3:
+                params["scatter.E_cov"] = float(np.std(Es, ddof=1) / np.mean(Es))
+        if len(fails) >= 3:
+            fl = [x[3] * x[0] / (x[1] * x[2] ** 2) for x in fails]  # ~ bending strength
+            params["scatter.strength_cov"] = float(np.std(fl, ddof=1) / np.mean(fl))
         if fails:
             fb = float(np.mean([Ff * L / 4 / (b * t * t / 6) for L, b, t, Ff in fails]))
             changes["f_b_MPa"] = fb
@@ -939,6 +997,10 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
                     break
             changes["f_t_MPa"] = mat.f_t_MPa.value * k
             changes["f_c_MPa"] = mat.f_c_MPa.value * k
+            notes["f_b_MPa"] = f"from {len(fails)} bending failures (calibrate)"
+            for kk in ("f_t_MPa", "f_c_MPa"):
+                notes[kk] = ("fitted so the simulated sticks break at the measured bending "
+                             "loads; the f_t / f_c ratio is still the placeholder's")
             log.append(f"f_b = {fb:.1f} MPa from {len(fails)} tests; f_t and f_c scaled by "
                        f"{k:.3f} so the simulated sticks break at the measured "
                        f"{target:.1f} N")
@@ -970,11 +1032,25 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
                 if abs(k - 1) < 0.005:
                     break
             changes["glue.tau_g_MPa"] = tau
+            notes["glue.tau_g_MPa"] = (f"fitted to {len(joints)} lap joints through the "
+                                       "simulated lap test (calibrate)")
             log.append(f"tau_g = {tau:.2f} MPa from {len(joints)} joints (so the simulated "
                        "lap joints of the measured overlaps break at the measured loads)")
+            if len(joints) >= 3:
+                tj = [F_ / (ov * w) for ov, w, F_ in joints]
+                params["scatter.glue_cov"] = float(np.std(tj, ddof=1) / np.mean(tj))
     if not changes:
-        return mat, ["no test data found in " + str(d)]
-    return _material_with(mat, changes), log
+        return mat, ["no test data found in " + str(d)], {}
+    for k, v in params.items():
+        log.append(f"{k} = {v:.3f} from the scatter of the specimens")
+    new = _material_with(mat, changes, notes)
+    if assumed_changes:
+        new = _material_with(new, assumed_changes, notes, source="assumed")
+    new = new.model_copy(update={
+        "name": (mat.name.replace(" (placeholder)", "") + " (calibrated)")[:200],
+        "description": f"Calibrated by bridgesim from the coupon tests in {d.name}: "
+                       + "; ".join(log)})
+    return new, log, params
 
 
 # ------------------------------------------------------------------------- monte carlo
@@ -1120,11 +1196,14 @@ def summarize_pairs(ra: list[dict], rb: list[dict], name_a: str, name_b: str,
     sig = bool(ciF[0] > 0 or ciF[1] < 0) if not math.isnan(ciF[0]) else False
     wins = int((d > 0).sum())
 
-    def gov(rs):
+    def gov(rs):  # most frequent first failure; ties: the one seed 1 shows
         cnt: dict[str, int] = {}
         for r in rs:
             cnt[r["first_failure"]] = cnt.get(r["first_failure"], 0) + 1
-        return max(cnt, key=cnt.get) if cnt else ""
+        if not cnt:
+            return ""
+        top = max(cnt.values())
+        return next(r["first_failure"] for r in rs if cnt[r["first_failure"]] == top)
 
     seeds = f"B stronger with {wins} of {n} seeds"
     if math.isnan(ciF[0]):
@@ -1228,13 +1307,17 @@ def sensitivity(cad: str | Path, overrides=None, material=None, sim_params=None,
     return SensitivityReport(
         file=Path(cad).name, fidelity=fidelity, seed=seed, rel=rel,
         Fu_base_kgf=round(F0, 2), items=items, measure_first=first,
-        note="One seed: a value that changes which part fails first can move F_u by more "
-             "than its own effect; repeat with another --seed if a ranking matters.")
+        note=(f"One seed, {fidelity} fidelity"
+              + (" (coarse mesh: the part that fails first can differ from the standard "
+                 "mesh)" if fidelity == "quick" else "")
+              + ". A value that changes which part fails first can move F_u by more than "
+                "its own effect; repeat with another --seed or --fidelity standard if a "
+                "ranking matters."))
 
 
 def compare_designs(cad_a: str | Path, cad_b: str | Path, n: int = 3, overrides_a=None,
                     overrides_b=None, material=None, sim_params=None, ruleset=None,
-                    fidelity: str = "quick", processes: int | None = None,
+                    fidelity: str = "standard", processes: int | None = None,
                     out_dir: str | Path | None = None, progress=None, units=None,
                     up: str = "y", span: str = "x"):
     """Crush design A and design B with the same seeds 1..n and report whether B is

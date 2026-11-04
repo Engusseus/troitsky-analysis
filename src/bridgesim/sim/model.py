@@ -81,6 +81,7 @@ class Model:
     #                   to e3: plies are stacked through the thickness e3), shear along e3
     b_nply: np.ndarray  # plies stacked through e3 (the parts a glue-line split leaves)
     b_Wt: np.ndarray  # torsional section modulus (mm^3)
+    b_kGA: np.ndarray  # shear stiffness k G A (N); 0 = no shear deformation (Euler-Bernoulli)
     b_body: np.ndarray
     # shells
     # (layered: each ply group is integrated through its thickness at 3 points, at each

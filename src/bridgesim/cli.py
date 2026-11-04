@@ -313,7 +313,11 @@ def _print_questions(qs) -> None:
 def inspect(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = None,
             rules: RulesOpt = "troitsky_2027", sim_params: SimOpt = None,
             units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
-            strict: StrictOpt = False, json_out: JsonOpt = False) -> None:
+            strict: StrictOpt = False,
+            brief: Annotated[bool, typer.Option(
+                "--brief", help="With --json: questions, counts, failed rules and warnings "
+                                "only (a few kB instead of ~100 kB)")] = False,
+            json_out: JsonOpt = False) -> None:
     """Read a CAD bridge and report how bridgesim understood it (members, plates, joints,
     loading, rules) and what it had to assume. Fast: no simulation."""
     from bridgesim.sim import study
@@ -322,7 +326,12 @@ def inspect(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt =
         cad, overrides, material or "popsicle_birch", sim_params, rules, units=units,
         up=up_axis, span=span_axis, strict=strict))
     if json_out:
-        typer.echo(rep.model_dump_json(indent=2))
+        if brief:
+            import json as _json
+
+            typer.echo(_json.dumps(study.inspect_brief(rep), indent=2))
+        else:
+            typer.echo(rep.model_dump_json(indent=2))
         return
     typer.echo(f"{rep.file}: {rep.n_bodies} bodies, {rep.mass_kg:.2f} kg")
     kinds: dict[str, int] = {}
@@ -458,16 +467,26 @@ def calibrate(data: Annotated[Path, typer.Argument(help="Folder with your test C
     """Fit E, strengths and glue strength from your test CSVs into a material YAML."""
     from bridgesim.sim import study
 
-    mat, log = _guard(json_out, lambda: study.calibrate(data, material or "popsicle_birch"))
+    mat, log, params = _guard(json_out, lambda: study.calibrate(
+        data, material or "popsicle_birch"))
     out.write_text(yaml.safe_dump(mat.model_dump(mode="json"), sort_keys=False),
                    encoding="utf-8")
+    ov_path = None
+    if params:
+        ov_path = out.with_name(out.stem + ".overrides.yaml")
+        ov_path.write_text(yaml.safe_dump({"params": {k: round(v, 4)
+                                                      for k, v in params.items()}}),
+                           encoding="utf-8")
     if json_out:
         import json as _json
-        typer.echo(_json.dumps({"material": str(out), "changes": log}))
+        typer.echo(_json.dumps({"material": str(out), "changes": log,
+                                "overrides": str(ov_path) if ov_path else None,
+                                "params": params}))
         return
     for line in log:
         typer.echo(f"  {line}")
-    typer.echo(f"Wrote {out} (use it with --material {out})")
+    typer.echo(f"Wrote {out} (use it with --material {out})"
+               + (f" and {ov_path} (use it with -o {ov_path})" if ov_path else ""))
 
 
 @app.command()
@@ -508,7 +527,7 @@ def ab(cad_a: CadArg, cad_b: Annotated[Path, typer.Argument(
        overrides_b: Annotated[Path | None, typer.Option("--overrides-b",
                                                         help="Overrides YAML for B")] = None,
        material: MaterialOpt = None,
-       fidelity: Annotated[str, typer.Option(help="quick, standard, fine")] = "quick",
+       fidelity: Annotated[str, typer.Option(help="quick, standard, fine")] = "standard",
        processes: Annotated[int | None, typer.Option(
            help="Crushes in parallel (default: one per 2 CPU cores)")] = None,
        out: Annotated[Path | None, typer.Option("--out", help="Folder for the crush "

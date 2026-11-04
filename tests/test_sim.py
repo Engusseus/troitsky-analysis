@@ -183,6 +183,9 @@ def test_compiled_kernels_match_numpy():
     S.internal_and_contact_numpy(m, st2, s, F2, Mo2)
     assert np.abs(F - F2).max() <= 1e-9 * max(1.0, np.abs(F2).max())
     assert np.abs(Mo - Mo2).max() <= 1e-9 * max(1.0, np.abs(Mo2).max())
+    assert np.abs(st.b_gam).max() > 0  # Timoshenko shear state, same in both
+    np.testing.assert_allclose(st.b_gam, st2.b_gam, rtol=1e-8, atol=1e-14)
+    assert (m.params["p_lift"] > 0).any() and m.params["seating_mm"] > 0
 
 
 def test_compiled_shell_damage_matches_numpy():
@@ -416,6 +419,44 @@ def test_mcp_server_exposes_the_tools():
             "compare_with_test", "lab_tests", "calibrate_material", "get_schema"} <= names
 
 
+def test_mcp_tools_return_structured_json():
+    """Each tool publishes an output schema, a call returns the report as structured
+    content, and a bad call is flagged as an error carrying the JSON error object."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    from bridgesim.sim.mcp_server import build_server
+
+    srv = build_server()
+
+    async def go():
+        tools = await srv.list_tools()
+        tools = getattr(tools, "tools", tools)
+        assert all((getattr(t, "output_schema", None) or getattr(t, "outputSchema", None))
+                   for t in tools)
+        ok = await srv.call_tool("get_schema", {"name": "question"})
+        bad = None
+        try:
+            await srv.call_tool("get_schema", {"name": "nope"})
+        except Exception as exc:  # noqa: BLE001 - the SDK turns this into isError
+            bad = str(exc)
+        return ok, bad
+
+    ok, bad = asyncio.run(go())
+    structured = ok[1] if isinstance(ok, tuple) else getattr(ok, "structured_content", ok)
+    assert structured["title"] == "Question"
+    assert bad is not None and json.loads(bad[bad.index("{"):])["kind"] == "bad_input"
+
+    async def missing():
+        try:
+            await srv.call_tool("inspect_bridge", {"cad_path": "no/such/bridge.SLDPRT"})
+        except Exception as exc:  # noqa: BLE001
+            return str(exc)
+
+    msg = asyncio.run(missing())  # a relative path says where it was looked for
+    assert "absolute path" in msg and str(Path.cwd()) in msg
+
+
 # ------------------------------------------------------------- agent-facing contract
 
 
@@ -560,8 +601,9 @@ def test_calibration_closes_the_loop(tmp_path):
     (tmp_path / "stick_bending_template.csv").write_text(
         "specimen,span_L_mm,width_b_mm,thickness_t_mm,load_F_N,deflection_mm,failure_load_N\n"
         f"S1,100,10,2,{k:.4f},1.0,{r.peak:.3f}\n")
-    mat, log = study.calibrate(tmp_path)
+    mat, log, params = study.calibrate(tmp_path)
     assert mat.E_MPa.value == pytest.approx(E, rel=1e-6) and mat.E_MPa.source == "measured"
+    assert mat.G_MPa.source == "assumed" and "ratio" in mat.f_t_MPa.note
     gaps = study.lab(mat, None, tmp_path).gaps
     errs = [m.error for g in gaps for m in g.metrics]
     assert errs and max(abs(e) for e in errs) < 0.01
@@ -604,10 +646,39 @@ def test_simply_supported_beam_matches_beam_theory(tmp_path):
                             / (6 * E * I * Ls))
         return out
 
-    k_theory = 1 / defl(x).mean() / 9.80665
+    shear = 0.5 * a / (5 / 6 * MAT.G_MPa.value * 50 * T)  # Timoshenko: constant under the plate
+    k_theory = 1 / (defl(x).mean() + shear) / 9.80665
     assert k_sim == pytest.approx(k_theory, rel=0.05)
     mor = rep.Fu_kgf * 9.80665 * 0.5 * a / (50 * T**2 / 6)
     assert MAT.f_c_MPa.value < mor < 1.05 * MAT.f_b_MPa.value
+
+
+def test_deep_beam_includes_shear_deformation():
+    """Wood shears easily (E/G ~ 16): a beam 50 mm deep over 200 mm deflects 2.2 times
+    more than Euler-Bernoulli says. The Timoshenko fibre beam is exact for any mesh, and
+    its bending strength is that of the fibres (shear flexibility adds no capacity)."""
+    from bridgesim.sim.lab import BeamSpec, add_beam_line, blank_model, drive
+
+    pytest.importorskip("numba")
+    E, G, span, b, d = 10000.0, 625.0, 200.0, 20.0, 50.0
+    I, A = b * d**3 / 12, b * d
+    k_t = 1 / (span**3 / (48 * E * I) + span / (4 * 5 / 6 * G * A))
+
+    def run(n_el, shear, **kw):
+        X = np.c_[np.linspace(0, span, n_el + 1), np.zeros((n_el + 1, 2))]
+        m = blank_model(X)
+        add_beam_line(m, list(range(n_el + 1)), BeamSpec(b=b, d=d, E=E, G=G, shear=shear,
+                                                          **kw), up=(0, 1, 0))
+        return drive(m, {0: "xyz", n_el: "yz"}, n_el // 2, 1, 20.0, sign=-1.0,
+                     max_disp=kw and 4.0 or 0.2, stop_drop=0.6 if kw else -1e9,
+                     slow_disp=0.05, slow_rate=5.0)
+
+    for n_el in (4, 16):
+        r = run(n_el, True)
+        sel = r.disp > 0.05
+        assert np.polyfit(r.disp[sel], r.force[sel], 1)[0] == pytest.approx(k_t, rel=0.01)
+    strong = {"ft": 80.0, "fc": 40.0, "Gf": 150.0}
+    assert run(8, True, **strong).peak == pytest.approx(run(8, False, **strong).peak, rel=0.02)
 
 
 def test_stick_bending_strength_matches_f_b():
@@ -673,3 +744,86 @@ def test_compare_with_real_competition_records(synthetic_crush, tmp_path):
     assert _part_match("top chord far side, left", "Top Chord (10-ply UD) - L Far") == 1.0
     assert _part_match("top chord far side", "Top Chord (10-ply UD) - Near") == 0.5
     assert _part_match("deck stringer", "Top Chord (10-ply UD) - Near") == 0.0
+
+
+def test_agent_docs_match_the_code():
+    """The question ids AGENTS.md tells agents about exist in the code, and the schema
+    names the MCP server documents are the real ones."""
+    import re
+
+    from bridgesim.sim import mcp_server
+    from bridgesim.sim.report import SCHEMAS
+
+    doc = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    src = "".join((ROOT / "src" / "bridgesim" / "sim" / f).read_text(encoding="utf-8")
+                  for f in ("idealize.py", "study.py"))
+    i = doc.index("## Questions")
+    section = doc[i: doc.index("\n## ", i + 5)]
+    ids = set(re.findall(r"`([a-z_]+):?(?:<[^>]*>)?`", section)) - {"important", "check",
+                                                                        "info", "acknowledge",
+                                                                        "acknowledged_questions",
+                                                                        "answer_with", "id",
+                                                                        "topic", "severity",
+                                                                        "question", "assumed",
+                                                                        "material", "connection",
+                                                                        "geometry", "rules",
+                                                                        "design", "bodies",
+                                                                        "glue", "params", "cad",
+                                                                        "cli", "centroid_mm",
+                                                                        "bbox_min_mm",
+                                                                        "bbox_max_mm", "axis",
+                                                                        "where_mm"}
+    assert ids, "no question ids found in AGENTS.md"
+    for qid in ids:
+        assert f'"{qid}' in src or f"'{qid}" in src or f'f"{qid}' in src, qid
+    for name in SCHEMAS:
+        assert name in doc, name
+    src_mcp = Path(mcp_server.__file__).read_text(encoding="utf-8")
+    j = src_mcp.index("def get_schema")
+    doc_schema = src_mcp[j: src_mcp.index("if name not in SCHEMAS", j)]
+    for name in SCHEMAS:
+        assert name in doc_schema, name
+
+
+def test_questions_can_be_acknowledged(tmp_path):
+    """A designer's 'as drawn' closes a question; a typo in acknowledge is reported."""
+    from bridgesim.sim import study
+
+    write_stl(simple_beam_bridge(), tmp_path / "b.stl")
+    first = study.inspect(tmp_path / "b.stl")
+    layup_q = [q.id for q in first.questions if q.id.startswith("layup:")]
+    assert layup_q
+    rep = study.inspect(tmp_path / "b.stl",
+                        overrides={"acknowledge": ["layup:*", "no_such_question"],
+                                   "cad": "x"})
+    assert not any(q.id.startswith("layup:") for q in rep.questions)
+    assert set(layup_q) <= set(rep.acknowledged_questions)
+    assert any("no_such_question" in w for w in rep.warnings)
+    assert any("'cad'" in w for w in rep.warnings)
+    b = study.inspect_brief(rep)
+    assert b["kind"] == "inspect_brief" and "bodies" not in b and b["n_bodies"] == 5
+
+
+def test_glue_bearing_follows_the_grain():
+    """A member pressed on its end grain bears at f_c, across its grain at f_c90 (and in
+    between by Hankinson); a plate pressed on its face bears at f_c90."""
+    from bridgesim.sim.idealize import analyse_shape, grain_bearing, hankinson
+
+    fc, fc90 = 30.0, 5.0
+    assert hankinson(fc, fc90, 1.0) == pytest.approx(fc)
+    assert hankinson(fc, fc90, 0.0) == pytest.approx(fc90)
+    assert fc90 < hankinson(fc, fc90, 0.7) < fc
+    bar = analyse_shape(box("Post (6-ply UD)", (0, 0, 0), (200, 12, 19)),
+                        parse_layup("Post (6-ply UD)"), None)
+    assert bar.kind == "bar"
+    f_end, e_end = grain_bearing(bar, np.array([1.0, 0, 0]), fc, fc90)
+    f_side, e_side = grain_bearing(bar, np.array([0.0, 1, 0]), fc, fc90)
+    assert (f_end, e_end) == (pytest.approx(fc), 1.0)
+    assert (f_side, e_side) == (pytest.approx(fc90), 0.0)
+    plate = analyse_shape(box("Gusset (2-ply 0-90)", (0, 0, 0), (120, 80, 4)),
+                          parse_layup("Gusset (2-ply 0-90)"), None)
+    assert plate.kind == "shell"
+    f_face, _ = grain_bearing(plate, np.array([0.0, 0, 1]), fc, fc90)
+    f_edge, e_edge = grain_bearing(plate, np.array([1.0, 0, 0]), fc, fc90)
+    assert f_face == pytest.approx(fc90)
+    assert f_edge == pytest.approx((fc + fc90) / 2) and e_edge == 0.5

@@ -67,7 +67,7 @@ class Frame:
     q: np.ndarray  # (n, 4) quaternion float32
     beam_state: np.ndarray  # uint8: 0 ok, 1 cracked, 2 broken
     shell_state: np.ndarray
-    patch_damage: np.ndarray  # max damage per patch (0..1)
+    patch_damage: np.ndarray  # share of each joint's glued area let go (0..1)
     cable_ok: np.ndarray
 
 
@@ -351,7 +351,7 @@ class CrushOptions:
     max_travel_mm: float = 70.0
     deflection_limit_mm: float = 50.0
     drop_ratio: float = 0.5  # stop when load < drop_ratio * peak, after the peak
-    after_failure_mm: float = 8.0  # keep going this far past failure (collapse replay)
+    after_failure_mm: float = 15.0  # keep going this far past failure (collapse replay)
     frame_mm: float = 0.15  # replay frame every this much jack travel
     alpha: float = 25.0
     max_added_mass: float = 0.05
@@ -853,8 +853,10 @@ def _frame(m: Model, st: S.State, travel: float, force: float, defl: float) -> F
     sstate = (st.s_dmg > 0.5).astype(np.uint8)
     sstate[st.s_gone] = 2
     pd = np.zeros(len(m.patches))
-    if len(m.c_patch):
-        np.maximum.at(pd, m.c_patch, st.c_d)
+    if len(m.c_patch):  # share of each joint's glued area that has let go
+        area = np.bincount(m.c_patch, weights=m.c_area, minlength=len(m.patches))
+        pd = np.bincount(m.c_patch, weights=m.c_area * (st.c_d >= 0.999),
+                         minlength=len(m.patches)) / np.maximum(area, 1e-12)
     return Frame(st.t, travel, force, defl, st.x.astype(np.float32),
                  _quat(st.R).astype(np.float32), bstate, sstate, pd.astype(np.float32),
                  st.k_alive.copy())

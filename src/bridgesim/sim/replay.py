@@ -141,7 +141,7 @@ def replay_html(res: CrushResult, bodies: list[CadBody], title: str = "Crush tes
         if len(m.s_body):
             bstate[fi, np.unique(m.s_body[f.shell_state > 0])] = 2
         if len(m.patches):
-            for pid in np.where(f.patch_damage > 0.5)[0]:
+            for pid in np.where(f.patch_damage >= 0.3)[0]:  # joint cracking
                 p = m.patches[pid]
                 for bb in (p.body_a, p.body_b):
                     bstate[fi, bb] = max(bstate[fi, bb], 1)
@@ -204,10 +204,10 @@ input[type=range]{width:100%}#events{overflow:auto;flex:1;padding:0 14px 14px;fo
 </style></head><body>
 <div id="wrap"><div id="view"><div id="hud"><div>Jack load</div><div class="big" id="load">0 kgf</div>
 <div id="sub"></div></div></div>
-<div id="side"><h2 id="ttl"></h2><div id="legend">Wood colour = intact &middot; <span style="color:#e0a800">amber</span> = a glue line on it is failing &middot; <span style="color:#d0342c">red</span> = cracked or broken. Dots: glue points (green intact &rarr; red failed).</div>
+<div id="side"><h2 id="ttl"></h2><div id="legend">Wood colour = intact &middot; <span style="color:#e0a800">amber</span> = a glued joint on it is cracking (30 % of its area let go) &middot; <span style="color:#d0342c">red</span> = cracked or broken. Dots: glue points, by joint (green intact &rarr; red separated). Use deformation x5/x20 to see the bridge bend before it breaks.</div>
 <canvas id="chart"></canvas>
 <div id="ctrl"><button id="play">Play</button><select id="speed"><option value="real">Real test time</option><option value="10">10x</option><option value="60" selected>60x</option><option value="sim">Simulated time</option></select>
-<label><input type="checkbox" id="glue" checked> glue points</label><input type="range" id="slider" min="0" value="0"></div>
+<label><input type="checkbox" id="glue" checked> glue points</label><label> deformation <select id="mag"><option value="1" selected>x1</option><option value="5">x5</option><option value="20">x20</option></select></label><input type="range" id="slider" min="0" value="0"></div>
 <h2>What happened</h2><div id="events"></div></div></div>
 <script>__THREE__</script>
 <script>__ORBIT__</script>
@@ -245,7 +245,7 @@ const gpts=new THREE.Points(gg,new THREE.PointsMaterial({size:4,vertexColors:tru
 const cOK=dec(D.cable_ok,Uint8Array);const cg=new THREE.BufferGeometry();const cpos=new Float32Array(D.cables.length*6);cg.setAttribute('position',new THREE.BufferAttribute(cpos,3));
 const clines=new THREE.LineSegments(cg,new THREE.LineBasicMaterial({color:dark?0xffffff:0x333333}));scene.add(clines);
 const P=new Float32Array(nN*3),R=new Float32Array(nN*9);
-function nodes(f){const s=D.scale;for(let i=0;i<nN;i++){P[3*i]=X[3*i]+U[(f*nN+i)*3]*s;P[3*i+1]=X[3*i+1]+U[(f*nN+i)*3+1]*s;P[3*i+2]=X[3*i+2]+U[(f*nN+i)*3+2]*s;
+let MAG=1;function nodes(f){const s=D.scale*MAG;for(let i=0;i<nN;i++){P[3*i]=X[3*i]+U[(f*nN+i)*3]*s;P[3*i+1]=X[3*i+1]+U[(f*nN+i)*3+1]*s;P[3*i+2]=X[3*i+2]+U[(f*nN+i)*3+2]*s;
  let w=Q[(f*nN+i)*4]/32767,x=Q[(f*nN+i)*4+1]/32767,y=Q[(f*nN+i)*4+2]/32767,z=Q[(f*nN+i)*4+3]/32767;const n=Math.hypot(w,x,y,z)||1;w/=n;x/=n;y/=n;z/=n;
  const r=R,o=9*i;r[o]=1-2*(y*y+z*z);r[o+1]=2*(x*y-z*w);r[o+2]=2*(x*z+y*w);r[o+3]=2*(x*y+z*w);r[o+4]=1-2*(x*x+z*z);r[o+5]=2*(y*z-x*w);r[o+6]=2*(x*z-y*w);r[o+7]=2*(y*z+x*w);r[o+8]=1-2*(x*x+y*y);}}
 function tp(n,ox,oy,oz,out,k){const o=9*n;out[k]=P[3*n]+R[o]*ox+R[o+1]*oy+R[o+2]*oz;out[k+1]=P[3*n+1]+R[o+3]*ox+R[o+4]*oy+R[o+5]*oz;out[k+2]=P[3*n+2]+R[o+6]*ox+R[o+7]*oy+R[o+8]*oz;}
@@ -284,6 +284,7 @@ const sum=document.createElement('div');sum.className='ev on';sum.innerHTML=`<b>
 function events(f){const t=D.travel[f];evs.forEach(([e,d])=>d.classList.toggle('on',e.jack_travel_mm<=t+1e-9));}
 const slider=document.getElementById('slider');slider.max=nF-1;slider.oninput=()=>{cur=+slider.value;show(cur)};
 document.getElementById('glue').onchange=e=>{gpts.visible=e.target.checked};
+document.getElementById('mag').onchange=e=>{MAG=+e.target.value;show(+slider.value)};
 let cur=0,playing=false,last=0;const btn=document.getElementById('play');btn.onclick=()=>{playing=!playing;btn.textContent=playing?'Pause':'Play';last=performance.now()};
 function tick(now){if(playing){const sp=document.getElementById('speed').value;const dt=(now-last)/1000;last=now;
  let want;if(sp==='sim'){want=D.t[cur]+dt*0.05}else{const mult=sp==='real'?1:+sp;want=D.travel[cur]+dt*mult*D.rate/60;}

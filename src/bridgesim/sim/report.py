@@ -92,6 +92,8 @@ class InspectReport(BaseModel):
     loading: dict[str, Any]
     rules: RulesSummary
     questions: list[Question]
+    acknowledged_questions: list[str] = Field(
+        [], description="Question ids the overrides acknowledged (acknowledge:), not asked")
     assumed_parameters: list[str] = Field(
         description="Material/simulation values still marked 'assumed' (not measured).")
     model: dict[str, Any] = Field(description="Size of the structural model.")
@@ -217,6 +219,8 @@ class CrushReport(BaseModel):
     quality: Quality
     rules: RulesSummary
     questions: list[Question]
+    acknowledged_questions: list[str] = Field(
+        [], description="Question ids the overrides acknowledged (acknowledge:), not asked")
     assumed_parameters: list[str]
     fidelity: str = Field("standard", description="quick (screening), standard or fine")
     artifacts: dict[str, str] = {}

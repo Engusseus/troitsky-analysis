@@ -19,9 +19,10 @@ relevant parts in your Design Validation (§10). Units: mm, N, MPa, s.
 
 | Body shape (from its faces) | Model | Why |
 |---|---|---|
-| slender extrusion, section no flatter than 1:4 | **bar**: chain of corotational fibre beams on its centre line, ~25-30 mm elements (>= 4), real section and length | members carry axial force + bending; buckling needs >= 4 elements |
+| slender extrusion, section no flatter than 1:4 | **bar**: chain of corotational fibre beams on its centre line, ~25-30 mm elements (>= 4), real section and length, Timoshenko (shear-flexible) | members carry axial force + bending; buckling needs >= 4 elements |
+| slender but tapered extrusion (a wedge, a lip or filler cut along a diagonal: 40-75 % of its bounding box) | **tapered bar**: as above, each element with the width and centre offset of the profile at its position (same volume as the solid) | still a member; a rigid block would make the load path too stiff |
 | thin extrusion (width >= 3 x thickness) | **shell**: CST membrane + DKT bending triangles on the mid-surface, meshed from the real outline (holes > element size kept), integrated ply by ply (layered) | gussets, webs, decks, diaphragms |
-| compact piece, block, short toothpick | **rigid body** with its real mass and inertia | much stiffer than the members |
+| compact piece (neither slender nor thin), a body named a block, short toothpick | **rigid body** with its real mass and inertia | much stiffer than the members; a question lists those in the load path |
 | floss (by name) | **cable**: tension only, snaps at its breaking load | §8.4.5 |
 
 Laminates come from the body name (`10-ply UD`, `2-ply 0-90`, `4-ply +-45`, `block`,
@@ -33,6 +34,16 @@ plates take their grain along the long axis (or the global X with "along the spa
 non-rectangular UD plates, along the nearest long edge). The order of the plies through
 the thickness is not in the CAD: it is taken from the name, listed from the face the
 plate's normal points away from.
+
+**Shear deformation of members.** Wood is soft in shear (E/G ~ 16), so a deep laminated
+member (a 47.5 mm chord between nodes 300 mm apart) deflects ~25 % more in bending than
+Euler-Bernoulli theory says. Each bar element is a Timoshenko beam (shear area 5/6 A,
+G = G_LT of the layup): a constant shear strain takes its share of the end rotations, the
+exact two-node split phi / (2 (1 + phi)) with phi = 12 EI / (k G A L^2) while elastic,
+corrected each step so the shear force k G A gamma equals the bending shear (M_i + M_j) / L
+once the fibres crack or crush. Tested: a 50 mm deep beam over 200 mm matches
+Timoshenko theory within 1 % on 4 or 16 elements, and its bending strength is the same as
+without shear deformation (`test_deep_beam_includes_shear_deformation`).
 
 **Laminated members longer than one stick.** A ply longer than a stick (115 mm) has butt
 joints, and its load goes round each joint through the glue lines to the neighbouring
@@ -62,9 +73,19 @@ assumed tight in compression (they bear).
   simulated lap test reproduces the measured tau_g (checked in the tests). Peel strength = 0.5 tau_max.
 * A broken glue line keeps **bearing in compression** and **slides with friction**
   (mu = 0.4): pieces still lean on each other after the glue lets go.
-* The wood under a glue line **crushes across the grain** at f_c90 (5 MPa placeholder):
-  a joint pressed together cannot carry more than f_c90 x its area, and keeps the
-  permanent set.
+* The wood at a glue line **crushes** when the joint is pressed together, at the
+  strength of each side for the direction of the joint (Hankinson's formula between f_c
+  along the grain and f_c90 across it, averaged over the plies; the weaker side governs),
+  and keeps the permanent set: a member's end pressed into the face of a plate crushes
+  the plate across its grain (f_c90), two members end to end bear at f_c.
+* **End grain** holds glue poorly: the glue strength of a joint is multiplied by
+  1 - e (1 - `glue.end_grain_factor`), e being the share of a side's plies meeting the
+  joint end-on (0.5 placeholder: a member's end glued flat gets half, a 0/90 plate's edge
+  three quarters). Joints that are mostly end grain are listed in a question.
+* Where all the glue points of a joint hang on one or two nodes of each part (bars and
+  blocks: rigid arms, no shear lag inside the joint), the cohesive strength is tau_g
+  itself; on plates the glue points are spread over the plate's nodes and the joint
+  shows the shear lag of the lap test, so the peak strength is 1.17 tau_g.
 * A joint is reported **cracking** when 30 % of its glued area has let go and
   **separated** (`joint_failure`) at 90 % (area-weighted over its glue points); the
   first separation sets `Fu_first_joint_failure_kgf`.
@@ -87,7 +108,7 @@ placeholder moves F_u for your design. Your own stick tests replace them
 sections: linear elastic; tension softens to zero after f_t with fracture energy G_f
 (3 N/mm, element-length regularised); compression yields at f_c and softens to 70 %
 (crushing). A single stick so modelled breaks in 3-point bending at the material's
-f_b (within 3 %, tested): compression yielding on top and tension softening below give
+f_b (within 4 %; the test allows 10 %): compression yielding on top and tension softening below give
 the bending strength, as in wood. A member **splits in shear** when 1.5 V/A + T/W_t
 reaches min(f_v, tau_g) on the glue planes between its plies, or f_v across them; it is
 not deleted: it delaminates (its n plies then bend each about their own axis, 1/n^2 of
@@ -98,7 +119,8 @@ its axial strength, so a split member still props what it carried. Glue and flos
 **Plates (layered shells).** At each of the 3 in-plane points of a triangle and at 3
 points through each ply group (Simpson's rule, exact for the elastic bending
 stiffness), the strain is turned into the grain axes and each failure mode has its own
-damage (as LS-DYNA's MAT_054 or Abaqus' Hashin damage): fibre tension softens to zero with
+damage, in the spirit of LS-DYNA's MAT_054 or Abaqus' Hashin damage but with an
+independent maximum-strain criterion per mode: fibre tension softens to zero with
 fracture energy G_f (3 N/mm); fibre compression crushes to a plateau at 70 % of f_c;
 across-grain tension (sticks parting edge to edge, f_t90 = 1 MPa) softens with G_f90
 (0.3 N/mm); across-grain compression yields at f_c90; in-plane shear softens with G_v
@@ -128,6 +150,14 @@ the spread of F_u.
   rigid body resting on the deck at mid-span and the deck centreline. The jack pushes on
   its hemispherical seat, so the plate tilts freely; plate-bridge contact is unilateral
   with friction (mu = 0.3) on any part of the bridge that reaches the plate.
+* **Seating and an out-of-level bridge.** A bearing face beds in on the steel: its contact
+  stiffness grows from 0 to full over the first `contact.seating_mm` (0.3 mm: roughness,
+  glue beads, fibres crushing at the first touch), which gives the soft start ("toe") of
+  a real load-deflection curve. And a built bridge never stands on its four support
+  corners at once: with a seed, each corner is lifted by up to
+  `scatter.support_level_mm` (0.5 mm, one corner not at all), so the bridge first rocks
+  on three corners until the load beds it down. Both are assumed values: read them off
+  the start of a real crush curve and off the bridge on a flat table.
 * **Bearing**: each contact point with the platform or the plate carries at most the
   crushing strength of the wood under it times the area it stands for (f_c90 for wood
   pressed across the grain, f_c for a post standing on its end grain): a plate edge
@@ -218,14 +248,14 @@ the spread of F_u.
 * Glue lines are perfect over the whole touching area: starved or gappy joints only
   through `glue_factor` in the overrides.
 * Splitting of a member along the grain other than by shear, knots and stick-to-stick
-  variation inside one body; butt joints in plates (only in bars); shear deformation of
-  members (Euler-Bernoulli beams; about 1 % on the deflection of the slender members of
-  a bridge).
+  variation inside one body; butt joints in plates (only in bars).
 * Thick plates (gussets 20 mm thick) use thin-plate (Kirchhoff) elements with constant-
   strain membranes, at least 1.5 x their thickness in size: their in-plane bending is
   somewhat too stiff on coarse meshes (check with `--fidelity fine`), and compact
-  blocks (a node block, the block under the plate) are rigid: they crush only where they
-  bear on the plate or the platform, and their glue lines crush at f_c90.
+  blocks (a node block, the block under the plate; slender or tapered pieces are bars)
+  are rigid: they crush only where they bear on the plate or the platform, and their
+  glue lines crush (by grain direction, as above); a question lists the ones in the load
+  path, answered with `kind: bar` or `kind: shell` when one is really a member.
 * Friction in the contact between parts that were not touching at the start.
 * Debris (pieces with nothing left holding them) falls under gravity and lands on the
   platform, but does not hit the bridge or the plate.

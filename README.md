@@ -105,8 +105,9 @@ uv run streamlit run app/streamlit_app.py         # page "SolidWorks crush test"
 
 **What happens to your file.** The SolidWorks part is read directly (the Parasolid model
 inside it; no SolidWorks licence needed). Every solid body is rebuilt with its name. Each
-body becomes what an engineer would model it as: a **member** (corotational beam with a
-fibre section that cracks in tension and crushes in compression), a **plate** (shell
+body becomes what an engineer would model it as: a **member** (corotational
+shear-flexible beam with a fibre section that cracks in tension and crushes in
+compression; tapered members follow their profile), a **plate** (shell
 elements meshed on its real outline, holes included, that crack ply by ply with
 mesh-independent fracture energy), a **rigid block**, or **floss** (a tension-only cable
 that snaps). The layup comes from the body name: `10-ply UD`, `2-ply 0-90`, `4-ply +-45`,
@@ -115,10 +116,12 @@ members longer than one stick lose tension strength at their butt joints. Every 
 where two bodies touch face to face becomes a **glue joint** of the exact overlap shape.
 It peels and slides, fails in mixed mode, and keeps bearing with friction once broken.
 Parts that meet during the collapse push on each other (contact), and wood crushes
-locally under the plate and at the supports.
+locally under the plate and at the supports (across or along the grain, as it bears).
+The glue lines crush by grain direction too, and end-grain joints are weaker.
 
 **The test, as at the competition.** The bridge stands on the press's flat steel
-platform with friction and no anchorage, and settles under its own weight. The 200 x 90
+platform with friction and no anchorage (its corners a little out of level, its
+bearing faces seating in), and settles under its own weight. The 200 x 90
 mm loading plate is placed on the deck at mid-span; it is a rigid body that tilts on the
 jack's hemisphere. The jack then moves down at constant speed, and its force is the
 load-cell reading. The run stops after the bridge has failed by a §12.5 criterion: a load

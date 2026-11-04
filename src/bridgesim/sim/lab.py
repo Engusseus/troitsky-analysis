@@ -36,7 +36,8 @@ def blank_model(X: np.ndarray, nf: int = 15) -> Model:
         X=np.asarray(X, float), mass=z(n), rot_inertia=z(n), node_body=z(n, int),
         b_i=z(0, int), b_j=z(0, int), b_L0=z(0), b_E0=z((0, 3, 3)), b_fy=z((0, nf)),
         b_fz=z((0, nf)), b_fA=z((0, nf)), b_E=z(0), b_ft=z(0), b_fc=z(0), b_Gf=z(0),
-        b_GJ=z(0), b_A=z(0), b_fv=z(0), b_fv3=z(0), b_nply=z(0), b_Wt=z(0), b_body=z(0, int),
+        b_GJ=z(0), b_A=z(0), b_fv=z(0), b_fv3=z(0), b_nply=z(0), b_Wt=z(0), b_kGA=z(0),
+        b_body=z(0, int),
         s_nodes=z((0, 3), int), s_E0=z((0, 3, 3)), s_P=z((0, 3, 3)), s_t=z(0),
         s_body=z(0, int), **shellmod.empty(), a_node=z(0, int), a_r0=z((0, 3)),
         c_a=z(0, int), c_b=z(0, int), c_area=z(0), c_n0=z((0, 3)), c_Kn=z(0), c_Ks=z(0),
@@ -61,6 +62,7 @@ class BeamSpec:
     rho: float = 6.5e-10  # t/mm^3
     ny: int = 3
     nz: int = 5
+    shear: bool = True  # Timoshenko shear deformation (k = 5/6); False: Euler-Bernoulli
 
 
 def add_beam_line(m: Model, nodes: list[int], spec: BeamSpec, up=(0.0, 0.0, 1.0)) -> None:
@@ -105,7 +107,7 @@ def add_beam_line(m: Model, nodes: list[int], spec: BeamSpec, up=(0.0, 0.0, 1.0)
     for name, v in (("b_E", spec.E), ("b_ft", spec.ft), ("b_fc", spec.fc),
                     ("b_Gf", spec.Gf), ("b_GJ", spec.G * J), ("b_A", A),
                     ("b_fv", spec.fv), ("b_fv3", spec.fv), ("b_nply", 2.0),
-                    ("b_Wt", J / dd)):
+                    ("b_Wt", J / dd), ("b_kGA", 5 / 6 * spec.G * A if spec.shear else 0.0)):
         cat(name, np.full(k, float(v)))
     cat("b_body", np.zeros(k, int))
 

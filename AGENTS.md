@@ -22,13 +22,13 @@ SolidWorks needed), a Parasolid `.x_b`, or an STL with all bodies in one file.
 
 | Command | What it does | Time |
 |---|---|---|
-| `bridgesim inspect BRIDGE.SLDPRT [-o overrides.yaml] [--strict] --json` | Bodies (how each is modelled, centroid and bounding box, layup, mass), glued joints, loading position, rule check from the solids, `warnings`, `questions` | seconds |
+| `bridgesim inspect BRIDGE.SLDPRT [-o overrides.yaml] [--strict] --json [--brief]` | Bodies (how each is modelled, centroid and bounding box, layup, mass), glued joints, loading position, rule check from the solids, `warnings`, `questions`. `--brief` (and the MCP default): questions, counts, failed rules and warnings only (~15 kB instead of ~100 kB) | seconds |
 | `bridgesim crush BRIDGE.SLDPRT [-o overrides.yaml] [--seed N] [--fidelity quick\|standard\|fine] [--rate-check] [--out DIR] --json [--brief]` | Simulated crushing test; with `--out`: `crush.json`, `curve.csv`, `events.csv` (every event), `replay.html`. `--rate-check` runs it again at half the jack speed (3x the time). `--brief`: the report without the curve and event log (~20 kB instead of ~200 kB; the MCP crush tools return this by default) | minutes |
 | `bridgesim compare DIR/crush.json my_test.csv --json` | Reality gap vs a physical crush test | seconds |
 | `bridgesim sensitivity BRIDGE.SLDPRT [--rel 0.2] [--fidelity quick] --json` | Which material values move F_u most: each one lowered and raised by `rel`; `measure_first` lists the tests that would narrow the prediction most | (1 + 2 x 8) x crush / processes |
 | `bridgesim lab [--data validation/physical] --json` | Simulated coupon tests (stick bending, lap joint, stick column) and their gap to the team's coupon data | ~1 min |
-| `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, f_t/f_c and tau_g so the *simulated* coupons reproduce the measured ones (`lab --data` then shows ~0 % error) | ~1 min |
-| `bridgesim ab A.SLDPRT B.SLDPRT [-n 3] [--overrides-a a.yaml] [--overrides-b b.yaml] [--fidelity quick] --json` | Is B better than A? Both crushed with the same seeds: change of F_u and efficiency with a 90 % interval, `significant`, `verdict`, first failure of each. B may be A with other overrides | 2n x crush / processes |
+| `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, f_t/f_c and tau_g so the *simulated* coupons reproduce the measured ones (`lab --data` then shows ~0 % error); with 3+ specimens of a kind also the scatter (`my_material.overrides.yaml`, `params: scatter.*`) | ~1 min |
+| `bridgesim ab A.SLDPRT B.SLDPRT [-n 3] [--overrides-a a.yaml] [--overrides-b b.yaml] [--fidelity standard] --json` | Is B better than A? Both crushed with the same seeds: change of F_u and efficiency with a 90 % interval, `significant`, `verdict`, first failure of each. B may be A with other overrides | 2n x crush / processes |
 | `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity quick] [--processes 4] --json` | Spread of F_u over imperfections and material scatter; `recommended_prediction_kgf` for the Load Prediction Form (the 1/F-weighted median, which minimises the §12.7 error). `note` says what the spread leaves out (placeholder material values) | n x crush / processes |
 | `bridgesim schema inspect\|crush\|reality_gap\|lab\|montecarlo\|design_comparison\|sensitivity\|question` | JSON Schema of each report | instant |
 | `bridgesim mcp` | The same as MCP tools (`uv sync --extra mcp`) | - |
@@ -57,8 +57,11 @@ only the report; an error is one JSON object on stderr:
 `{"error": "...", "kind": "bad_input" | "simulation_failed", "exit_code": 2, "type": "..."}`.
 Progress lines go to stderr (one line per percent step), so they never break the JSON.
 
-MCP tools report errors as a result flagged as an error (`isError`), whose text is
-`Error executing tool <name>: ` followed by the same JSON error object.
+MCP tools return their report as structured content (`structuredContent`, a JSON
+object with a published output schema) and the same JSON as text. Errors are a result
+flagged as an error (`isError`), whose text is `Error executing tool <name>: ` followed by
+the same JSON error object. Give absolute paths: a relative one is taken from the
+server's folder (where the client started it), and the error for a missing file says so.
 
 ### Overrides are checked
 
@@ -79,7 +82,7 @@ claude mcp add bridgesim -- uv run --directory /path/to/troitsky-analysis bridge
 
 | Tool | Use |
 |---|---|
-| `inspect_bridge(cad_path, overrides_yaml, up_axis, span_axis, units, strict)` | seconds |
+| `inspect_bridge(cad_path, overrides_yaml, up_axis, span_axis, units, strict, brief=true)` | seconds |
 | `crush_bridge(cad_path, overrides_yaml, seed, fidelity, out_dir, strict, rate_check, ...)` | blocking, minutes |
 | `start_crush(cad_path, out_dir, ...)` then `job_status(out_dir)` | background: poll until `status` is `done` (report included) or `failed` (error included). Use this when tool calls time out |
 | `start_montecarlo(cad_path, out_dir, n, fidelity)` then `job_status(out_dir)` | background spread of F_u |
@@ -128,11 +131,17 @@ meanwhile, and `answer_with`: how to answer, as an overrides fragment (`bodies`,
 * laminated members longer than one stick (`butt_joints`, one question for all of
   them): how far apart the butt joints of neighbouring plies are (it sets each member's
   tension strength);
-* a rigid block directly under the loading plate (`block_under_plate:`);
+* a rigid block directly under the loading plate (`rigid_under_plate:`), and the compact
+  parts in the load path modelled as rigid blocks (`rigid_blocks`);
+* glued joints that are mostly end grain, a member's end glued flat (`end_grain_joints`);
+* a `kind` set in the overrides that does not fit the body's shape (`kind:`);
 * a failing rule (`rule:<section>`), the mass with an assumed density
   (`material:density`), placeholder material values (`material:measure`).
 
-Ask the `important` ones first. Do not guess an answer the designer can give.
+Ask the `important` ones first. Do not guess an answer the designer can give. A question
+is closed by its answer (setting what it asks), or, when the designer confirms the design
+is as drawn, by listing its id (or a pattern such as `weak_joint:*`) under `acknowledge:`
+in the overrides; acknowledged ids are reported in `acknowledged_questions`.
 
 Bodies are located by `centroid_mm`, `bbox_min_mm`, `bbox_max_mm` and `axis` in the
 inspect report, and events by `where_mm` in the crush report, so you can tell the
@@ -155,7 +164,14 @@ params:                     # any key of materials/simulation.yaml, or material.
   floss.strands: 6
   material.density_kg_m3: 590
   material.glue.tau_g_MPa: 2.6
+  glue.end_grain_factor: 0.8                     # end-grain joints sized before gluing
+acknowledge:                # questions the designer has answered "as drawn"
+  - "weak_joint:*"
+  - rigid_blocks
 ```
+
+Other top-level keys are reported in `warnings` (an `answer_with` may hold `cad` or `cli`:
+things to do, not overrides).
 
 Body names are exactly as `inspect` lists them (SolidWorks body names; mirrored copies
 get "(mirror copy)"). Joint names are `A | B` as listed in the inspect `joints`.
@@ -228,8 +244,11 @@ until measured, and the model is verified (the equations are solved right) but n
 validated against a physical crush test, so give F_u with its uncertainty and lean on
 design comparisons; glue lines are perfect over the whole touching area unless a
 `glue_factor` says otherwise; butt joints in laminated members are assumed in a brick
-pattern unless `butt_stagger_mm` says otherwise; members are fibre beams (no splitting
-along the grain except through shear); plates crack ply by ply; thick plates use
-thin-plate elements; parts that come into contact during the test push on each other
-without friction; time is compressed (the jack moves ~mm/s instead of mm/min; the
+pattern unless `butt_stagger_mm` says otherwise; members are shear-flexible fibre beams
+(no splitting along the grain except through shear), tapered ones with their real
+profile; compact blocks are rigid; plates crack ply by ply; thick plates use thin-plate
+elements; the bearing faces seat over 0.3 mm and the support corners are up to 0.5 mm out
+of level (`contact.seating_mm`, `scatter.support_level_mm`: measure them on the built
+bridge); parts that come into contact during the test push on each other without
+friction; time is compressed (the jack moves ~mm/s instead of mm/min; the
 materials have no rate effect, and `--rate-check` shows the speed does not matter).

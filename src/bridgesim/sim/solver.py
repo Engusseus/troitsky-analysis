@@ -114,6 +114,8 @@ class State:
     c_crush: np.ndarray = field(default_factory=lambda: np.zeros(0))  # glue-line set
     b_s2: np.ndarray = field(default_factory=lambda: np.zeros(0))
     b_s3: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    # Timoshenko shear strain correction of each beam, bending about e3 and e2
+    b_gam: np.ndarray = field(default_factory=lambda: np.zeros((0, 2)))
     sc: object | None = None  # self-contact (bridgesim.sim.contact.SelfContact)
     t: float = 0.0
     jack_y: float = 0.0
@@ -145,7 +147,7 @@ def initial_state(m: Model, jack_y: float) -> State:
         c_prev=np.zeros((nc, 3)), c_alive=np.ones(nc, bool), loose=np.zeros(n, bool),
         s_hist=np.zeros((len(m.s_nodes), 9 * m.s_lay.shape[1], 5)),
         s_gone=np.zeros(len(m.s_nodes), bool), b_s2=np.ones(nb), b_s3=np.ones(nb),
-        c_crush=np.zeros(nc))
+        b_gam=np.zeros((nb, 2)), c_crush=np.zeros(nc))
 
 
 # ----------------------------------------------------------------------------- kernels
@@ -195,9 +197,23 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     eu = np.maximum(et0 + 2 * m.b_Gf[:, None] / (ft * lch), 1.5 * et0)
     soft = m.params.get("crush_softening", 0.3)
     ec0 = fc / E_
+    # Timoshenko shear flexibility (see kernels.beam_kernel)
+    EIz = (m.b_E[:, None] * m.b_fA * m.b_fy**2).sum(1) * st.b_s2**2
+    EIy = (m.b_E[:, None] * m.b_fA * m.b_fz**2).sum(1) * st.b_s3**2
+    kGA = m.b_kGA
+    pos = kGA > 0
+    kGAs = np.where(pos, kGA, 1.0)
+    phz = np.where(pos, 12 * EIz / (kGAs * L0**2), 0.0)
+    phy = np.where(pos, 12 * EIy / (kGAs * L0**2), 0.0)
+    gz = 0.5 * phz / (1 + phz) * (th_i[:, 2] + th_j[:, 2]) + st.b_gam[:, 0]
+    gy = 0.5 * phy / (1 + phy) * (th_i[:, 1] + th_j[:, 1]) + st.b_gam[:, 1]
+    bzi, bzj = th_i[:, 2] - gz, th_j[:, 2] - gz
+    byi, byj = th_i[:, 1] - gy, th_j[:, 1] - gy
+    EIzt = np.zeros_like(l)
+    EIyt = np.zeros_like(l)
     for g, xi in enumerate(GP):
-        kz = ((-4 + 6 * xi) * th_i[:, 2] + (-2 + 6 * xi) * th_j[:, 2]) / L0
-        ky = ((-4 + 6 * xi) * th_i[:, 1] + (-2 + 6 * xi) * th_j[:, 1]) / L0
+        kz = ((-4 + 6 * xi) * bzi + (-2 + 6 * xi) * bzj) / L0
+        ky = ((-4 + 6 * xi) * byi + (-2 + 6 * xi) * byj) / L0
         s2, s3 = st.b_s2[:, None], st.b_s3[:, None]
         eps = eps0[:, None] - s2 * m.b_fy * kz[:, None] + s3 * m.b_fz * ky[:, None]
         ep = st.eps_p[:, g]
@@ -209,8 +225,11 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
         sig = np.where(ee > 0, (1 - dm2) * E_ * ee, E_ * ee)
         fce = fc * (1 - soft * np.clip(-ep / (5 * ec0), 0, 1))
         over = sig < -fce
+        Et = np.where(over, 0.0, np.where(ee > 0, (1 - dm2) * E_, E_))
         ep2 = np.where(over, eps + fce / E_, ep)
         sig = np.where(over, -fce, sig)
+        EIzt += 0.5 * (Et * m.b_fA * m.b_fy**2).sum(1) * st.b_s2**2
+        EIyt += 0.5 * (Et * m.b_fA * m.b_fz**2).sum(1) * st.b_s3**2
         if update:
             st.dmg_t[:, g] = dm2
             st.eps_p[:, g] = ep2
@@ -223,20 +242,25 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
         Mzj += 0.5 * Mz * (-2 + 6 * xi)
         Myi += 0.5 * My * (-4 + 6 * xi)
         Myj += 0.5 * My * (-2 + 6 * xi)
+    if update:
+        st.b_gam[:, 0] += np.where(pos, ((Mzi + Mzj) / L0 - kGA * gz)
+                                   / (kGAs + 12 * EIzt / L0**2), 0)
+        st.b_gam[:, 1] += np.where(pos, ((Myi + Myj) / L0 - kGA * gy)
+                                   / (kGAs + 12 * EIyt / L0**2), 0)
     sj = (st.b_s2 * st.b_s3) ** 2
     T = sj * m.b_GJ / L0 * (th_j[:, 0] - th_i[:, 0])
     D = np.c_[l - L0, th_i, th_j]
     if beta > 0:
         rate = (D - st.b_prev) / dt
         EA = (m.b_E[:, None] * m.b_fA).sum(1)
-        EIz = (m.b_E[:, None] * m.b_fA * m.b_fy**2).sum(1) * st.b_s2**2
-        EIy = (m.b_E[:, None] * m.b_fA * m.b_fz**2).sum(1) * st.b_s3**2
+        cz = beta * EIz / (L0 * (1 + phz))
+        cy = beta * EIy / (L0 * (1 + phy))
         N = N + beta * EA / L0 * rate[:, 0]
         T = T + beta * sj * m.b_GJ / L0 * (rate[:, 4] - rate[:, 1])
-        Mzi = Mzi + beta * EIz / L0 * (4 * rate[:, 3] + 2 * rate[:, 6])
-        Mzj = Mzj + beta * EIz / L0 * (2 * rate[:, 3] + 4 * rate[:, 6])
-        Myi = Myi + beta * EIy / L0 * (4 * rate[:, 2] + 2 * rate[:, 5])
-        Myj = Myj + beta * EIy / L0 * (2 * rate[:, 2] + 4 * rate[:, 5])
+        Mzi = Mzi + cz * ((4 + phz) * rate[:, 3] + (2 - phz) * rate[:, 6])
+        Mzj = Mzj + cz * ((2 - phz) * rate[:, 3] + (4 + phz) * rate[:, 6])
+        Myi = Myi + cy * ((4 + phy) * rate[:, 2] + (2 - phy) * rate[:, 5])
+        Myj = Myj + cy * ((2 - phy) * rate[:, 2] + (4 + phy) * rate[:, 5])
     if update:
         st.b_prev = D
     Vz = (Mzi + Mzj) / l
@@ -497,11 +521,12 @@ def cable_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
 def platform_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray, k: float,
                     mu: float, update: bool = True, cdamp=0.0) -> None:
     p, arm = _attach_pos(m, st, m.p_att)
-    pen = m.table_y - p[:, 1]
+    pen = m.table_y - p[:, 1] - _lift(m)
     touch = (pen > 0) & ~st.loose[m.a_node[m.p_att]]
     nd = m.a_node[m.p_att]
     vy = st.v[nd, 1] + st.w[nd, 2] * arm[:, 0] - st.w[nd, 0] * arm[:, 2]
-    fn = np.where(touch, np.maximum(np.minimum(k * pen - cdamp * vy, _fmax(m, "p")), 0.0), 0.0)
+    fe = seated(k, np.maximum(pen, 0.0), _seat(m))
+    fn = np.where(touch, np.maximum(np.minimum(fe - cdamp * vy, _fmax(m, "p")), 0.0), 0.0)
     k = np.broadcast_to(np.asarray(k, float), (len(p),))
     rel = p - st.p_anchor
     rel[:, 1] = 0
@@ -545,8 +570,8 @@ def plate_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray, k: float,
     vb = st.v[nd] + np.cross(st.w[nd], arm)
     vp = st.v[P] + np.cross(st.w[P], p - xp)
     vr = ((vb - vp) * n).sum(1)
-    fn = np.where(inside, np.maximum(np.minimum(k * pen - cdamp * vr, _fmax(m, "q")), 0.0),
-                  0.0)
+    fe = seated(k, np.maximum(pen, 0.0), _seat(m))
+    fn = np.where(inside, np.maximum(np.minimum(fe - cdamp * vr, _fmax(m, "q")), 0.0), 0.0)
     rel = loc - st.q_anchor
     rel = rel - (rel * nloc).sum(1)[:, None] * nloc
     ftl = -k[:, None] * rel
@@ -648,9 +673,34 @@ def _kc(m: Model, key: str, s: Settings) -> np.ndarray:
     return k
 
 
-def _glue_fc90(m: Model) -> float:
-    """Crushing strength across the grain under glue lines (MPa)."""
-    return float(m.params.get("glue_fc90", 1e30))
+def _glue_fc90(m: Model) -> np.ndarray:
+    """Crushing strength of the wood at each glue point (MPa), by grain direction."""
+    f = m.params.get("glue_fc")
+    if f is None or len(f) != len(m.c_a):
+        f = np.full(len(m.c_a), 1e30)
+        m.params["glue_fc"] = f
+    return f
+
+
+def seated(k, pen: np.ndarray, seat: float) -> np.ndarray:
+    """Bearing-face normal force with seating (see kernels._seated)."""
+    if seat <= 0:
+        return k * pen
+    return np.where(pen < seat, 0.5 * k * pen**2 / seat, k * (pen - 0.5 * seat))
+
+
+def _seat(m: Model) -> float:
+    return float(m.params.get("seating_mm", 0.0))
+
+
+def _lift(m: Model) -> np.ndarray:
+    """How far each platform contact point sits above the platform when the bridge is
+    level: the support corners of a built bridge are not quite in one plane."""
+    v = m.params.get("p_lift")
+    if v is None or len(v) != len(m.p_att):
+        v = np.zeros(len(m.p_att))
+        m.params["p_lift"] = v
+    return v
 
 
 def _fmax(m: Model, key: str) -> np.ndarray:
@@ -680,7 +730,7 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
     if len(m.b_i):
         K.beam_kernel(x, R, m.b_i, m.b_j, m.b_L0, m.b_E0, m.b_fy, m.b_fz, m.b_fA, m.b_E,
                       m.b_ft, m.b_fc, m.b_Gf, m.b_GJ, m.b_A, m.b_fv, m.b_fv3, m.b_Wt,
-                      m.b_nply, st.b_s2, st.b_s3,
+                      m.b_nply, m.b_kGA, st.b_gam, st.b_s2, st.b_s3,
                       float(m.params.get("crush_softening", 0.3)), st.eps_p, st.dmg_t,
                       st.b_alive, st.b_fractured, st.b_shear, F, Mo, update,
                       s.beta if update else 0.0, s.dt, st.b_prev)
@@ -710,13 +760,14 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
     Mc[:] = 0.0
     K.platform_kernel(x, R, m.a_node, m.a_r0, m.p_att, m.table_y, _kc(m, "p", s),
                       s.mu_platform, st.p_anchor, st.p_touch, Fc, Mc, update, st.v, st.w,
-                      _cd(m, "p", s, update), st.loose, _fmax(m, "p"))
+                      _cd(m, "p", s, update), st.loose, _fmax(m, "p"), _lift(m), _seat(m))
     plate_load = 0.0
     if len(m.q_att) and m.plate_node >= 0:
         plate_load = K.plate_kernel(x, R, m.a_node, m.a_r0, m.q_att, m.plate_node,
                                     m.plate_half, _kc(m, "q", s), s.mu_plate, st.q_anchor,
                                     st.q_touch, Fc, Mc, update, st.v, st.w,
-                                    _cd(m, "q", s, update), st.loose, _fmax(m, "q"))
+                                    _cd(m, "q", s, update), st.loose, _fmax(m, "q"),
+                                    _seat(m))
     jack_forces(m, st, Fc, Mc, s.k_jack, s.k_jack_lat, s.contact_damping, st.jack_v)
     F -= Fc
     Mo -= Mc
