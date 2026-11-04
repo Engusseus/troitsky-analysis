@@ -17,9 +17,10 @@ Tools:
   questions to ask the designer (seconds);
 * ``crush_bridge`` - the simulated §12.5 crushing test (minutes, blocking);
 * ``start_crush`` / ``start_montecarlo`` / ``start_compare_designs`` /
-  ``start_sensitivity`` + ``job_status`` - in the background (jobs survive a restart of
-  this server), for clients whose tool calls time out;
-* ``compare_with_test`` - reality gap between a simulation and a physical crush test;
+  ``start_sensitivity`` / ``start_calibrate_bridge`` + ``job_status`` - in the background
+  (jobs survive a restart of this server), for clients whose tool calls time out;
+* ``compare_with_test`` - reality gap between a simulation (or a montecarlo spread) and
+  a physical crush test;
 * ``lab_tests`` - simulated coupon tests, and their gap to the team's coupon data;
 * ``calibrate_material`` - fit the material from the team's coupon data;
 * ``get_schema`` - JSON Schema of any report.
@@ -213,8 +214,11 @@ def build_server():
         "Simulates the Troitsky popsicle-stick bridge crushing test on SolidWorks parts. "
         "Call inspect_bridge first, ask the designer its `questions`, pass the answers as "
         "overrides_yaml to crush_bridge or start_crush. Check report.quality.trustworthy. "
-        "After a real test, compare_with_test gives the reality gap. Every tool returns "
-        "JSON; failures come back as {error, kind}. Full guide: AGENTS.md."))
+        "Every report ends with `next_steps` (what to do next, with a what-if to test with "
+        "start_compare_designs before changing the CAD). After a real test, "
+        "compare_with_test gives the reality gap and start_calibrate_bridge fits the "
+        "model to it. Every tool returns JSON; failures come back as {error, kind}. Full "
+        "guide: AGENTS.md."))
 
     @srv.tool()
     @_safe

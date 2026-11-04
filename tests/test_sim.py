@@ -514,6 +514,65 @@ def test_bridge_calibration_recovers_known_factors(tmp_path):
     assert "material.E_MPa" in cal.overrides["params"] and "bodies" in cal.overrides
 
 
+def test_agent_loop_through_mcp(tmp_path):
+    """The loop an agent drives, through the MCP tools only: inspect, answer the questions
+    in overrides, crush, take the strengthen step's what-if, test it with a background A/B
+    comparison on the same seed, and see the design get stronger."""
+    import asyncio
+    import time
+
+    import yaml
+
+    from bridgesim.cad.synthetic import box
+    from bridgesim.sim.mcp_server import build_server
+
+    pytest.importorskip("mcp")
+    pytest.importorskip("numba")
+    cad = tmp_path / "beam.stl"
+    write_stl([box("Pier L", (-550, 0, -40), (-540, 150, 40)),
+               box("Pier R", (540, 0, -40), (550, 150, 40)),
+               box("Beam", (-550, 150, -25), (550, 179.4, 25))], cad)
+    srv = build_server()
+
+    def call(tool, **kw):
+        out = asyncio.run(srv.call_tool(tool, kw))
+        out = out[1] if isinstance(out, tuple) else getattr(out, "structured_content", out)
+        return out
+
+    ins = call("inspect_bridge", cad_path=str(cad), brief=False)
+    assert ins["questions"] and ins["next_steps"]
+    # the designer's answers: what each body is (an STL has no names: the agent reads
+    # them, and where each body is, from the full inspect report)
+    bodies = {b["name"]: ({"layup": "14-ply UD", "butt_stagger_mm": 0} if b["kind"] == "bar"
+                          else {"kind": "block"}) for b in ins["bodies"]}
+    ov = {"bodies": bodies, "acknowledge": ["material:*", "rigid_*", "floating:*", "rule:*",
+                                           "weak_joint:*"]}
+    ov_yaml = yaml.safe_dump(ov)
+    ins2 = call("inspect_bridge", cad_path=str(cad), overrides_yaml=ov_yaml, strict=True)
+    assert not [q for q in ins2["questions"] if q["severity"] == "important"], \
+        ins2["questions"]
+    rep = call("crush_bridge", cad_path=str(cad), overrides_yaml=ov_yaml, fidelity="quick",
+               seed=1, out_dir=str(tmp_path / "A"))
+    assert rep["kind"] == "crush_brief" and rep["Fu_kgf"] > 50
+    step = next(s for s in rep["next_steps"] if s["action"] == "strengthen")
+    assert step["overrides"], step  # a what-if to try before touching the CAD
+    whatif = json.loads(json.dumps(ov))
+    for k, v in step["overrides"].items():
+        for name, val in v.items():
+            whatif.setdefault(k, {})[name] = {**whatif.get(k, {}).get(name, {}), **val} \
+                if isinstance(val, dict) else val
+    call("start_compare_designs", cad_a=str(cad), cad_b=str(cad), out_dir=str(tmp_path / "ab"),
+         n=1, overrides_a_yaml=ov_yaml, overrides_b_yaml=yaml.safe_dump(whatif),
+         fidelity="quick")
+    for _ in range(600):
+        st = call("job_status", out_dir=str(tmp_path / "ab"))
+        if st["status"] != "running":
+            break
+        time.sleep(1)
+    assert st["status"] == "done", st
+    assert st["report"]["Fu_change"] > 0.1  # the what-if made it stronger
+
+
 def test_synthetic_bridge_crush(synthetic_crush):
     d, rep, res = synthetic_crush
     # two 6.2 x 19 stringers + a 4.1 mm deck over 1 m: tens of kgf, not hundreds

@@ -134,9 +134,14 @@ load), the load–deflection curve, the 2027 rules measured on the real solids, 
 schemas, and `bridgesim mcp` serves the same functions as MCP tools. `inspect` returns
 **questions** when the design is ambiguous or suspect. Examples: an unnamed body, parts
 that overlap, a joint much weaker than its member, a failing rule, an assumed density
-pushing the mass over 6 kg. The answers go in an overrides YAML. `bridgesim compare`
-scores the simulation against a real crush test, and `bridgesim lab` and
-`bridgesim calibrate` do the same at the coupon level. See [AGENTS.md](AGENTS.md).
+pushing the mass over 6 kg. The answers go in an overrides YAML. Every report ends
+with `next_steps`: what to do next, with the exact command, and for the parts that broke
+first a what-if (a thicker member, a bigger glued area) that `bridgesim ab` tests
+before anyone touches the CAD. `bridgesim compare` scores the simulation against a real
+crush test (or places it in the `montecarlo` range), `bridgesim calibrate-bridge` fits
+the model to it, and `bridgesim lab` and `bridgesim calibrate` do the same at the coupon
+level; `bridgesim sensitivity` says which material value to measure first. See
+[AGENTS.md](AGENTS.md).
 The method and every assumption are in [ASSUMPTIONS-SIM.md](ASSUMPTIONS-SIM.md). The
 simulation is verified against textbook solutions in the tests but **not yet validated
 against a real crush test**: with placeholder materials, treat F_u as an estimate and

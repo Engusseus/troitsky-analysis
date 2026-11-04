@@ -195,7 +195,8 @@ seeds gives the spread of F_u.
   20 kN/mm machine compliance).
 * **F_u** = peak jack force up to the moment the bridge is judged failed: a load drop to
   half the peak after the peak (collapse), mid-span deflection > 50 mm, or contact of a
-  part with the platform other than the original supports (§12.5). A glued joint letting
+  part with the platform other than the original supports (§12.5) or with the press
+  uprights (debris flying off a broken part does not count). A glued joint letting
   go inside the bridge is also a §12.5 failure ("shear, including joint failure"), but
   the judges only see it when the bridge visibly gives way, which shows as the load
   drop; the load at the first complete joint separation is reported separately
@@ -264,7 +265,12 @@ seeds gives the spread of F_u.
 * Glue lines are perfect over the whole touching area: starved or gappy joints only
   through `glue_factor` in the overrides.
 * Splitting of a member along the grain other than by shear, knots and stick-to-stick
-  variation inside one body; butt joints in plates (only in bars).
+  variation inside one body; butt joints in plates (only in bars). A member that splits
+  in shear switches to its split section at once (no fracture energy for the split
+  itself); its axial strength is kept.
+* A crushed part keeps its full section in the rest of the model: crushing is in the
+  glue line between two parts (permanent set, compaction), not a loss of the part's
+  own area.
 * Thick plates (gussets 20 mm thick) use thin-plate (Kirchhoff) elements with constant-
   strain membranes, at least 1.5 x their thickness in size: their in-plane bending is
   somewhat too stiff on coarse meshes (check with `--fidelity fine`), and compact
@@ -275,4 +281,8 @@ seeds gives the spread of F_u.
 * Friction in the contact between parts that were not touching at the start.
 * Debris (pieces with nothing left holding them) falls under gravity and lands on the
   platform, but does not hit the bridge or the plate.
-* Creep, humidity, and the time the bridge waits loaded.
+* Creep, humidity, and the time the bridge waits loaded. White (PVA) glue creeps and the
+  real test takes minutes, so a real curve bends over more before the peak and the
+  deflection at the peak is larger than simulated; slip in imperfect joints (gaps, glue
+  starved at the edges) adds to it. The simulated curve is that of perfect joints:
+  the toe from seating, then near-linear to ~90 % of the peak.
