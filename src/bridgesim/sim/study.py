@@ -69,12 +69,25 @@ def _sha(path: Path) -> str:
 
 
 def load_overrides(overrides: str | Path | dict | None) -> tuple[Overrides, dict]:
+    """Overrides from a dict (already parsed: MCP, the app) or from a YAML file the user
+    names (the CLI's -o). Only a .yaml/.yml file is read, and its content must be a
+    mapping; it is never echoed back in an error."""
     if overrides is None:
         return Overrides(), {}
     if isinstance(overrides, dict):
         d = overrides
+    elif isinstance(overrides, (str, Path)):
+        path = Path(overrides)
+        if path.suffix.lower() not in (".yaml", ".yml") or not path.is_file():
+            raise ValueError(f"overrides file {path.name!r}: give an existing .yaml or .yml "
+                             "file")
+        d = load_yaml(path.read_text(encoding="utf-8")) or {}
+        if not isinstance(d, dict):
+            raise ValueError(f"overrides file {path.name!r} must hold a YAML mapping "
+                             "(bodies:, glue:, params:, acknowledge:)")
     else:
-        d = load_yaml(Path(overrides).read_text(encoding="utf-8")) or {}
+        raise ValueError("overrides must be a YAML mapping (bodies:, glue:, params:, "
+                         f"acknowledge:), not a {type(overrides).__name__}")
     return Overrides.from_dict(d), d
 
 

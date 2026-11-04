@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import tempfile
 from pathlib import Path
 
@@ -32,7 +33,13 @@ data = up.getvalue()
 digest = hashlib.sha256(data).hexdigest()[:16]
 work = Path(tempfile.gettempdir()) / f"bridgesim_{digest}"
 work.mkdir(exist_ok=True)
-cad = work / up.name
+# the browser names the file: keep only a plain name with the CAD suffix, never a path
+suffix = Path(up.name).suffix.lower()
+if suffix not in (".sldprt", ".x_b", ".stl"):
+    st.error("Give a .SLDPRT, .x_b or .stl file.")
+    st.stop()
+stem = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(up.name).stem)[:80] or "bridge"
+cad = work / f"{stem}{suffix}"
 cad.write_bytes(data)
 
 ov_text = st.text_area(
@@ -44,14 +51,17 @@ try:
 except yaml.YAMLError as exc:
     st.error(f"Overrides are not valid YAML: {exc}")
     st.stop()
+if not isinstance(overrides, dict):  # a bare string is never taken as a file path
+    st.error("Overrides must be a YAML mapping (bodies:, glue:, params:, acknowledge:).")
+    st.stop()
 
 
 @st.cache_data(show_spinner="Reading the CAD file and building the model…")
-def _inspect(path: str, ov: str):
-    return study.inspect(path, yaml.safe_load(ov) or {}).model_dump(mode="json")
+def _inspect(path: str, ov: dict):
+    return study.inspect(path, dict(ov)).model_dump(mode="json")
 
 
-rep = _inspect(str(cad), ov_text)
+rep = _inspect(str(cad), overrides)
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Bodies", rep["n_bodies"])
 c2.metric("Mass", f"{rep['mass_kg']:.2f} kg")

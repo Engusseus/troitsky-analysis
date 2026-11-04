@@ -716,6 +716,36 @@ def test_cli_error_contract(tmp_path):
     assert err["kind"] == "bad_input" and "missing.SLDPRT" in err["error"]
 
 
+def test_overrides_never_read_an_arbitrary_file(tmp_path):
+    """Overrides typed as text (MCP, the app) must be a mapping: a bare string is refused,
+    never taken as a file path. A file is read only with a .yaml/.yml name, and must hold
+    a mapping; its content is not echoed in the error."""
+    import asyncio
+
+    from bridgesim.sim import study
+
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOP-SECRET-CONTENT")
+    with pytest.raises(ValueError, match="yaml"):
+        study.load_overrides(str(secret))
+    listy = tmp_path / "list.yaml"
+    listy.write_text("- TOP-SECRET-CONTENT\n")
+    with pytest.raises(ValueError, match="mapping") as exc:
+        study.load_overrides(listy)
+    assert "TOP-SECRET" not in str(exc.value)
+    pytest.importorskip("mcp")
+    from bridgesim.sim.mcp_server import build_server
+
+    write_stl(simple_beam_bridge(), tmp_path / "b.stl")
+    try:
+        asyncio.run(build_server().call_tool(
+            "inspect_bridge", {"cad_path": str(tmp_path / "b.stl"),
+                               "overrides_yaml": str(secret)}))
+        raise AssertionError("a bare string was accepted as overrides")
+    except Exception as e:  # noqa: BLE001 - the SDK's ToolError
+        assert "mapping" in str(e) and "TOP-SECRET" not in str(e)
+
+
 def test_overrides_are_validated(tmp_path):
     """Typos in overrides are reported (with a suggestion), and are errors with strict."""
     from bridgesim.sim import study

@@ -41,12 +41,20 @@ from pathlib import Path
 _JOBS: dict[str, subprocess.Popen] = {}
 
 
-def _yaml_or_none(text: str | None):
+def _yaml_or_none(text: str | None) -> dict | None:
+    """Overrides given as YAML text: a mapping, never a path (a bare string such as
+    '/etc/passwd' is refused, not read)."""
     if not text:
         return None
     import yaml
 
-    return yaml.safe_load(text)
+    d = yaml.safe_load(text)
+    if d is None:
+        return None
+    if not isinstance(d, dict):
+        raise ValueError("overrides_yaml must be a YAML mapping (bodies:, glue:, params:, "
+                         f"acknowledge:), not a {type(d).__name__}")
+    return d
 
 
 def _error(exc: BaseException) -> str:
