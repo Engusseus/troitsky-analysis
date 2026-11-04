@@ -670,9 +670,12 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 "answer_with": {"bodies": {g + "*": {
                     "layup": f"{len(lay.angles)}-ply <UD | 0-90 | +-45>"}}}})
         forced = o.get("kind")
+        if forced in ("block", "ignore") and questions and \
+                questions[-1].get("id") == f"layup:{b.name}":
+            questions.pop()  # set rigid or left out: what it is made of changes nothing
         sh = analyse_shape(b, lay, forced)
         if lay.source == "default" and sh.kind == "block" and questions and \
-                questions[-1].get("body") == b.name:
+                questions[-1].get("id") == f"layup:{b.name}":
             questions[-1]["question"] += (" It is compact, so it is modelled as a rigid "
                                           "block whatever it is made of; if it is built "
                                           "from plates or members, set its kind too.")

@@ -630,7 +630,8 @@ def test_agent_loop_through_mcp(tmp_path):
     assert step["overrides"], step  # a what-if to try before touching the CAD
     # the what-if with the designer's answers, saved next to the report for ab
     whatif = Path(rep["artifacts"]["whatif_yaml"]).read_text(encoding="utf-8")
-    assert yaml.safe_load(whatif)["bodies"]["Beam"]["layup"] == "14-ply UD"
+    wb = yaml.safe_load(whatif)["bodies"]
+    assert all(wb[n].get("layup") == v.get("layup") for n, v in bodies.items())
     call("start_compare_designs", cad_a=str(cad), cad_b=str(cad), out_dir=str(tmp_path / "ab"),
          n=1, overrides_a_yaml=ov_yaml, overrides_b_yaml=whatif, fidelity="quick")
     for _ in range(600):
