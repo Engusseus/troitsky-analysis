@@ -32,11 +32,13 @@ from bridgesim.rules import RuleSet, evaluate_values
 from bridgesim.schema import Material
 from bridgesim.sim import lab as labmod
 from bridgesim.sim.crush import KGF, CrushOptions, CrushResult, run_crush
-from bridgesim.sim.idealize import Overrides, build_model
+from bridgesim.sim.idealize import Overrides, _group, build_model
 from bridgesim.sim.materials import SimParams
 from bridgesim.sim.model import Model
 from bridgesim.sim.report import (
     BodyReport,
+    Criteria,
+    CriterionHit,
     CrushReport,
     Curve,
     EventOut,
@@ -193,19 +195,27 @@ def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: Sim
     for p in model.patches:
         by_body.setdefault(p.body_a, []).append(p)
         by_body.setdefault(p.body_b, []).append(p)
+    weak_seen: set[str] = set()
     for bi, info in enumerate(model.bodies):
         if info.kind != "bar" or info.f_t_eff_MPa <= 0:
             continue
         cap_member = info.f_t_eff_MPa * info.section_mm[0] * info.section_mm[1]
         glue = sum(p.area_mm2 for p in by_body.get(bi, []) if p.kind == "glue") * tau
-        if glue and glue < 0.5 * cap_member:
+        if glue and glue < 0.5 * cap_member and _group(info.name) not in weak_seen:
+            weak_seen.add(_group(info.name))
             qs.append(Question(
                 id=f"weak_joint:{info.name}", topic="design", body=info.name,
-                question=f"The glued area on '{info.name}' carries about {glue / KGF:.0f} kgf "
+                question=f"The glued area on '{info.name}' (and its copies) carries about "
+                         f"{glue / KGF:.0f} kgf "
                          f"in shear, much less than the member itself "
                          f"({cap_member / KGF:.0f} kgf in tension). Is the joint really this "
                          "small, or is a gusset or lap missing from the CAD?",
                 assumed="the joint is exactly as drawn",
+                answer_with={"cad": f"add the missing gusset or lap on '{info.name}' and "
+                                    "crush again; if the joint is as drawn, nothing to do",
+                             "bodies": {info.name: {
+                                 "glue_factor": "<only if its glue is weaker or stronger "
+                                                "than a full glue line, e.g. 0.7>"}}},
                 severity="check"))
     # rules
     for ln in rules.lines:
@@ -215,7 +225,10 @@ def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: Sim
                 question=f"Rule §{ln.section} {ln.title} fails ({ln.measured}; penalty "
                          f"{ln.penalty:g}{', bans ' + ', '.join(ln.bans) if ln.bans else ''})"
                          f"{': ' + ln.cause if ln.cause else ''}. Intended?",
-                assumed="the design is simulated as drawn", severity="important"))
+                assumed="the design is simulated as drawn",
+                answer_with={"cad": f"change the design so §{ln.section} passes "
+                                    f"({ln.cause or ln.measured}), or accept the penalty"},
+                severity="important"))
     mass = rules.measurements.get("mass_kg", 0.0)
     if mass > MASS_LIMIT_KG and mat.density_kg_m3.source == "assumed":
         qs.append(Question(
@@ -225,7 +238,8 @@ def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: Sim
                      f"{mat.glue.mass_fraction.value:.0%} of the wood mass. What do your "
                      "sticks weigh (density = mass of 100 sticks / their volume)?",
             assumed=f"{mat.density_kg_m3.value:g} kg/m3",
-            answer_with={"params": {"material.density_kg_m3": 600}}, severity="important"))
+            answer_with={"params": {"material.density_kg_m3": "<measured density, kg/m3>"}},
+            severity="important"))
     assumed = [k for k in ("E_MPa", "f_t_MPa", "f_c_MPa") if k in mat.assumed_keys()]
     if assumed or "glue.tau_g_MPa" in mat.assumed_keys():
         qs.append(Question(
@@ -234,6 +248,9 @@ def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: Sim
                      "Have you tested sticks (3-point bending) and glued lap joints? Fill "
                      "validation/physical/*.csv and run `bridgesim calibrate`.",
             assumed="E = 10 GPa, f_t = 40, f_c = 30 MPa, glue 2 MPa (placeholders)",
+            answer_with={"cli": "bridgesim calibrate validation/physical --out "
+                                "my_material.yaml, then crush with --material "
+                                "my_material.yaml"},
             severity="important"))
     return qs
 
@@ -344,6 +361,7 @@ def _sequence(events: list) -> list[str]:
         seen.add(key)
         verb = {"member_fracture": "member broke", "member_shear": "member split in shear",
                 "plate_crack": "plate cracked", "joint_failure": "glued joint separated",
+                "joint_cracking": "glued joint cracking",
                 "floss_break": "floss snapped", "criterion": "§12.5 failure criterion",
                 "instability": "instability", "numerical": "numerical problem"}.get(
                     e.kind, e.kind)
@@ -371,6 +389,8 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
     scale, speed = FIDELITY[fidelity]
     path, bodies, ov, ov_raw, mat, sp, rs = _inputs(cad, overrides, material, sim_params,
                                                      ruleset, units, up, span)
+    if progress is not None:
+        progress(0.0, f"read {len(bodies)} bodies; building the structural model")
     model = _build(bodies, mat, sp, ov, seed, scale, strict)
     rules = _rules(bodies, mat, rs, model)
     opt = options or CrushOptions(speed_mm_s=speed)
@@ -408,7 +428,8 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         Fu_kgf=round(res.Fu_kgf, 2), Fu_N=round(res.Fu_N, 1), failure_mode=res.failure_mode,
         failure_detail=res.failure_detail, deflection_at_Fu_mm=round(res.deflection_at_Fu_mm, 2),
         mass_kg=round(mass, 3), efficiency_kgf_per_kg=round(res.Fu_kgf / mass, 2),
-        criteria=res.criteria,
+        criteria=_criteria(res.criteria),
+        failures=_failures(res.events, _fail_time(res)),
         events=_compact_events(res.events), n_events_total=len(res.events),
         failure_sequence=_sequence(res.events), curve=curve,
         quality=_quality(res, mat, sp, rc),
@@ -431,12 +452,13 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         with (out / "events.csv").open("w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
             w.writerow(["t_s", "jack_travel_mm", "load_kgf", "kind", "what", "detail",
-                        "x_mm", "y_mm", "z_mm"])
+                        "x_mm", "y_mm", "z_mm", "fraction_separated"])
             for e in res.events:
                 d = e.as_dict()
                 p = d.get("where_mm") or ["", "", ""]
+                fr = d.get("fraction_separated")
                 w.writerow([d["t_s"], d["jack_travel_mm"], d["load_kgf"], d["kind"],
-                            d["what"], d["detail"], *p])
+                            d["what"], d["detail"], *p, "" if fr is None else fr])
         rep.artifacts["events_csv"] = str(out / "events.csv")
         if replay:
             from bridgesim.sim.replay import replay_html
@@ -447,6 +469,40 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         rep.artifacts["report_json"] = str(out / "crush.json")
         (out / "crush.json").write_text(rep.model_dump_json(indent=2), encoding="utf-8")
     return rep, res
+
+
+MAJOR = ("joint_cracking", "joint_failure", "member_fracture", "member_shear",
+         "plate_crack", "floss_break")
+
+
+def _failures(events, fail_t: float | None, limit: int = 60) -> list[EventOut]:
+    """Major events in order, first per (kind, part), up to the collapse plus a little."""
+    out, seen = [], set()
+    for e in events:
+        if e.kind not in MAJOR or (e.kind, e.what) in seen:
+            continue
+        if fail_t is not None and e.t > fail_t + 0.002:
+            break
+        seen.add((e.kind, e.what))
+        out.append(EventOut(**e.as_dict()))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _criteria(c: dict) -> Criteria:
+    def hit(d):
+        if d is None:
+            return None
+        ld = d.get("load_N")
+        return CriterionHit(t_s=round(float(d.get("t_s", 0.0)), 5),
+                            jack_travel_mm=None if d.get("travel_mm") is None
+                            else round(float(d["travel_mm"]), 2),
+                            load_kgf=None if ld is None else round(float(ld) / KGF, 2),
+                            what=str(d.get("what") or d.get("part") or d.get("detail") or ""))
+
+    return Criteria(**{k: hit(c.get(k)) for k in ("deflection", "contact", "joint_or_shear",
+                                                  "instability")})
 
 
 def _compact_events(events) -> list[EventOut]:
@@ -494,6 +550,15 @@ def brief(rep: CrushReport, n_sequence: int = 12) -> dict:
     return d
 
 
+def _fail_time(res: CrushResult) -> float | None:
+    """Simulated time at which the bridge was judged failed (from its jack travel)."""
+    tr = res.curve.get("travel") or []
+    if not tr or res.failure_mode in ("none", "instability"):
+        return None
+    i = next((k for k, v in enumerate(tr) if v >= res.t_failure), len(tr) - 1)
+    return float(res.curve["t"][i])
+
+
 def _first_joint(res: CrushResult) -> float | None:
     hit = [e for e in res.events if e.kind in ("joint_failure", "member_shear")]
     return round(hit[0].force_N / KGF, 2) if hit else None
@@ -530,139 +595,186 @@ def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = N
 
 
 def _read_test_csv(path: str | Path) -> dict[str, Any]:
+    """Rows of a crush test record. The curve may be load vs mid-span deflection
+    (``midspan_deflection_mm``) or vs jack stroke (``jack_travel_mm``); a record of the
+    peak alone (one row, or only a ``failure`` row with its load) is accepted too."""
     rows = list(csv.DictReader(Path(path).read_text(encoding="utf-8").splitlines()))
-    load = [float(r["load_kgf"]) for r in rows if r.get("load_kgf") not in (None, "")]
-    defl = [float(r["midspan_deflection_mm"]) for r in rows
-            if r.get("midspan_deflection_mm") not in (None, "")]
-    n = min(len(load), len(defl))
+    if not rows or "load_kgf" not in rows[0]:
+        raise ValueError(f"{path}: needs a load_kgf column (see "
+                         "validation/physical/crush_test_template.csv)")
+    xcol = "midspan_deflection_mm" if any(r.get("midspan_deflection_mm") not in (None, "")
+                                          for r in rows) else "jack_travel_mm"
+    load, x = [], []
+    for r in rows:
+        lv, xv = _float(r, "load_kgf"), _float(r, xcol)
+        if lv is not None and xv is not None:
+            load.append(lv)
+            x.append(xv)
+    peaks = [_float(r, "load_kgf") for r in rows if _float(r, "load_kgf") is not None]
     ev = [(r.get("event") or "", r.get("notes") or "") for r in rows]
     fail_parts = [n_.strip() for e, n_ in ev if e.lower().startswith("fail") and n_]
-    return {"load": np.array(load[:n]), "defl": np.array(defl[:n]), "fail_parts": fail_parts}
+    return {"load": np.array(load), "x": np.array(x), "x_kind": xcol,
+            "peak": max(peaks) if peaks else math.nan, "fail_parts": fail_parts}
 
 
 def compare(sim: CrushReport | str | Path, test_csv: str | Path) -> RealityGap:
     """Reality gap between a simulated crush (report or crush.json) and a physical crush
-    test recorded in ``validation/physical/crush_test_template.csv`` format (rows of
-    load_kgf and midspan_deflection_mm; a row with event 'failure' and the broken part in
-    notes)."""
+    test (``validation/physical/crush_test_template.csv``): load_kgf against
+    midspan_deflection_mm or jack_travel_mm, a row with event 'failure' and the broken part
+    in notes. With the peak load alone (and the broken part), the ultimate load, the §12.7
+    prediction error and the failure location are still compared."""
     rep = sim if isinstance(sim, CrushReport) else CrushReport.model_validate_json(
         Path(sim).read_text(encoding="utf-8"))
     t = _read_test_csv(test_csv)
-    if len(t["load"]) < 2:
-        raise ValueError(f"{test_csv}: need at least two rows with load_kgf and "
-                         "midspan_deflection_mm")
+    peak_t = float(t["peak"])
+    if not math.isfinite(peak_t) or peak_t <= 0:
+        raise ValueError(f"{test_csv}: no load_kgf value")
+    peak_s = float(rep.Fu_kgf)
+    has_curve = len(t["load"]) >= 3
+    jack = t["x_kind"] == "jack_travel_mm"
     sl = np.array(rep.curve.load_kgf)
-    sd = np.array(rep.curve.deflection_mm)
+    sx = np.array(rep.curve.jack_travel_mm if jack else rep.curve.deflection_mm)
     # the simulated record up to F_u: after the bridge is judged failed the jack goes on
     # (for the replay) and may press on the wreckage, which is not part of the test
-    if len(sl) and rep.Fu_kgf > 0:
-        i_fu = int(np.argmax(sl >= 0.999 * rep.Fu_kgf))
-        sl, sd = sl[: i_fu + 1], sd[: i_fu + 1]
-    tl, td = t["load"], t["defl"]
-    peak_s, peak_t = float(rep.Fu_kgf), float(tl.max())
-    i_t = int(np.argmax(tl))
-    d_s, d_t = float(rep.deflection_at_Fu_mm), float(td[i_t])
+    if len(sl) and peak_s > 0:
+        i_fu = int(np.argmax(sl >= 0.999 * peak_s))
+        sl, sx = sl[: i_fu + 1], sx[: i_fu + 1]
 
-    def slope(load, defl, pk):
-        """Secant stiffness on the rising branch (before the peak) between the first
-        points where the load reaches 10 % and 50 % of the peak (interpolated, so the
-        sampling of the record does not matter); the seating toe and the post-peak drop
-        do not enter."""
+    def slope(load, x, pk):
+        """Secant stiffness on the rising branch between the first points where the load
+        reaches 10 % and 50 % of the peak (interpolated: the sampling does not matter)."""
         ipk = int(np.argmax(load))
-        load, defl = load[: ipk + 1], defl[: ipk + 1]
+        load, x = load[: ipk + 1], x[: ipk + 1]
 
         def cross(level):
             i = int(np.argmax(load >= level))
             if load[i] < level:
                 return math.nan
             if i == 0:
-                return float(defl[0])
+                return float(x[0])
             f = (level - load[i - 1]) / max(load[i] - load[i - 1], 1e-12)
-            return float(defl[i - 1] + f * (defl[i] - defl[i - 1]))
+            return float(x[i - 1] + f * (x[i] - x[i - 1]))
 
         d10, d50 = cross(0.1 * pk), cross(0.5 * pk)
         if not (math.isfinite(d10) and math.isfinite(d50)) or d50 <= d10:
             return math.nan
         return 0.4 * pk / (d50 - d10)
 
-    k_s, k_t = slope(sl, sd, peak_s), slope(tl, td, peak_t)
-    # curve: load at the test's deflections up to the test's peak
-    upto = td <= d_t
-    sim_at = np.interp(td[upto], sd[: int(np.argmax(sl)) + 1] if np.argmax(sl) > 0 else sd,
-                       sl[: int(np.argmax(sl)) + 1] if np.argmax(sl) > 0 else sl)
-    curve_err = float(np.sqrt(np.mean((sim_at - tl[upto]) ** 2)) / max(peak_t, 1e-9))
-
     def rel(a, b):
         return None if not (math.isfinite(a) and math.isfinite(b) and b) else (a - b) / b
 
-    metrics = [
-        GapMetric(name="ultimate load", simulated=round(peak_s, 2), measured=round(peak_t, 2),
-                  error=rel(peak_s, peak_t), unit="kgf", meaning="§12.5 F_u"),
-        GapMetric(name="initial stiffness", simulated=round(k_s, 2) if k_s == k_s else "n/a",
-                  measured=round(k_t, 2) if k_t == k_t else "n/a", error=rel(k_s, k_t),
-                  unit="kgf/mm", meaning="secant of load vs mid-span deflection between "
-                                        "10 % and 50 % of the peak"),
-        GapMetric(name="deflection at ultimate load", simulated=round(d_s, 2),
-                  measured=round(d_t, 2), error=rel(d_s, d_t), unit="mm"),
-        GapMetric(name="curve shape", simulated="", measured="", error=curve_err,
-                  meaning="RMS load difference along the test's curve / test peak"),
-    ]
+    what = "jack stroke" if jack else "mid-span deflection"
+    metrics = [GapMetric(name="ultimate load", simulated=round(peak_s, 2),
+                         measured=round(peak_t, 2), error=rel(peak_s, peak_t), unit="kgf",
+                         meaning="§12.5 F_u")]
+    if has_curve:
+        tl, tx = t["load"], t["x"]
+        i_t = int(np.argmax(tl))
+        k_s, k_t = slope(sl, sx, peak_s), slope(tl, tx, float(tl.max()))
+        x_s = float(sx[-1]) if len(sx) else math.nan
+        x_t = float(tx[i_t])
+        upto = tx <= x_t
+        sim_at = np.interp(tx[upto], sx, sl) if len(sx) > 1 else np.zeros(int(upto.sum()))
+        curve_err = float(np.sqrt(np.mean((sim_at - tl[upto]) ** 2)) / peak_t)
+        metrics += [
+            GapMetric(name="initial stiffness",
+                      simulated=round(k_s, 2) if math.isfinite(k_s) else "n/a",
+                      measured=round(k_t, 2) if math.isfinite(k_t) else "n/a",
+                      error=rel(k_s, k_t), unit="kgf/mm",
+                      meaning=f"secant of load vs {what} between 10 % and 50 % of the peak"),
+            GapMetric(name=f"{what} at ultimate load", simulated=round(x_s, 2),
+                      measured=round(x_t, 2), error=rel(x_s, x_t), unit="mm"),
+            GapMetric(name="curve shape", simulated="", measured="", error=curve_err,
+                      meaning="RMS load difference along the test's curve / test peak"),
+        ]
     if t["fail_parts"]:
-        # what the simulation broke within 15 % of the peak load, compared by keywords
-        near = [e for e in rep.events
-                if e.kind in ("joint_failure", "member_fracture", "member_shear",
-                              "plate_crack", "floss_break")
-                and e.load_kgf >= 0.85 * rep.Fu_kgf][:12]
-        hit = any(_same_part(p, e.what) for p in t["fail_parts"] for e in near)
+        # the test's first failure against the simulation's governing failures: the
+        # first ones within 10 % of F_u, before the collapse
+        gov = [f for f in rep.failures if f.kind != "joint_cracking"
+               and f.load_kgf >= 0.9 * peak_s][:3] or [f for f in rep.failures
+                                                       if f.kind != "joint_cracking"][:3]
+        obs = t["fail_parts"][0]
+        score = max((_part_match(obs, f.what) for f in gov), default=0.0)
         metrics.append(GapMetric(
-            name="failure location", simulated="; ".join(e.what for e in near[:3]),
-            measured="; ".join(t["fail_parts"]), error=0.0 if hit else 1.0,
-            meaning="did the simulation break the same part near the peak"))
-    w = {"ultimate load": 0.45, "initial stiffness": 0.2, "deflection at ultimate load": 0.1,
-         "curve shape": 0.1, "failure location": 0.15}
+            name="failure location", simulated="; ".join(f.what for f in gov),
+            measured=obs, error=1.0 - score,
+            meaning="did the simulation break the same part, on the same side, first "
+                    "(0: yes; 0.5: same part, other side; 1: no)"))
+    # score: each metric 0 (as far off as tol, or worse) to 1 (exact); ratios are
+    # compared on a log scale, so 2x too stiff and 2x too soft count the same
+    tol = {"ultimate load": math.log(1.5), "initial stiffness": math.log(2.0),
+           f"{what} at ultimate load": math.log(2.0), "curve shape": 0.4,
+           "failure location": 1.0}
+    w = {"ultimate load": 0.4, "initial stiffness": 0.2, f"{what} at ultimate load": 0.1,
+         "curve shape": 0.15, "failure location": 0.15}
     num = den = 0.0
     for mtr in metrics:
-        if mtr.error is not None and math.isfinite(mtr.error):
-            num += w[mtr.name] * min(1.0, abs(mtr.error))
-            den += w[mtr.name]
+        e = mtr.error
+        if e is None or not math.isfinite(e):
+            continue
+        if mtr.name in ("curve shape", "failure location"):
+            dev = abs(e)
+        else:
+            dev = abs(math.log(max(1 + e, 1e-6)))
+        num += w[mtr.name] * min(1.0, dev / tol[mtr.name])
+        den += w[mtr.name]
     score = max(0.0, 100 * (1 - num / den)) if den else 0.0
     advice = []
     e_peak = metrics[0].error or 0.0
-    e_k = metrics[1].error
+    e_k = next((m_.error for m_ in metrics if m_.name == "initial stiffness"), None)
+    if not has_curve:
+        advice.append("Only the peak load was compared: log load against mid-span "
+                      "deflection (or jack stroke) during the test to compare stiffness "
+                      "and the shape of the curve.")
     if e_k is not None and abs(e_k) > 0.2:
         advice.append("Stiffness is off by more than 20 %: measure E (stick bending) and the "
-                      "glue line stiffness (sim.glue.K_n/K_s), and check the support "
-                      "contact (supports sliding?).")
+                      "glue line stiffness (glue.K_n/K_s), and check the support contact "
+                      "(supports sliding?)" + (". The simulated jack stroke includes a "
+                      "20 kN/mm machine stiffness (crusher)." if jack else "."))
     if abs(e_peak) > 0.15:
         advice.append("Ultimate load is off by more than 15 %: compare the first thing that "
                       "broke. If it was a joint, calibrate tau_g with lap tests of that joint; "
-                      "if a member, calibrate f_t/f_c with stick tests.")
+                      "if a member, calibrate f_t/f_c with stick tests "
+                      "(bridgesim sensitivity says which values matter most).")
+    loc = next((m_ for m_ in metrics if m_.name == "failure location"), None)
+    if loc is not None and loc.error and loc.error > 0:
+        advice.append("The test broke elsewhere: look at the simulated failure sequence for "
+                      "that part; its glue or strength may be overestimated (glue_factor, "
+                      "strength_factor in the overrides).")
     return RealityGap(subject=f"{rep.file} vs {Path(test_csv).name}", metrics=metrics,
                       score_0_100=round(score, 1),
                       competition_prediction_error=round(abs(peak_t - peak_s) / peak_t, 4),
                       advice=advice)
 
 
-_STOP = {"the", "a", "of", "and", "at", "side", "ply", "plate", "near", "far", "left",
-         "right", "broke", "failed", "joint", "glue"}
+_STOP = {"the", "a", "of", "and", "at", "side", "ply", "plate", "broke", "failed", "joint",
+         "glue", "ud", "mirror", "copy", "x", "member"}
+_SIDES = {"near", "far", "left", "right"}
 
 
 def _words(s: str) -> set[str]:
     import re
 
-    w = set(re.findall(r"[a-z]+", s.lower()))
+    low = s.lower()
+    w = set(re.findall(r"[a-z]+", low))
     side = {"l": "left", "r": "right"}
-    w |= {side[x] for x in re.findall(r"\b([lr])\b", s.lower())}
+    w |= {side[x] for x in re.findall(r"\b([lr])\b", low)}
     return w
 
 
+def _part_match(observed: str, simulated: str) -> float:
+    """1 if the observed part ('top chord, far side, left') is the simulated one ('Top
+    Chord (10-ply UD) - L Far'), 0.5 if it is the same part on another side, else 0."""
+    o, s_ = _words(observed) - _STOP, _words(simulated) - _STOP
+    o_sides, s_sides = o & _SIDES, s_ & _SIDES
+    o_part = o - _SIDES
+    if not o_part or len(o_part & s_) / len(o_part) < 0.6:
+        return 0.0
+    return 1.0 if o_sides <= s_sides else 0.5
+
+
 def _same_part(observed: str, simulated: str) -> bool:
-    """Keyword match: 'top chord far side' vs 'Top Chord (10-ply UD) - Far'."""
-    o = _words(observed) - _STOP
-    s_ = _words(simulated)
-    if not o:
-        return False
-    return len(o & s_) / len(o) >= 0.6
+    return _part_match(observed, simulated) == 1.0
 
 
 # --------------------------------------------------------------------------- lab tests
@@ -715,6 +827,16 @@ def _float(r: dict, k: str) -> float | None:
 
 def _lab_gaps(d: Path, mat: Material, sp: SimParams) -> list[RealityGap]:
     gaps = []
+    memo: dict = {}
+
+    def bending(L, b, t):  # specimens of the same size share one simulation
+        key = (round(L, 3), round(b, 3), round(t, 3))
+        if key not in memo:
+            memo[key] = labmod.three_point_bending(mat.E_MPa.value, mat.f_t_MPa.value,
+                                                   mat.f_c_MPa.value, span=L, b=b, t=t,
+                                                   Gf=sp["wood.G_f_N_per_mm"])
+        return memo[key]
+
     f = d / "stick_bending_template.csv"
     if f.exists():
         rows = [r for r in csv.DictReader(f.read_text(encoding="utf-8").splitlines())]
@@ -726,9 +848,7 @@ def _lab_gaps(d: Path, mat: Material, sp: SimParams) -> list[RealityGap]:
                 r, "failure_load_N")
             if not (L and b and t) or not ((F and dl) or Ff):
                 continue
-            sim = labmod.three_point_bending(mat.E_MPa.value, mat.f_t_MPa.value,
-                                             mat.f_c_MPa.value, span=L, b=b, t=t,
-                                             Gf=sp["wood.G_f_N_per_mm"])
+            sim = bending(L, b, t)
             if F and dl:
                 mets.append(GapMetric(name=f"{r['specimen']} stiffness",
                                       simulated=round(sim.stiffness, 3),
@@ -772,17 +892,23 @@ def _lab_gaps(d: Path, mat: Material, sp: SimParams) -> list[RealityGap]:
 # --------------------------------------------------------------------------- calibrate
 
 
-def calibrate(csv_dir: str | Path, material=None) -> tuple[Material, list[str]]:
-    """Fit E, f_b (and f_t, f_c in proportion) and tau_g from the team's test CSVs.
-    Returns the new material (values marked ``measured``) and what was changed."""
+def calibrate(csv_dir: str | Path, material=None, sim_params=None
+              ) -> tuple[Material, list[str]]:
+    """Fit the material to the team's coupon tests so that the *simulated* coupons
+    (``bridgesim lab``) reproduce them: E from the bending stiffness (the simulated
+    coupon matches 48 E I / L^3), the strengths f_t and f_c (scaled together, keeping
+    their ratio) so the simulated sticks break at the measured loads, and tau_g so the
+    simulated lap joints of the measured overlaps break at the measured loads. Returns the
+    new material (values marked ``measured``) and what was changed."""
     mat = material if isinstance(material, Material) else load_material(
         material or "popsicle_birch")
+    sp = sim_params if isinstance(sim_params, SimParams) else SimParams.load(sim_params)
     d = Path(csv_dir)
     log = []
     changes: dict[str, float] = {}
     f = d / "stick_bending_template.csv"
     if f.exists():
-        Es, fbs = [], []
+        Es, fails = [], []
         for r in csv.DictReader(f.read_text(encoding="utf-8").splitlines()):
             L, b, t = _float(r, "span_L_mm"), _float(r, "width_b_mm"), _float(r,
                                                                              "thickness_t_mm")
@@ -791,30 +917,61 @@ def calibrate(csv_dir: str | Path, material=None) -> tuple[Material, list[str]]:
             if L and b and t and F and dl:
                 Es.append(F * L**3 / (48 * dl * b * t**3 / 12))
             if L and b and t and Ff:
-                fbs.append(Ff * L / 4 / (b * t * t / 6))
+                fails.append((L, b, t, Ff))
+        E = float(np.mean(Es)) if Es else mat.E_MPa.value
         if Es:
-            changes["E_MPa"] = float(np.mean(Es))
-            log.append(f"E = {changes['E_MPa']:.0f} MPa from {len(Es)} bending tests")
-        if fbs:
-            fb = float(np.mean(fbs))
-            ratio = fb / mat.f_b_MPa.value
+            changes["E_MPa"] = E
+            log.append(f"E = {E:.0f} MPa from {len(Es)} bending tests")
+        if fails:
+            fb = float(np.mean([Ff * L / 4 / (b * t * t / 6) for L, b, t, Ff in fails]))
             changes["f_b_MPa"] = fb
-            changes["f_t_MPa"] = mat.f_t_MPa.value * ratio
-            changes["f_c_MPa"] = mat.f_c_MPa.value * ratio
-            log.append(f"f_b = {fb:.1f} MPa from {len(fbs)} tests; f_t and f_c scaled by "
-                       f"{ratio:.2f} (their ratio to f_b kept)")
+            # inverse fit: scale f_t and f_c until the simulated sticks break at the
+            # measured loads (bending strength of wood comes from both)
+            L, b, t = (float(np.mean([x[i] for x in fails])) for i in range(3))
+            target = float(np.mean([x[3] for x in fails]))
+            k = 1.0
+            for _ in range(3):
+                sim = labmod.three_point_bending(E, mat.f_t_MPa.value * k,
+                                                 mat.f_c_MPa.value * k, span=L, b=b, t=t,
+                                                 Gf=sp["wood.G_f_N_per_mm"])
+                k *= target / max(sim.peak, 1e-9)
+                if abs(sim.peak / target - 1) < 0.005:
+                    break
+            changes["f_t_MPa"] = mat.f_t_MPa.value * k
+            changes["f_c_MPa"] = mat.f_c_MPa.value * k
+            log.append(f"f_b = {fb:.1f} MPa from {len(fails)} tests; f_t and f_c scaled by "
+                       f"{k:.3f} so the simulated sticks break at the measured "
+                       f"{target:.1f} N")
     f = d / "glue_joint_template.csv"
     if f.exists():
-        taus = []
+        joints = []
         for r in csv.DictReader(f.read_text(encoding="utf-8").splitlines()):
             ov, w, Ff = _float(r, "overlap_mm"), _float(r, "width_mm"), _float(
                 r, "failure_load_N")
             faces = _float(r, "faces") or 1
             if ov and w and Ff:
-                taus.append(Ff / (ov * w * faces))
-        if taus:
-            changes["glue.tau_g_MPa"] = float(np.mean(taus))
-            log.append(f"tau_g = {changes['glue.tau_g_MPa']:.2f} MPa from {len(taus)} joints")
+                joints.append((ov, w, Ff / faces))
+        if joints:
+            tau = float(np.mean([F_ / (ov * w) for ov, w, F_ in joints]))
+            ratio = sp.values.get("glue.tau_peak_over_avg", 1.17)
+            E = changes.get("E_MPa", mat.E_MPa.value)
+            # inverse fit through the simulated lap joint of each measured geometry
+            for _ in range(3):
+                errs = []
+                for ov, w, F_ in joints:
+                    sim = labmod.lap_shear(tau * ratio, sp["glue.peel_to_shear"],
+                                           sp["glue.K_n_N_per_mm3"], sp["glue.K_s_N_per_mm3"],
+                                           sp["glue.G_Ic_N_per_mm"],
+                                           sp["glue.G_IIc_N_per_mm"], overlap=ov, width=w,
+                                           E=E)
+                    errs.append(F_ / max(sim.peak, 1e-9))
+                k = float(np.mean(errs))
+                tau *= k
+                if abs(k - 1) < 0.005:
+                    break
+            changes["glue.tau_g_MPa"] = tau
+            log.append(f"tau_g = {tau:.2f} MPa from {len(joints)} joints (so the simulated "
+                       "lap joints of the measured overlaps break at the measured loads)")
     if not changes:
         return mat, ["no test data found in " + str(d)]
     return _material_with(mat, changes), log
@@ -865,6 +1022,15 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
                            recommended_prediction_kgf=round(best_prediction(F), 1),
                            fidelity=fidelity,
                            untrustworthy_runs=sum(1 for r in res if not r["trustworthy"]))
+    _, _, _, _, mat_, sp_, _ = _inputs(cad, overrides, material, sim_params, ruleset, units,
+                                       up, span)
+    rep.assumed_parameters = _assumed(mat_, sp_)
+    rep.note = ("The spread covers member bow, stick-to-stick and joint-to-joint scatter "
+                "and plate placement. It does not cover the material values themselves: "
+                + (f"{len(rep.assumed_parameters)} are still placeholders, which can move "
+                   "F_u by tens of % (bridgesim sensitivity shows which); measure them "
+                   "before trusting this range." if rep.assumed_parameters else
+                   "they are all measured."))
     if out_dir:
         (Path(out_dir) / "montecarlo.json").write_text(rep.model_dump_json(indent=2),
                                                       encoding="utf-8")

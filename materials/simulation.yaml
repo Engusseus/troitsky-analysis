@@ -4,8 +4,11 @@
 # measurements.
 #
 # EVERY VALUE IS A PLACEHOLDER (source: assumed) unless you measured it. Each `note` says
-# how to measure it; `bridgesim calibrate` fits several of them from the CSV templates in
-# validation/physical/. Units: mm, N, MPa (= N/mm^2), N/mm^3, N/mm, kg.
+# how to measure it; enter your values here or as `params:` in an overrides file.
+# (`bridgesim calibrate` fits E, the strengths and the glue strength of the *material*
+# file from the CSV templates in validation/physical/, not the values below.
+# `bridgesim sensitivity` shows which of them matter for your design.)
+# Units: mm, N, MPa (= N/mm^2), N/mm^3, N/mm, kg.
 name: Troitsky crush simulation defaults (placeholder)
 
 wood:

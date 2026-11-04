@@ -52,6 +52,8 @@ import numpy as np
 from bridgesim.sim import solver as S
 from bridgesim.sim.model import Model
 
+JOINT_FAILED = 0.9  # share of a joint's glued area let go: the joint has separated
+JOINT_CRACKED = 0.3  # ... the joint is cracking (an event, and the jack holds)
 KGF = 9.80665
 
 
@@ -78,6 +80,7 @@ class Event:
     what: str
     detail: str = ""
     where: tuple[float, float, float] | None = None
+    fraction: float | None = None  # share of a glued joint's area that has let go
 
     def as_dict(self) -> dict:
         return {"t_s": round(float(self.t), 5),
@@ -86,7 +89,9 @@ class Event:
                 "load_kgf": round(float(self.force_N) / KGF, 2),
                 "kind": self.kind, "what": self.what, "detail": self.detail,
                 "where_mm": [round(float(v), 1) for v in self.where] if self.where is not None
-                else None}
+                else None,
+                "fraction_separated": None if self.fraction is None
+                else round(float(self.fraction), 3)}
 
 
 @dataclass
@@ -413,7 +418,13 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     s = S.Settings(dt=1e-5, alpha=opt.alpha,
                    mu_platform=m.params.get("friction_platform", 0.35),
                    mu_plate=m.params.get("friction_plate", 0.3))
+    if opt.progress:
+        opt.progress(0.0, f"model: {m.n_nodes} nodes, {len(m.b_i)} beams, "
+                          f"{len(m.s_nodes)} shells, {len(m.c_a)} glue points; estimating "
+                          "the stable time step")
     dt, mass, rot, scale_log = stable_dt(m, s, dt_target, opt.max_added_mass)
+    if opt.progress:
+        opt.progress(0.0, f"time step {dt * 1e6:.2f} us; settling under self-weight")
     s.dt = dt
     S.contact_damping_coeffs(m, s, mass)
     phys_mass = m.mass.copy()
@@ -440,18 +451,27 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                              "glue_broken", "members_broken")}
     frames: list[Frame] = []
     steps = 0
-    # deck reference: bridge points under the plate
+    # deck reference: the bridge points the plate rests on when loading starts, followed
+    # as material points (so the deflection does not jump when the contact set changes)
     under = m.q_att
     nd_under = m.a_node[under]
+    deck_pts: list = []
 
     def deck_y() -> float:
         if not len(under):
             return float(st.x[P, 1])
-        p = st.x[nd_under] + np.einsum("nij,nj->ni", st.R[nd_under], m.a_r0[under])
-        touch = st.q_touch
-        if touch.any():
-            return float(p[touch, 1].mean())
-        return float(st.x[P, 1] - m.plate_half[1])
+        if not deck_pts:
+            sel = np.where(st.q_touch)[0]
+            if not len(sel):
+                return float(st.x[P, 1] - m.plate_half[1])
+            deck_pts.append(sel)
+        sel = deck_pts[0]
+        sel = sel[~st.loose[nd_under[sel]]] if st.loose[nd_under[sel]].any() else sel
+        if not len(sel):
+            return float(st.x[P, 1] - m.plate_half[1])
+        nd = nd_under[sel]
+        p = st.x[nd] + np.einsum("nij,nj->ni", st.R[nd], m.a_r0[under[sel]])
+        return float(p[:, 1].mean())
 
     # nodes that carry elements: when all of a node's elements are broken it is debris
     has_el = np.zeros(m.n_nodes, bool)
@@ -588,6 +608,10 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     n_patch = len(m.patches)
     prev_patch_broken = np.zeros(n_patch, bool)
     prev_patch_started = np.zeros(n_patch, bool)
+    prev_patch_cracked = np.zeros(n_patch, bool)
+    # glued area of each joint, to tell a joint that has cracked from one that has let go
+    patch_area = np.bincount(patch_of, weights=m.c_area, minlength=n_patch) \
+        if len(patch_of) else np.zeros(n_patch)
     peak = 0.0
     peak_travel = 0.0
     peak_defl = 0.0
@@ -610,8 +634,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     holds = 0
     hold_time = 0.0
     n_seen = 0
-    major = ("joint_failure", "plate_crack", "member_fracture", "member_shear",
-             "floss_break")
+    major = ("joint_cracking", "joint_failure", "plate_crack", "member_fracture",
+             "member_shear", "floss_break")
     while not unstable:
         tl = st.t - t_load0
         target = opt.hold_speed_frac if st.t < hold_until else 1.0
@@ -651,16 +675,19 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             curve["kinetic"].append(kin)
             curve["plate_load"].append(0.0)
             pdmg = np.zeros(n_patch)
+            pfrac = np.zeros(n_patch)
             if len(patch_of):
                 np.maximum.at(pdmg, patch_of, st.c_d)
-            curve["glue_broken"].append(int((pdmg >= 0.999).sum()))
+                pfrac = np.bincount(patch_of, weights=m.c_area * (st.c_d >= 0.999),
+                                    minlength=n_patch) / np.maximum(patch_area, 1e-12)
+            curve["glue_broken"].append(int((pfrac >= JOINT_FAILED).sum()))
             curve["members_broken"].append(int((st.b_fractured | st.b_shear).sum()))
             if force > peak:
                 peak, peak_travel, peak_defl = force, travel, defl
             # ---- events
-            def ev(kind, what, detail="", where=None, _tr=travel, _f=force):
+            def ev(kind, what, detail="", where=None, _tr=travel, _f=force, fraction=None):
                 events.append(Event(st.t, _tr, _f, kind, what, detail,
-                                    None if where is None else tuple(where)))
+                                    None if where is None else tuple(where), fraction))
 
             def mid(nodes):  # current position of a group of nodes
                 return st.x[np.asarray(nodes)].mean(0)
@@ -672,7 +699,9 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                    mid([m.b_i[e], m.b_j[e]]))
             ns = st.b_shear & ~prev_bs
             for e in np.where(ns)[0]:
-                ev("member_shear", m.bodies[m.b_body[e]].name, "member split in shear",
+                ev("member_shear", m.bodies[m.b_body[e]].name,
+                   "member split in shear along its glue lines or grain: it bends as "
+                   "separate parts but still carries axial load",
                    mid([m.b_i[e], m.b_j[e]]))
             sd = (st.s_dmg > 0.5) & ~prev_s
             if sd.any():
@@ -685,20 +714,27 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                 ev("floss_break", m.bodies[m.k_body[c]].name, "floss snapped",
                    mid([m.a_node[m.k_a[c]], m.a_node[m.k_b[c]]]))
             started = pdmg > 0.0
-            broken = pdmg >= 0.999
+            cracked = pfrac >= JOINT_CRACKED
+            broken = pfrac >= JOINT_FAILED
             for pid in np.where(started & ~prev_patch_started)[0]:
                 pa = m.patches[pid]
                 ev("glue_damage", f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
-                   f"glue line starts to fail ({pa.area_mm2:.0f} mm^2)", pa.centroid)
+                   f"glue line starts to fail ({pa.area_mm2:.0f} mm^2)", pa.centroid,
+                   fraction=float(pfrac[pid]))
+            for pid in np.where(cracked & ~prev_patch_cracked & ~broken)[0]:
+                pa = m.patches[pid]
+                ev("joint_cracking", f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
+                   f"{pfrac[pid]:.0%} of the glued joint has let go ({pa.area_mm2:.0f} mm^2)",
+                   pa.centroid, fraction=float(pfrac[pid]))
             for pid in np.where(broken & ~prev_patch_broken)[0]:
                 pa = m.patches[pid]
-                frac = float((st.c_d[pa.springs] >= 0.999).mean()) if pa.springs else 1
                 ev("joint_failure", f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
-                   f"glued joint fully separated ({pa.area_mm2:.0f} mm^2, "
-                   f"{frac:.0%} of it)", pa.centroid)
+                   f"glued joint separated ({pfrac[pid]:.0%} of its {pa.area_mm2:.0f} mm^2 "
+                   "let go)", pa.centroid, fraction=float(pfrac[pid]))
             prev_b, prev_bs, prev_s = st.b_fractured.copy(), st.b_shear.copy(), st.s_dmg > 0.5
             prev_k = st.k_alive.copy()
             prev_patch_started, prev_patch_broken = started, broken
+            prev_patch_cracked = cracked | broken
             # ---- hold the jack while something is breaking (quasi-static failure)
             if opt.hold_on_failure and fail_at is None and len(events) > n_seen:
                 if any(e.kind in major for e in events[n_seen:]):
@@ -740,6 +776,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                     fail_detail = (f"load fell from {peak / KGF:.1f} to {force / KGF:.1f} "
                                    "kgf")
                     Fu_at_fail = peak
+                    ev("criterion", "collapse", fail_detail)
                 elif criteria["deflection"] is not None:
                     fail_at, fail_mode = travel, "deflection"
                     fail_detail = "mid-span deflection passed 50 mm"
@@ -772,7 +809,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         fail_detail = (f"no failure within {opt.max_travel_mm:g} mm of jack travel")
         Fu_at_fail = peak
     # the governing failure: what broke around the peak
-    near = [e for e in events if e.kind in ("joint_failure", "member_fracture",
+    near = [e for e in events if e.kind in ("joint_failure", "joint_cracking", "member_fracture",
                                              "member_shear", "plate_crack", "floss_break")
             and abs(e.travel_mm - peak_travel) <= 3.0]
     first_major = near[0] if near else next(
@@ -781,6 +818,9 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     if fail_mode == "collapse" and first_major:
         fail_detail = f"{first_major.kind.replace('_', ' ')}: {first_major.what}. " + \
             fail_detail
+    elif fail_mode == "collapse":
+        fail_detail = ("no part broke: a buckling or sway mechanism (see the replay), the "
+                       + fail_detail)
     m.mass = phys_mass
     # quasi-static check: kinetic energy vs the work done by the jack, once that work is
     # at least a tenth of the work done up to the peak load (before that both are ~0)

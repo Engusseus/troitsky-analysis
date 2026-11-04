@@ -98,18 +98,49 @@ class InspectReport(BaseModel):
     warnings: list[str] = []
 
 
+EventKind = Literal["member_fracture", "member_shear", "plate_crack", "glue_damage",
+                    "joint_cracking", "joint_failure", "floss_break", "criterion",
+                    "instability", "numerical"]
+FailureMode = Literal["collapse", "deflection", "contact", "instability", "none"]
+
+
 class EventOut(BaseModel):
     t_s: float
     jack_travel_mm: float
     load_N: float
     load_kgf: float
-    kind: str = Field(description="member_fracture, member_shear, plate_crack, "
-                                  "glue_damage, joint_failure, floss_break, criterion, "
-                                  "instability")
-    what: str
+    kind: EventKind = Field(description=(
+        "member_fracture (fibres cracked through), member_shear (split along the glue "
+        "lines or grain), plate_crack, glue_damage (a joint's glue starts to soften), "
+        "joint_cracking (>= 30 % of a joint's glued area has let go), joint_failure "
+        "(>= 90 %: separated), floss_break, criterion (§12.5), instability, numerical"))
+    what: str = Field(description="The part, or 'A | B' for a glued joint")
+    parts: list[str] = Field([], description="Body names involved (two for a joint)")
     detail: str = ""
     where_mm: list[float] | None = Field(None, description="Where it happened (centroid "
                                                            "of the part or glued patch)")
+    fraction_separated: float | None = Field(
+        None, description="Joints: share of the glued area that has let go")
+
+    def model_post_init(self, _ctx) -> None:
+        if not self.parts and self.kind not in ("criterion", "instability", "numerical"):
+            self.parts = [p.strip() for p in self.what.split(" | ")]
+
+
+class CriterionHit(BaseModel):
+    t_s: float
+    jack_travel_mm: float | None = None
+    load_kgf: float | None = None
+    what: str = ""
+
+
+class Criteria(BaseModel):
+    """When each §12.5 failure criterion was first met (null: never)."""
+
+    deflection: CriterionHit | None = None
+    contact: CriterionHit | None = None
+    joint_or_shear: CriterionHit | None = None
+    instability: CriterionHit | None = None
 
 
 class Curve(BaseModel):
@@ -157,21 +188,28 @@ class CrushReport(BaseModel):
     overrides: dict[str, Any]
     Fu_kgf: float = Field(description="Predicted ultimate load (rulebook §12.5), kgf.")
     Fu_N: float
-    failure_mode: str = Field(description="collapse, deflection, contact, instability, "
-                                          "none")
+    failure_mode: FailureMode = Field(description="collapse (the load fell to half its "
+                                                  "peak), deflection (> 50 mm), contact "
+                                                  "(with the platform), instability "
+                                                  "(collapsed under self-weight, F_u = 0), "
+                                                  "none (no failure within the jack travel)")
     failure_detail: str
     deflection_at_Fu_mm: float
     mass_kg: float
     efficiency_kgf_per_kg: float = Field(description="§12.6: Fu / mass")
-    criteria: dict[str, Any] = Field(description="First time each §12.5 failure criterion "
-                                                 "was met (null if never).")
+    criteria: Criteria = Field(description="First time each §12.5 failure criterion "
+                                           "was met (null if never).")
+    failures: list[EventOut] = Field([], description=(
+        "What broke, in order (joint cracking or separation, member and plate failures, "
+        "floss), first time per part, up to the collapse: the structured form of "
+        "failure_sequence"))
     events: list[EventOut] = Field(description="First event of each kind per part (full log: "
                                                "events.csv)")
     n_events_total: int = 0
     Fu_first_joint_failure_kgf: float | None = Field(
-        None, description="Jack load when the first glued joint fully separated (or a member "
-                          "split in shear). §12.5 counts joint failure as failure, so a "
-                          "strict judge could stop the test here.")
+        None, description="Jack load when the first glued joint separated (>= 90 % of its "
+                          "area let go) or a member split in shear. §12.5 counts joint "
+                          "failure as failure, so a strict judge could stop the test here.")
     warnings: list[str] = []
     failure_sequence: list[str] = Field(description="Plain-language order in which things "
                                                     "broke.")
@@ -231,6 +269,9 @@ class MonteCarloReport(BaseModel):
     fidelity: str = "standard"
     untrustworthy_runs: int = Field(0, description="Runs whose quality.trustworthy is "
                                                    "false")
+    assumed_parameters: list[str] = Field([], description="Material values still "
+                                                         "placeholders")
+    note: str = Field("", description="What the spread does and does not cover")
 
 
 class DesignRun(BaseModel):

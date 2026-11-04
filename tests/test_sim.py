@@ -127,49 +127,38 @@ def test_lap_shear_reproduces_tau_g():
     assert r.peak / 200 == pytest.approx(2.0, rel=0.05)
 
 
-def _glued_pair():
-    cap = {}
-
-    def grab(m, *a, **k):
-        cap["m"] = m
-        raise StopIteration
-
-    orig = lab.drive
-    lab.drive = grab
-    try:
-        lab.lap_shear(2.0)
-    except StopIteration:
-        pass
-    finally:
-        lab.drive = orig
-    m = cap["m"]
-    m.mass = np.maximum(m.mass, 1e-12)
-    m.rot_inertia = np.maximum(m.rot_inertia, 1e-12)
-    return m
-
-
 def test_energy_is_conserved_without_damping():
+    """Free vibration of the synthetic bridge (beams, layered shells, glue) without any
+    damping: kinetic + strain energy stays constant while energy goes back and forth
+    between them. Strain energy = u.F(u) / 2 (small amplitudes); velocities at whole steps
+    (mean of the half steps of the central-difference scheme)."""
     from bridgesim.sim.crush import stable_dt
+    from bridgesim.sim.idealize import build_model
 
-    m = _glued_pair()
-    m.c_tau[:] = 1e6
-    m.c_sig[:] = 1e6
-    s = S.Settings(dt=1e-7, beta_frac=0.0)
-    dt, m.mass, m.rot_inertia, _ = stable_dt(m, s, 5e-6, 0.0)
-    s.dt = dt
+    m = build_model(simple_beam_bridge(), MAT, SP, seed=None)
+    m.table_y, m.plate_node, m.q_att = -1e6, -1, m.q_att[:0]  # free-floating
+    s = S.Settings(dt=1e-6, beta_frac=0.0)
+    s.dt, m.mass, m.rot_inertia, _ = stable_dt(m, s, 5e-6, 0.0)
     st = S.initial_state(m, 1e12)
-    rng = np.random.default_rng(0)
-    st.v = rng.normal(0, 1, st.v.shape)
-    F = np.zeros((m.n_nodes, 3))
-    Mo = np.zeros_like(F)
-    S.internal_and_contact(m, st, s, F, Mo)
-    e0 = None
-    for k in range(4000):
-        S.step(m, st, s, F, Mo, grav_scale=0, alpha=0)
-        if k == 10:
-            e0 = S.kinetic_energy(m, st)
-    assert np.isfinite(st.x).all()
-    assert S.kinetic_energy(m, st) < 3 * e0  # bounded (energy exchanges with strain)
+    x = m.X[:, 0]
+    st.v[:, 1] = 2.0 * np.sin(np.pi * (x - x.min()) / np.ptp(x))  # a smooth bending motion
+    st.v -= (m.mass[:, None] * st.v).sum(0) / m.mass.sum()
+    F, Mo = np.zeros((m.n_nodes, 3)), np.zeros((m.n_nodes, 3))
+    E, U_max = [], 0.0
+    for k in range(20000):
+        v0, w0 = st.v.copy(), st.w.copy()
+        S.step(m, st, s, F, Mo, grav_scale=0.0, alpha=0.0)
+        if k % 1000 == 0:
+            S.internal_and_contact(m, st, s, F, Mo, update=False)
+            U = 0.5 * float((F * (st.x - m.X)).sum() + (Mo * S.logvec(st.R)).sum())
+            va, wa = 0.5 * (v0 + st.v), 0.5 * (w0 + st.w)
+            KE = 0.5 * float((m.mass * (va**2).sum(1)).sum()
+                             + (m.rot_inertia * (wa**2).sum(1)).sum())
+            E.append(KE + U)
+            U_max = max(U_max, U)
+    E = np.array(E)
+    assert U_max > 0.05 * E.mean()  # energy really changes form
+    assert np.ptp(E) < 0.005 * E.mean()
 
 
 def test_compiled_kernels_match_numpy():
@@ -558,3 +547,129 @@ def test_sensitivity_rejects_unknown_parameters(tmp_path):
         study.sensitivity(tmp_path / "b.stl", params=["material.E_GPa"])
     with pytest.raises(ValueError, match="rel"):
         study.sensitivity(tmp_path / "b.stl", rel=1.5)
+
+
+def test_calibration_closes_the_loop(tmp_path):
+    """Coupon data made with known values -> calibrate -> the simulated coupons
+    (bridgesim lab) reproduce the data."""
+    from bridgesim.sim import study
+
+    E, ft, fc = 8000.0, 50.0, 36.0
+    r = lab.three_point_bending(E, ft, fc, span=100, b=10, t=2, Gf=SP["wood.G_f_N_per_mm"])
+    k = 48 * E * (10 * 2**3 / 12) / 100**3
+    (tmp_path / "stick_bending_template.csv").write_text(
+        "specimen,span_L_mm,width_b_mm,thickness_t_mm,load_F_N,deflection_mm,failure_load_N\n"
+        f"S1,100,10,2,{k:.4f},1.0,{r.peak:.3f}\n")
+    mat, log = study.calibrate(tmp_path)
+    assert mat.E_MPa.value == pytest.approx(E, rel=1e-6) and mat.E_MPa.source == "measured"
+    gaps = study.lab(mat, None, tmp_path).gaps
+    errs = [m.error for g in gaps for m in g.metrics]
+    assert errs and max(abs(e) for e in errs) < 0.01
+
+
+def test_simply_supported_beam_matches_beam_theory(tmp_path):
+    """End to end (CAD -> idealisation -> crushing test): one laminated beam on two
+    narrow piers under the rigid plate. The plate bears on the bending beam at its two
+    edges, so the stiffness is that of two loads P/2 100 mm either side of mid-span
+    (Euler-Bernoulli), and the beam breaks when the section reaches the stick's bending
+    strength (between f_c, first yield, and f_b)."""
+    from bridgesim.cad.synthetic import box
+    from bridgesim.sim import study
+    from bridgesim.sim.crush import CrushOptions
+
+    pytest.importorskip("numba")
+    T = 29.4
+    write_stl([box("Pier L", (-550, 0, -40), (-540, 150, 40)),
+               box("Pier R", (540, 0, -40), (550, 150, 40)),
+               box("Beam", (-550, 150, -25), (550, 150 + T, 25))], tmp_path / "beam.stl")
+    kinds = {b.name: b.kind for b in study.inspect(tmp_path / "beam.stl").bodies}
+    ov = {"bodies": {n: ({"layup": "14-ply UD", "butt_stagger_mm": 0} if k == "bar"
+                         else {"kind": "block"}) for n, k in kinds.items()}}
+    rep, _ = study.crush(tmp_path / "beam.stl", overrides=ov, seed=None, replay=False,
+                         options=CrushOptions(speed_mm_s=100, max_travel_mm=60))
+    L, D = np.array(rep.curve.load_kgf), np.array(rep.curve.deflection_mm)
+    i = int(np.argmax(L >= 0.999 * rep.Fu_kgf))
+    sel = (L[:i] > 0.1 * rep.Fu_kgf) & (L[:i] < 0.5 * rep.Fu_kgf)
+    k_sim = np.polyfit(D[:i][sel], L[:i][sel], 1)[0]
+    E, I, Ls = MAT.E_MPa.value, 50 * T**3 / 12, 1090.0  # supports at the pier centres
+    a = Ls / 2 - 100
+    x = np.linspace(-100, 100, 201) + Ls / 2  # deflection averaged under the plate
+
+    def defl(x):  # two loads of 1/2 N at a and Ls - a
+        out = np.zeros_like(x)
+        for xp in (a, Ls - a):
+            bb = Ls - xp
+            out += np.where(x <= xp, 0.5 * bb * x * (Ls**2 - bb**2 - x**2) / (6 * E * I * Ls),
+                            0.5 * xp * (Ls - x) * (Ls**2 - xp**2 - (Ls - x)**2)
+                            / (6 * E * I * Ls))
+        return out
+
+    k_theory = 1 / defl(x).mean() / 9.80665
+    assert k_sim == pytest.approx(k_theory, rel=0.05)
+    mor = rep.Fu_kgf * 9.80665 * 0.5 * a / (50 * T**2 / 6)
+    assert MAT.f_c_MPa.value < mor < 1.05 * MAT.f_b_MPa.value
+
+
+def test_stick_bending_strength_matches_f_b():
+    """The fibre section (tension softening, compression yielding) gives a single stick
+    in 3-point bending the material's bending strength f_b (within 10 %)."""
+    r = lab.three_point_bending(MAT.E_MPa.value, MAT.f_t_MPa.value, MAT.f_c_MPa.value,
+                                Gf=SP["wood.G_f_N_per_mm"])
+    mor = 3 * r.peak * 100 / (2 * 10 * 2**2)
+    assert mor == pytest.approx(MAT.f_b_MPa.value, rel=0.1)
+
+
+def test_background_jobs_survive_a_server_restart(tmp_path):
+    """job_status reads a job's state from its files: a job started by one MCP server is
+    'done' (with its report) when polled by another, and a killed one is 'failed'."""
+    import signal
+    import sys
+    import time
+
+    from bridgesim.sim import mcp_server as M
+
+    write_stl(simple_beam_bridge(), tmp_path / "b.stl")
+    M._start([sys.executable, "-m", "bridgesim.cli", "inspect", str(tmp_path / "b.stl"),
+              "--json"], tmp_path / "j1")
+    M._start([sys.executable, "-c", "import time; time.sleep(120)"], tmp_path / "j2")
+    M._JOBS.clear()  # a new server knows nothing of them
+    for _ in range(120):
+        st = json.loads(M.job_status_impl(str(tmp_path / "j1")))
+        if st["status"] != "running":
+            break
+        time.sleep(0.5)
+    assert st["status"] == "done" and st["report"]["kind"] == "inspect"
+    assert json.loads(M.job_status_impl(str(tmp_path / "j2")))["status"] == "running"
+    pid = json.loads((tmp_path / "j2" / "job.json").read_text())["pid"]
+    os.killpg(os.getpgid(pid), signal.SIGKILL)
+    time.sleep(0.5)
+    st = json.loads(M.job_status_impl(str(tmp_path / "j2")))
+    assert st["status"] == "failed" and "died" in st["error"]["error"]
+    assert json.loads(M.job_status_impl(str(tmp_path / "nothing")))["status"] == "unknown"
+
+
+def test_compare_with_real_competition_records(synthetic_crush, tmp_path):
+    """A peak-only record (what the competition gives) is compared; a much softer, weaker
+    test curve scores low; the failure location respects the side."""
+    from bridgesim.sim import study
+    from bridgesim.sim.study import _part_match
+
+    _, rep, _ = synthetic_crush
+    js = Path(rep.artifacts["report_json"])
+    (tmp_path / "peak.csv").write_text(
+        "test,bridge_file,load_kgf,midspan_deflection_mm,event,notes\n"
+        f"T,b.stl,{rep.Fu_kgf * 1.1:.2f},,failure,something\n")
+    gap = study.compare(js, tmp_path / "peak.csv")
+    assert {m.name for m in gap.metrics} >= {"ultimate load"}
+    assert gap.competition_prediction_error == pytest.approx(1 - 1 / 1.1, abs=0.01)
+    c = rep.curve
+    L = np.array(c.load_kgf)
+    ipk = int(np.argmax(L >= 0.999 * rep.Fu_kgf))
+    rows = ["test,bridge_file,load_kgf,midspan_deflection_mm,event,notes"]
+    for i in range(0, ipk + 1, max(1, ipk // 40)):  # 3x softer, 31 % weaker
+        rows.append(f"T,b.stl,{c.load_kgf[i] * 0.69:.3f},{c.deflection_mm[i] * 3 / 0.69:.3f},,")
+    (tmp_path / "soft.csv").write_text("\n".join(rows))
+    assert study.compare(js, tmp_path / "soft.csv").score_0_100 <= 40
+    assert _part_match("top chord far side, left", "Top Chord (10-ply UD) - L Far") == 1.0
+    assert _part_match("top chord far side", "Top Chord (10-ply UD) - Near") == 0.5
+    assert _part_match("deck stringer", "Top Chord (10-ply UD) - Near") == 0.0

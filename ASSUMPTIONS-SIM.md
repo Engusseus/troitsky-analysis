@@ -62,6 +62,12 @@ assumed tight in compression (they bear).
   simulated lap test reproduces the measured tau_g (checked in the tests). Peel strength = 0.5 tau_max.
 * A broken glue line keeps **bearing in compression** and **slides with friction**
   (mu = 0.4): pieces still lean on each other after the glue lets go.
+* The wood under a glue line **crushes across the grain** at f_c90 (5 MPa placeholder):
+  a joint pressed together cannot carry more than f_c90 x its area, and keeps the
+  permanent set.
+* A joint is reported **cracking** when 30 % of its glued area has let go and
+  **separated** (`joint_failure`) at 90 % (area-weighted over its glue points); the
+  first separation sets `Fu_first_joint_failure_kgf`.
 * Bodies that touch nothing are tied to the nearest part (and reported); floss ends
   attach to the part they touch.
 
@@ -80,7 +86,13 @@ placeholder moves F_u for your design. Your own stick tests replace them
 (`bridgesim calibrate`). In the fibre
 sections: linear elastic; tension softens to zero after f_t with fracture energy G_f
 (3 N/mm, element-length regularised); compression yields at f_c and softens to 70 %
-(crushing). Members split when 1.5 V/A + T/W_t > f_v. Glue and floss: see
+(crushing). A single stick so modelled breaks in 3-point bending at the material's
+f_b (within 3 %, tested): compression yielding on top and tension softening below give
+the bending strength, as in wood. A member **splits in shear** when 1.5 V/A + T/W_t
+reaches min(f_v, tau_g) on the glue planes between its plies, or f_v across them; it is
+not deleted: it delaminates (its n plies then bend each about their own axis, 1/n^2 of
+the bending stiffness through the plies, half across the width for a split) and keeps
+its axial strength, so a split member still props what it carried. Glue and floss: see
 `materials/simulation.yaml`, every value with its source and how to measure it.
 
 **Plates (layered shells).** At each of the 3 in-plane points of a triangle and at 3
@@ -137,6 +149,9 @@ the spread of F_u.
   (`quality.holds`). Without this, a failure that takes ~30 ms to develop (a heel joint
   letting go and the supports sliding out) would be outrun by the jack, and F_u would
   depend on the jack speed.
+* The **deflection** reported is that of the deck points the plate rests on when the
+  jack starts, followed as material points (not the jack stroke, which also includes the
+  20 kN/mm machine compliance).
 * **F_u** = peak jack force up to the moment the bridge is judged failed: a load drop to
   half the peak after the peak (collapse), mid-span deflection > 50 mm, or contact of a
   part with the platform other than the original supports (§12.5). A glued joint letting
@@ -181,10 +196,18 @@ the spread of F_u.
   run stays quasi-static; the replay converts back to real test time.
 * **Verified** (the equations are solved right) in `tests/test_sim.py`: cantilever
   (0.04 % vs PL^3/3EI), large-deflection elastica (Bisshopp-Drucker, < 1 %), Euler
-  buckling of a stick, 3-point bending stiffness, lap-joint strength, energy
-  conservation, DKT patch test, layered shell = exact laminate stiffness, mesh-independent
-  fracture energy of a plate strip, a member dropped on another stopped by contact,
-  compiled kernels identical to the NumPy reference (damage histories included).
+  buckling of a stick, 3-point bending stiffness (0.03 %; the lab coupon starts slowly so
+  its stiffness is quasi-static), a stick's bending strength = f_b, lap-joint strength,
+  energy conservation (kinetic + strain energy constant to 0.5 % in free vibration of a
+  bridge with beams, shells and glue), DKT patch test, layered shell = exact laminate
+  stiffness, exactly 6 rigid-body zero modes per shell element, mesh-independent fracture
+  energy of a plate strip, a member dropped on another stopped by contact, compiled
+  kernels identical to the NumPy reference (damage histories included).
+* **End to end** (CAD file -> crushing test -> report): a laminated beam on two narrow
+  piers under the rigid plate has the stiffness of beam theory within 5 % (measured:
+  1.8 %) and breaks at the section's bending strength
+  (`test_simply_supported_beam_matches_beam_theory`); `calibrate` followed by `lab` on
+  the same coupon data gives < 1 % error (`test_calibration_closes_the_loop`).
 * **Not yet validated** against physical tests (whether the equations are the right ones
   for popsicle sticks): no load-deflection record of a real Troitsky crush test was
   available. `bridgesim lab --data` and `bridgesim compare` measure that gap as soon as
@@ -194,11 +217,15 @@ the spread of F_u.
 
 * Glue lines are perfect over the whole touching area: starved or gappy joints only
   through `glue_factor` in the overrides.
-* Splitting of a member along the grain other than by shear, local crushing at a joint
-  inside the bridge (bearing is modelled only against the platform and the plate), knots
-  and stick-to-stick variation inside one body; butt joints in plates (only in bars).
-* Thick plates (gussets 20 mm thick) use thin-plate (Kirchhoff) elements, sized at
-  >= 2.5 x their thickness.
+* Splitting of a member along the grain other than by shear, knots and stick-to-stick
+  variation inside one body; butt joints in plates (only in bars); shear deformation of
+  members (Euler-Bernoulli beams; about 1 % on the deflection of the slender members of
+  a bridge).
+* Thick plates (gussets 20 mm thick) use thin-plate (Kirchhoff) elements with constant-
+  strain membranes, at least 1.5 x their thickness in size: their in-plane bending is
+  somewhat too stiff on coarse meshes (check with `--fidelity fine`), and compact
+  blocks (a node block, the block under the plate) are rigid: they crush only where they
+  bear on the plate or the platform, and their glue lines crush at f_c90.
 * Friction in the contact between parts that were not touching at the start.
 * Debris (pieces with nothing left holding them) falls under gravity and lands on the
   platform, but does not hit the bridge or the plate.

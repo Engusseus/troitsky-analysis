@@ -36,7 +36,7 @@ def blank_model(X: np.ndarray, nf: int = 15) -> Model:
         X=np.asarray(X, float), mass=z(n), rot_inertia=z(n), node_body=z(n, int),
         b_i=z(0, int), b_j=z(0, int), b_L0=z(0), b_E0=z((0, 3, 3)), b_fy=z((0, nf)),
         b_fz=z((0, nf)), b_fA=z((0, nf)), b_E=z(0), b_ft=z(0), b_fc=z(0), b_Gf=z(0),
-        b_GJ=z(0), b_A=z(0), b_fv=z(0), b_fv3=z(0), b_Wt=z(0), b_body=z(0, int),
+        b_GJ=z(0), b_A=z(0), b_fv=z(0), b_fv3=z(0), b_nply=z(0), b_Wt=z(0), b_body=z(0, int),
         s_nodes=z((0, 3), int), s_E0=z((0, 3, 3)), s_P=z((0, 3, 3)), s_t=z(0),
         s_body=z(0, int), **shellmod.empty(), a_node=z(0, int), a_r0=z((0, 3)),
         c_a=z(0, int), c_b=z(0, int), c_area=z(0), c_n0=z((0, 3)), c_Kn=z(0), c_Ks=z(0),
@@ -104,7 +104,8 @@ def add_beam_line(m: Model, nodes: list[int], spec: BeamSpec, up=(0.0, 0.0, 1.0)
     cat("b_fA", np.repeat(fA[None], k, 0))
     for name, v in (("b_E", spec.E), ("b_ft", spec.ft), ("b_fc", spec.fc),
                     ("b_Gf", spec.Gf), ("b_GJ", spec.G * J), ("b_A", A),
-                    ("b_fv", spec.fv), ("b_fv3", spec.fv), ("b_Wt", J / dd)):
+                    ("b_fv", spec.fv), ("b_fv3", spec.fv), ("b_nply", 2.0),
+                    ("b_Wt", J / dd)):
         cat(name, np.full(k, float(v)))
     cat("b_body", np.zeros(k, int))
 
@@ -115,10 +116,17 @@ class TestResult:
     force: np.ndarray
     peak: float
     state: S.State
+    slow_disp: float = 0.0  # the test ran slowly (quasi-statically) up to this displacement
 
     @property
     def stiffness(self) -> float:
-        """Initial slope (N/mm) from the first 25 % of the peak load."""
+        """Initial slope (N/mm): from the slow first part of the test when there is one,
+        else from the first 25 % of the peak load."""
+        if self.slow_disp > 0:
+            sel = (self.disp > 0.1 * self.slow_disp) & (self.disp <= self.slow_disp) & \
+                (self.force < 0.5 * self.peak)
+            if sel.sum() >= 3:
+                return float(np.polyfit(self.disp[sel], self.force[sel], 1)[0])
         sel = (self.force > 0.02 * self.peak) & (self.force < 0.25 * self.peak)
         if sel.sum() < 3:
             sel = self.force < 0.3 * self.peak
@@ -128,11 +136,13 @@ class TestResult:
 def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
           max_disp: float, dt: float | None = None, alpha: float = 200.0,
           stop_drop: float = 0.3, record_every: int = 20, max_steps: int = 2_000_000,
-          gravity: bool = False, sign: float = 1.0) -> TestResult:
+          gravity: bool = False, sign: float = 1.0, slow_disp: float = 0.0,
+          slow_rate: float | None = None) -> TestResult:
     """Move ``node`` (one node or a list: a grip) along global ``dof`` at ``rate`` mm/s
     (displacement control) with the ``fixed`` nodes held ("xyz", "xyzr" = also rotations,
     any subset of x, y, z, r) and record the reaction force. Stops at ``max_disp`` or
-    when the force drops below ``stop_drop`` x peak after the peak."""
+    when the force drops below ``stop_drop`` x peak after the peak. Up to ``slow_disp``
+    the node moves at ``slow_rate`` instead (a quasi-static start, for the stiffness)."""
     node = np.atleast_1d(np.asarray(node, int))
     m.mass = np.maximum(m.mass, 1e-12)
     m.rot_inertia = np.maximum(m.rot_inertia, 1e-12)
@@ -158,10 +168,12 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
     peak = 0.0
     k = 0
     u = 0.0
+    vr = rate
     while u < max_disp and k < max_steps:
-        u = min(max_disp, rate * k * s.dt)
+        vr = rate if u >= slow_disp or not slow_rate else slow_rate
+        u = min(max_disp, u + vr * s.dt)
         st.x[node, dof] = x0 + sign * u
-        st.v[node, dof] = sign * rate
+        st.v[node, dof] = sign * vr
         S.internal_and_contact(m, st, s, F, Mo)
         fext = np.zeros_like(F)
         if gravity:
@@ -171,7 +183,7 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
         acc[node, dof] = 0.0
         st.v += s.dt * acc
         st.v[fix_t] = 0.0
-        st.v[node, dof] = sign * rate
+        st.v[node, dof] = sign * vr
         st.x += s.dt * st.v
         st.x[fix_t] = m.X[fix_t]
         wacc = -Mo / m.rot_inertia[:, None] - alpha * st.w
@@ -188,7 +200,8 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
             if peak > 0 and f < stop_drop * peak and u > 0.05 * max_disp:
                 break
         k += 1
-    return TestResult(np.array(disp), np.array(force), peak, st)
+    return TestResult(np.array(disp), np.array(force), peak, st,
+                      slow_disp if slow_rate else 0.0)
 
 
 def three_point_bending(E: float, ft: float, fc: float, span: float = 100.0,
@@ -200,7 +213,8 @@ def three_point_bending(E: float, ft: float, fc: float, span: float = 100.0,
     add_beam_line(m, list(range(n_el + 1)), BeamSpec(b=b, d=t, E=E, ft=ft, fc=fc, Gf=Gf),
                   up=(0, 1, 0))
     mid = n_el // 2
-    return drive(m, {0: "xyz", n_el: "yz"}, mid, 1, rate, max_disp=span / 4, sign=-1.0)
+    return drive(m, {0: "xyz", n_el: "yz"}, mid, 1, rate, max_disp=span / 4, sign=-1.0,
+                 slow_disp=0.15, slow_rate=5.0, stop_drop=0.8)
 
 
 def euler_column(E: float = 10000.0, L: float = 115.0, b: float = 10.0, t: float = 2.0,

@@ -26,10 +26,10 @@ SolidWorks needed), a Parasolid `.x_b`, or an STL with all bodies in one file.
 | `bridgesim crush BRIDGE.SLDPRT [-o overrides.yaml] [--seed N] [--fidelity quick\|standard\|fine] [--rate-check] [--out DIR] --json [--brief]` | Simulated crushing test; with `--out`: `crush.json`, `curve.csv`, `events.csv` (every event), `replay.html`. `--rate-check` runs it again at half the jack speed (3x the time). `--brief`: the report without the curve and event log (~20 kB instead of ~200 kB; the MCP crush tools return this by default) | minutes |
 | `bridgesim compare DIR/crush.json my_test.csv --json` | Reality gap vs a physical crush test | seconds |
 | `bridgesim sensitivity BRIDGE.SLDPRT [--rel 0.2] [--fidelity quick] --json` | Which material values move F_u most: each one lowered and raised by `rel`; `measure_first` lists the tests that would narrow the prediction most | (1 + 2 x 8) x crush / processes |
-| `bridgesim lab [--data validation/physical] --json` | Simulated coupon tests (stick bending, lap joint, stick column) and their gap to the team's coupon data | ~20 s |
-| `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, strengths, glue strength from coupon CSVs | seconds |
+| `bridgesim lab [--data validation/physical] --json` | Simulated coupon tests (stick bending, lap joint, stick column) and their gap to the team's coupon data | ~1 min |
+| `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, f_t/f_c and tau_g so the *simulated* coupons reproduce the measured ones (`lab --data` then shows ~0 % error) | ~1 min |
 | `bridgesim ab A.SLDPRT B.SLDPRT [-n 3] [--overrides-a a.yaml] [--overrides-b b.yaml] [--fidelity quick] --json` | Is B better than A? Both crushed with the same seeds: change of F_u and efficiency with a 90 % interval, `significant`, `verdict`, first failure of each. B may be A with other overrides | 2n x crush / processes |
-| `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity quick] [--processes 4] --json` | Spread of F_u over imperfections and material scatter; `recommended_prediction_kgf` for the Load Prediction Form (the 1/F-weighted median, which minimises the §12.7 error) | n x crush / processes |
+| `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity quick] [--processes 4] --json` | Spread of F_u over imperfections and material scatter; `recommended_prediction_kgf` for the Load Prediction Form (the 1/F-weighted median, which minimises the §12.7 error). `note` says what the spread leaves out (placeholder material values) | n x crush / processes |
 | `bridgesim schema inspect\|crush\|reality_gap\|lab\|montecarlo\|design_comparison\|sensitivity\|question` | JSON Schema of each report | instant |
 | `bridgesim mcp` | The same as MCP tools (`uv sync --extra mcp`) | - |
 
@@ -55,7 +55,8 @@ only the report; an error is one JSON object on stderr:
 `{"error": "...", "kind": "bad_input" | "simulation_failed", "exit_code": 2, "type": "..."}`.
 Progress lines go to stderr (one line per percent step), so they never break the JSON.
 
-MCP tools return the same error object as their result instead of raising.
+MCP tools report errors as a result flagged as an error (`isError`), whose text is
+`Error executing tool <name>: ` followed by the same JSON error object.
 
 ### Overrides are checked
 
@@ -86,9 +87,11 @@ claude mcp add bridgesim -- uv run --directory /path/to/troitsky-analysis bridge
 | `lab_tests(material, data_dir)`, `calibrate_material(data_dir, out_path)` | coupon level |
 | `get_schema(name)` | JSON Schemas |
 
-`job_status` returns `{"status": "running" | "done" | "failed", "progress": 0..1,
-"message": ..., "report": {...} | null, "error": ... | null}`. A job whose process died is
-reported `failed`, never left `running`.
+`job_status` returns `{"status": "running" | "done" | "failed" | "unknown", "progress":
+0..1 | null, "message": ..., "report": {...} | null, "error": ... | null}`. Jobs run
+detached and record their exit in `out_dir/status.json`, so any server (a restarted one
+too) reports them: a finished job is `done` with its report, a job whose process died is
+`failed`, never left `running`.
 
 ## Speed and determinism
 
@@ -108,8 +111,9 @@ varies 30 % joint to joint) is often larger than a small design change.
 `inspect` and `crush` return `questions`. Each has an `id`, a `topic`
 (`material`, `connection`, `geometry`, `rules`, `design`), a `severity`
 (`important` > `check` > `info`), the `question` in plain words, what was `assumed`
-meanwhile, and `answer_with`: an overrides fragment showing how to answer (placeholders in
-`<angle brackets>` are for the designer to fill). Typical ones:
+meanwhile, and `answer_with`: how to answer, as an overrides fragment (`bodies`, `glue`,
+`params`) with placeholders in `<angle brackets>` for the designer to fill, and/or `cad`
+(a change to make in SolidWorks) or `cli` (a command to run). Typical ones:
 
 * a body whose name does not say its layup or grain direction (`layup:<body>`,
   `orientation:<body>`);
@@ -119,8 +123,9 @@ meanwhile, and `answer_with`: an overrides fragment showing how to answer (place
 * two solids that overlap in the CAD (`overlap:`) - usually a modelling error;
 * a member whose glued area is much weaker than the member (`weak_joint:`) - a missing
   gusset?
-* a laminated member longer than one stick (`butt_joints:<member>`): how far apart the
-  butt joints of neighbouring plies are (it sets the member's tension strength);
+* laminated members longer than one stick (`butt_joints`, one question for all of
+  them): how far apart the butt joints of neighbouring plies are (it sets each member's
+  tension strength);
 * a rigid block directly under the loading plate (`block_under_plate:`);
 * a failing rule (`rule:<section>`), the mass with an assumed density
   (`material:density`), placeholder material values (`material:measure`).
@@ -158,8 +163,14 @@ get "(mirror copy)"). Joint names are `A | B` as listed in the inspect `joints`.
 * `Fu_kgf`: predicted ultimate load (§12.5): the peak jack force before the bridge is
   judged failed (load drop, 50 mm deflection, or contact with the platform); 0 if it
   collapses under its own weight (`failure_mode: instability`).
-* `failure_sequence`: what broke, in order, with the load at that moment. The first
-  entries near the peak are the reason the bridge failed: strengthen *that*.
+* `failure_sequence` (text) and `failures` (structured: `kind`, `parts`, `load_kgf`,
+  `jack_travel_mm`, `where_mm`, `fraction_separated`): what broke, in order, up to the
+  collapse. The entries near the peak are the reason the bridge failed: strengthen
+  *that*. A joint is `joint_cracking` when 30 % of its glued area has let go and
+  `joint_failure` (separated) at 90 %; `member_shear` means the member split along its
+  glue lines or grain (it keeps carrying axial load). Which part goes first can change
+  with the mesh when two parts are close to failing together: check with
+  `--fidelity fine` before redesigning around one part, and use `ab` to confirm.
 * `events`: the first event of each kind per part, with `where_mm`; `events.csv` in the
   output folder has every event (`n_events_total`).
 * `Fu_first_joint_failure_kgf`: load at the first glue-joint failure (§12.5 counts a
@@ -186,12 +197,16 @@ get "(mirror copy)"). Joint names are `A | B` as listed in the inspect `joints`.
    `glue_joint_template.csv`, run `bridgesim lab --data validation/physical --json`:
    each specimen gets simulated-vs-measured errors and a 0-100 reality-gap score.
    `bridgesim calibrate` then fits the material; re-run `lab` to confirm.
-2. Bridge level: crush a prototype (or a sub-assembly), log load and mid-span deflection
-   in `crush_test_template.csv` (the whole record, the drop after the peak included; mark
-   the row of the failure with `event = failure` and the broken part in `notes`), then
-   `bridgesim compare results/crush.json my_test.csv --json`: errors on ultimate load,
-   stiffness (rising branch only), deflection at peak, curve shape and failure location,
-   a 0-100 score, the §12.7 prediction error, and advice on what to measure next.
+2. Bridge level: crush a prototype (or a sub-assembly), log load against mid-span
+   deflection (`midspan_deflection_mm`) or the jack stroke (`jack_travel_mm`) in
+   `crush_test_template.csv` (the whole record; mark the row of the failure with
+   `event = failure` and the part that broke first in `notes`, with its side: "top chord,
+   far side, left"). The peak load and the broken part alone are enough (that is what the
+   competition gives you). Then `bridgesim compare results/crush.json my_test.csv --json`:
+   errors on ultimate load, stiffness (secant 10-50 % of the peak), deflection at peak,
+   curve shape and failure location (side included), a 0-100 score (0 when off by 1.5x
+   in load or 2x in stiffness), the §12.7 prediction error, and advice on what to measure
+   next.
 
 ## Python API
 

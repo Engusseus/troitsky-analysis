@@ -51,8 +51,9 @@ def _log3(R, out):
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
-def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv3, Wt, soft,
-                eps_p, dmg_t, alive, fractured, shear, F, Mo, update, beta, dt, prev):
+def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv3, Wt, nply,
+                s2, s3, soft, eps_p, dmg_t, alive, fractured, shear, F, Mo, update, beta, dt,
+                prev):
     nb = bi.shape[0]
     nf = fA.shape[1]
     Ti = np.empty((3, 3))
@@ -130,7 +131,9 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
             My = 0.0
             crk = 0.0
             for f in range(nf):
-                eps = eps0 - fy[e, f] * kz + fz[e, f] * ky
+                # s2, s3 < 1: the member has split (delaminated) and its parts bend
+                # each about its own axis: n parts carry 1/n^2 of the bending stiffness
+                eps = eps0 - s2[e] * fy[e, f] * kz + s3[e] * fz[e, f] * ky
                 ep = eps_p[e, g, f]
                 dm = dmg_t[e, g, f]
                 ee = eps - ep
@@ -162,8 +165,8 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
                 if g == 0:
                     Atot += A
                 Ng += sig * A
-                Mz -= sig * A * fy[e, f]
-                My += sig * A * fz[e, f]
+                Mz -= sig * A * fy[e, f] * s2[e]
+                My += sig * A * fz[e, f] * s3[e]
             if crk > cracked_max:
                 cracked_max = crk
             N += 0.5 * Ng
@@ -171,7 +174,8 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
             Mzj += 0.5 * Mz * (-2.0 + 6.0 * xi)
             Myi += 0.5 * My * (-4.0 + 6.0 * xi)
             Myj += 0.5 * My * (-2.0 + 6.0 * xi)
-        T = GJ[e] / L * (thj[0] - thi[0])
+        sj = (s2[e] * s3[e]) ** 2
+        T = sj * GJ[e] / L * (thj[0] - thi[0])
         if beta > 0.0:
             # material (stiffness-proportional) damping on the local deformation rates
             EA = 0.0
@@ -179,8 +183,8 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
             EIy = 0.0
             for f in range(nf):
                 EA += E_ * fA[e, f]
-                EIz += E_ * fA[e, f] * fy[e, f] * fy[e, f]
-                EIy += E_ * fA[e, f] * fz[e, f] * fz[e, f]
+                EIz += E_ * fA[e, f] * fy[e, f] * fy[e, f] * s2[e] * s2[e]
+                EIy += E_ * fA[e, f] * fz[e, f] * fz[e, f] * s3[e] * s3[e]
             r0 = (l - L - prev[e, 0]) / dt
             rxi = (thi[0] - prev[e, 1]) / dt
             ryi = (thi[1] - prev[e, 2]) / dt
@@ -189,7 +193,7 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
             ryj = (thj[1] - prev[e, 5]) / dt
             rzj = (thj[2] - prev[e, 6]) / dt
             N += beta * EA / L * r0
-            T += beta * GJ[e] / L * (rxj - rxi)
+            T += beta * sj * GJ[e] / L * (rxj - rxi)
             Mzi += beta * EIz / L * (4.0 * rzi + 2.0 * rzj)
             Mzj += beta * EIz / L * (2.0 * rzi + 4.0 * rzj)
             Myi += beta * EIy / L * (4.0 * ryi + 2.0 * ryj)
@@ -211,13 +215,16 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
             fractured[e] = True
         if update:
             if alive[e]:
-                # shear along e2 runs across the plies (wood), along e3 on the glue
-                # planes between plies; torsion loads both
+                # shear along e3 runs on the glue planes between the plies: the member
+                # delaminates into its plies; along e2 it splits the wood across the
+                # width in two. Either way it keeps its axial strength (no deletion).
                 tt = abs(T) / Wt[e]
-                if (1.5 * abs(Vz) / Ar[e] + tt) / fv[e] > 1.0 or \
-                        (1.5 * abs(Vy) / Ar[e] + tt) / fv3[e] > 1.0:
+                if s3[e] == 1.0 and (1.5 * abs(Vy) / Ar[e] + tt) / fv3[e] > 1.0:
                     shear[e] = True
-                    alive[e] = False
+                    s3[e] = 1.0 / nply[e]
+                if s2[e] == 1.0 and (1.5 * abs(Vz) / Ar[e] + tt) / fv[e] > 1.0:
+                    shear[e] = True
+                    s2[e] = 0.5
             if cracked_max / Atot > 0.9:
                 fractured[e] = True
         if not alive[e]:
@@ -537,7 +544,8 @@ def _add(F, Mo, nd, arm, f, sign):
 
 @njit(cache=True, fastmath=True, error_model="numpy")
 def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GIIc, mu,
-                breakable, dmax, dd, slip, F, Mo, update, beta, dt, prev, alive):
+                breakable, dmax, dd, slip, F, Mo, update, beta, dt, prev, alive, crush,
+                fc90):
     nc = ca.shape[0]
     pa = np.empty(3)
     pb = np.empty(3)
@@ -569,8 +577,14 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
             ds[k] = pb[k] - pa[k] - dn * n[k]
             s2 += ds[k] * ds[k]
         s = math.sqrt(s2)
-        dnp = dn if dn > 0.0 else 0.0
         kn = Kn[i]
+        # the wood under a glue line crushes across the grain at fc90 (permanent set)
+        dn = dn - crush[i]
+        if kn * dn < -fc90:
+            if update:
+                crush[i] += dn + fc90 / kn
+            dn = -fc90 / kn
+        dnp = dn if dn > 0.0 else 0.0
         ks = Ks[i]
         d = 0.0
         if breakable[i]:
@@ -603,7 +617,7 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
                 dd[i] = d
             # a debonded pair that has turned, parted or passed through: the two points
             # no longer face each other, so the pair stops acting as a contact
-            if d >= 0.999 and (nn < 1.6 or dn < -1.0 or dn * dn + s2 > 9.0):
+            if d >= 0.999 and (nn < 1.6 or crush[i] < -3.0 or dn * dn + s2 > 9.0):
                 if update:
                     alive[i] = False
                 continue

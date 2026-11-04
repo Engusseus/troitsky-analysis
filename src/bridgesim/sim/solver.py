@@ -109,6 +109,11 @@ class State:
     # across c, shear); s_dmg is the through-crack indicator, s_gone the eroded elements
     s_hist: np.ndarray = field(default_factory=lambda: np.zeros((0, 3, 5)))
     s_gone: np.ndarray = field(default_factory=lambda: np.zeros(0, bool))
+    # beams split in shear: factor on the bending lever arms across the width (s2) and
+    # through the plies (s3); 1 intact, 1/2 and 1/n after splitting
+    c_crush: np.ndarray = field(default_factory=lambda: np.zeros(0))  # glue-line set
+    b_s2: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    b_s3: np.ndarray = field(default_factory=lambda: np.zeros(0))
     sc: object | None = None  # self-contact (bridgesim.sim.contact.SelfContact)
     t: float = 0.0
     jack_y: float = 0.0
@@ -139,7 +144,8 @@ def initial_state(m: Model, jack_y: float) -> State:
         b_prev=np.zeros((nb, 7)), s_prev=np.zeros((len(m.s_nodes), 18)),
         c_prev=np.zeros((nc, 3)), c_alive=np.ones(nc, bool), loose=np.zeros(n, bool),
         s_hist=np.zeros((len(m.s_nodes), 9 * m.s_lay.shape[1], 5)),
-        s_gone=np.zeros(len(m.s_nodes), bool))
+        s_gone=np.zeros(len(m.s_nodes), bool), b_s2=np.ones(nb), b_s3=np.ones(nb),
+        c_crush=np.zeros(nc))
 
 
 # ----------------------------------------------------------------------------- kernels
@@ -192,7 +198,8 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     for g, xi in enumerate(GP):
         kz = ((-4 + 6 * xi) * th_i[:, 2] + (-2 + 6 * xi) * th_j[:, 2]) / L0
         ky = ((-4 + 6 * xi) * th_i[:, 1] + (-2 + 6 * xi) * th_j[:, 1]) / L0
-        eps = eps0[:, None] - m.b_fy * kz[:, None] + m.b_fz * ky[:, None]
+        s2, s3 = st.b_s2[:, None], st.b_s3[:, None]
+        eps = eps0[:, None] - s2 * m.b_fy * kz[:, None] + s3 * m.b_fz * ky[:, None]
         ep = st.eps_p[:, g]
         dm = st.dmg_t[:, g]
         ee = eps - ep
@@ -209,22 +216,23 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
             st.eps_p[:, g] = ep2
         A = m.b_fA
         Ng = (sig * A).sum(1)
-        Mz = -(sig * A * m.b_fy).sum(1)
-        My = (sig * A * m.b_fz).sum(1)
+        Mz = -(sig * A * m.b_fy * s2).sum(1)
+        My = (sig * A * m.b_fz * s3).sum(1)
         N += 0.5 * Ng
         Mzi += 0.5 * Mz * (-4 + 6 * xi)
         Mzj += 0.5 * Mz * (-2 + 6 * xi)
         Myi += 0.5 * My * (-4 + 6 * xi)
         Myj += 0.5 * My * (-2 + 6 * xi)
-    T = m.b_GJ / L0 * (th_j[:, 0] - th_i[:, 0])
+    sj = (st.b_s2 * st.b_s3) ** 2
+    T = sj * m.b_GJ / L0 * (th_j[:, 0] - th_i[:, 0])
     D = np.c_[l - L0, th_i, th_j]
     if beta > 0:
         rate = (D - st.b_prev) / dt
         EA = (m.b_E[:, None] * m.b_fA).sum(1)
-        EIz = (m.b_E[:, None] * m.b_fA * m.b_fy**2).sum(1)
-        EIy = (m.b_E[:, None] * m.b_fA * m.b_fz**2).sum(1)
+        EIz = (m.b_E[:, None] * m.b_fA * m.b_fy**2).sum(1) * st.b_s2**2
+        EIy = (m.b_E[:, None] * m.b_fA * m.b_fz**2).sum(1) * st.b_s3**2
         N = N + beta * EA / L0 * rate[:, 0]
-        T = T + beta * m.b_GJ / L0 * (rate[:, 4] - rate[:, 1])
+        T = T + beta * sj * m.b_GJ / L0 * (rate[:, 4] - rate[:, 1])
         Mzi = Mzi + beta * EIz / L0 * (4 * rate[:, 3] + 2 * rate[:, 6])
         Mzj = Mzj + beta * EIz / L0 * (2 * rate[:, 3] + 4 * rate[:, 6])
         Myi = Myi + beta * EIy / L0 * (4 * rate[:, 2] + 2 * rate[:, 5])
@@ -239,11 +247,11 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
         st.b_alive &= ~big
         st.b_fractured |= big
         tt = np.abs(T) / m.b_Wt
-        shear_fail = alive & (((1.5 * np.abs(Vz) / m.b_A + tt) > m.b_fv)
-                              | ((1.5 * np.abs(Vy) / m.b_A + tt) > m.b_fv3))
-        if shear_fail.any():
-            st.b_shear |= shear_fail
-            st.b_alive &= ~shear_fail
+        f3 = alive & (st.b_s3 == 1.0) & ((1.5 * np.abs(Vy) / m.b_A + tt) > m.b_fv3)
+        f2 = alive & (st.b_s2 == 1.0) & ((1.5 * np.abs(Vz) / m.b_A + tt) > m.b_fv)
+        st.b_s3 = np.where(f3, 1.0 / m.b_nply, st.b_s3)
+        st.b_s2 = np.where(f2, 0.5, st.b_s2)
+        st.b_shear |= f2 | f3
         cracked = (st.dmg_t > 0.99) * m.b_fA[:, None, :]
         frac = cracked.sum(2).max(1) / m.b_fA.sum(1)
         st.b_fractured |= frac > 0.9
@@ -406,8 +414,15 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     dn = (delta * n).sum(1)
     ds = delta - dn[:, None] * n
     s = np.linalg.norm(ds, axis=1)
-    dnp = np.maximum(dn, 0.0)
     Kn, Ks = m.c_Kn, m.c_Ks
+    # the wood under a glue line crushes across the grain at fc90 (permanent set)
+    fc90 = _glue_fc90(m)
+    dn = dn - st.c_crush
+    over = Kn * dn < -fc90
+    if update:
+        st.c_crush = np.where(over, st.c_crush + dn + fc90 / Kn, st.c_crush)
+    dn = np.where(over, -fc90 / Kn, dn)
+    dnp = np.maximum(dn, 0.0)
     dn0 = m.c_sig / Kn
     ds0 = m.c_tau / Ks
     dm = np.sqrt(dnp**2 + s**2)
@@ -427,7 +442,8 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
         st.c_dmax = np.where(m.c_breakable, dmax, 0.0)
         st.c_d = d
     # a debonded pair that has turned, parted or passed through stops acting as contact
-    gone = m.c_breakable & (d >= 0.999) & ((nn < 1.6) | (dn < -1.0) | (dn**2 + s**2 > 9.0))
+    gone = m.c_breakable & (d >= 0.999) & ((nn < 1.6) | (st.c_crush < -3.0)
+                                           | (dn**2 + s**2 > 9.0))
     live = st.c_alive & ~gone
     if update:
         st.c_alive = live
@@ -632,6 +648,11 @@ def _kc(m: Model, key: str, s: Settings) -> np.ndarray:
     return k
 
 
+def _glue_fc90(m: Model) -> float:
+    """Crushing strength across the grain under glue lines (MPa)."""
+    return float(m.params.get("glue_fc90", 1e30))
+
+
 def _fmax(m: Model, key: str) -> np.ndarray:
     """Bearing capacity of each platform ("p") or plate ("q") contact point: crushing
     strength of the wood under it x the area the point stands for."""
@@ -659,6 +680,7 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
     if len(m.b_i):
         K.beam_kernel(x, R, m.b_i, m.b_j, m.b_L0, m.b_E0, m.b_fy, m.b_fz, m.b_fA, m.b_E,
                       m.b_ft, m.b_fc, m.b_Gf, m.b_GJ, m.b_A, m.b_fv, m.b_fv3, m.b_Wt,
+                      m.b_nply, st.b_s2, st.b_s3,
                       float(m.params.get("crush_softening", 0.3)), st.eps_p, st.dmg_t,
                       st.b_alive, st.b_fractured, st.b_shear, F, Mo, update,
                       s.beta if update else 0.0, s.dt, st.b_prev)
@@ -676,7 +698,8 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
         K.glue_kernel(x, R, m.a_node, m.a_r0, m.c_a, m.c_b, m.c_area, m.c_n0, m.c_Kn,
                       m.c_Ks, m.c_sig, m.c_tau, m.c_GIc, m.c_GIIc, m.c_mu, m.c_breakable,
                       st.c_dmax, st.c_d, st.c_slip, F, Mo, update,
-                      s.beta if update else 0.0, s.dt, st.c_prev, st.c_alive)
+                      s.beta if update else 0.0, s.dt, st.c_prev, st.c_alive, st.c_crush,
+                      _glue_fc90(m))
     if len(m.k_a):
         K.cable_kernel(x, R, m.a_node, m.a_r0, m.k_a, m.k_b, m.k_L0, m.k_EA, m.k_Fb,
                        st.k_alive, F, Mo, update)

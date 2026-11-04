@@ -25,9 +25,11 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 #: background jobs started by this server process: out_dir -> Popen
@@ -53,8 +55,22 @@ def _error(exc: BaseException) -> str:
     return json.dumps({"error": msg, "kind": kind, "type": type(exc).__name__})
 
 
+def _tool_error_cls():
+    """The SDK's ToolError: raised by a tool, the client gets a result flagged as an
+    error (isError) with our message, the JSON object {"error", "kind", "type"}."""
+    try:  # mcp >= 2
+        from mcp.server.mcpserver.exceptions import ToolError
+    except ImportError:
+        try:  # mcp 1.x
+            from mcp.server.fastmcp.exceptions import ToolError
+        except ImportError:  # pragma: no cover - no mcp installed
+            ToolError = RuntimeError  # noqa: N806
+    return ToolError
+
+
 def _safe(fn):
-    """Wrap a tool so any exception comes back as a JSON error the agent can read."""
+    """Wrap a tool so any exception comes back as a flagged MCP error (isError) whose
+    text is a JSON object the agent can read."""
     import functools
 
     @functools.wraps(fn)
@@ -62,19 +78,38 @@ def _safe(fn):
         try:
             return fn(*a, **k)
         except Exception as exc:  # noqa: BLE001
-            return _error(exc)
+            raise _tool_error_cls()(_error(exc)) from None
 
     return wrapper
 
 
 def _start(cmd: list[str], out: Path) -> str:
+    """Start ``cmd`` detached, through bridgesim.sim.jobrun, which records the exit code
+    in out/status.json: the job's state survives a restart of this server."""
     out.mkdir(parents=True, exist_ok=True)
-    with (out / "result.json").open("w") as so, (out / "progress.log").open("w") as se:
-        proc = subprocess.Popen(cmd, stdout=so, stderr=se)
+    for f in ("status.json", "result.json", "progress.log"):
+        (out / f).unlink(missing_ok=True)
+    proc = subprocess.Popen([sys.executable, "-m", "bridgesim.sim.jobrun", str(out), "--",
+                             *cmd], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, start_new_session=True)
     _JOBS[str(out.resolve())] = proc
-    (out / "job.json").write_text(json.dumps({"pid": proc.pid, "cmd": cmd}))
+    (out / "job.json").write_text(json.dumps({"pid": proc.pid, "cmd": cmd,
+                                              "started": time.time()}))
     return json.dumps({"status": "running", "out_dir": str(out),
                        "poll": "job_status(out_dir) every 30-60 s"})
+
+
+def _alive(pid: int) -> bool:
+    """Whether a process with this pid is running (and not a zombie)."""
+    try:
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return False
+    try:  # a finished child of this server that was not reaped yet
+        with open(f"/proc/{pid}/stat") as fh:
+            return fh.read().split(")")[-1].split()[0] != "Z"
+    except OSError:
+        return True
 
 
 def _progress_of(lines: list[str]) -> tuple[float | None, str]:
@@ -89,31 +124,37 @@ def _progress_of(lines: list[str]) -> tuple[float | None, str]:
 def job_status_impl(out_dir: str) -> str:
     """{"status": running | done | failed | unknown, "progress": 0..1 or null,
     "message": last progress message, "report": the report when done, "error": the error
-    object when failed}."""
+    object when failed}. Read from the job's files, so it works from any server."""
     out = Path(out_dir)
     log = (out / "progress.log").read_text(encoding="utf-8", errors="replace") \
         if (out / "progress.log").exists() else ""
     lines = [ln.strip() for ln in log.splitlines() if ln.strip()]
-    res = (out / "result.json").read_text(encoding="utf-8") \
-        if (out / "result.json").exists() else ""
-    proc = _JOBS.get(str(out.resolve()))
-    code = proc.poll() if proc is not None else None
-    if proc is None and (out / "status.json").exists():
-        code = json.loads((out / "status.json").read_text()).get("exit_code")
-    done_json = res.strip().startswith("{") and res.strip().endswith("}")
     frac, msg = _progress_of(lines)
 
     def reply(status, **kw):
         return json.dumps({"status": status, "progress": frac, "message": msg,
                            "report": None, "error": None} | kw)
 
-    if code is None and proc is None and not done_json:
-        return reply("unknown", error={"error": "no job was started by this server in that "
-                                                "folder", "kind": "bad_input"})
-    if code is None:
-        return reply("running")
-    (out / "status.json").write_text(json.dumps({"exit_code": code}))
-    if code == 0 and done_json:
+    proc = _JOBS.get(str(out.resolve()))
+    if proc is not None:
+        proc.poll()  # reap it if it has finished
+    status = json.loads((out / "status.json").read_text()) \
+        if (out / "status.json").exists() else None
+    if status is None:
+        job = json.loads((out / "job.json").read_text()) if (out / "job.json").exists() \
+            else None
+        if job is None:
+            return reply("unknown", error={"error": "no job was started in that folder",
+                                           "kind": "bad_input"})
+        if _alive(int(job["pid"])):
+            return reply("running")
+        return reply("failed", error={"error": "the job's process died without finishing "
+                                               "(killed, or the machine restarted)",
+                                      "kind": "simulation_failed"})
+    code = status.get("exit_code")
+    res = (out / "result.json").read_text(encoding="utf-8") \
+        if (out / "result.json").exists() else ""
+    if code == 0 and res.strip().startswith("{"):
         return reply("done", progress=1.0, report=json.loads(res))
     err = None
     for ln in reversed(lines):

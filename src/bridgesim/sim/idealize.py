@@ -438,6 +438,8 @@ def _laminated_member(name: str, sh, lam, L: float, mat: Material, o: dict,
     if o.get("butt_stagger_mm") is None and not any(
             q["id"] == f"butt_joints:{g}" for q in questions):
         questions.append({
+            "member": f"'{g}' ({L:.0f} mm long, {kt:.0%} of a solid member's tension "
+                      f"strength with joints {s:.0f} mm apart)",
             "id": f"butt_joints:{g}", "body": name, "topic": "design", "severity": "check",
             "question": f"'{g}' is {L:.0f} mm long, longer than one stick "
                         f"({Ls:.0f} mm), so its plies have butt joints. How far apart are "
@@ -451,6 +453,32 @@ def _laminated_member(name: str, sh, lam, L: float, mat: Material, o: dict,
                 "butt_stagger_mm": "<distance between joints of neighbouring plies, mm; "
                                    "0 if the plies have no joints>"}}}})
     return kt, fv
+
+
+def _merge_butt_questions(questions: list[dict]) -> list[dict]:
+    """One question for all the laminated members longer than a stick (instead of one
+    per member type): the designer answers once, one line per member."""
+    bj = [q for q in questions if q["id"].startswith("butt_joints:")]
+    if len(bj) < 2:
+        for q in bj:
+            q.pop("member", None)
+        return questions
+    rest = [q for q in questions if not q["id"].startswith("butt_joints:")]
+    members = "; ".join(q["member"] for q in bj)
+    answer: dict = {}
+    for q in bj:
+        answer.update(q["answer_with"]["bodies"])
+    merged = {"id": "butt_joints", "body": bj[0]["body"], "topic": "design",
+              "severity": "check",
+              "question": "These laminated members are longer than one stick, so their plies "
+                          "have butt joints: " + members + ". How far apart are the joints of "
+                          "neighbouring plies in each? Joints close together let the glue "
+                          "between them shear first and weaken the member in tension.",
+              "assumed": bj[0]["assumed"], "answer_with": {"bodies": answer}}
+    i = questions.index(bj[0])
+    out = rest[:]
+    out.insert(min(i, len(out)), merged)
+    return out
 
 
 def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
@@ -510,14 +538,17 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             })
         if o.get("grain"):
             lay.grain = str(o["grain"])
-        if lay.orientation_assumed and lay.source == "name" and not o.get("layup"):
+        g = _group(b.name)
+        if lay.orientation_assumed and lay.source == "name" and not o.get("layup") and \
+                not any(q["id"] == f"orientation:{g}" for q in questions):
             questions.append({
-                "id": f"orientation:{b.name}", "body": b.name, "topic": "material",
+                "id": f"orientation:{g}", "body": b.name, "topic": "material",
                 "severity": "check",
-                "question": f"'{b.name}' says how many plies but not their direction. Do "
-                            "all its sticks run along it (UD), or is it cross-laminated?",
+                "question": f"'{g}' (all its copies) says how many plies but not their "
+                            "direction. Do all its sticks run along it (UD), or is it "
+                            "cross-laminated?",
                 "assumed": "all sticks along its long direction (UD)",
-                "answer_with": {"bodies": {b.name: {
+                "answer_with": {"bodies": {g + "*": {
                     "layup": f"{len(lay.angles)}-ply <UD | 0-90 | +-45>"}}}})
         forced = o.get("kind")
         sh = analyse_shape(b, lay, forced)
@@ -529,6 +560,22 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             questions[-1]["answer_with"]["bodies"][b.name]["kind"] = "<block | shell | bar>"
         if forced == "ignore":
             sh.kind = "ignore"
+        if forced in ("shell", "bar") and sh.kind == forced:
+            lo, hi = b.mesh.bbox
+            dims = sorted(hi - lo)
+            bad = (forced == "shell" and dims[0] > 0.34 * dims[1]) or \
+                (forced == "bar" and dims[0] < 0.25 * dims[1])
+            if bad:
+                questions.append({
+                    "id": f"kind:{b.name}", "body": b.name, "topic": "geometry",
+                    "severity": "check",
+                    "question": f"'{b.name}' was set to kind {forced}, but it measures "
+                                f"{dims[0]:.0f} x {dims[1]:.0f} x {dims[2]:.0f} mm: a "
+                                + ("plate that thick is not a thin plate (the shell model "
+                                   "only knows thin plates)" if forced == "shell" else
+                                   "member that flat is a plate") + ". Is that right?",
+                    "assumed": f"modelled as a {forced} as asked",
+                    "answer_with": {"bodies": {b.name: {"kind": "<block | shell | bar>"}}}})
         shapes.append(sh)
 
     # ---------------------------------------------------------------- contacts
@@ -545,8 +592,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     shell_tree: dict[int, cKDTree] = {}
     shell_mesh: dict[int, tuple[np.ndarray, np.ndarray, float]] = {}
     beams: dict[str, list] = {k: [] for k in ("i", "j", "L0", "E0", "fy", "fz", "fA", "E",
-                                              "ft", "fc", "Gf", "GJ", "A", "fv", "fv3", "Wt",
-                                              "body")}
+                                              "ft", "fc", "Gf", "GJ", "A", "fv", "fv3",
+                                              "nply", "Wt", "body")}
     shells: dict[str, list] = {k: [] for k in ("nodes", "E0", "P", "t", "el", "body")}
     n_snap = 0
     snap_excess = 1.0
@@ -635,6 +682,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 beams["A"].append(A_true)
                 beams["fv"].append(mat.f_v_MPa.value * Sf)
                 beams["fv3"].append(fv_lam * Sf)
+                beams["nply"].append(float(max(2, len(lam.angles))))
                 beams["Wt"].append(J / dd)
                 beams["body"].append(bi)
                 info.beams.append(len(beams["i"]) - 1)
@@ -1072,6 +1120,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         b_fA=arr(beams["fA"], (0, nf)), b_E=arr(beams["E"]), b_ft=arr(beams["ft"]),
         b_fc=arr(beams["fc"]), b_Gf=arr(beams["Gf"]), b_GJ=arr(beams["GJ"]),
         b_A=arr(beams["A"]), b_fv=arr(beams["fv"]), b_fv3=arr(beams["fv3"]),
+        b_nply=arr(beams["nply"]),
         b_Wt=arr(beams["Wt"]),
         b_body=arr(beams["body"], dtype=int),
         s_nodes=arr(shells["nodes"], (0, 3), int),
@@ -1102,9 +1151,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 "test_rate_mm_per_min": sp["crusher.test_rate_mm_per_min"],
                 "c_d0": np.array(springs["d0"], float),
                 "fmax_p": np.array(p_fmax, float), "fmax_q": np.array(q_fmax, float),
+                "glue_fc90": float(sp["wood.f_c90_MPa"]),
                 "plate_offset_mm": [float(off[0]), float(off[1])],
                 "seed": seed},
-        questions=questions, notes=notes)
+        questions=_merge_butt_questions(questions), notes=notes)
     model.notes += ov.problems([b.name for b in bodies])
     # a rigid (unbreakable) piece directly under the loading plate takes the load without
     # any crushing: say so
@@ -1134,7 +1184,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             f"{n_snap} shell element(s) are larger than the crack band their fracture energy "
             f"allows ({', '.join(sorted(snap_modes))}): they keep their strength and fail as "
             f"brittly as possible, dissipating up to {snap_excess:.1f}x the fracture energy "
-            "of that mode; a finer mesh (--fidelity fine) removes this")
+            "of that mode; a finer mesh (--fidelity fine) reduces this")
     return model
 
 
@@ -1158,6 +1208,9 @@ def _mesh_robust(poly, h: float, name: str):
                      f"({poly.area:.0f} mm^2){': ' + str(last) if last else ''}")
 
 
+THICK_H = 1.5  # smallest shell element / plate thickness (Kirchhoff plates)
+
+
 def _shell_h(sh: Shape) -> float:
     """Shell element size: ~1/5 of the plate's size, 10-30 mm, at least 2.5 elements
     across a strip, and at least 2.5 times the plate's thickness."""
@@ -1165,7 +1218,7 @@ def _shell_h(sh: Shape) -> float:
     h = min(h, max(sh.Wp / 2.5, 6.0))
     # Kirchhoff (DKT) plates ignore shear deformation, which is only right for elements
     # several times larger than the thickness: thick plates get coarse elements
-    return max(h, min(2.5 * sh.T, 60.0))
+    return max(h, min(THICK_H * sh.T, 60.0))
 
 
 def _seg_dist(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:

@@ -79,6 +79,7 @@ class Model:
     b_fv: np.ndarray  # shear strength across the plies (wood), for shear along e2
     b_fv3: np.ndarray  # shear strength on the planes between plies (glue lines, normal
     #                   to e3: plies are stacked through the thickness e3), shear along e3
+    b_nply: np.ndarray  # plies stacked through e3 (the parts a glue-line split leaves)
     b_Wt: np.ndarray  # torsional section modulus (mm^3)
     b_body: np.ndarray
     # shells
