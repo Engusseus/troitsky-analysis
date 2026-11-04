@@ -29,6 +29,9 @@ def _name(scale: float) -> str:
 
 def _one(args):
     cad, scale, seed, save = args
+    done = Path(save) / f"{_name(scale)}_seed{seed}" / "result.json" if save else None
+    if done is not None and done.exists():  # finished before a restart: keep it
+        return json.loads(done.read_text())
     import numba
 
     numba.set_num_threads(2)
@@ -44,11 +47,14 @@ def _one(args):
                                               dt_target=3e-6 * min(1.0, scale / 1.0) ** 1.1,
                                               after_failure_mm=15.0 if full else 2.0))
     first = next((f for f in rep.failures if f.kind != "joint_cracking"), None)
-    return {"mesh": _name(scale), "element_scale": scale, "seed": seed,
-            "Fu_kgf": rep.Fu_kgf, "deflection_at_Fu_mm": rep.deflection_at_Fu_mm,
-            "first_failure": f"{first.kind}: {first.what}" if first else rep.failure_mode,
-            "trustworthy": rep.quality.trustworthy,
-            "added_mass": rep.quality.added_mass_fraction, "wall_s": round(time.time() - t0)}
+    res = {"mesh": _name(scale), "element_scale": scale, "seed": seed,
+           "Fu_kgf": rep.Fu_kgf, "deflection_at_Fu_mm": rep.deflection_at_Fu_mm,
+           "first_failure": f"{first.kind}: {first.what}" if first else rep.failure_mode,
+           "trustworthy": rep.quality.trustworthy,
+           "added_mass": rep.quality.added_mass_fraction, "wall_s": round(time.time() - t0)}
+    if done is not None:
+        done.write_text(json.dumps(res))
+    return res
 
 
 def main() -> None:
@@ -58,7 +64,8 @@ def main() -> None:
     ap.add_argument("--scales", default="1.6,1,0.75", help="element sizes (x standard)")
     ap.add_argument("--seeds", default="0,1,2", help="-1: the perfect bridge")
     ap.add_argument("--save", default="", help="folder for each run's crush.json, curves, "
-                    "events (and the replay of seed 0 or -1)")
+                    "events (and the replay of seed 0 or -1); a run whose result.json is "
+                    "there already is not run again (resume after an interruption)")
     a = ap.parse_args()
     scales = [float(x) for x in a.scales.split(",")]
     seeds = [int(s) for s in a.seeds.split(",")]
