@@ -21,7 +21,7 @@ relevant parts in your Design Validation (§10). Units: mm, N, MPa, s.
 |---|---|---|
 | extrusion at least 2x longer than its section, section no flatter than 1:4 (a deep cross-beam 221 x 88 x 63 mm is one) | **bar**: chain of corotational fibre beams on its centre line, ~25-30 mm elements (>= 4), real section and length, Timoshenko (shear-flexible) | members carry axial force + bending; buckling needs >= 4 elements |
 | slender but tapered extrusion (a wedge, a lip or filler cut along a diagonal: 40-75 % of its bounding box) | **tapered bar**: as above, each element with the width and centre offset of the profile at its position (same volume as the solid) | still a member; a rigid block would make the load path too stiff |
-| thin extrusion (width >= 3 x thickness) | **shell**: triangles on the mid-surface with Allman's membrane (drilling rotations: a plate bends in its own plane without the locking of constant-strain triangles) and DKT bending, meshed from the real outline (holes > element size kept), integrated ply by ply (layered) | gussets, webs, decks, diaphragms. A plate made of narrow arms (an X, a frame) gets about one element across an arm: still ~1.5x too stiff in in-plane bending there (`test_plates_bend_in_their_own_plane`), one grain direction for all its arms; the `narrow_plates` question asks to draw such members as their own bodies |
+| thin extrusion (width >= 3 x thickness) | **shell**: CST membrane + DKT bending triangles on the mid-surface, meshed from the real outline (holes > element size kept), integrated ply by ply (layered) | gussets, webs, decks, diaphragms. A plate made of narrow arms (an X, a frame) gets about one element across an arm: ~4x too stiff in in-plane bending there (constant-strain triangles lock), one grain direction for all its arms; the `narrow_plates` question asks to draw such members as their own bodies |
 | compact piece (less than 2x longer than its section, not thin), a body named a block, short toothpick | **rigid body** with its real mass and inertia | much stiffer than the members; a question lists those in the load path |
 | floss (by name) | **cable**: tension only, snaps at its breaking load | §8.4.5 |
 
@@ -134,11 +134,9 @@ independent maximum-strain criterion per mode: fibre tension softens to zero wit
 fracture energy G_f (3 N/mm); fibre compression crushes to a plateau at 70 % of f_c;
 across-grain tension (sticks parting edge to edge, f_t90 = 1 MPa) softens with G_f90
 (0.3 N/mm); across-grain compression yields at f_c90; in-plane shear softens with G_v
-(1 N/mm). Cracks close: a broken ply still carries compression. Damage follows the
-element's mean strain (the stresses use the strain at each point, which varies with
-Allman's membrane), and the softening strain of each element is set from its size
-(crack band, Bažant & Oh 1983), so the energy a crack dissipates does not depend on the
-mesh: a plate strip pulled apart dissipates
+(1 N/mm). Cracks close: a broken ply still carries compression. The softening strain of
+each element is set from its size (crack band, Bažant & Oh 1983), so the energy a crack
+dissipates does not depend on the mesh: a plate strip pulled apart dissipates
 G_f x width x thickness within 2 % with 5, 2.5 and 1.25 mm elements
 (`test_shell_fracture_energy_is_mesh_independent`). Elements larger than the crack band
 of a mode allows (snap-back) keep their strength and fail as brittle as possible; they are
@@ -285,9 +283,10 @@ an edit elsewhere in the design. Monte Carlo over seeds gives the spread of F_u.
 * A crushed part keeps its full section in the rest of the model: crushing is in the
   glue line between two parts (permanent set, compaction), not a loss of the part's
   own area.
-* Thick plates (gussets 20 mm thick) use thin-plate (Kirchhoff) elements at least 1.5 x
-  their thickness in size: an arm of a plate one element wide is ~1.5x too stiff in
-  in-plane bending (Allman's membrane; constant-strain triangles would be ~4x), and compact
+* Thick plates (gussets 20 mm thick) use thin-plate (Kirchhoff) elements with constant-
+  strain membranes, at least 1.5 x their thickness in size: a strip of plate one element
+  wide is ~4x too stiff in in-plane bending, two elements wide ~2x (a membrane with
+  drilling rotations was tried and not adopted: `validation/README.md` §3.4), and compact
   blocks (a node block, the block under the plate; slender or tapered pieces are bars)
   are rigid: they crush only where they bear on the plate or the platform, and their
   glue lines crush (by grain direction, as above); a question lists the ones in the load

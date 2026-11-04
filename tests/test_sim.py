@@ -73,46 +73,6 @@ def test_dkt_patch_test():
             assert B @ dofs(f) == pytest.approx(want, abs=1e-9)
 
 
-def _inplane_cantilever(nx: int, ny: int, L: float = 100.0, H: float = 10.0) -> float:
-    """Tip deflection of a plate cantilever bent in its own plane (shell elements, a
-    static solve of their stiffness), over Timoshenko beam theory."""
-    from bridgesim.sim.shell import local_stiffness
-
-    E, nu, t = 1000.0, 0.25, 1.0
-    A = E * t / (1 - nu**2) * np.array([[1, nu, 0], [nu, 1, 0], [0, 0, (1 - nu) / 2]])
-    X = np.array([(L * i / nx, H * j / ny) for i in range(nx + 1) for j in range(ny + 1)])
-    nid = lambda i, j: i * (ny + 1) + j  # noqa: E731
-    K = np.zeros((6 * len(X), 6 * len(X)))
-    for i in range(nx):
-        for j in range(ny):
-            for tri in ((nid(i, j), nid(i + 1, j), nid(i + 1, j + 1)),
-                        (nid(i, j), nid(i + 1, j + 1), nid(i, j + 1))):
-                dofs = np.array([6 * q + k for q in tri for k in range(6)])
-                K[np.ix_(dofs, dofs)] += local_stiffness(X[list(tri)], A, A * t * t / 12,
-                                                         E * t)
-    f = np.zeros(len(K))
-    for j in range(ny):  # unit shear at the tip
-        f[6 * nid(nx, j) + 1] += 0.5 / ny
-        f[6 * nid(nx, j + 1) + 1] += 0.5 / ny
-    fixed = {6 * nid(0, j) + k for j in range(ny + 1) for k in range(6)}
-    fixed |= {6 * q + k for q in range(len(X)) for k in (2, 3, 4)}  # in-plane problem
-    free = np.array(sorted(set(range(len(K))) - fixed))
-    u = np.zeros(len(K))
-    u[free] = np.linalg.solve(K[np.ix_(free, free)], f[free])
-    exact = L**3 / (3 * E * t * H**3 / 12) + L / (5 / 6 * E / (2 * (1 + nu)) * t * H)
-    return u[6 * nid(nx, ny // 2) + 1] / exact
-
-
-def test_plates_bend_in_their_own_plane():
-    """Allman's membrane: a strip bent in its plane with a single element across is not
-    locked (constant-strain triangles give 0.23 of the beam deflection there), and the
-    deflection converges to beam theory."""
-    r1, r2, r4 = (_inplane_cantilever(10, 1), _inplane_cantilever(20, 2),
-                  _inplane_cantilever(40, 4))
-    assert r1 > 0.6 and r2 > 0.8 and r1 < r2 < r4 <= 1.0
-    assert r4 == pytest.approx(1.0, abs=0.05)
-
-
 def test_shell_element_has_only_rigid_body_zero_modes():
     """6 zero-energy modes (rigid body) and no more: an element whose nodes can spin
     about its normal for free lets glued plates drift (a creep that depends on the test

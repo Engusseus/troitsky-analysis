@@ -12,8 +12,7 @@ LS-DYNA and Abaqus/Explicit). Ingredients:
   regularised by element length) and yields at f_c in compression with mild softening
   (crushing). Torsion is elastic; a section whose shear stress 1.5 V/A + T/W_t passes
   f_v splits and the element is removed.
-* **shells**: corotational triangles (Allman membrane with drilling rotations + DKT
-  bending) with laminate stiffness; a ply strain
+* **shells**: corotational CST + DKT triangles with laminate stiffness; a ply strain
   limit reached anywhere in an element cracks it (its stiffness falls to zero over a
   small strain range); a node held only by broken elements becomes loose debris.
 * **glue lines**: zero-thickness cohesive springs with a bilinear mixed-mode law
@@ -347,13 +346,8 @@ def shell_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     dd = dloc + (beta * (dloc - st.s_prev) / dt if beta > 0 else 0.0)
     if update:
         st.s_prev = dloc
-    # membrane strains: constant part + Allman's drilling part; damage follows the
-    # element's mean strain (crack band one element wide), stresses the strain at each
-    # of the 3 points
-    em = np.repeat((np.einsum("nik,nk->ni", m.s_Bm, dloc[:, _IM])
-                    + np.einsum("ngia,na->ni", m.s_Bt, dloc[:, _IR]) / 3)[:, None], 3, axis=1)
-    emt = np.einsum("nik,nk->ni", m.s_Bm, dd[:, _IM])[:, None] \
-        + np.einsum("ngia,na->ngi", m.s_Bt, dd[:, _IR])
+    em = np.einsum("nik,nk->ni", m.s_Bm, dloc[:, _IM])
+    emt = np.einsum("nik,nk->ni", m.s_Bm, dd[:, _IM])
     kap = np.einsum("ngik,nk->ngi", m.s_Bb, dloc[:, _IB])
     kapt = np.einsum("ngik,nk->ngi", m.s_Bb, dd[:, _IB])
     q11, q22, q12, q66 = m.s_Q.T
@@ -372,8 +366,8 @@ def shell_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
             cc2, ss2, cs = cg * cg, sg * sg, cg * sg
             for q, (z, wq) in enumerate(((zb, hh / 6), ((zb + zt) / 2, 4 * hh / 6),
                                          (zt, hh / 6))):
-                e1, e2, g12 = _ply_strain(em[:, g], kap[:, g], z, cc2, ss2, cs)
-                e1t, e2t, g12t = _ply_strain(emt[:, g], kapt[:, g], z, cc2, ss2, cs)
+                e1, e2, g12 = _ply_strain(em, kap[:, g], z, cc2, ss2, cs)
+                e1t, e2t, g12t = _ply_strain(emt, kapt[:, g], z, cc2, ss2, cs)
                 h = st.s_hist[:, (g * nlay + ll) * 3 + q]
                 if update:
                     upd = (act & ~st.s_gone)[:, None]
@@ -418,8 +412,7 @@ def shell_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     om = (g * dd[:, _IM]).sum(1)
     rel = dd[:, _IR] - om[:, None]
     kde = m.s_kd * np.maximum(0.0, 1.0 - 10.0 * st.s_dmg)  # a cracking element: no drilling
-    f[:, _IR] = kde[:, None] * rel \
-        + (m.s_area / 3)[:, None] * np.einsum("ngia,ngi->na", m.s_Bt, N)
+    f[:, _IR] = kde[:, None] * rel
     f[:, _IM] -= (kde * rel.sum(1))[:, None] * g
     f[st.s_gone] = 0.0
     if update:
@@ -765,8 +758,7 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
             st.work = (np.zeros((ns, 3, 3)), np.zeros((ns, 3, 3)), np.zeros((ns, 18)),
                        np.zeros((ns, 3, 3)), np.zeros((ns, 3)), np.zeros((ns, 60)))
         fe, me, wd, wR, wth, ws = st.work
-        K.shell_kernel(x, R, m.s_nodes, m.s_E0, m.s_P, m.s_Bm, m.s_Bb, m.s_Bt, m.s_area,
-                       m.s_kd,
+        K.shell_kernel(x, R, m.s_nodes, m.s_E0, m.s_P, m.s_Bm, m.s_Bb, m.s_area, m.s_kd,
                        m.s_lay, m.s_nl, m.s_Q, m.s_lim, m.s_rf, _rc(m), st.s_hist,
                        st.s_dmg, st.s_gone, F, Mo, update, fe, me,
                        s.beta if update else 0.0, s.dt, st.s_prev, wd, wR, wth, ws)

@@ -290,7 +290,7 @@ def _plateau(r, rc):
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
-def _shell_one(e, x, R, sn, E0, P, Bm, Bb, Bt, area, kd, lay, nl, Q, lim, rf, rc, hist, dmg,
+def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hist, dmg,
                gone, update, fe, me, beta, dt, prev, wd, wR, wth, ws):
     d = wd[e]
     Rl = wR[e]
@@ -397,26 +397,6 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, Bt, area, kd, lay, nl, Q, lim, rf, rc
     all_open = True
     for g in range(3):
         mincr = 1.0
-        # membrane strains: the constant part plus Allman's part from the corners'
-        # in-plane rotations. Damage follows the element's mean strain (Allman's part at
-        # the centroid: the crack band is one element wide); the stresses use the strain
-        # at this point (with damping)
-        em0 = w[18]
-        em1 = w[19]
-        em2 = w[20]
-        et0 = w[21]
-        et1 = w[22]
-        et2 = w[23]
-        for a in range(3):
-            ra = d[6 * a + 5] / 3.0
-            rt = w[6 * a + 5]
-            for gg in range(3):
-                em0 += Bt[e, gg, 0, a] * ra
-                em1 += Bt[e, gg, 1, a] * ra
-                em2 += Bt[e, gg, 2, a] * ra
-            et0 += Bt[e, g, 0, a] * rt
-            et1 += Bt[e, g, 1, a] * rt
-            et2 += Bt[e, g, 2, a] * rt
         for ll in range(nl[e]):
             zb = lay[e, ll, 0]
             zt = lay[e, ll, 1]
@@ -436,15 +416,15 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, Bt, area, kd, lay, nl, Q, lim, rf, rc
                 else:
                     z = zt
                     wq = hh / 6.0
-                exx = em0 + z * w[24 + 3 * g]
-                eyy = em1 + z * w[25 + 3 * g]
-                gxy = em2 + z * w[26 + 3 * g]
+                exx = w[18] + z * w[24 + 3 * g]
+                eyy = w[19] + z * w[25 + 3 * g]
+                gxy = w[20] + z * w[26 + 3 * g]
                 e1 = exx * cc2 + eyy * ss2 + gxy * cs
                 e2 = exx * ss2 + eyy * cc2 - gxy * cs
                 g12 = 2.0 * (eyy - exx) * cs + gxy * (cc2 - ss2)
-                exx = et0 + z * w[33 + 3 * g]
-                eyy = et1 + z * w[34 + 3 * g]
-                gxy = et2 + z * w[35 + 3 * g]
+                exx = w[21] + z * w[33 + 3 * g]
+                eyy = w[22] + z * w[34 + 3 * g]
+                gxy = w[23] + z * w[35 + 3 * g]
                 e1t = exx * cc2 + eyy * ss2 + gxy * cs
                 e2t = exx * ss2 + eyy * cc2 - gxy * cs
                 g12t = 2.0 * (eyy - exx) * cs + gxy * (cc2 - ss2)
@@ -544,11 +524,7 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, Bt, area, kd, lay, nl, Q, lim, rf, rc
         f2 *= ar / 3.0
         m0 *= ar / 3.0
         m1 *= ar / 3.0
-        m2 = 0.0  # the membrane's work through this corner's in-plane rotation
-        for g in range(3):
-            m2 += (Bt[e, g, 0, a] * w[42 + 3 * g] + Bt[e, g, 1, a] * w[43 + 3 * g]
-                   + Bt[e, g, 2, a] * w[44 + 3 * g])
-        m2 = m2 * ar / 3.0 + kde * (w[6 * a + 5] - om)
+        m2 = kde * (w[6 * a + 5] - om)
         fe[e, a, 0] = ax0 * f0 + y0 * f1 + z0 * f2
         fe[e, a, 1] = ax1 * f0 + y1 * f1 + z1 * f2
         fe[e, a, 2] = ax2 * f0 + y2 * f1 + z2 * f2
@@ -558,12 +534,12 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, Bt, area, kd, lay, nl, Q, lim, rf, rc
 
 
 @njit(cache=True, fastmath=True, parallel=True, error_model="numpy")
-def shell_kernel(x, R, sn, E0, P, Bm, Bb, Bt, area, kd, lay, nl, Q, lim, rf, rc, hist,
-                 dmg, gone, F, Mo, update, fe, me, beta, dt, prev, wd, wR, wth, ws):
+def shell_kernel(x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hist, dmg,
+                 gone, F, Mo, update, fe, me, beta, dt, prev, wd, wR, wth, ws):
     ns = sn.shape[0]
     for e in prange(ns):
-        _shell_one(e, x, R, sn, E0, P, Bm, Bb, Bt, area, kd, lay, nl, Q, lim, rf, rc, hist,
-                   dmg, gone, update, fe, me, beta, dt, prev, wd, wR, wth, ws)
+        _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hist, dmg,
+                   gone, update, fe, me, beta, dt, prev, wd, wR, wth, ws)
     for e in range(ns):
         for a in range(3):
             nd = sn[e, a]

@@ -48,7 +48,6 @@ and white glue (validation, which needs physical tests).
 | Single-lap glued joint | $\tau_g$ of the material file | within 5 % | `test_lap_shear_reproduces_tau_g` |
 | DKT plate patch test, layered laminate stiffness | constant curvature; CLT A, B, D | exact | `test_dkt_patch_test`, `test_classical_lamination_theory` |
 | Shell element zero-energy modes | 6 rigid-body modes | exactly 6 | `test_shell_element_has_only_rigid_body_zero_modes` |
-| Plate strip bent in its own plane (span/depth 10), 1, 2 and 4 elements across | Timoshenko beam | 0.64, 0.87, 0.96 of the deflection (constant-strain triangles: 0.23, 0.54, 0.82) | `test_plates_bend_in_their_own_plane` |
 | Deep laminated beam (span/depth 2.5) strong in bending | splits in shear at $\tfrac43 f_v A$ | within 0.5 % on 6 and 12 elements | `test_deep_laminated_beam_fails_in_shear` |
 | Cracking plate strip, 5 and 2.5 mm elements | strength and work of fracture $G_f W t$ | strength within 4 %, work within 10 % | `test_shell_fracture_energy_is_mesh_independent` |
 | Energy conservation, free vibration of a bridge (beams, shells, glue) | kinetic + strain = const | spread < 0.5 % | `test_energy_is_conserved_without_damping` |
@@ -119,6 +118,18 @@ local peak load falls 48.1, 36.3, 28.8 N with 5, 2.5, 1.25 mm elements, the proc
 version stays at 59.8, 59.2, 58.4 N. But holding the across-grain and shear modes at
 their strengths until the zone cracks doubled the strength of a 45 degree strip (where
 those modes interact), so it was not adopted.
+
+A membrane with drilling rotations (Allman's triangle) was also implemented and tested.
+A strip bent in its plane gives 0.64, 0.87 and 0.96 of the beam deflection with 1, 2 and
+4 elements across (the constant-strain triangle: 0.23, 0.54, 0.82), and the work of
+fracture of a cracking strip stayed mesh-independent. But on Bridge_v6 it made the fine
+mesh weaker than the standard one: the perfect bridge gave 2731 and 2519 kgf (-7.8 %),
+2707 and 2572 kgf with a stiffer drilling penalty (-5.0 %), against 2684 and 2673 kgf
+(-0.4 %) with constant-strain membranes (all at 100 mm/s). The better membrane resolves
+the stress concentration where the hub tie strap's glued lap ends, and a local crack
+onset there then depends on the mesh, the limit described above. It was not adopted:
+it needs a mesh-objective crack onset first. Until then, plates made of narrow arms are
+too stiff in their plane, and inspect asks about them (`narrow_plates`).
 
 **Three seeds** (imperfections and scatter; each seed is the same imperfect bridge at
 every mesh, its random values being keyed on the CAD, not the mesh):

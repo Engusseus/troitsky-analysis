@@ -95,7 +95,6 @@ class Model:
     s_body: np.ndarray
     s_Bm: np.ndarray  # (ns, 3, 6) membrane strain operator
     s_Bb: np.ndarray  # (ns, 3, 3, 9) curvature operators at the 3 in-plane points
-    s_Bt: np.ndarray  # (ns, 3, 3, 3) membrane strains from the drilling rotations there
     s_area: np.ndarray  # (ns,)
     s_kd: np.ndarray  # (ns,) drilling stiffness
     s_lay: np.ndarray  # (ns, NL, 4) layers: z bottom, z top, cos, sin of the grain angle

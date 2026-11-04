@@ -1489,7 +1489,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                         "about one shell element across an arm: " + "; ".join(
                             f"{g} (arms ~{a:.0f} mm wide, elements {h:.0f} mm)"
                             for g, (_n, a, h) in list(narrow.items())[:8])
-                        + ". Their arms come out ~1.5x too stiff in in-plane bending and their "
+                        + ". Their arms come out ~4x too stiff in in-plane bending and their "
                         "cracks are placed coarsely (one grain direction for the whole "
                         "plate, too). If such a part is really members crossing or framing "
                         "together, draw each member as its own body: it becomes a bar with "
