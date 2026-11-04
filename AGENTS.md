@@ -23,7 +23,7 @@ SolidWorks needed), a Parasolid `.x_b`, or an STL with all bodies in one file (m
 | Command | What it does | Time |
 |---|---|---|
 | `bridgesim inspect BRIDGE.SLDPRT [-o overrides.yaml] --json` | Bodies and how each is modelled, glued joints, loading position, rule check from the solids, `questions` | seconds |
-| `bridgesim crush BRIDGE.SLDPRT [-o overrides.yaml] [--seed N] [--out DIR] --json` | Simulated crushing test; with `--out`: `crush.json`, `curve.csv`, `replay.html` | minutes |
+| `bridgesim crush BRIDGE.SLDPRT [-o overrides.yaml] [--seed N] [--fidelity quick|standard|fine] [--out DIR] --json` | Simulated crushing test; with `--out`: `crush.json`, `curve.csv`, `replay.html`. Use `--fidelity quick` to screen design changes (coarser mesh, faster jack), `standard` for the answer, `fine` to check convergence | minutes |
 | `bridgesim compare DIR/crush.json my_test.csv --json` | Reality gap vs a physical crush test | seconds |
 | `bridgesim lab [--data validation/physical] --json` | Simulated coupon tests (stick bending, lap joint, stick column) and their gap to the team's coupon data | ~20 s |
 | `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, strengths, glue strength from coupon CSVs | seconds |
@@ -34,11 +34,24 @@ SolidWorks needed), a Parasolid `.x_b`, or an STL with all bodies in one file (m
 Exit codes: `0` ok, `2` bad input (message on stderr), `3` simulation failed.
 Units are in every field name (`_mm`, `_kgf`, `_N`, `_g`, `_s`, `_MPa`).
 
+MCP tools: `inspect_bridge`, `crush_bridge` (blocking), `start_crush` + `crush_status`
+(background, poll until `done`: use these if your tool calls time out), `compare_with_test`,
+`lab_tests`, `calibrate_material`, `get_schema`.
+
 Register the MCP server with Claude Code:
 
 ```bash
 claude mcp add bridgesim -- uv run --directory /path/to/troitsky-analysis bridgesim mcp
 ```
+
+## Speed and determinism
+
+`inspect` takes seconds. A crush of a 100-body bridge takes roughly 5-20 minutes at
+`standard` fidelity on a laptop with numba (`uv sync --extra sim`), a few minutes at
+`quick`; a small bridge takes under a minute. Results are deterministic for a given
+`--seed` (which sets the imperfections, the material scatter and the plate placement);
+`--seed -1` gives the perfect, centred bridge. Compare two designs with the same seed, and
+use `montecarlo` for the spread.
 
 ## Questions: when the design is not what it should be
 

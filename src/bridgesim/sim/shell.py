@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import numpy as np
 
-DRILL = 1e-3  # drilling stiffness, as a fraction of E t A
+DRILL = 0.05  # drilling stiffness, as a fraction of E t A (keeps a node's in-plane rotation
+#              tied to its element once the glue around it has gone)
 
 
 def cst_B(xy: np.ndarray) -> tuple[np.ndarray, float]:

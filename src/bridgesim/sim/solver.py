@@ -13,7 +13,8 @@ LS-DYNA and Abaqus/Explicit). Ingredients:
   (crushing). Torsion is elastic; a section whose shear stress 1.5 V/A + T/W_t passes
   f_v splits and the element is removed.
 * **shells**: corotational CST + DKT triangles with laminate stiffness; a ply strain
-  limit reached anywhere in an element breaks it (stiffness drops to 3 %).
+  limit reached anywhere in an element cracks it (its stiffness falls to zero over a
+  small strain range); a node held only by broken elements becomes loose debris.
 * **glue lines**: zero-thickness cohesive springs with a bilinear mixed-mode law
   (quadratic initiation, Benzeggagh-Kenane propagation). In compression they keep
   bearing (contact); once broken they slide with Coulomb friction.
@@ -281,8 +282,8 @@ def shell_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
                 r2 = np.where(e2 > 0, e2 / lim[:, 2], -e2 / lim[:, 3])
                 r = np.where(m.s_matrix, np.maximum(r, r2), r)
                 fi = np.maximum(fi, np.where(ok, r, 0))
-        live = (fi >= 1.0) & (st.s_dmg < 0.97)
-        target = np.minimum(0.97, 2.0 * (fi - 1.0) + 0.1)
+        live = (fi >= 1.0) & (st.s_dmg < 1.0)
+        target = np.minimum(1.0, 2.0 * (fi - 1.0) + 0.1)
         st.s_dmg = np.where(live, np.maximum(st.s_dmg, target), st.s_dmg)
     dd = dloc + (beta * (dloc - st.s_prev) / dt if beta > 0 else 0.0)
     if update:
@@ -382,15 +383,16 @@ def platform_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray, k: float
     nd = m.a_node[m.p_att]
     vy = st.v[nd, 1] + st.w[nd, 2] * arm[:, 0] - st.w[nd, 0] * arm[:, 2]
     fn = np.where(touch, np.maximum(k * pen - cdamp * vy, 0.0), 0.0)
+    k = np.broadcast_to(np.asarray(k, float), (len(p),))
     rel = p - st.p_anchor
     rel[:, 1] = 0
-    ft = -k * rel
+    ft = -k[:, None] * rel
     cap = mu * fn
     mag = np.linalg.norm(ft, axis=1)
     sc = np.where(mag > cap, cap / np.maximum(mag, 1e-30), 1.0)
     ft = ft * sc[:, None] * touch[:, None]
     if update:
-        anc = p + ft / k
+        anc = p + ft / k[:, None]
         st.p_anchor = np.where(touch[:, None], anc, p)
         st.p_touch = touch
     f = ft.copy()
@@ -409,6 +411,7 @@ def plate_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray, k: float,
     xp = st.x[P]
     p, arm = _attach_pos(m, st, m.q_att)
     loc = (p - xp) @ Rp  # plate-frame coordinates
+    k = np.broadcast_to(np.asarray(k, float), (len(p),))
     h = m.plate_half
     depth = h[None, :] - np.abs(loc)
     inside = (depth > 0).all(axis=1)
@@ -426,13 +429,13 @@ def plate_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray, k: float,
     fn = np.where(inside, np.maximum(k * pen - cdamp * vr, 0.0), 0.0)
     rel = loc - st.q_anchor
     rel = rel - (rel * nloc).sum(1)[:, None] * nloc
-    ftl = -k * rel
+    ftl = -k[:, None] * rel
     cap = mu * fn
     mag = np.linalg.norm(ftl, axis=1)
     sc = np.where(mag > cap, cap / np.maximum(mag, 1e-30), 1.0)
     ftl = ftl * (sc * inside)[:, None]
     if update:
-        st.q_anchor = np.where(inside[:, None], loc + ftl / k, loc)
+        st.q_anchor = np.where(inside[:, None], loc + ftl / k[:, None], loc)
         st.q_touch = inside
     f = fn[:, None] * n + ftl @ Rp.T  # on the bridge point
     _apply(F, Mo, m.a_node[m.q_att], arm, f)
@@ -495,14 +498,28 @@ def internal_and_contact(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np
 
 
 def contact_damping_coeffs(m: Model, s: Settings, mass: np.ndarray) -> None:
-    """Normal damping coefficient (N s/mm) of every platform and plate contact point:
-    contact_damping * k, but never more than the node can take explicitly
-    (sum over the node's points of c <= 0.4 m / dt)."""
+    """Penalty stiffness and normal damping of every platform and plate contact point.
+
+    Any part may land on the platform or the plate during a collapse, so contact must be
+    stable for every node, not only those touching at the start: like the "soft"
+    penalty of explicit codes, a point's stiffness is the nominal k but never more than
+    its node can take at this time step (sum over the node's points of k <= 0.3 m/dt^2),
+    and its damping c = contact_damping * k, likewise capped (sum c <= 0.4 m/dt)."""
     for key, att, k in (("p", m.p_att, s.k_platform), ("q", m.q_att, s.k_plate)):
         nd = m.a_node[att]
         cnt = np.bincount(nd, minlength=len(mass))[nd] if len(nd) else np.zeros(0)
-        c = np.minimum(s.contact_damping * k, 0.4 * mass[nd] / (s.dt * np.maximum(cnt, 1)))
+        kk = np.minimum(k, 0.3 * mass[nd] / (s.dt**2 * np.maximum(cnt, 1)))
+        c = np.minimum(s.contact_damping * kk, 0.4 * mass[nd] / (s.dt * np.maximum(cnt, 1)))
         m.params[f"cdamp_{key}"] = c
+        m.params[f"kc_{key}"] = kk
+
+
+def _kc(m: Model, key: str, s: Settings) -> np.ndarray:
+    n = len(m.p_att) if key == "p" else len(m.q_att)
+    k = m.params.get(f"kc_{key}")
+    if k is None or len(k) != n:
+        return np.full(n, s.k_platform if key == "p" else s.k_plate)
+    return k
 
 
 def _cd(m: Model, key: str, s: Settings, update: bool) -> np.ndarray:
@@ -546,13 +563,13 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
     Fc, Mc = st.scratch
     Fc[:] = 0.0
     Mc[:] = 0.0
-    K.platform_kernel(x, R, m.a_node, m.a_r0, m.p_att, m.table_y, s.k_platform,
+    K.platform_kernel(x, R, m.a_node, m.a_r0, m.p_att, m.table_y, _kc(m, "p", s),
                       s.mu_platform, st.p_anchor, st.p_touch, Fc, Mc, update, st.v, st.w,
                       _cd(m, "p", s, update))
     plate_load = 0.0
     if len(m.q_att) and m.plate_node >= 0:
         plate_load = K.plate_kernel(x, R, m.a_node, m.a_r0, m.q_att, m.plate_node,
-                                    m.plate_half, s.k_plate, s.mu_plate, st.q_anchor,
+                                    m.plate_half, _kc(m, "q", s), s.mu_plate, st.q_anchor,
                                     st.q_touch, Fc, Mc, update, st.v, st.w,
                                     _cd(m, "q", s, update))
     jack_forces(m, st, Fc, Mc, s.k_jack, s.k_jack_lat, s.contact_damping, st.jack_v)
@@ -574,8 +591,9 @@ def internal_and_contact_numpy(m: Model, st: State, s: Settings, F: np.ndarray,
     # contacts produce forces *on* nodes; convert to "internal" sign convention below
     Fc = np.zeros_like(F)
     Mc = np.zeros_like(Mo)
-    platform_forces(m, st, Fc, Mc, s.k_platform, s.mu_platform, update, _cd(m, "p", s, update))
-    plate_load = plate_forces(m, st, Fc, Mc, s.k_plate, s.mu_plate, update,
+    platform_forces(m, st, Fc, Mc, _kc(m, "p", s), s.mu_platform, update,
+                    _cd(m, "p", s, update))
+    plate_load = plate_forces(m, st, Fc, Mc, _kc(m, "q", s), s.mu_plate, update,
                               _cd(m, "q", s, update))
     jack_forces(m, st, Fc, Mc, s.k_jack, s.k_jack_lat, s.contact_damping, st.jack_v)
     F -= Fc

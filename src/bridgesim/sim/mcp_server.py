@@ -9,6 +9,8 @@ Tools (all return JSON documents whose schemas ``get_schema`` gives):
 * ``inspect_bridge`` - what bridgesim understood from a CAD file, the rule check and the
   questions to ask the designer (seconds);
 * ``crush_bridge`` - the simulated §12.5 crushing test (minutes), with a 3D replay file;
+* ``start_crush`` / ``crush_status`` - the same in the background, for clients whose tool
+  calls time out;
 * ``compare_with_test`` - reality gap between a simulation and a physical crush test;
 * ``lab_tests`` - simulated coupon tests, and their gap to the team's coupon data;
 * ``calibrate_material`` - fit the material from the team's coupon data;
@@ -40,7 +42,6 @@ def build_server():
                              "pip install 'bridgesim[mcp]' (or uv sync --extra mcp)") from exc
 
     from bridgesim.sim import study
-    from bridgesim.sim.crush import CrushOptions
     from bridgesim.sim.report import SCHEMAS
 
     srv = Server("bridgesim", instructions=(
@@ -61,17 +62,68 @@ def build_server():
 
     @srv.tool()
     def crush_bridge(cad_path: str, overrides_yaml: str = "", seed: int = 0,
-                     speed_mm_s: float = 100.0, out_dir: str = "", material: str = "") -> str:
+                     fidelity: str = "standard", out_dir: str = "",
+                     material: str = "") -> str:
         """Simulate the Troitsky crushing test (rulebook §12.5) on the CAD bridge:
         nonlinear explicit dynamics with breaking glue joints, cracking and buckling
         members, floss, contact with the platform and the loading plate. Takes minutes.
         Returns JSON with Fu_kgf, failure_mode, failure_sequence, curve, quality and
-        artifacts (replay.html path when out_dir is given)."""
+        artifacts (replay.html path when out_dir is given). Use start_crush for long runs.
+        fidelity: quick (screening), standard, fine."""
         rep, _ = study.crush(cad_path, _yaml_or_none(overrides_yaml),
                              material or "popsicle_birch", seed=seed,
-                             out_dir=out_dir or None,
-                             options=CrushOptions(speed_mm_s=speed_mm_s))
+                             out_dir=out_dir or None, fidelity=fidelity)
         return rep.model_dump_json()
+
+    @srv.tool()
+    def start_crush(cad_path: str, out_dir: str, overrides_yaml: str = "", seed: int = 0,
+                    fidelity: str = "standard", material: str = "") -> str:
+        """Start a crush simulation in the background (it takes minutes) and return at
+        once. Poll crush_status(out_dir) until status is 'done'. fidelity: quick
+        (screening a design change), standard, fine."""
+        import subprocess
+        import sys
+
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        cmd = [sys.executable, "-m", "bridgesim.cli", "crush", cad_path, "--out", str(out),
+               "--seed", str(seed), "--fidelity", fidelity, "--json"]
+        if overrides_yaml:
+            (out / "overrides.yaml").write_text(overrides_yaml, encoding="utf-8")
+            cmd += ["--overrides", str(out / "overrides.yaml")]
+        if material:
+            cmd += ["--material", material]
+        with (out / "result.json").open("w") as so, (out / "progress.log").open("w") as se:
+            proc = subprocess.Popen(cmd, stdout=so, stderr=se)
+        (out / "pid").write_text(str(proc.pid))
+        return json.dumps({"status": "running", "out_dir": str(out),
+                           "poll": "crush_status(out_dir)"})
+
+    @srv.tool()
+    def crush_status(out_dir: str) -> str:
+        """Status of a crush started with start_crush: running (with the latest progress
+        line), done (with the full crush report), or failed (with the error)."""
+        import os
+
+        out = Path(out_dir)
+        log = (out / "progress.log").read_text(encoding="utf-8", errors="replace") \
+            if (out / "progress.log").exists() else ""
+        last = [ln for ln in log.splitlines() if ln.strip()][-1:] or [""]
+        res = (out / "result.json").read_text(encoding="utf-8") \
+            if (out / "result.json").exists() else ""
+        if res.strip().startswith("{") and res.strip().endswith("}"):
+            return json.dumps({"status": "done", "report": json.loads(res)})
+        pid = int((out / "pid").read_text()) if (out / "pid").exists() else None
+        alive = False
+        if pid:
+            try:
+                os.kill(pid, 0)
+                alive = True
+            except OSError:
+                alive = False
+        if alive:
+            return json.dumps({"status": "running", "progress": last[0].strip()})
+        return json.dumps({"status": "failed", "error": log[-2000:]})
 
     @srv.tool()
     def compare_with_test(crush_json_path: str, test_csv_path: str) -> str:

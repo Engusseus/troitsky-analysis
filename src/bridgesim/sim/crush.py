@@ -36,7 +36,9 @@ maps simulated time back to real test time.
 
 from __future__ import annotations
 
+import copy
 import math
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -318,6 +320,13 @@ def choose_dt(m: Model, s: S.Settings, max_added: float = 0.05,
     return best
 
 
+FIDELITY = {  # mesh scale, simulated jack speed (mm/s)
+    "quick": (1.6, 200.0),     # screening a design change: ~3-5x faster, +-10 % on F_u
+    "standard": (1.0, 100.0),
+    "fine": (0.75, 50.0),      # convergence check
+}
+
+
 @dataclass
 class CrushOptions:
     speed_mm_s: float = 40.0  # simulated jack speed
@@ -417,6 +426,11 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             return float(p[touch, 1].mean())
         return float(st.x[P, 1] - m.plate_half[1])
 
+    # developer aid: BRIDGESIM_DUMP_UNSTABLE=path keeps the last state before any node
+    # first moved faster than 20 m/s
+    dump_path = os.environ.get("BRIDGESIM_DUMP_UNSTABLE")
+    snaps: list = [None, False]
+
     def do_step(grav: float, alpha: float) -> dict:
         nonlocal steps
         info = S.internal_and_contact(m, st, s, F, Mo)
@@ -437,6 +451,16 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         steps += 1
         if steps % 2000 == 0:
             S.reorthonormalize(st)
+        if dump_path and steps % 200 == 0:
+            vm = float(np.abs(st.v).max())
+            if vm < 2e4:
+                snaps[0] = copy.deepcopy(st)
+            elif not snaps[1]:
+                snaps[1] = True
+                import pickle
+                with open(dump_path, "wb") as fh:
+                    pickle.dump({"st": snaps[0], "mass": mass, "rot": rot, "dt": dt,
+                                 "s": s, "steps": steps}, fh)
         if steps % 100 == 0:
             vmax = float(np.abs(st.v).max())
             if not np.isfinite(vmax) or vmax > 1e6:  # 1 km/s: integration diverged
@@ -594,7 +618,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             ok_b = st.b_alive
             live[m.b_i[ok_b]] = True
             live[m.b_j[ok_b]] = True
-            ok_s = st.s_dmg < 0.999
+            ok_s = st.s_dmg < 0.9  # a node held only by cracked elements is debris
             live[m.s_nodes[ok_s].ravel()] = True
             newly = has_el & ~live & ~st.loose
             if newly.any():

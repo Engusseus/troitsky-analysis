@@ -311,5 +311,5 @@ def test_mcp_server_exposes_the_tools():
 
     tools = asyncio.run(build_server().list_tools())
     names = {getattr(t, "name", None) for t in getattr(tools, "tools", tools)}
-    assert {"inspect_bridge", "crush_bridge", "compare_with_test", "lab_tests",
-            "calibrate_material", "get_schema"} <= names
+    assert {"inspect_bridge", "crush_bridge", "start_crush", "crush_status",
+            "compare_with_test", "lab_tests", "calibrate_material", "get_schema"} <= names

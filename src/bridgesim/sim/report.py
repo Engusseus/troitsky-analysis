@@ -152,6 +152,7 @@ class CrushReport(BaseModel):
     rules: RulesSummary
     questions: list[Question]
     assumed_parameters: list[str]
+    fidelity: str = Field("standard", description="quick (screening), standard or fine")
     artifacts: dict[str, str] = {}
 
 

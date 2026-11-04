@@ -299,7 +299,10 @@ def crush(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = N
           rules: RulesOpt = "troitsky_2027", sim_params: SimOpt = None,
           seed: Annotated[int, typer.Option(help="Random imperfections/scatter seed "
                                                  "(-1: perfect bridge)")] = 0,
-          speed: Annotated[float, typer.Option(help="Simulated jack speed, mm/s")] = 100.0,
+          speed: Annotated[float | None, typer.Option(
+              help="Simulated jack speed, mm/s (default from --fidelity)")] = None,
+          fidelity: Annotated[str, typer.Option(
+              help="quick (screening, ~3-5x faster), standard, fine")] = "standard",
           out: Annotated[Path | None, typer.Option("--out", help="Folder for crush.json, "
                                                                  "curve.csv, replay.html")]
           = None,
@@ -317,7 +320,8 @@ def crush(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = N
     try:
         rep, _ = study.crush(cad, overrides, material or "popsicle_birch", sim_params,
                              rules, seed=None if seed < 0 else seed, out_dir=out,
-                             options=CrushOptions(speed_mm_s=speed), progress=prog)
+                             options=CrushOptions(speed_mm_s=speed) if speed else None,
+                             progress=prog, fidelity=fidelity)
     except BAD_INPUT as exc:
         _fail(f"CAD file {cad}", exc)
     except RuntimeError as exc:

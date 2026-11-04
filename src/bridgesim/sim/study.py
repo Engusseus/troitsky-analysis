@@ -268,6 +268,7 @@ def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
         loading={"plate_centre_mm": [round(model.mid_x, 1), round(model.deck_top_y, 1),
                                      round(model.deck_z, 1)],
                  "plate_mm": [200, 90], "deck_top_y_mm": model.params.get("deck_y"),
+                 "plate_offset_mm": model.params.get("plate_offset_mm"),
                  "plate_rests_on_y_mm": model.deck_top_y,
                  "deck_bodies": model.params.get("deck_bodies", []),
                  "supports": "both ends rest on the press's flat base platform "
@@ -309,14 +310,19 @@ def _sequence(events: list) -> list[str]:
 def crush(cad: str | Path, overrides=None, material=None, sim_params=None, ruleset=None,
           seed: int | None = 0, out_dir: str | Path | None = None,
           options: CrushOptions | None = None, progress=None,
-          replay: bool = True) -> tuple[CrushReport, CrushResult]:
+          replay: bool = True, fidelity: str = "standard") -> tuple[CrushReport, CrushResult]:
     """Simulate the §12.5 crushing test of a CAD bridge. Writes ``crush.json``,
     ``curve.csv`` and ``replay.html`` (interactive 3D replay) to ``out_dir`` if given."""
+    from bridgesim.sim.crush import FIDELITY
+
+    if fidelity not in FIDELITY:
+        raise ValueError(f"fidelity must be one of {', '.join(FIDELITY)}")
+    scale, speed = FIDELITY[fidelity]
     path, bodies, ov, ov_raw, mat, sp, rs = _inputs(cad, overrides, material, sim_params,
                                                      ruleset)
-    model = build_model(bodies, mat, sp, ov, seed=seed)
+    model = build_model(bodies, mat, sp, ov, seed=seed, mesh_scale=scale)
     rules = _rules(bodies, mat, rs, model)
-    opt = options or CrushOptions()
+    opt = options or CrushOptions(speed_mm_s=speed)
     if progress is not None:
         opt.progress = progress
     res = run_crush(model, opt)
@@ -342,7 +348,8 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
                         added_mass_fraction=round(res.added_mass_frac, 4),
                         kinetic_to_work_max=round(res.kinetic_ratio_max, 4),
                         settle_sag_mm=round(res.settle_sag_mm, 3), notes=res.notes),
-        rules=rules, questions=qs, assumed_parameters=_assumed(mat, sp))
+        rules=rules, questions=qs, assumed_parameters=_assumed(mat, sp),
+        fidelity=fidelity)
     if out_dir:
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)

@@ -55,7 +55,7 @@ Wood along the grain: E, f_t, f_c, f_v from `materials/popsicle_birch.yaml`. In 
 sections: linear elastic; tension softens to zero after f_t with fracture energy G_f
 (3 N/mm, element-length regularised); compression yields at f_c and softens to 70 %
 (crushing). Members split when 1.5 V/A + T/W_t > f_v. Plates crack when a ply strain
-limit is passed (stiffness falls to 3 % over a small strain range). Glue and floss: see
+limit is passed (its stiffness falls to zero over a small strain range). Glue and floss: see
 `materials/simulation.yaml`, every value with its source and how to measure it.
 
 **Scatter** (seeded, `--seed`; `--seed -1` for a perfect bridge): per body, E (CoV 12 %)

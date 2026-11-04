@@ -362,7 +362,10 @@ class _Builder:
 
 def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 ov: Overrides | None = None, seed: int | None = 0,
-                plate_offset_mm: tuple[float, float] = (0.0, 0.0)) -> Model:
+                plate_offset_mm: tuple[float, float] = (0.0, 0.0),
+                mesh_scale: float = 1.0) -> Model:
+    """Structural model of the CAD bodies. ``mesh_scale`` > 1 makes elements larger
+    (faster, coarser: ``--fidelity quick``), < 1 smaller."""
     ov = ov or Overrides()
     if ov.params:
         sp = sp.updated(ov.params)
@@ -453,7 +456,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             s0, s1 = float(s_v.min()), float(s_v.max())
             L = s1 - s0
             # uniform elements; joints attach to the nearest node through a rigid arm
-            h = min(30.0, L / 4) if L >= 60 else max(L / 2, 1e-3)
+            h = min(30.0 * mesh_scale, L / 4 * min(mesh_scale, 1.5)) if L >= 60 \
+                else max(L / 2, 1e-3)
             n_el = max(2, int(math.ceil(L / h - 1e-9)))
             st2 = list(np.linspace(s0, s1, n_el + 1))
             st2 = np.array(st2)
@@ -521,7 +525,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             lam_ref = laminate(ply, sh.layup.angles, T)
             o_mid = sh.origin - sh.n * T / 2
             area = sh.poly.area
-            h = _shell_h(sh)
+            h = _shell_h(sh) * mesh_scale
             P2, tri = mesh_polygon(sh.poly, h)  # glue points attach by rigid arms
             ids = np.array([bld.node(o_mid + p[0] * sh.e1 + p[1] * sh.e2, bi) for p in P2])
             body_nodes[bi] = ids
@@ -621,9 +625,9 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     def elem_size(bi: int) -> float:
         sh = shapes[bi]
         if sh.kind == "shell":
-            return shell_mesh[bi][2]
+            return shell_mesh[bi][2]  # already scaled
         if sh.kind == "bar":
-            return min(30.0, sh.Lp / 4)
+            return min(30.0, sh.Lp / 4) * mesh_scale
         return 20.0
 
     patch_pts3: list[tuple[int, int, np.ndarray, np.ndarray, float, Polygon, np.ndarray]] = []
@@ -826,9 +830,13 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     right = sup[sup[:, 0] >= xc0]
     if not len(left) or not len(right):
         raise ValueError("the bridge does not rest on supports at both ends")
-    mid_x = 0.5 * (left[:, 0].mean() + right[:, 0].mean()) + plate_offset_mm[0]
+    # the plate is placed by hand: off-centre by up to scatter.placement_mm each way
+    off = np.asarray(plate_offset_mm, float)
+    if rng is not None and sp["scatter.placement_mm"] > 0 and not off.any():
+        off = rng.uniform(-1, 1, 2) * sp["scatter.placement_mm"]
+    mid_x = 0.5 * (left[:, 0].mean() + right[:, 0].mean()) + off[0]
     zmin, zmax = Vall[:, 2].min(), Vall[:, 2].max()
-    deck_z = 0.5 * (zmin + zmax) + plate_offset_mm[1]
+    deck_z = 0.5 * (zmin + zmax) + off[1]
     PL, PW = 200.0, 90.0  # rulebook §12.5 plate
     PT = 30.0  # two 15 mm plates (Appendix B)
     fp = Polygon([(mid_x - PL / 2, deck_z - PW / 2), (mid_x + PL / 2, deck_z - PW / 2),
@@ -934,6 +942,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 "friction_plate": sp["contact.friction_plate"],
                 "deck_bodies": deck_bodies, "deck_y": deck_y,
                 "test_rate_mm_per_min": sp["crusher.test_rate_mm_per_min"],
+                "plate_offset_mm": [float(off[0]), float(off[1])],
                 "seed": seed},
         questions=questions, notes=notes)
     return model

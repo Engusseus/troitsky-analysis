@@ -289,7 +289,7 @@ def _shell_one(e, x, R, sn, K, E0, P, Rr, t, ang, lim, matrix, dmg, update, fe, 
             r2 = d[6 * a + 3] ** 2 + d[6 * a + 4] ** 2 + d[6 * a + 5] ** 2
             if r2 > 0.25:
                 dmg[e] = 1.0
-    if update and dmg[e] < 0.97:
+    if update and dmg[e] < 1.0:
         e0 = 0.0
         e1_ = 0.0
         e2_ = 0.0
@@ -332,8 +332,8 @@ def _shell_one(e, x, R, sn, K, E0, P, Rr, t, ang, lim, matrix, dmg, update, fe, 
         if fi >= 1.0:
             # cracking develops over a small strain range (energy released gradually)
             target = 2.0 * (fi - 1.0) + 0.1
-            if target > 0.97:
-                target = 0.97
+            if target > 1.0:
+                target = 1.0
             if target > dmg[e]:
                 dmg[e] = target
     sc = 1.0 - dmg[e]
@@ -549,7 +549,7 @@ def cable_kernel(x, R, a_node, a_r0, ka, kb, L0, EA, Fb, alive, F, Mo, update):
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
-def platform_kernel(x, R, a_node, a_r0, att, table_y, k, mu, anchor, touch, F, Mo, update,
+def platform_kernel(x, R, a_node, a_r0, att, table_y, kk_, mu, anchor, touch, F, Mo, update,
                     vel, omg, cdamp):
     p = np.empty(3)
     arm = np.empty(3)
@@ -563,6 +563,7 @@ def platform_kernel(x, R, a_node, a_r0, att, table_y, k, mu, anchor, touch, F, M
                 for kk in range(3):
                     anchor[i, kk] = p[kk]
             continue
+        k = kk_[i]
         # contact damping on the approach speed (never pulls the point down)
         vy = vel[nd, 1] + omg[nd, 2] * arm[0] - omg[nd, 0] * arm[2]
         fn = k * pen - cdamp[i] * vy
@@ -588,7 +589,7 @@ def platform_kernel(x, R, a_node, a_r0, att, table_y, k, mu, anchor, touch, F, M
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
-def plate_kernel(x, R, a_node, a_r0, att, P, h, k, mu, anchor, touch, F, Mo, update,
+def plate_kernel(x, R, a_node, a_r0, att, P, h, kk_, mu, anchor, touch, F, Mo, update,
                  vel, omg, cdamp):
     p = np.empty(3)
     arm = np.empty(3)
@@ -624,6 +625,7 @@ def plate_kernel(x, R, a_node, a_r0, att, P, h, k, mu, anchor, touch, F, Mo, upd
         for j in range(3):
             nl[j] = 0.0
         nl[ax] = 1.0 if loc[ax] > 0 else -1.0
+        k = kk_[i]
         # relative velocity of the point with respect to the plate, along the normal
         vr = 0.0
         for j in range(3):
