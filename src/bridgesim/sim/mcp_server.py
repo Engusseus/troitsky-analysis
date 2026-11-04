@@ -240,9 +240,10 @@ def build_server():
         the bodies by kind. brief=false adds every body (how it is modelled, where it is,
         layup, mass) and glued joint (~100 kB). bridgesim expects X along the span and Y
         up; say otherwise with up_axis/span_axis."""
-        rep = study.inspect(_infile(cad_path, "CAD file"), _yaml_or_none(overrides_yaml),
+        rep = study.inspect(_infile(cad_path, "CAD file"), None,
                             material or "popsicle_birch", units=units or None, up=up_axis,
-                            span=span_axis, strict=strict)
+                            span=span_axis, strict=strict,
+                            overrides_data=_yaml_or_none(overrides_yaml))
         return json.dumps(study.inspect_brief(rep)) if brief else rep.model_dump_json()
 
     @srv.tool()
@@ -261,8 +262,9 @@ def build_server():
         without the curve and the event log, which are in out_dir's curve.csv and
         events.csv (brief=false returns them inline, ~200 kB). Use start_crush instead
         if your tool calls time out."""
-        rep, _ = study.crush(_infile(cad_path, "CAD file"), _yaml_or_none(overrides_yaml),
+        rep, _ = study.crush(_infile(cad_path, "CAD file"), None,
                              material or "popsicle_birch", seed=None if seed < 0 else seed,
+                             overrides_data=_yaml_or_none(overrides_yaml),
                              out_dir=str(_outpath(out_dir)) if out_dir else None,
                              fidelity=fidelity,
                              units=units or None, up=up_axis, span=span_axis,

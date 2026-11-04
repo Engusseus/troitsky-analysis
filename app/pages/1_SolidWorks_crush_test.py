@@ -58,7 +58,7 @@ if not isinstance(overrides, dict):  # a bare string is never taken as a file pa
 
 @st.cache_data(show_spinner="Reading the CAD file and building the model…")
 def _inspect(path: str, ov: dict):
-    return study.inspect(path, dict(ov)).model_dump(mode="json")
+    return study.inspect(path, overrides_data=dict(ov)).model_dump(mode="json")
 
 
 rep = _inspect(str(cad), overrides)
@@ -99,7 +99,8 @@ speed = cc2.select_slider("Simulated jack speed (mm/s)", options=[50, 100, 150, 
 if st.button("Run the crushing test", type="primary"):
     bar = st.progress(0.0, text="Starting…")
     out = work / f"run_{seed}_{speed}"
-    crush_rep, _ = study.crush(cad, overrides, seed=None if seed < 0 else int(seed),
+    crush_rep, _ = study.crush(cad, overrides_data=overrides,
+                               seed=None if seed < 0 else int(seed),
                                out_dir=out, options=CrushOptions(speed_mm_s=float(speed)),
                                progress=lambda f, m: bar.progress(min(1.0, f), text=m))
     bar.empty()

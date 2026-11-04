@@ -91,13 +91,22 @@ def load_overrides(overrides: str | Path | dict | None) -> tuple[Overrides, dict
     return Overrides.from_dict(d), d
 
 
+def _from_mapping(doc) -> tuple[Overrides, dict]:
+    """Overrides already parsed (typed in the app, sent through MCP): a mapping, never a
+    file name (this path never opens a file)."""
+    if not isinstance(doc, dict):
+        raise ValueError("overrides must be a YAML mapping (bodies:, glue:, params:, "
+                         f"acknowledge:), not a {type(doc).__name__}")
+    return Overrides.from_dict(doc), doc
+
+
 def _inputs(cad: str | Path, overrides, material, sim_params, ruleset, units=None,
-            up: str = "y", span: str = "x"):
+            up: str = "y", span: str = "x", doc: dict | None = None):
     path = Path(cad)
     if not path.exists():
         raise FileNotFoundError(f"no such file: {path}")
     bodies = load_cad(path, units=units, up=up, span=span)
-    ov, ov_raw = load_overrides(overrides)
+    ov, ov_raw = _from_mapping(doc) if doc is not None else load_overrides(overrides)
     mat = material if isinstance(material, Material) else load_material(
         material or "popsicle_birch")
     sp = sim_params if isinstance(sim_params, SimParams) else SimParams.load(sim_params)
@@ -324,11 +333,15 @@ def _joint_reports(model: Model, mat: Material) -> list[JointReport]:
 
 def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
             ruleset=None, seed: int | None = 0, units=None, up: str = "y",
-            span: str = "x", strict: bool = False) -> InspectReport:
+            span: str = "x", strict: bool = False,
+            overrides_data: dict | None = None) -> InspectReport:
     """Read the CAD file and report what bridgesim understood, the rule check and the
-    questions to ask the designer. No simulation is run (a few seconds)."""
+    questions to ask the designer. No simulation is run (a few seconds). ``overrides``
+    is a mapping or the user's YAML file; ``overrides_data`` a mapping typed by someone
+    else (the app, an MCP client), which is never taken as a file name."""
     path, bodies, ov, ov_raw, mat, sp, rs = _inputs(cad, overrides, material, sim_params,
-                                                     ruleset, units, up, span)
+                                                     ruleset, units, up, span,
+                                                     doc=overrides_data)
     model = _build(bodies, mat, sp, ov, seed, 1.0, strict)
     rules = _rules(bodies, mat, rs, model)
     qs, acked = _open_questions([Question(**q) for q in model.questions]
@@ -353,7 +366,8 @@ def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
                "platform_contact_points": int(len(model.p_att)),
                "plate_contact_points": int(len(model.q_att))},
         warnings=list(model.notes))
-    rep.next_steps = _next_inspect(rep, path, overrides if ov_raw else None)
+    rep.next_steps = _next_inspect(rep, path, (overrides if overrides is not None
+                                               else overrides_data) if ov_raw else None)
     return rep
 
 
@@ -417,7 +431,8 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
           options: CrushOptions | None = None, progress=None,
           replay: bool = True, fidelity: str = "standard", units=None, up: str = "y",
           span: str = "x", strict: bool = False, rate_check: bool = False,
-          mesh_scale: float | None = None) -> tuple[CrushReport, CrushResult]:
+          mesh_scale: float | None = None,
+          overrides_data: dict | None = None) -> tuple[CrushReport, CrushResult]:
     """Simulate the §12.5 crushing test of a CAD bridge. Writes ``crush.json``,
     ``curve.csv``, ``events.csv`` and ``replay.html`` (interactive 3D replay) to
     ``out_dir`` if given. ``rate_check`` crushes the bridge a second time at half the
@@ -434,7 +449,8 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
             raise ValueError("mesh_scale must be between 0.2 and 4")
         scale = float(mesh_scale)
     path, bodies, ov, ov_raw, mat, sp, rs = _inputs(cad, overrides, material, sim_params,
-                                                     ruleset, units, up, span)
+                                                     ruleset, units, up, span,
+                                                     doc=overrides_data)
     if progress is not None:
         progress(0.0, f"read {len(bodies)} bodies; building the structural model")
     model = _build(bodies, mat, sp, ov, seed, scale, strict)
@@ -490,7 +506,9 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         assumed_parameters=_assumed(mat, sp),
         fidelity=fidelity, Fu_first_joint_failure_kgf=_first_joint(res),
         warnings=list(model.notes))
-    rep.next_steps = _next_crush(rep, path, overrides if ov_raw else None, out_dir)
+    rep.next_steps = _next_crush(rep, path, (overrides if overrides is not None
+                                             else overrides_data) if ov_raw else None,
+                                 out_dir)
     if out_dir:
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
