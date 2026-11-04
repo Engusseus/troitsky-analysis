@@ -151,5 +151,10 @@ every mesh, its random values being keyed on the CAD, not the mesh):
   out-of-level supports, plate placement) and glue/strength scatter cost ~20 %.
 * Every run passed the quasi-static check (kinetic / external work < 0.1) with < 1 %
   added mass.
-* **Time compression** (`crush --fidelity standard --seed 0 --rate-check`): F_u 2029 kgf
-  at 100 mm/s, 1997 kgf at 50 mm/s (-1.6 %); kinetic / external work 0.002.
+* **Time compression** (`crush --fidelity standard --seed 0 --rate-check`): F_u 2163 kgf
+  at 100 mm/s, 2129 kgf at 50 mm/s (-1.6 %); kinetic / external work 0.002.
+* **Design loop**: the `strengthen` what-if of a quick crush of Bridge_v6 (seed 0: the
+  End Post joints to their locating plates x1.5 glue and the Top Strut Inner x1.25 section,
+  on every copy), tested with `ab -n 3 --fidelity quick`: F_u +13.5 % (90 % interval
+  +3.7 % to +23.4 %, stronger with 3 of 3 seeds); the deck stringers under the plate then
+  govern.

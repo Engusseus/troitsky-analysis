@@ -210,7 +210,8 @@ CAD and its glued areas are unchanged, and each what-if is listed in `warnings`.
 `strengthen` step in `next_steps` comes with such a what-if in its `overrides` (on every
 copy of the parts that broke, since a design change is made on all of them) and the `ab`
 command that tests it on the same seeds: if it helps, make the change in SolidWorks and
-compare the two files with `ab`.
+compare the two files with `ab`. (On Bridge_v6 the what-if of a quick crush raised F_u by
+13.5 %, 90 % interval +3.7 % to +23.4 %, with 3 of 3 seeds: `validation/README.md` §3.4.)
 
 Body names are exactly as `inspect` lists them (SolidWorks body names; mirrored copies
 get "(mirror copy)"). Joint names are `A | B` as listed in the inspect `joints`; both
