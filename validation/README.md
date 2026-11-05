@@ -165,9 +165,11 @@ shear, f_c and the laminate bond line within the noise of two seeds (|elasticity
 would narrow the prediction most.
 
 **A nearly perfect bridge** (`--seeds 0 --amplitude 0.1`: every imperfection and scatter
-of seed 0 at a tenth): F_u 2353 / 2247 / (running) kgf at x1 / x0.75 / x0.5. (A
-perfect bridge is symmetric: which of its identical sides gives way first is a
-bifurcation that round-off decides; a tenth of the imperfections lets the seed decide.)
+of seed 0 at a tenth): F_u 2353 / 2247 / 2402 kgf at x1 / x0.75 / x0.5, the Hub Core
+splitting first at all three meshes (far, far, near side), the first joint separating at
+725 / 778 / 724 kgf: standard is 4.5 % below x1 and 6.5 % below x0.5. (A perfect bridge
+is symmetric: which of its identical sides gives way first is a bifurcation that
+round-off decides; a tenth of the imperfections lets the seed decide.)
 
 **x0.5 and local crack onset.** A plate left as a shell cracks where its strain first
 reaches the strength in one element: the crack band makes the *energy* of a crack
@@ -212,7 +214,7 @@ the in-plane locking where it mattered without resolving those stress concentrat
   It bends over before the peak: the secant stiffness from 50 to 90 % of the peak is
   10 % below that from 10 to 50 % (quick, seed 0: 389 and 433 kgf/mm).
 * **Stick modulus**: with the material file's 10 GPa instead of the 7.1 GPa crush
-  placeholder, standard seed 0 gives F_u (running) kgf and a deflection at F_u of (running)
+  placeholder, standard seed 0 gives F_u 2302 kgf (+2.2 %) and a deflection at F_u of 4.52
   mm instead of 5.81: the strength is set by the joints and the splits, the deflection by E.
 * **What limits the bridge** (`diagnose -n 2 --fidelity quick --candidates 3`, seeds 1
   and 2): strengthening the inner hub tie straps (section x1.25) raises F_u by 2.8 %
