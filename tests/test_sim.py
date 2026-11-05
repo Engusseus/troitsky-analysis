@@ -1432,12 +1432,13 @@ def _x_plate(name: str, half: float, arm: float, y0: float, y1: float):
 
 
 def test_geometry_the_model_cannot_represent_well_is_asked_about():
-    """A plate made of narrow arms (an X) and faces read only approximately (a freeform
-    face flattened) each raise a question: the designer can redraw or confirm them."""
+    """A plate made of narrow arms (an X) becomes a frame of four members meeting at its
+    centre (frame_plates says so); kept a plate, it is asked about (narrow_plates). Faces
+    read only approximately (a freeform face flattened) raise a question too."""
     from bridgesim.cad import CadBody
     from bridgesim.cad.mesh import tessellate
     from bridgesim.cad.parasolid import Body
-    from bridgesim.sim.idealize import build_model
+    from bridgesim.sim.idealize import Overrides, build_model
 
     x = _x_plate("X Brace (6-ply UD)", 100.0, 12.0, 173.1, 179.1)
     assert x.mesh.volume == pytest.approx(6 * (4 * 100 * 12 - 12**2), rel=1e-6)
@@ -1448,9 +1449,21 @@ def test_geometry_the_model_cannot_represent_well_is_asked_about():
     faces[top] = type(faces[top])("other", faces[top].loops)
     bodies[0] = CadBody(pier.name, tessellate(Body(0, pier.name, faces)), faces, 0)
     m = build_model(bodies + [x], MAT, SP, seed=0)
-    assert {b.name: b.kind for b in m.bodies}["X Brace (6-ply UD)"] == "shell"
+    xb = next(b for b in m.bodies if b.name == "X Brace (6-ply UD)")
+    assert xb.kind == "frame" and xb.section_mm[1] == pytest.approx(6.0)
+    # four arms of ~100 mm from the centre, all meeting at one node
+    ends = np.concatenate([[m.b_i[e], m.b_j[e]] for e in xb.beams])
+    centre = np.bincount(ends).argmax()
+    assert np.bincount(ends)[centre] == 4
+    assert float(m.b_L0[xb.beams].sum()) == pytest.approx(4 * (100 - 6), rel=0.08)
     qs = {q["id"]: q for q in m.questions}
-    assert "X Brace (6-ply UD)" in qs["narrow_plates"]["question"]
+    assert "X Brace (6-ply UD)" in qs["frame_plates"]["question"]
+    assert "narrow_plates" not in qs
+    m2 = build_model(bodies + [x], MAT, SP, Overrides.from_dict(
+        {"bodies": {"X Brace*": {"kind": "shell"}}}), seed=0)
+    assert {b.name: b.kind for b in m2.bodies}["X Brace (6-ply UD)"] == "shell"
+    assert "X Brace (6-ply UD)" in {q["id"]: q for q in m2.questions}[
+        "narrow_plates"]["question"]
     q = qs["cad_approximated:Pier L (block)"]
     assert q["severity"] == "important" and "10.0%" in q["question"]  # 50x150 of 75000
     assert "cad_approximated:Pier R (block)" not in qs
@@ -1496,6 +1509,82 @@ def test_linear_screen_matches_beam_theory(tmp_path):
     assert r.exit_code == 0, r.stderr
     out = json.loads(r.stdout)
     assert out["kind"] == "screen" and len(out["limits"]) == 3
+
+
+def test_frame_plate_bends_like_a_beam(tmp_path):
+    """A strip of plate standing on its edge on two piers (in-plane bending, ~2.5 shell
+    elements across) becomes a frame member and has beam theory's stiffness and first
+    fibre limit; the same strip kept as constant-strain shells comes out ~70 % too stiff.
+    A curved rib becomes one member chain following its curve."""
+    from shapely.geometry import Polygon
+
+    from bridgesim.cad.synthetic import box, prism
+    from bridgesim.sim import study
+    from bridgesim.sim.skeleton import medial_chains
+
+    H, T = 40.0, 8.0
+    cad = tmp_path / "strip.stl"
+    write_stl([box("Pier L", (-550, 0, -40), (-540, 150, 40)),
+               box("Pier R", (540, 0, -40), (550, 150, 40)),
+               box("Strip", (-550, 150, -T / 2), (550, 150 + H, T / 2))], cad)
+    names = {b.name: b.kind for b in study.inspect(cad).bodies}
+    strip = next(n for n, k in names.items() if k == "frame")  # found without asking
+    E, G, I = MAT.E_MPa.value, MAT.G_MPa.value, T * H**3 / 12
+    Ls = 1090.0
+    a = Ls / 2 - 100  # the plate bears at its two edges
+    d = 0.5 * a**2 * (3 * Ls - 4 * a) / (6 * E * I) + 0.5 * a / (5 / 6 * G * T * H)
+    k = {}
+    for kind in ("frame", "shell"):
+        ov = {"bodies": {n: ({"layup": "14-ply UD", "butt_stagger_mm": 0, "kind": kind}
+                             if n == strip else {"kind": "block"}) for n in names}}
+        rep = study.screen(cad, overrides=ov)
+        k[kind] = rep.stiffness_kgf_per_mm * 9.80665 * d
+        if kind == "frame":
+            lim = {lm.mode: lm.load_kgf for lm in rep.limits if lm.part == strip}
+            S = T * H**2 / 6
+            assert lim["compression"] == pytest.approx(
+                MAT.f_c_MPa.value * S / (0.5 * a) / 9.80665, rel=0.03)
+    assert k["frame"] == pytest.approx(1.0, rel=0.03)
+    assert k["shell"] > 1.4  # in-plane bending locks with ~2.5 elements across
+    # a semicircular rib 30 mm wide: one chain along its mid-line
+    th = np.linspace(0, np.pi, 60)
+    outer = np.c_[500 * np.cos(th), 300 * np.sin(th)]
+    inner = np.c_[470 * np.cos(th[::-1]), 270 * np.sin(th[::-1])]
+    ch = medial_chains(Polygon(np.vstack([outer, inner])))
+    assert len(ch) == 1 and ch[0].width.mean() == pytest.approx(30, rel=0.15)
+    ellipse = np.pi * (3 * (485 + 285) - np.sqrt((3 * 485 + 285) * (485 + 3 * 285))) / 2
+    assert ch[0].length == pytest.approx(ellipse - 30, rel=0.05)
+    from bridgesim.sim.idealize import _frame_chains, analyse_shape
+    from bridgesim.sim.materials import parse_layup
+
+    rib = prism("Rib (6-ply UD)", list(np.vstack([outer, inner])), 0.0, 8.0)
+    sh = analyse_shape(rib, parse_layup(rib.name), None)
+    assert sh.kind == "shell" and len(_frame_chains(sh)) == 1  # built as a frame
+
+
+def test_the_built_bridge_leans_without_stress():
+    """The global imperfection: a seeded bridge leans out of its plane by up to
+    scatter.lean_rad (height x angle), the same at every node and glue point, so every
+    glued pair still coincides (no initial stress); the perfect bridge stands upright."""
+    from bridgesim.sim.idealize import build_model
+
+    sp = SP.updated({"scatter.lean_rad": 0.01, "scatter.bow_L_over": 1e6,
+                     "scatter.support_level_mm": 0.0, "scatter.placement_mm": 0.0})
+    bodies = simple_beam_bridge()
+    m0 = build_model(bodies, MAT, sp, seed=None)
+    leans = []
+    for seed in (1, 2, 3):
+        m = build_model(bodies, MAT, sp, seed=seed)
+        dz = m.X[:, 2] - m0.X[:, 2]
+        y = m0.X[:, 1] - min(float(b.mesh.vertices[:, 1].min()) for b in bodies)
+        sel = y > 10
+        lean = float(np.median(dz[sel] / y[sel]))
+        assert np.allclose(dz, lean * y, atol=2e-3) and abs(lean) <= 0.01  # bows ~1e-3
+        assert np.allclose(m.X[:, :2], m0.X[:, :2], atol=2e-3)
+        pos = m.X[m.a_node] + m.a_r0
+        assert np.abs(pos[m.c_a] - pos[m.c_b]).max() < 1e-9  # glue pairs still together
+        leans.append(lean)
+    assert len(set(np.round(leans, 6))) == 3 and max(abs(x) for x in leans) > 1e-3
 
 
 def test_mcp_outputs_match_their_published_schemas(tmp_path):

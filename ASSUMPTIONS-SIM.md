@@ -21,7 +21,8 @@ relevant parts in your Design Validation (§10). Units: mm, N, MPa, s.
 |---|---|---|
 | extrusion at least 2x longer than its section, section no flatter than 1:4 (a deep cross-beam 221 x 88 x 63 mm is one) | **bar**: chain of corotational fibre beams on its centre line, ~25-30 mm elements (>= 4), real section and length, Timoshenko (shear-flexible) | members carry axial force + bending; buckling needs >= 4 elements |
 | slender but tapered extrusion (a wedge, a lip or filler cut along a diagonal: 40-75 % of its bounding box) | **tapered bar**: as above, each element with the width and centre offset of the profile at its position (same volume as the solid) | still a member; a rigid block would make the load path too stiff |
-| thin extrusion (width >= 3 x thickness) | **shell**: CST membrane + DKT bending triangles on the mid-surface, meshed from the real outline (holes > element size kept), integrated ply by ply (layered) | gussets, webs, decks, diaphragms. A plate made of narrow arms (an X, a frame) gets about one element across an arm: ~4x too stiff in in-plane bending there (constant-strain triangles lock), one grain direction for all its arms; the `narrow_plates` question asks to draw such members as their own bodies |
+| thin extrusion (width >= 3 x thickness) | **shell**: CST membrane + DKT bending triangles on the mid-surface, meshed from the real outline (holes > element size kept), integrated ply by ply (layered) | gussets, webs, decks, diaphragms |
+| plate made of narrow arms (an L-shaped leg, an X, a curved rib, a strut-like plate): arms narrower than 1.6 standard shell elements, or 3 when they are slender (centre lines >= 4x their width), arms covering >= 80 % of the plate and carrying what is glued to it | **frame**: fibre beams along the centre lines of its arms (the medial axis of its outline, `sim/skeleton.py`), each with the arm's local width and the plate's thickness, plies stacked through the thickness with their grain along the arm (or the span), butt joints per arm as for bars, arms sharing nodes where they meet, glue on rigid arms to the nearest node | a strip of constant-strain triangles one or two elements wide is 2-4x too stiff in in-plane bending, and a 20 mm thick plate is no thin plate; a beam is exact there (`test_frame_plate_bends_like_a_beam`: beam theory within 3 %, the same strip as shells 70 % too stiff). The `frame_plates` question lists them; a plate whose glued parts lie off its arms (a hub plate with wide wings) stays a shell and the `narrow_plates` question asks about it |
 | compact piece (less than 2x longer than its section, not thin), a body named a block, short toothpick | **rigid body** with its real mass and inertia | much stiffer than the members; a question lists those in the load path |
 | floss (by name) | **cable**: tension only, snaps at its breaking load | §8.4.5 |
 
@@ -155,7 +156,10 @@ counted in the warnings. An element is removed only when every ply is torn wide 
 **Scatter** (seeded, `--seed`; `--seed -1` for a perfect bridge): per body, E (CoV 12 %)
 and strength (CoV 18 %); per joint, glue strength (CoV 30 %); per bar, an initial bow of
 L/400 on average (0.3-1.7 of that) in a random direction; per bridge, the plate placed up
-to 3 mm off-centre and the support corners up to 0.5 mm out of level. Each value is drawn
+to 3 mm off-centre, the support corners up to 0.5 mm out of level, and the whole bridge
+leaning out of its plane by up to 0.005 rad either way (`scatter.lean_rad`, the initial
+inclination of EN 1995-1-1 5.4.4: height x angle at every node and glue point alike, so
+the parts stay together and unstressed). Each value is drawn
 from a stream named after its body or joint (a joint by its two bodies and where they
 overlap in the CAD), so a seed is the same imperfect bridge at every fidelity and after
 an edit elsewhere in the design. Monte Carlo over seeds gives the spread of F_u.
@@ -206,8 +210,10 @@ an edit elsewhere in the design. Monte Carlo over seeds gives the spread of F_u.
 * **Failures run their course at constant load**, as in the real test where the jack
   moves mm per minute: whenever something breaks (a joint lets go, a member or plate
   cracks, floss snaps) the simulated jack slows smoothly to 2 % of its speed and waits
-  until nothing more has broken for 4 ms (at most 30 ms), then speeds up again
-  (`quality.holds`). Without this, a failure that takes ~30 ms to develop (a heel joint
+  until nothing more has broken for 4 ms and the bridge has settled (its kinetic energy
+  back within twice that of steady loading, its load steady within 1 % over the last
+  2 ms), at most 30 ms, then speeds up again (`quality.holds`). The curve therefore does
+  not show the bridge ringing after a break as a load rising at constant travel. Without this, a failure that takes ~30 ms to develop (a heel joint
   letting go and the supports sliding out) would be outrun by the jack, and F_u would
   depend on the jack speed.
 * The **deflection** reported is that of the deck points the plate rests on when the
@@ -309,19 +315,22 @@ an edit elsewhere in the design. Monte Carlo over seeds gives the spread of F_u.
 
 ## 7. Not modelled (yet)
 
-* Glue lines are perfect over the whole touching area: starved or gappy joints only
-  through `glue_factor` in the overrides.
+* Glue lines cover the whole touching area. Starved or gappy joints come in through
+  `glue_factor` in the overrides, or through the glue strength itself: tau_g is the
+  average over the nominal overlap of a hand-made lap, so once measured on laps made
+  like the bridge's, incomplete coverage is in it (a separate coverage factor would
+  count it twice).
 * Splitting of a member along the grain other than by shear, knots and stick-to-stick
-  variation inside one body; butt joints in plates (only in bars). A member that splits
+  variation inside one body; butt joints in plates (in bars and frame arms only). A member that splits
   in shear switches to its split section at once (no fracture energy for the split
   itself); its axial strength is kept.
 * A crushed part keeps its full section in the rest of the model: crushing is in the
   glue line between two parts (permanent set, compaction), not a loss of the part's
   own area.
-* Thick plates (gussets 20 mm thick) use thin-plate (Kirchhoff) elements with constant-
-  strain membranes, at least 1.5 x their thickness in size: a strip of plate one element
-  wide is ~4x too stiff in in-plane bending, two elements wide ~2x (a membrane with
-  drilling rotations was tried and not adopted: `validation/README.md` §3.4), and compact
+* Thick plates that are not made of arms (a wide gusset 20 mm thick) use thin-plate
+  (Kirchhoff) elements with constant-strain membranes, at least 1.5 x their thickness in
+  size (a membrane with drilling rotations was tried and not adopted:
+  `validation/README.md` §3.4); plates of narrow arms are frames (section 2). Compact
   blocks (a node block, the block under the plate; slender or tapered pieces are bars)
   are rigid: they crush only where they bear on the plate or the platform, and their
   glue lines crush (by grain direction, as above); a question lists the ones in the load

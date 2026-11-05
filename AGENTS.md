@@ -171,9 +171,11 @@ meanwhile, and `answer_with`: how to answer, as an overrides fragment (`bodies`,
 * faces read only approximately (`cad_approximated:<body>`, important when they are a
   twentieth of the body's surface): a spline, cone or freeform surface flattened, or a
   face that could not be decoded closed over;
-* plates made of narrow arms (`narrow_plates`: an X, a frame), with about one shell
-  element across an arm: their arms are ~4x too stiff in in-plane bending; if the part is
-  really members, draw each as its own body (it becomes a bar);
+* plates made of narrow arms (an L-shaped leg, an X, a curved rib) are modelled as
+  frames of members along their arms (`frame_plates`, info: which ones); one whose glued
+  parts lie off its arms stays a plate with about one shell element across an arm, ~4x
+  too stiff in in-plane bending (`narrow_plates`): if the part is really members, draw
+  each as its own body (it becomes a bar);
 * members whose glued area is much weaker than the member in tension (`weak_joints`, one
   question for all of them) - a missing gusset? (`screen` shows which joints are really
   loaded: a member in compression needs far less);
@@ -201,7 +203,7 @@ designer *where* a part or a failure is ("the gusset at x = -310 mm, far side").
 ```yaml
 bodies:                     # by exact body name or glob pattern
   "Body 21531": {layup: "10-ply UD"}            # what an unnamed body is made of
-  "Saddle*": {kind: block}                      # bar | shell | block | cable | ignore
+  "Saddle*": {kind: block}                      # bar | shell | frame | block | cable | ignore
   "Hub Tie Strap*": {glue_factor: 0.7}          # poorly glued part (x glue strength)
   "Spacer*": {glue_factor: 0}                   # touching but NOT glued
   "Top Chord*": {strength_factor: 0.9, grain: span}
@@ -343,9 +345,10 @@ design comparisons; glue lines are perfect over the whole touching area unless a
 pattern unless `butt_stagger_mm` says otherwise; members are shear-flexible fibre beams
 (no splitting along the grain except through shear), tapered ones with their real
 profile (a part at least twice as long as its section is a member); compact blocks are
-rigid; plates crack ply by ply; thick plates use thin-plate elements, and plates made of
-narrow arms are meshed coarsely across them (`narrow_plates`); the bearing faces seat over 0.3 mm and the support corners are up to 0.5 mm out
-of level (`contact.seating_mm`, `scatter.support_level_mm`: measure them on the built
-bridge); parts that come into contact during the test push on each other without
+rigid; plates crack ply by ply; plates made of narrow arms are frames of members (thick
+plates otherwise use thin-plate elements); the bearing faces seat over 0.3 mm, the support
+corners are up to 0.5 mm out of level and the bridge leans out of its plane by up to
+0.005 rad (`contact.seating_mm`, `scatter.support_level_mm`, `scatter.lean_rad`: measure
+them on the built bridge); parts that come into contact during the test push on each other without
 friction; time is compressed (the jack moves ~mm/s instead of mm/min; the
 materials have no rate effect, and `--rate-check` shows the speed does not matter).

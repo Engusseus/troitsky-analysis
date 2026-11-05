@@ -368,13 +368,17 @@ class CrushOptions:
     self_contact: bool = True  # contact between parts not touching at the start
     # quasi-static failures: when something breaks (a joint, a member, a plate, floss)
     # the jack slows to hold_speed_frac of its speed until nothing more has broken for
-    # hold_settle_s (at most hold_max_s), as at the competition, where a failure runs
-    # its course long before the jack has moved
+    # hold_settle_s and the bridge has settled (its kinetic energy back within
+    # hold_ke_settle times that of steady loading, its load steady within hold_force_tol
+    # over the last hold_settle_s / 2), at most hold_max_s, as at the competition, where
+    # a failure runs its course long before the jack has moved
     hold_on_failure: bool = True
     hold_speed_frac: float = 0.02
     hold_ramp_s: float = 0.002
     hold_settle_s: float = 0.004
     hold_max_s: float = 0.03
+    hold_ke_settle: float = 2.0
+    hold_force_tol: float = 0.01
     progress: object = None  # callable(fraction, message)
 
 
@@ -719,6 +723,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     holds = 0
     hold_time = 0.0
     n_seen = 0
+    ke_q = 0.0  # kinetic energy of the bridge under steady loading (full jack speed)
+    recent: list[tuple[float, float]] = []  # (t, load) over the last half settle window
     major = ("joint_cracking", "joint_failure", "plate_crack", "member_fracture",
              "member_shear", "floss_break")
     while not unstable:
@@ -832,6 +838,19 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                         hold_start = st.t
                     hold_until = min(st.t + opt.hold_settle_s, hold_start + opt.hold_max_s)
                 n_seen = len(events)
+            # ... and until the bridge has settled: no hold ends while it still rings
+            recent.append((st.t, force))  # the online reading (the raw force rings)
+            while recent and recent[0][0] < st.t - 0.5 * opt.hold_settle_s:
+                recent.pop(0)
+            if throttle >= 0.999 and st.t >= hold_until and tl > ramp:
+                ke_q = kin if ke_q <= 0 else 0.95 * ke_q + 0.05 * kin
+            if opt.hold_on_failure and fail_at is None and hold_until > 0 and \
+                    hold_until - 0.0005 <= st.t < hold_start + opt.hold_max_s:
+                fr = [f for _, f in recent]
+                ringing = kin > opt.hold_ke_settle * max(ke_q, 1e-9) or \
+                    max(fr) - min(fr) > opt.hold_force_tol * max(abs(force), 1.0)
+                if ringing:
+                    hold_until = min(st.t + 0.001, hold_start + opt.hold_max_s)
             # ---- §12.5 criteria
             if criteria["deflection"] is None and defl > opt.deflection_limit_mm:
                 criteria["deflection"] = {"t_s": st.t, "travel_mm": travel, "load_N": force}

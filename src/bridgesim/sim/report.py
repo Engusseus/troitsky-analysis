@@ -37,8 +37,9 @@ class BodyReport(BaseModel):
     bbox_max_mm: list[float] = Field(default_factory=list)
     axis: list[float] | None = Field(None, description="Long axis (bars) or plate normal "
                                                        "(shells), unit vector")
-    kind: Literal["bar", "shell", "block", "cable", "ignore"] = Field(
-        description="bar = fibre beam member, shell = plate, block = rigid piece, "
+    kind: Literal["bar", "shell", "frame", "block", "cable", "ignore"] = Field(
+        description="bar = fibre beam member, shell = plate, frame = plate of narrow arms "
+                    "modelled as members along its arms, block = rigid piece, "
                     "cable = floss, ignore = left out.")
     layup: str
     layup_source: Literal["name", "override", "default"]

@@ -20,7 +20,7 @@ G_MM_S2 = 9806.65
 @dataclass
 class BodyInfo:
     name: str
-    kind: str  # "bar", "shell", "block", "cable"
+    kind: str  # "bar", "shell", "frame", "block", "cable"
     layup: str
     layup_source: str
     mass_kg: float

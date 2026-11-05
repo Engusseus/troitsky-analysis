@@ -76,5 +76,7 @@ scatter:
   bow_L_over: {value: 400, source: assumed,
                note: "Typical initial bow of a member, as span/bow (L/400). Measure the crookedness of your built members."}
   placement_mm: {value: 3.0, source: assumed, note: "How far off-centre the plate may be placed (each way)."}
+  lean_rad: {value: 0.005, source: assumed,
+             note: "How far the built bridge leans out of its plane (sway): each seed leans it by up to this angle, either way, the height times the angle at every point (EN 1995-1-1 5.4.4: 0.005 rad). Measure how far the top of your built bridge stands off the vertical."}
   support_level_mm: {value: 0.5, source: assumed,
                      note: "How far the four support corners of the built bridge are out of one plane: each is lifted by up to this much (seeded), so the bridge rocks on three corners until the load beds it down. Stand the bridge on a flat table and measure the gap under the corner that rocks."}

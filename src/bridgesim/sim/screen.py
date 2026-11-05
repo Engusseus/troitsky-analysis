@@ -315,7 +315,9 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
             info = m.bodies[bd]
             sel = m.b_body == bd
             EI = float(np.min(m.b_E[sel] * np.minimum(Iy[sel], Iz[sel])))
-            Lm = max(info.length_mm, float(m.b_L0[sel].sum()))
+            # a member buckles over its length; a frame over its longest arm
+            Lm = info.length_mm if info.kind == "frame" else \
+                max(info.length_mm, float(m.b_L0[sel].sum()))
             Ncr = math.pi**2 * EI / Lm**2
             add(info.name, "buckling", -N / max(Ncr, 1e-9), info.centroid_mm)
     # plates: ply strains at each element's centre against the ply's limits

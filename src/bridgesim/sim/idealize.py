@@ -76,7 +76,7 @@ class Overrides:
     unknown: list[str] = field(default_factory=list)  # top-level keys we do not read
     used: set = field(default_factory=set)  # patterns and glue keys that matched
 
-    KINDS = ("bar", "shell", "block", "cable", "ignore")
+    KINDS = ("bar", "shell", "frame", "block", "cable", "ignore")
     FIELDS = ("kind", "layup", "grain", "glue_factor", "strength_factor", "butt_stagger_mm",
               "section_scale")
 
@@ -206,6 +206,7 @@ class Shape:
     fill: float
     centroid: np.ndarray
     why: str = ""
+    frame: list | None = None  # centre lines of the arms of a plate modelled as a frame
 
 
 def _mrr(poly: Polygon) -> tuple[np.ndarray, np.ndarray, float, float]:
@@ -286,9 +287,11 @@ def analyse_shape(b: CadBody, layup: Layup, forced: str | None) -> Shape:
         sh.kind, sh.why = "shell", f"thin plate ({T:.1f} mm thick)"
     else:
         sh.kind, sh.why = "block", f"compact ({Lp:.0f} x {Wp:.1f} x {T:.1f} mm)"
-    if forced in ("bar", "shell", "block", "cable"):
+    if forced in ("bar", "shell", "block", "cable", "frame"):
         if forced == "bar" and not extr:
             return _pca_shape(b, layup, "bar")
+        if forced == "frame" and not extr:
+            return sh  # a frame is cut from a plate: needs an extrusion
         sh.kind, sh.why = forced, "set in overrides"
     return sh
 
@@ -469,9 +472,14 @@ class _Builder:
         self.node_body: list[int] = []
         self.att_node: list[int] = []
         self.att_r0: list[np.ndarray] = []
+        self.imperf = None  # a global imperfection field applied to every point
+
+    def _at(self, p) -> np.ndarray:
+        p = np.asarray(p, float)
+        return p if self.imperf is None else self.imperf(p)
 
     def node(self, p, body: int) -> int:
-        self.X.append(np.asarray(p, float))
+        self.X.append(self._at(p))
         self.mass.append(0.0)
         self.rot.append(0.0)
         self.node_body.append(body)
@@ -479,7 +487,7 @@ class _Builder:
 
     def attach(self, node: int, p) -> int:
         self.att_node.append(node)
-        self.att_r0.append(np.asarray(p, float) - self.X[node])
+        self.att_r0.append(self._at(p) - self.X[node])
         return len(self.att_node) - 1
 
 
@@ -488,7 +496,7 @@ def grain_vectors(sh) -> list[np.ndarray]:
     if sh.kind == "bar" or (sh.kind == "block" and sh.layup.kind == "laminate"
                             and sh.layup.source in ("name", "override")):
         u, w = sh.u, sh.w  # plies lie in the (u, w) plane, stacked through the thickness
-    elif sh.kind == "shell":
+    elif sh.kind in ("shell", "frame"):
         u = sh.u
         if sh.layup.grain == "span":
             gx = np.array([1.0, 0, 0]) - sh.n * sh.n[0]
@@ -704,17 +712,44 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
 
     # ---------------------------------------------------------------- contacts
     raw_patches = find_patches(bodies)
+    # plates of narrow arms become frames (where their arms carry what is glued to them)
+    for bi, sh in enumerate(shapes):
+        forced = ov.for_body(bodies[bi].name).get("kind")
+        if sh.kind not in ("shell", "frame") or forced == "shell" or sh.poly is None:
+            continue
+        mine = [(inter, oa, e1, e2) for ia, ib, inter, oa, e1, e2, _na in raw_patches
+                if bi in (ia, ib)]
+        fr = _frame_chains(sh, force=sh.kind == "frame", patches=mine)
+        if fr is not None:
+            arm = 2 * sh.poly.area / max(sh.poly.length, 1e-9)
+            sh.kind, sh.frame = "frame", fr
+            sh.why = (f"plate of narrow arms ({arm:.0f} mm wide, {sh.T:.1f} mm thick): "
+                      f"a frame of members along its {len(fr)} arm centre line(s)"
+                      if forced != "frame" else "frame, set in overrides")
+        elif sh.kind == "frame":
+            sh.kind = "shell"
+            sh.why += " (no arms found: kept as a plate)"
     touching = {i: set() for i in range(len(bodies))}
     for ia, ib, *_ in raw_patches:
         touching[ia].add(ib)
         touching[ib].add(ia)
 
     bld = _Builder()
+    # global imperfection: the built bridge leans out of its plane (sway), seeded up to
+    # scatter.lean_rad (EN 1995-1-1 5.4.4: 0.005 rad), applied to every node and glue
+    # point alike so the parts stay together and unstressed
+    rl = rng_for("lean")
+    lean = 0.0 if rl is None else sp.values.get("scatter.lean_rad", 0.0) * rl.uniform(-1, 1)
+    if lean:
+        y_base = min(float(b.mesh.vertices[:, 1].min()) for b in bodies)
+        bld.imperf = lambda p: p + np.array([0.0, 0.0, lean * (p[1] - y_base)])
     infos: list[BodyInfo] = []
     body_nodes: dict[int, np.ndarray] = {}
     bar_axis: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     shell_tree: dict[int, cKDTree] = {}
     shell_mesh: dict[int, tuple[np.ndarray, np.ndarray, float]] = {}
+    frame_tree: dict[int, cKDTree] = {}
+    frame_h: dict[int, float] = {}
     beams: dict[str, list] = {k: [] for k in ("i", "j", "L0", "E0", "fy", "fz", "fA", "E",
                                               "ft", "fc", "Gf", "GJ", "A", "fv", "fv3",
                                               "nply", "Wt", "kGA", "body")}
@@ -724,6 +759,126 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     snap_modes: set = set()
     G_f = sp["wood.G_f_N_per_mm"]
 
+    def _frame_body(bi, b, sh, info, o, ssc, Ef, Sf, mass_t):
+        """A plate of narrow arms as a frame: each arm a chain of fibre beams along its
+        centre line with the arm's local width and the plate's thickness, its plies
+        stacked through the thickness, the arms sharing nodes where they meet."""
+        from types import SimpleNamespace
+
+        from bridgesim.sim.skeleton import resample
+
+        T = sh.T * ssc
+        o_mid = sh.origin - sh.n * T / 2
+        bnd = sh.poly.boundary
+        arm = 2 * sh.poly.area / max(sh.poly.length, 1e-9)
+        h_e = min(30.0, max(arm, 10.0)) * mesh_scale
+        chains = [resample(c, h_e, bnd) for c in sh.frame]
+        P2s: list[np.ndarray] = []
+        ids_all: list[int] = []
+        tol = 0.3 * arm
+
+        def nid(q):
+            for k_, p_ in enumerate(P2s):
+                if float(np.hypot(*(p_ - q))) <= tol:
+                    return ids_all[k_]
+            i_ = bld.node(o_mid + q[0] * sh.e1 + q[1] * sh.e2, bi)
+            P2s.append(np.asarray(q, float))
+            ids_all.append(i_)
+            return i_
+
+        # grain: along each arm (sticks run along the arm) unless it follows the span
+        gspan = None
+        if sh.layup.grain == "span":
+            gx = np.array([1.0, 0, 0]) - sh.n * sh.n[0]
+            if np.linalg.norm(gx) > 0.3:
+                gspan = gx / np.linalg.norm(gx)
+        lam_cache: dict[float, object] = {}
+
+        def lam_at(rel: float):
+            key = round(rel, 0)
+            if key not in lam_cache:
+                lam_cache[key] = laminate(ply, [a + key for a in sh.layup.angles], T)
+            return lam_cache[key]
+
+        elems = []  # (a, b, width, L0, chain index)
+        for ci, ch in enumerate(chains):
+            ids = [nid(q) for q in ch.pts]
+            for k in range(len(ids) - 1):
+                a_, b_ = ids[k], ids[k + 1]
+                if a_ == b_:
+                    continue
+                L0 = float(np.linalg.norm(bld.X[b_] - bld.X[a_]))
+                if L0 <= 1e-6:
+                    continue
+                We = max(0.5 * (ch.width[k] + ch.width[k + 1]), 0.3 * arm) * ssc
+                elems.append((a_, b_, We, L0, ci))
+        if not elems:
+            raise ValueError(f"model build failed: no members in the frame '{b.name}'")
+        wl = sum(e[2] * e[3] for e in elems)
+        ch_len = [float(sum(e[3] for e in elems if e[4] == ci)) for ci in range(len(chains))]
+        ch_w = [float(np.median([e[2] for e in elems if e[4] == ci] or [arm]))
+                for ci in range(len(chains))]
+        kt_fv = {}
+        lam0 = laminate(ply, sh.layup.angles, T)
+        for ci in range(len(chains)):
+            proxy = SimpleNamespace(layup=sh.layup, Wp=ch_w[ci], T=T)
+            kt_fv[ci] = _laminated_member(b.name, proxy, lam0, ch_len[ci], mat, o, questions,
+                                          sp.values.get("glue.tau_peak_over_avg", 1.155))
+        for a_, b_, We, L0, ci in elems:
+            e1v = (bld.X[b_] - bld.X[a_]) / L0
+            e2v = np.cross(sh.n, e1v)
+            e2v /= np.linalg.norm(e2v)
+            e3v = np.cross(e1v, e2v)
+            Ein = np.stack([e1v, e2v, e3v], axis=1)
+            rel = 0.0
+            if gspan is not None:
+                rel = math.degrees(math.atan2(float(gspan @ e2v), float(gspan @ e1v)))
+            lam = lam_at(rel)
+            kt, fv_lam = kt_fv[ci]
+            ny, nz = (5, 3) if We >= T else (3, 5)
+            gy = ((np.arange(ny) + 0.5) / ny - 0.5) * We * _exact(ny)
+            gz = ((np.arange(nz) + 0.5) / nz - 0.5) * T * _exact(nz)
+            FY, FZ = np.meshgrid(gy, gz, indexing="ij")
+            A_e = We * T
+            bb, dd = max(We, T), min(We, T)
+            J = bb * dd**3 * (1 / 3 - 0.21 * dd / bb * (1 - dd**4 / (12 * bb**4)))
+            beams["i"].append(a_)
+            beams["j"].append(b_)
+            beams["L0"].append(L0)
+            beams["E0"].append(Ein)
+            beams["fy"].append(FY.ravel())
+            beams["fz"].append(FZ.ravel())
+            beams["fA"].append(np.full(ny * nz, A_e / (ny * nz)))
+            beams["E"].append(lam.E_x * Ef)
+            beams["ft"].append(lam.f_t * Ef * Sf * kt)
+            beams["fc"].append(lam.f_c * Ef * Sf)
+            beams["Gf"].append(G_f * Sf)
+            beams["GJ"].append(lam.G_xy * Ef * J)
+            beams["A"].append(A_e)
+            beams["fv"].append(mat.f_v_MPa.value * Sf)
+            beams["fv3"].append(fv_lam * Sf)
+            beams["nply"].append(float(max(2, len(lam.angles))))
+            beams["Wt"].append(J / dd)
+            beams["kGA"].append(5 / 6 * lam.G_xy * Ef * A_e)
+            beams["body"].append(bi)
+            info.beams.append(len(beams["i"]) - 1)
+            me = mass_t * We * L0 / wl  # the plate's mass spread over its arms
+            bld.mass[a_] += me / 2
+            bld.mass[b_] += me / 2
+            r2 = (We**2 + T**2) / 12
+            for nn in (a_, b_):
+                bld.rot[nn] += me / 2 * (L0**2 / 12 + r2)
+        ids = np.array(sorted(set(ids_all)))
+        body_nodes[bi] = ids
+        frame_tree[bi] = cKDTree(np.array([bld.X[i] for i in ids]))
+        frame_h[bi] = h_e
+        info.E_eff_MPa, info.f_c_eff_MPa = lam0.E_x, lam0.f_c
+        info.f_t_eff_MPa = lam0.f_t * min(v[0] for v in kt_fv.values())
+        info.thickness_mm = T
+        info.section_mm = (round(float(np.median([e[2] for e in elems])), 2), round(T, 2))
+        info.length_mm = max(ch_len)  # the longest arm (buckling length in the screen)
+        info.nodes = list(ids)
+
     mass_change_t = 0.0
     for bi, (b, sh) in enumerate(zip(bodies, shapes, strict=True)):
         o = ov.for_body(b.name)
@@ -732,11 +887,11 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         ssc = o.get("section_scale", 1.0)
         ssc = float(ssc) if isinstance(ssc, (int, float)) and ssc > 0 else 1.0
         if ssc != 1.0:
-            if sh.kind in ("bar", "shell"):
-                vfac = ssc * ssc if sh.kind == "bar" else ssc
+            if sh.kind in ("bar", "shell", "frame"):
+                vfac = ssc * ssc if sh.kind in ("bar", "frame") else ssc
                 dm = rho * vol * (vfac - 1) * (1 + glue_frac)
                 mass_change_t += dm
-                what = "section" if sh.kind == "bar" else "thickness"
+                what = "section" if sh.kind in ("bar", "frame") else "thickness"
                 notes.append(f"what-if: '{b.name}' {what} x{ssc:g} (mass "
                              f"{dm / TONNE_PER_KG * 1000:+.1f} g); the CAD and its glued "
                              "areas are unchanged")
@@ -749,7 +904,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                         mass_t / TONNE_PER_KG, vol)
         info.centroid_mm = tuple(float(v) for v in b.mesh.centroid)
         info.bbox_mm = (b.mesh.bbox[0].copy(), b.mesh.bbox[1].copy())
-        info.axis = tuple(float(v) for v in (sh.n if sh.kind == "shell" else sh.u))
+        info.axis = tuple(float(v) for v in (sh.n if sh.kind in ("shell", "frame")
+                                             else sh.u))
         info.notes.append(f"{sh.kind}: {sh.why}")
         if sh.kind == "ignore":
             infos.append(info)
@@ -939,6 +1095,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             info.f_t_eff_MPa, info.f_c_eff_MPa = lam_ref.f_t, lam_ref.f_c
             info.thickness_mm = T
             info.nodes = list(ids)
+        elif sh.kind == "frame":
+            _frame_body(bi, b, sh, info, o, ssc, Ef, Sf, mass_t)
         elif sh.kind == "cable":
             info.nodes = []  # a floss cable acts between the parts it is tied to
         elif sh.kind == "block":
@@ -960,6 +1118,9 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         if sh.kind == "shell":
             _, k = shell_tree[bi].query(p)
             return bld.attach(int(body_nodes[bi][k]), p)
+        if sh.kind == "frame":
+            _, k = frame_tree[bi].query(p)
+            return bld.attach(int(body_nodes[bi][k]), p)
         return bld.attach(int(body_nodes[bi][0]), p)
 
     # ---------------------------------------------------------------- glue points
@@ -972,6 +1133,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             return shell_mesh[bi][2]  # already scaled
         if sh.kind == "bar":
             return min(30.0, sh.Lp / 4) * mesh_scale
+        if sh.kind == "frame":
+            return frame_h[bi]
         return 20.0
 
     patch_pts3: list[tuple[int, int, np.ndarray, np.ndarray, float, np.ndarray,
@@ -1224,7 +1387,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         sh = shapes[bi]
         if sh.kind == "bar" and sh.layup.kind != "toothpick" and abs(sh.u[1]) > 0.7:
             return ply.f_c
-        if sh.kind == "shell" and abs(sh.n[1]) < 0.7:
+        if sh.kind in ("shell", "frame") and abs(sh.n[1]) < 0.7:
             return 0.5 * (ply.f_c + ply.f_c90)
         return ply.f_c90
 
@@ -1452,7 +1615,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     # cone, sphere, freeform) becomes a flat best-fit facet; an undecoded face is closed
     # over. One question per body; important when a twentieth of its surface is affected
     for bi, b in enumerate(bodies):
-        if shapes[bi].kind not in ("bar", "shell", "block"):
+        if shapes[bi].kind not in ("bar", "shell", "frame", "block"):
             continue
         other = [k for k, f in enumerate(b.faces) if f.kind == "other"]
         if not other and not b.mesh.capped_loops:
@@ -1484,6 +1647,28 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         arm = 2 * sh.poly.area / max(sh.poly.length, 1e-9)
         if arm < h_:
             narrow.setdefault(_group(bodies[bi].name), (bodies[bi].name, arm, h_))
+    frames: dict[str, tuple[str, int, float, float]] = {}
+    for bi, sh in enumerate(shapes):
+        if sh.kind == "frame":
+            frames.setdefault(_group(bodies[bi].name), (
+                bodies[bi].name, len(sh.frame), 2 * sh.poly.area / max(sh.poly.length, 1e-9),
+                sh.T))
+    if frames:
+        model.questions.append({
+            "id": "frame_plates", "body": next(iter(frames.values()))[0],
+            "topic": "geometry", "severity": "info",
+            "question": f"{len(frames)} plate(s) made of narrow arms are modelled as frames "
+                        "of members along the centre lines of their arms (each arm a beam "
+                        "with its local width and the plate's thickness, sticks along the "
+                        "arm, butt joints included, the arms joined rigidly where they "
+                        "meet): " + "; ".join(
+                            f"{g} ({n} arm(s), ~{a:.0f} mm wide, {t:.1f} mm thick)"
+                            for g, (_n, n, a, t) in list(frames.items())[:8])
+                        + ". If one is really a solid plate whose sticks all run one way, "
+                        "set its kind to shell.",
+            "assumed": "frames as listed",
+            "answer_with": {"bodies": {next(iter(frames)) + "*": {"kind": "<frame | shell>"}},
+                            "acknowledge": ["frame_plates"]}})
     if narrow:
         model.questions.append({
             "id": "narrow_plates", "body": next(iter(narrow.values()))[0],
@@ -1531,6 +1716,71 @@ def _mesh_robust(poly, h: float, name: str):
 
 
 THICK_H = 1.5  # smallest shell element / plate thickness (Kirchhoff plates)
+
+#: a plate whose arms are narrower than this many shell elements (at the standard element
+#: size, so the choice is the same at every fidelity) is a frame of members along its
+#: arms; up to FRAME_SLENDER_ACROSS elements when its arms are slender (their centre
+#: lines at least FRAME_SLENDER times as long as they are wide): a strip two or three
+#: constant-strain elements wide is still about twice too stiff in in-plane bending
+FRAME_MAX_ACROSS = 1.6
+FRAME_SLENDER_ACROSS = 3.0
+FRAME_SLENDER = 4.0
+
+
+def _frame_chains(sh: Shape, force: bool = False, patches=()) -> list | None:
+    """The arms of a plate made of narrow arms (an X, a frame, a curved rib, a thick
+    strut-like plate): their centre lines (:func:`skeleton.medial_chains`), when the
+    plate's mean arm width 2 A / P is below ``FRAME_MAX_ACROSS`` standard shell elements
+    (``FRAME_SLENDER_ACROSS`` when the arms are slender; or ``force``), the arms, at
+    their local width, cover at least 80 % of the plate, and what is glued to it lies on
+    its arms: at least half of each glued face within a quarter arm width of them, each
+    glued edge within three quarters (the arms' ends reach their end faces through rigid
+    arms); otherwise it stays a plate. ``patches``: (overlap polygon, origin, e1, e2) of
+    each glued patch."""
+    from bridgesim.sim.skeleton import medial_chains, resample
+
+    poly = sh.poly
+    if poly is None or poly.area <= 0:
+        return None
+    arm = 2 * poly.area / max(poly.length, 1e-9)
+    h = _shell_h(sh)
+    if not force and arm >= FRAME_SLENDER_ACROSS * h:
+        return None
+    try:
+        chains = [c for c in medial_chains(poly) if c.length > 1e-6]
+    except (ValueError, IndexError, RuntimeError):  # a degenerate outline
+        return None
+    if not chains:
+        return None
+    width = float(np.median(np.concatenate([c.width for c in chains])))
+    slender = sum(c.length for c in chains) >= FRAME_SLENDER * width
+    if not force and arm >= FRAME_MAX_ACROSS * h and not slender:
+        return None
+    bnd = poly.boundary
+    parts = []
+    for c in chains:
+        r = resample(c, max(arm / 2, 2.0), bnd)
+        parts.append(LineString(r.pts).buffer(max(float(r.width.min()) / 2, 0.1)))
+        parts += [Point(q).buffer(w / 2) for q, w in zip(r.pts, r.width, strict=True)]
+    region = shapely.union_all(parts)
+    if region.intersection(poly).area / poly.area < 0.8 and not force:
+        return None
+    if force:
+        return chains
+    near, edge = region.buffer(0.25 * arm), region.buffer(0.75 * arm)
+    for inter, oa, e1, e2 in patches:
+        if inter.geom_type != "Polygon" or inter.area <= 0:
+            continue
+        P3 = oa + np.outer(np.asarray(inter.exterior.coords)[:, 0], e1) \
+            + np.outer(np.asarray(inter.exterior.coords)[:, 1], e2)
+        P2 = np.c_[(P3 - sh.origin) @ sh.e1, (P3 - sh.origin) @ sh.e2]
+        flat = Polygon(P2).buffer(0)
+        if flat.area >= 0.25 * inter.area:  # glued on the plate's face
+            if flat.intersection(near).area < 0.5 * flat.area:
+                return None
+        elif not edge.contains(Point(P2.mean(0))):  # glued on its edge
+            return None
+    return chains
 
 
 def _shell_h(sh: Shape) -> float:

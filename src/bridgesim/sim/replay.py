@@ -65,7 +65,7 @@ def build_skin(model: Model, bodies: list[CadBody], max_edge: float = 20.0) -> d
         if info.kind in ("ignore", "cable") or not info.nodes:
             continue
         V, T = b.mesh.vertices, b.mesh.triangles
-        if info.kind in ("bar", "shell"):
+        if info.kind in ("bar", "shell", "frame"):
             V, T = _subdivide(V, T, max_edge)
         nodes = np.array(info.nodes)
         XN = model.X[nodes]
@@ -86,7 +86,7 @@ def build_skin(model: Model, bodies: list[CadBody], max_edge: float = 20.0) -> d
             t = np.clip((s - sn[k]) / np.maximum(sn[k + 1] - sn[k], 1e-9), 0, 1)
             idx[:, 0], idx[:, 1] = nodes[k], nodes[k + 1]
             w[:, 0], w[:, 1] = 1 - t, t
-        else:  # shell: nearest 3 nodes, inverse-distance weights
+        else:  # shell or frame: nearest 3 nodes, inverse-distance weights
             tree = cKDTree(XN)
             dd, kk = tree.query(V, k=min(3, len(nodes)))
             dd = np.atleast_2d(dd)
