@@ -535,8 +535,22 @@ def _group(name: str) -> str:
     return re.sub(r"( - .*| \(mirror copy\).*| #\d+)$", "", name).strip()
 
 
+def interlaminar_strength(angles, f_v: float, f_rolling: float, bond: float) -> float:
+    """Shear strength of the glue lines between the plies of a laminate (plies at
+    ``angles`` degrees to the member's axis): the lower of the bond line's own strength
+    and what the weakest ply takes there, the interlaminar shear running along its grain
+    (f_v) and across it (rolling shear) in proportion to the angle (a quadratic
+    interaction): f_v for a UD stack, the rolling shear for a ply across the member."""
+    worst = f_v
+    for a in angles:
+        c, s = abs(math.cos(math.radians(a))), abs(math.sin(math.radians(a)))
+        worst = min(worst, 1.0 / math.hypot(c / f_v, s / max(f_rolling, 1e-9)))
+    return min(bond, worst)
+
+
 def _laminated_member(name: str, sh, lam, L: float, mat: Material, o: dict,
-                      questions: list, peak: float = 1.155) -> tuple[float, float]:
+                      questions: list, f_rolling: float = 2.0,
+                      bond: float = 6.0) -> tuple[float, float]:
     """Tension-strength factor and shear strength of a member laminated from sticks.
 
     A ply longer than one stick has butt joints; its load goes round each joint through
@@ -544,16 +558,15 @@ def _laminated_member(name: str, sh, lam, L: float, mat: Material, o: dict,
     path cuts k plies at their joints and shears the glue between them:
     ``P_k = (n - k) P_ply + (k - 1) tau_g w s``, the smallest over k (k = 1 is the net
     section, k = n a path through every joint). Bending shear between plies runs in the
-    glue lines, so the member's shear strength is at most the glue's: the glue's own
-    strength (``peak`` x tau_g, what the glue points use), not tau_g, the average over a
-    lap that its ends' stress concentration lowers."""
+    glue lines between them: :func:`interlaminar_strength` (the bond line, pressed while
+    it cured, ``bond``; the plies along and across their grain, ``f_rolling``)."""
     n = len(lam.angles)
     f_v = mat.f_v_MPa.value
     if sh.layup.kind != "laminate" or n < 2:
         return 1.0, f_v
     gf = float(o.get("glue_factor", 1.0))
     tau = mat.glue.tau_g_MPa.value * max(gf, 1e-3)
-    fv = min(f_v, peak * tau)
+    fv = interlaminar_strength(lam.angles, f_v, f_rolling, bond * max(gf, 1e-3))
     Ls = mat.stick.length_mm
     if L <= 1.02 * Ls or o.get("butt_stagger_mm") == 0:
         return 1.0, fv
@@ -758,6 +771,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     snap_excess = 1.0
     snap_modes: set = set()
     G_f = sp["wood.G_f_N_per_mm"]
+    il_strength = {"f_rolling": sp.values.get("wood.f_rolling_MPa", 2.0),
+                   "bond": sp.values.get("glue.interlaminar_MPa", 6.0)}
 
     def _frame_body(bi, b, sh, info, o, ssc, Ef, Sf, mass_t):
         """A plate of narrow arms as a frame: each arm a chain of fibre beams along its
@@ -777,14 +792,33 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         ids_all: list[int] = []
         tol = 0.3 * arm
 
-        def nid(q):
+        def nid(q, off=None):
             for k_, p_ in enumerate(P2s):
                 if float(np.hypot(*(p_ - q))) <= tol:
                     return ids_all[k_]
-            i_ = bld.node(o_mid + q[0] * sh.e1 + q[1] * sh.e2, bi)
+            p3 = o_mid + q[0] * sh.e1 + q[1] * sh.e2
+            i_ = bld.node(p3 if off is None else p3 + off, bi)
             P2s.append(np.asarray(q, float))
             ids_all.append(i_)
             return i_
+
+        def bow(ci, ch):
+            """Initial bow of an arm, as for a member (L/400 on average, 0.3-1.7 of
+            that, in a random direction across it), keyed on the arm: the same at every
+            mesh. Zero at the arm's ends, which stay at its junctions."""
+            rb = rng_for(f"bow:{b.name}:{ci}")
+            ratio = sp["scatter.bow_L_over"]
+            L_ = float(np.linalg.norm(np.diff(ch.pts, axis=0), axis=1).sum())
+            if rb is None or ratio <= 0 or L_ <= 0 or ch.spur:
+                return [None] * len(ch.pts)
+            amp = L_ / ratio * rb.uniform(0.3, 1.7)
+            ang = rb.uniform(0, 2 * math.pi)
+            d2 = ch.pts[-1] - ch.pts[0]
+            d2 = d2 / max(float(np.linalg.norm(d2)), 1e-9)
+            w3 = -d2[1] * sh.e1 + d2[0] * sh.e2
+            direc = math.cos(ang) * w3 + math.sin(ang) * sh.n
+            s_ = np.r_[0, np.cumsum(np.linalg.norm(np.diff(ch.pts, axis=0), axis=1))]
+            return [amp * math.sin(math.pi * x / L_) * direc for x in s_]
 
         # grain: along each arm (sticks run along the arm) unless it follows the span
         gspan = None
@@ -801,8 +835,14 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             return lam_cache[key]
 
         elems = []  # (a, b, width, L0, chain index)
-        for ci, ch in enumerate(chains):
-            ids = [nid(q) for q in ch.pts]
+        order = sorted(range(len(chains)), key=lambda c_: chains[c_].spur)
+        for ci in order:
+            ch = chains[ci]
+            if ch.spur and P2s:  # joined to the frame at its nearest node
+                k0 = int(np.argmin([float(np.hypot(*(p_ - ch.pts[0]))) for p_ in P2s]))
+                ids = [ids_all[k0]] + [nid(q) for q in ch.pts[1:]]
+            else:
+                ids = [nid(q, off) for q, off in zip(ch.pts, bow(ci, ch), strict=True)]
             for k in range(len(ids) - 1):
                 a_, b_ = ids[k], ids[k + 1]
                 if a_ == b_:
@@ -823,7 +863,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         for ci in range(len(chains)):
             proxy = SimpleNamespace(layup=sh.layup, Wp=ch_w[ci], T=T)
             kt_fv[ci] = _laminated_member(b.name, proxy, lam0, ch_len[ci], mat, o, questions,
-                                          sp.values.get("glue.tau_peak_over_avg", 1.155))
+                                          **il_strength)
         for a_, b_, We, L0, ci in elems:
             e1v = (bld.X[b_] - bld.X[a_]) / L0
             e2v = np.cross(sh.n, e1v)
@@ -930,7 +970,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             s0, s1 = float(s_v.min()), float(s_v.max())
             L = s1 - s0
             kt, fv_lam = _laminated_member(b.name, sh, lam, L, mat, o, questions,
-                                           sp.values.get("glue.tau_peak_over_avg", 1.155))
+                                           **il_strength)
             # uniform elements; joints attach to the nearest node through a rigid arm
             h = min(30.0 * mesh_scale, L / 4 * min(mesh_scale, 1.5)) if L >= 60 \
                 else max(L / 2, 1e-3)
@@ -1200,10 +1240,12 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                                                 "breakable", "d0", "fc", "cdep")}
     end_grain_joints: list[tuple[str, str, float]] = []
     patches: list[Patch] = []
+    # the workmanship of the whole build: one factor on every joint of the bridge
+    gf_bridge = scatter(sp.values.get("scatter.glue_bridge_cov", 0.0), "glue:bridge")
     for ia, ib, pts3, na, area, cad_c, wts in patch_pts3:
         key = "|".join(sorted((bodies[ia].name, bodies[ib].name)))
-        gf = scatter(sp["scatter.glue_cov"],
-                     f"glue:{key}:{np.round(cad_c).astype(int).tolist()}")
+        gf = gf_bridge * scatter(sp["scatter.glue_cov"],
+                                 f"glue:{key}:{np.round(cad_c).astype(int).tolist()}")
         gf *= float(ov.for_body(bodies[ia].name).get("glue_factor", 1.0))
         gf *= float(ov.for_body(bodies[ib].name).get("glue_factor", 1.0))
         for key, val in ov.glue.items():
@@ -1555,6 +1597,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         params={"crush_softening": sp["wood.crush_softening"],
                 "friction_platform": sp["contact.friction_platform"],
                 "friction_plate": sp["contact.friction_plate"],
+                "crusher_k_N_per_mm": sp.values.get("crusher.stiffness_N_per_mm", 20000.0),
+                "crusher_k_lat_N_per_mm": sp.values.get("crusher.lateral_N_per_mm", 2000.0),
                 "deck_bodies": deck_bodies, "deck_y": deck_y,
                 "test_rate_mm_per_min": sp["crusher.test_rate_mm_per_min"],
                 "c_d0": np.array(springs["d0"], float),
@@ -1740,7 +1784,7 @@ def _frame_chains(sh: Shape, force: bool = False, patches=()) -> list | None:
     glued edge within three quarters (the arms' ends reach their end faces through rigid
     arms); otherwise it stays a plate. ``patches``: (overlap polygon, origin, e1, e2) of
     each glued patch."""
-    from bridgesim.sim.skeleton import medial_chains, resample
+    from bridgesim.sim.skeleton import Chain, medial_chains, resample
 
     poly = sh.poly
     if poly is None or poly.area <= 0:
@@ -1770,7 +1814,8 @@ def _frame_chains(sh: Shape, force: bool = False, patches=()) -> list | None:
         return None
     if force:
         return chains
-    near, edge = region.buffer(0.25 * arm), region.buffer(0.75 * arm)
+    inside = poly.buffer(1e-6)
+    spurs = 0
     for inter, oa, e1, e2 in patches:
         if inter.geom_type != "Polygon" or inter.area <= 0:
             continue
@@ -1778,10 +1823,31 @@ def _frame_chains(sh: Shape, force: bool = False, patches=()) -> list | None:
             + np.outer(np.asarray(inter.exterior.coords)[:, 1], e2)
         P2 = np.c_[(P3 - sh.origin) @ sh.e1, (P3 - sh.origin) @ sh.e2]
         flat = Polygon(P2).buffer(0)
-        if flat.area >= 0.25 * inter.area:  # glued on the plate's face
-            if flat.intersection(near).area < 0.5 * flat.area:
-                return None
-        elif not edge.contains(Point(P2.mean(0))):  # glued on its edge
+        face = flat.area >= 0.25 * inter.area  # glued on the plate's face, else its edge
+
+        def carried(reg, face=face, flat=flat, P2=P2):
+            if face:
+                return flat.intersection(reg.buffer(0.25 * arm)).area >= 0.5 * flat.area
+            return reg.buffer(0.75 * arm).contains(Point(P2.mean(0)))
+
+        if carried(region):
+            continue
+        # a glued part off the arms (a wing of the plate): an arm out to it from the
+        # nearest point of the centre lines, if that runs inside the plate
+        q = np.asarray(flat.representative_point().coords[0] if face else P2.mean(0))
+        if spurs >= 8 or not inside.buffer(1e-3).contains(Point(q)):  # edges: on it
+            return None
+        best = min((LineString(c.pts) for c in chains), key=lambda ln: ln.distance(Point(q)))
+        p0 = np.asarray(best.interpolate(best.project(Point(q))).coords[0])
+        seg = LineString([p0, q])
+        if seg.length < 1e-6 or not inside.buffer(1e-3).contains(seg):
+            return None
+        sp_ = Chain(np.array([p0, q]),
+                    np.array([2 * bnd.distance(Point(x)) for x in (p0, q)]), spur=True)
+        chains.append(sp_)
+        spurs += 1
+        region = region.union(seg.buffer(max(float(sp_.width.min()) / 2, 0.25 * arm)))
+        if not carried(region):
             return None
     return chains
 

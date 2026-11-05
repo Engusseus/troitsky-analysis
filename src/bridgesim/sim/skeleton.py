@@ -27,6 +27,7 @@ class Chain:
 
     pts: np.ndarray
     width: np.ndarray
+    spur: bool = False  # an arm added out to a glued part off the medial axis
 
     @property
     def length(self) -> float:
@@ -195,7 +196,7 @@ def resample(ch: Chain, h: float, bnd=None) -> Chain:
     else:
         s_old = np.r_[0, np.cumsum(np.linalg.norm(np.diff(ch.pts, axis=0), axis=1))]
         w = np.interp(s * s_old[-1] / max(L, 1e-9), s_old, ch.width)
-    return Chain(pts, w)
+    return Chain(pts, w, ch.spur)
 
 
 __all__ = ["Chain", "medial_chains", "resample"]

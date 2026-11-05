@@ -121,6 +121,14 @@ def _inputs(cad: str | Path, overrides, material, sim_params, ruleset, units=Non
             sp = sp.updated(sim_over)
         except KeyError as exc:
             raise ValueError(str(exc).strip("'\"")) from None
+    # the stick modulus, while it is a placeholder: the published craft-stick value
+    # (wood.E_placeholder_MPa), not the material file's round number
+    e_ph = sp.values.get("wood.E_placeholder_MPa", 0.0)
+    if e_ph and mat.E_MPa.source == "assumed":
+        mat = _material_with(mat, {"E_MPa": e_ph, "G_MPa": e_ph / 16}, {
+            "E_MPa": "placeholder for the crush: craft sticks measured at 7.1 GPa "
+                     "(Emergent Scientist 1, 3, 2017); measure yours",
+            "G_MPa": "E/16"}, source="assumed")
     mat_over = {k.split(".", 1)[1]: v for k, v in ov.params.items() if k.startswith("material.")}
     if mat_over:
         known = set(mat.props())
@@ -1633,6 +1641,8 @@ def _rows(f: Path) -> list[dict]:
 #: order a name is matched (the more specific first)
 COUPONS: dict[str, tuple[tuple[str, ...], set[str]]] = {
     "lap_slip": (("slip",), {"overlap_mm", "width_mm", "load_N", "slip_mm"}),
+    "short_beam": (("short_beam", "sbs", "interlaminar"),
+                   {"plies", "span_mm", "width_mm", "thickness_mm", "peak_load_N"}),
     "end_grain": (("end_grain", "endgrain", "end-grain", "butt"),
                   {"width_mm", "thickness_mm", "failure_load_N"}),
     "crush_across": (("crush_across", "across", "c90", "perpendicular"),
@@ -1737,6 +1747,16 @@ def _direct_coupons(d: Path, mat: Material, sp: SimParams, changes: dict, notes:
         log.append(f"glue.end_grain_factor = {params['glue.end_grain_factor']:.2f} from "
                    f"{len(ends)} end-to-end joints (their strength over the peel strength "
                    "of a face joint)")
+    # short-beam shear of a laminate (ASTM D2344): tau = 0.75 P / (b h) on its glue lines
+    sbs = [0.75 * _float(r, "peak_load_N") / (_float(r, "width_mm") * _float(r,
+                                                                              "thickness_mm"))
+           for r in _coupon_rows(d, "short_beam")
+           if _float(r, "peak_load_N") and _float(r, "width_mm") and _float(r, "thickness_mm")]
+    if sbs:
+        params["glue.interlaminar_MPa"] = float(np.mean(sbs))
+        log.append(f"glue.interlaminar_MPa = {params['glue.interlaminar_MPa']:.2f} from "
+                   f"{len(sbs)} short-beam shear tests (0.75 P / (b h); a UD laminate that "
+                   "splits in the wood next to its glue lines gives f_v)")
     ks, gs = [], []
     by_spec: dict[str, list] = {}
     for r in _coupon_rows(d, "lap_slip"):

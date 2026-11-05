@@ -404,43 +404,39 @@ LOAD_CELL_MM = 0.3  # time constant of the online load-cell filter, in jack trav
 
 
 def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
-                  hold: np.ndarray | None = None) -> np.ndarray:
+                  travel: np.ndarray | None = None) -> np.ndarray:
     """The load reported for a crush: the raw jack force smoothed by a centred Hann
-    window three load-cell time constants wide (0.9 mm of jack travel at full speed).
+    window 0.9 mm of jack travel wide (three online load-cell time constants at full
+    speed), along the jack travel: the load against travel, as a test record plots it.
     Centred, so it has no lag (the rising branch, the stiffness and F_u are where they
-    are), while it removes the stress waves ringing through the bridge as well as the
-    online filter that decides when the bridge is judged failed. ``hold``: 1 where the
-    jack was held, 0 where it moved; each stretch is smoothed on its own, so the load
-    of a moving jack never leaks into a hold (where it would show as a load rising at
-    constant travel) and the other way round."""
+    are), while it removes the stress waves ringing through the bridge. Along the
+    travel, a hold (the jack nearly still while something breaks) is one point of the
+    curve, weighted by the little travel it covers: the load can neither jump nor keep
+    rising at constant travel there. Without ``travel``: along time at full speed."""
     raw = np.asarray(raw, float)
     if len(raw) < 3:
         return raw.copy()
-    h = float(np.median(np.diff(t)))
-    width = 3 * LOAD_CELL_MM / max(speed_mm_s, 1e-9)
-    n = max(3, int(round(width / max(h, 1e-12))) | 1)
-    k = np.hanning(n + 2)[1:-1]
-    k /= k.sum()
-    if hold is None:
-        cuts = [0, len(raw)]
-    else:
-        hb = np.asarray(hold) > 0.5
-        cuts = [0] + [int(i) + 1 for i in np.where(hb[1:] != hb[:-1])[0]] + [len(raw)]
+    u = (np.asarray(travel, float) / max(speed_mm_s, 1e-9) if travel is not None
+         else np.asarray(t, float))  # the time the jack needs at full speed
+    u = np.maximum.accumulate(u)
+    W = 3 * LOAD_CELL_MM / max(speed_mm_s, 1e-9)
+    du = np.gradient(u)
+    du = np.maximum(du, 1e-6 * (float(np.median(du[du > 0])) if (du > 0).any() else 1.0))
+    # odd reflection at both ends: a load rising from the start (or still changing at
+    # the end) is not biased by a one-sided window there
+    m0 = int(np.searchsorted(u, u[0] + W / 2))
+    m1 = len(u) - int(np.searchsorted(u, u[-1] - W / 2))
+    m0, m1 = max(1, min(m0, len(u) - 1)), max(1, min(m1, len(u) - 1))
+    U = np.r_[2 * u[0] - u[m0:0:-1], u, 2 * u[-1] - u[-2:-m1 - 2:-1]]
+    F = np.r_[2 * raw[0] - raw[m0:0:-1], raw, 2 * raw[-1] - raw[-2:-m1 - 2:-1]]
+    D = np.r_[du[m0:0:-1], du, du[-2:-m1 - 2:-1]]
+    lo = np.searchsorted(U, u - W / 2)
+    hi = np.searchsorted(U, u + W / 2, side="right")
     out = np.empty_like(raw)
-    for a, b in zip(cuts[:-1], cuts[1:], strict=True):
-        x = raw[a:b]
-        m = min(n // 2, len(x) - 1)
-        if m < 1:
-            out[a:b] = x
-            continue
-        # the ends of the record: odd reflection (a load rising from the start is not
-        # biased); between a hold and a moving stretch: the window cut off there
-        lo = 2 * x[0] - x[m:0:-1] if a == 0 else np.zeros(m)
-        hi = 2 * x[-1] - x[-2:-m - 2:-1] if b == len(raw) else np.zeros(m)
-        w = np.r_[np.full(m, 1.0 if a == 0 else 0.0), np.ones(len(x)),
-                  np.full(m, 1.0 if b == len(raw) else 0.0)]
-        ext = np.r_[lo, x, hi]
-        out[a:b] = (np.convolve(ext, k, "same") / np.convolve(w, k, "same"))[m:m + len(x)]
+    for i in range(len(u)):
+        a, b = lo[i], hi[i]
+        k = 0.5 * (1 + np.cos(2 * np.pi * (U[a:b] - u[i]) / W)) * D[a:b]
+        out[i] = float(k @ F[a:b]) / max(float(k.sum()), 1e-300)
     return out
 
 
@@ -523,7 +519,9 @@ def run_crush(m: Model, opt: CrushOptions | None = None) -> CrushResult:
 def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResult:
     s = S.Settings(dt=1e-5, alpha=opt.alpha,
                    mu_platform=m.params.get("friction_platform", 0.35),
-                   mu_plate=m.params.get("friction_plate", 0.3))
+                   mu_plate=m.params.get("friction_plate", 0.3),
+                   k_jack=m.params.get("crusher_k_N_per_mm", 20000.0),
+                   k_jack_lat=m.params.get("crusher_k_lat_N_per_mm", 2000.0))
     if opt.progress:
         opt.progress(0.0, f"model: {m.n_nodes} nodes, {len(m.b_i)} beams, "
                           f"{len(m.s_nodes)} shells, {len(m.c_a)} glue points; estimating "
@@ -946,7 +944,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     if curve["t"] and not unstable:
         tt = np.asarray(curve["t"])
         fz = reported_load(tt, np.asarray(curve["force_raw"]), opt.speed_mm_s,
-                           np.asarray(curve["hold"]))
+                           np.asarray(curve["travel"]))
         curve["force_online"] = curve["force"]
         curve["force"] = [float(f) for f in fz]
         for e in events:

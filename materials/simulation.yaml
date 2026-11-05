@@ -12,12 +12,16 @@
 name: Troitsky crush simulation defaults (placeholder)
 
 wood:
+  E_placeholder_MPa: {value: 7100, source: assumed,
+                      note: "Stick modulus the crush uses while the material's E is a placeholder (source: assumed): the one published measurement on craft sticks, 7.1 +- 0.2 GPa (cantilever tests, Emergent Scientist 1, 3 (2017)); G is taken as E/16. A measured E (calibrate, or material.E_MPa in the overrides) replaces it; 0 keeps the material file's value."}
   E_T_MPa: {value: 500, source: assumed,
             note: "Modulus across the grain of one stick. Birch: about E_L/20."}
   nu_LT: {value: 0.35, source: assumed, note: "Major Poisson ratio of one ply."}
   f_t90_MPa: {value: 1.0, source: assumed,
               note: "Tension across the grain of a ply. Sticks laid side by side are barely joined edge to edge, so this is low."}
   f_c90_MPa: {value: 5.0, source: assumed, note: "Crushing across the grain."}
+  f_rolling_MPa: {value: 2.0, source: assumed,
+                  note: "Rolling shear: shear across the grain of a ply, which limits the glue line between crossed plies (0-90, +-45) in a laminated member or plate. Softwood about 1-1.5 MPa (EN 16351), birch plywood about 2."}
   G_f_N_per_mm: {value: 3.0, source: assumed,
                  note: "Fracture energy of a stick breaking in tension along the grain (sets how suddenly it snaps)."}
   G_f90_N_per_mm: {value: 0.3, source: assumed,
@@ -35,6 +39,8 @@ glue:
   K_n_N_per_mm3: {value: 150, source: assumed,
                   note: "Peel (normal) stiffness of a glue line plus the wood next to it, per mm^2 of glued area."}
   K_s_N_per_mm3: {value: 60, source: assumed, note: "Shear stiffness of the glue line per mm^2."}
+  interlaminar_MPa: {value: 6.0, source: assumed,
+                     note: "Shear strength of the glue line between the plies of a laminated member or plate (pressed while it cured, long and continuous), as opposed to tau_g, the average over a hand-made lap joint between parts. PVA bond lines in pressed wood laminates fail in the wood next to them, so about f_v. A member's plies split at the lower of this and what each ply takes at its grain angle (f_v along the grain, wood.f_rolling_MPa across). Measure it with short-beam shear tests of a 3-5 ply laminate (validation/physical/short_beam_shear_template.csv)."}
   peel_to_shear: {value: 0.5, source: assumed,
                   note: "Peel strength / shear strength of a white-glue joint (peel is weaker)."}
   G_Ic_N_per_mm: {value: 0.25, source: assumed, note: "Fracture energy, opening (peel)."}
@@ -65,6 +71,10 @@ crusher:
   plate_mass_kg: {value: 4.2, source: assumed,
                   note: "Mass of the loading plates resting on the deck: two 200 x 90 x 15 mm steel plates (Appendix B: 'each is 1.5 cm thick'), 2 x 2.1 kg. Weigh them if you can."}
   jack_diameter_mm: {value: 40, source: assumed, note: "Lower jack rod (Appendix B: 4.0 cm)."}
+  stiffness_N_per_mm: {value: 20000, source: assumed,
+                       note: "Axial stiffness of the crusher and its load cell between the jack and the frame (it is in the jack-stroke curve, not in the deck deflection). Measure: the jack stroke against the load on a steel block."}
+  lateral_N_per_mm: {value: 2000, source: assumed,
+                     note: "Sideways stiffness of the jack rod and its hemisphere at the loading plate (how much it holds the plate from sliding along the deck)."}
   frame_clear_width_mm: {value: 1370, source: assumed, note: "Between the press uprights (Appendix B: 137 cm)."}
   test_rate_mm_per_min: {value: 10, source: assumed,
                          note: "Real jack speed at the competition, used only to replay the simulation in real time."}
@@ -76,6 +86,8 @@ scatter:
   bow_L_over: {value: 400, source: assumed,
                note: "Typical initial bow of a member, as span/bow (L/400). Measure the crookedness of your built members."}
   placement_mm: {value: 3.0, source: assumed, note: "How far off-centre the plate may be placed (each way)."}
+  glue_bridge_cov: {value: 0.15, source: assumed,
+                    note: "Coefficient of variation of the workmanship of a whole build: one factor on every glue joint of the bridge (glue batch, curing, the builders' hands), on top of the joint-to-joint glue_cov, so repeat builds differ by more than independent joints would make them. From the scatter of whole-bridge or sub-assembly tests."}
   lean_rad: {value: 0.005, source: assumed,
              note: "How far the built bridge leans out of its plane (sway): each seed leans it by up to this angle, either way, the height times the angle at every point (EN 1995-1-1 5.4.4: 0.005 rad). Measure how far the top of your built bridge stands off the vertical."}
   support_level_mm: {value: 0.5, source: assumed,

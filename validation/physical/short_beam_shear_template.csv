@@ -1,0 +1,2 @@
+specimen,plies,span_mm,width_mm,thickness_mm,peak_load_N,cure_hours,notes
+S01,4,12,10.0,8.0,,24,example row: a stack of UD sticks glued face to face (as your laminated members are made) on a span of 4-5 x its thickness; the load at which it splits along a glue line (short-beam shear: tau = 0.75 P / (b h))

@@ -299,7 +299,7 @@ the two, which shows whether the X is worth its mass.
 
 Stated plainly:
 
-* **Placeholder materials.** E = 10 GPa, f_t = 40, f_c = 30, f_b = 50, f_v = 6 MPa, glue
+* **Placeholder materials.** E = 10 GPa (7.1 GPa in the crush, the published craft-stick value), f_t = 40, f_c = 30, f_b = 50, f_v = 6 MPa, glue
   τ = 2 MPa: textbook-order guesses, **not data**. Popsicle sticks vary a lot between brands
   and batches.
 * **Linear, first-failure.** No P-Δ, no imperfections, no joint slip, no load

@@ -22,6 +22,10 @@ from bridgesim.sim.shell import dkt_B
 ROOT = Path(__file__).resolve().parents[1]
 MAT = Material.from_yaml(ROOT / "materials" / "popsicle_birch.yaml")
 SP = SimParams.load()
+# the stick modulus the crush and the screen use: the craft-stick placeholder while the
+# material's E is assumed (study._inputs)
+E_SIM = SP["wood.E_placeholder_MPa"] if MAT.E_MPa.source == "assumed" else MAT.E_MPa.value
+G_SIM = E_SIM / 16 if MAT.E_MPa.source == "assumed" else MAT.G_MPa.value
 
 
 # ------------------------------------------------------------------ materials
@@ -524,10 +528,14 @@ def test_bridge_calibration_recovers_known_factors(tmp_path):
     write_stl([box("Pier L", (-550, 0, -40), (-540, 150, 40)),
                box("Pier R", (540, 0, -40), (550, 150, 40)),
                box("Beam", (-550, 150, -25), (550, 179.4, 25))], tmp_path / "beam.stl")
+    # the 10 GPa of the material file (the craft-stick placeholder off): at 7.1 GPa x 0.8
+    # this beam reaches the 50 mm deflection limit about when it breaks, and a fit of
+    # the strength would have nothing to go by
     ov = {"bodies": {"Pier*": {"kind": "block"},
-                     "Beam": {"layup": "14-ply UD", "butt_stagger_mm": 0}}}
+                     "Beam": {"layup": "14-ply UD", "butt_stagger_mm": 0}},
+          "params": {"wood.E_placeholder_MPa": 0}}
     true = json.loads(json.dumps(ov))
-    true["params"] = {k: v * 0.8 for k, v in (
+    true["params"] = {"wood.E_placeholder_MPa": 0} | {k: v * 0.8 for k, v in (
         ("material.E_MPa", MAT.E_MPa.value), ("material.G_MPa", MAT.G_MPa.value),
         ("wood.E_T_MPa", SP["wood.E_T_MPa"]), ("glue.K_n_N_per_mm3", SP["glue.K_n_N_per_mm3"]),
         ("glue.K_s_N_per_mm3", SP["glue.K_s_N_per_mm3"]))}
@@ -1005,7 +1013,7 @@ def test_simply_supported_beam_matches_beam_theory(tmp_path):
     i = int(np.argmax(L >= 0.999 * rep.Fu_kgf))
     sel = (L[:i] > 0.1 * rep.Fu_kgf) & (L[:i] < 0.5 * rep.Fu_kgf)
     k_sim = np.polyfit(D[:i][sel], L[:i][sel], 1)[0]
-    E, I, Ls = MAT.E_MPa.value, 50 * T**3 / 12, 1090.0  # supports at the pier centres
+    E, I, Ls = E_SIM, 50 * T**3 / 12, 1090.0  # supports at the pier centres
     a = Ls / 2 - 100
     x = np.linspace(-100, 100, 201) + Ls / 2  # deflection averaged under the plate
 
@@ -1018,7 +1026,7 @@ def test_simply_supported_beam_matches_beam_theory(tmp_path):
                             / (6 * E * I * Ls))
         return out
 
-    shear = 0.5 * a / (5 / 6 * MAT.G_MPa.value * 50 * T)  # Timoshenko: constant under the plate
+    shear = 0.5 * a / (5 / 6 * G_SIM * 50 * T)  # Timoshenko: constant under the plate
     k_theory = 1 / (defl(x).mean() + shear) / 9.80665
     assert k_sim == pytest.approx(k_theory, rel=0.05)
     mor = rep.Fu_kgf * 9.80665 * 0.5 * a / (50 * T**2 / 6)
@@ -1489,11 +1497,11 @@ def test_linear_screen_matches_beam_theory(tmp_path):
     ov = {"bodies": {n: ({"layup": "14-ply UD", "butt_stagger_mm": 0} if k == "bar"
                          else {"kind": "block"}) for n, k in kinds.items()}}
     rep = study.screen(cad, overrides=ov)
-    E, I, Ls, S = MAT.E_MPa.value, 50 * T**3 / 12, 1090.0, 50 * T**2 / 6
+    E, I, Ls, S = E_SIM, 50 * T**3 / 12, 1090.0, 50 * T**2 / 6
     a = Ls / 2 - 100  # the plate's edges, 100 mm either side of mid-span
     # deflection under each of two loads P/2 at a and Ls - a (unit P), plus shear
     d = 0.5 * a**2 * (3 * Ls - 4 * a) / (6 * E * I) * 2 / 2 \
-        + 0.5 * a / (5 / 6 * MAT.G_MPa.value * 50 * T)
+        + 0.5 * a / (5 / 6 * G_SIM * 50 * T)
     assert rep.stiffness_kgf_per_mm == pytest.approx(1 / d / 9.80665, rel=0.03)
     lim = {lm.mode: lm.load_kgf for lm in rep.limits}
     for mode, f in (("compression", MAT.f_c_MPa.value), ("tension", MAT.f_t_MPa.value)):
@@ -1509,6 +1517,21 @@ def test_linear_screen_matches_beam_theory(tmp_path):
     assert r.exit_code == 0, r.stderr
     out = json.loads(r.stdout)
     assert out["kind"] == "screen" and len(out["limits"]) == 3
+
+
+def test_interlaminar_strength_follows_the_plies():
+    """The glue lines between plies split at the bond line's strength or at what the
+    weakest ply takes there: f_v along its grain (a UD stack), the rolling shear across
+    it (0-90), in between at an angle (+-45, a quadratic interaction)."""
+    from bridgesim.sim.idealize import interlaminar_strength
+
+    fv, fr = 6.0, 2.0
+    assert interlaminar_strength([0, 0, 0], fv, fr, 10.0) == pytest.approx(6.0)
+    assert interlaminar_strength([0, 0, 0], fv, fr, 4.0) == pytest.approx(4.0)  # the bond
+    assert interlaminar_strength([0, 90], fv, fr, 10.0) == pytest.approx(2.0)
+    a45 = interlaminar_strength([45, -45], fv, fr, 10.0)
+    assert a45 == pytest.approx(1 / math.hypot(math.sqrt(0.5) / fv, math.sqrt(0.5) / fr))
+    assert fr < a45 < fv
 
 
 def test_frame_plate_bends_like_a_beam(tmp_path):
@@ -1529,7 +1552,7 @@ def test_frame_plate_bends_like_a_beam(tmp_path):
                box("Strip", (-550, 150, -T / 2), (550, 150 + H, T / 2))], cad)
     names = {b.name: b.kind for b in study.inspect(cad).bodies}
     strip = next(n for n, k in names.items() if k == "frame")  # found without asking
-    E, G, I = MAT.E_MPa.value, MAT.G_MPa.value, T * H**3 / 12
+    E, G, I = E_SIM, G_SIM, T * H**3 / 12
     Ls = 1090.0
     a = Ls / 2 - 100  # the plate bears at its two edges
     d = 0.5 * a**2 * (3 * Ls - 4 * a) / (6 * E * I) + 0.5 * a / (5 / 6 * G * T * H)
@@ -1691,18 +1714,24 @@ def test_reported_load_has_no_lag():
     assert (true[rise] - on[rise]).mean() > 0.05 * 2000  # the online reading lags
     i = int(np.argmax(rep))
     assert rep[i] == pytest.approx(2000.0, rel=0.02) and abs(x[i] - 5.0) < 0.5
-    # a hold (the jack at 2 % speed for 30 ms): smoothed apart from the moving stretches,
-    # the load does not keep rising at constant travel (only as the jack creeps on)
-    v2 = np.where((t > 0.03) & (t < 0.05), 0.02 * v, v)
+    # holds (the jack slowed to 2 % for 20 ms, the speed ramping over 2 ms): smoothed
+    # along the jack travel, the load neither keeps rising at constant travel (beyond
+    # the jack's creep) nor jumps; smoothed along time it would catch up in the hold
+    th = np.clip(np.minimum(t - 0.03, 0.05 - t) / 0.002, 0, 1)  # 0 -> 1 into the hold
+    v2 = v * (1 - 0.98 * th)
     x2 = np.cumsum(v2) * np.r_[0, np.diff(t)]
     raw2 = 400.0 * x2 + 25.0 * np.sin(2 * np.pi * 270 * t)  # ringing ~2 % (Bridge_v6)
-    hold = ((t > 0.03) & (t < 0.05)).astype(float)
-    sel = hold > 0
+    sel = th > 0.99
     creep = (400 * x2[sel].max() - 400 * x2[sel][0]) / (400 * x2[sel][0])
-    for h_, worst in ((None, 0.03), (hold, 0.005)):
-        r2 = reported_load(t, raw2, v, h_)
-        rise = (r2[sel].max() - r2[sel][0]) / r2[sel][0] - creep
-        assert (rise > worst) if h_ is None else (rise < worst), rise
+    rt = reported_load(t, raw2, v)
+    assert (rt[sel].max() - rt[sel][0]) / rt[sel][0] - creep > 0.01  # time: catches up
+    r2 = reported_load(t, raw2, v, x2)
+    assert (r2[sel].max() - r2[sel][0]) / r2[sel][0] - creep < 0.003
+    k = 400.0  # N/mm: no jump larger than the stiffness x 0.01 mm + 1 % within 0.01 mm
+    for i in np.where(x2 > 0.5)[0]:
+        j = np.searchsorted(x2, x2[i] + 0.01)
+        if j < len(x2):
+            assert abs(r2[j] - r2[i]) <= k * 0.01 + 0.01 * r2[i] + 1e-6
 
 
 def test_governing_is_the_break_that_started_the_fall():
@@ -1843,3 +1872,17 @@ def test_coupon_files_are_found_by_name_or_columns(tmp_path):
     assert [f.name for f in found["glue_joint"]] == ["laps.csv"]
     assert any("pulls.csv" in w and "tension" in w for w in warn)
     assert any("notes.csv" in w for w in warn) and not any("bridge.csv" in w for w in warn)
+    # a short-beam shear file, found by its columns, sets the interlaminar strength
+    import shutil
+
+    from bridgesim.sim.study import calibrate
+
+    sb = tmp_path / "sbs"
+    sb.mkdir()
+    (sb / "laminate_tests.csv").write_text(
+        "specimen,plies,span_mm,width_mm,thickness_mm,peak_load_N\n"
+        "S1,4,40,10,8,640\nS2,4,40,10,8,600\n")
+    assert [f.name for f in coupon_files(sb)[0]["short_beam"]] == ["laminate_tests.csv"]
+    _, _, params = calibrate(sb)
+    assert params["glue.interlaminar_MPa"] == pytest.approx(0.75 * 620 / 80)
+    shutil.rmtree(sb)

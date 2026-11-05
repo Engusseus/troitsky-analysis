@@ -99,6 +99,7 @@ PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("scatter.placement_mm", 0.0, 50.0, True),
     ("scatter.support_level_mm", 0.0, 20.0, True),
     ("scatter.lean_rad", 0.0, 0.1, True),
+    ("wood.E_placeholder_MPa", 0.0, 1e6, True),
     ("*", 0.0, float("inf"), False),  # moduli, strengths, energies, sizes: positive
 ]
 
