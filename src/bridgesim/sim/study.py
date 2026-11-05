@@ -1971,9 +1971,11 @@ def _screening(fidelity: str) -> CrushOptions:
 def _mc_one(a):
     cad, overrides, material, sim_params, ruleset, seed, options, fidelity, out, units, \
         up, span = a
-    rep, _ = crush(cad, overrides, material, sim_params, ruleset, seed=seed,
-                   options=options or _screening(fidelity), replay=False,
-                   fidelity=fidelity, out_dir=out, units=units, up=up, span=span)
+    rep = _finished(out, cad, seed, fidelity, overrides)
+    if rep is None:
+        rep, _ = crush(cad, overrides, material, sim_params, ruleset, seed=seed,
+                       options=options or _screening(fidelity), replay=False,
+                       fidelity=fidelity, out_dir=out, units=units, up=up, span=span)
     major = next((e for e in rep.failures if e.kind != "joint_cracking"), None)
     where = f"{e_kind(major)}: {major.what}" if major else rep.failure_mode
     strict = rep.Fu_first_joint_failure_kgf
@@ -1987,6 +1989,24 @@ def _mc_one(a):
             "Fu_strict_kgf": min(strict, rep.Fu_kgf) if strict else rep.Fu_kgf,
             "trustworthy": rep.quality.trustworthy, "mass_kg": rep.mass_kg,
             "efficiency_kgf_per_kg": rep.efficiency_kgf_per_kg}
+
+
+def _finished(out, cad, seed, fidelity, overrides) -> CrushReport | None:
+    """The report a run of the same study left in ``out`` (same file, seed, fidelity and
+    overrides), so an interrupted montecarlo resumes instead of starting over."""
+    f = Path(out) / "crush.json" if out else None
+    if f is None or not f.exists():
+        return None
+    try:
+        rep = CrushReport.model_validate_json(f.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - a partial or old file: run again
+        return None
+    same = (rep.file == Path(cad).name and rep.seed == seed and rep.fidelity == fidelity
+            and rep.sha256 == _sha(Path(cad))
+            and json.dumps(rep.overrides or {}, sort_keys=True)
+            == json.dumps(overrides if isinstance(overrides, dict) else rep.overrides or {},
+                          sort_keys=True))
+    return rep if same else None
 
 
 def _rising_secant(rep: CrushReport, jack: bool) -> float:

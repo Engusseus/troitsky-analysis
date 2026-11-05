@@ -759,6 +759,11 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     recent: list[tuple[float, float]] = []  # (t, load) over the last half settle window
     major = ("joint_cracking", "joint_failure", "plate_crack", "member_fracture",
              "member_shear", "floss_break", "member_erosion")
+    # the jack travel over which the bridge beds in: its bearing faces seating and the
+    # support corner that stood off the platform coming down (0.2 mm margin)
+    lift = np.asarray(m.params.get("p_lift", np.zeros(0)), float)
+    bedding_mm = float(m.params.get("seating_mm", 0.3)) + \
+        (float(lift.max()) if lift.size else 0.0) + 0.2
     test_rate = max(float(m.params.get("test_rate_mm_per_min", 10.0)), 1e-6) / 60.0  # mm/s
     while not unstable:
         tl = st.t - t_load0
@@ -934,7 +939,11 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                                                   "what": hit[0].what}
             # judged failed: a clear load drop after the peak, or a criterion
             if fail_at is None:
-                dropped = peak > 50 and force < opt.drop_ratio * peak and travel > peak_travel
+                # not while the bridge beds in (seating on its supports, rocking onto the
+                # corner that stood off the platform): a dip of the load there is no
+                # moment of failure
+                dropped = peak > 50 and force < opt.drop_ratio * peak and \
+                    travel > peak_travel and travel > bedding_mm
                 if dropped:
                     fail_at, fail_mode = travel, "collapse"
                     fail_detail = (f"load fell from {peak / KGF:.1f} to {force / KGF:.1f} "
