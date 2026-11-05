@@ -215,15 +215,16 @@ every mesh, its random values being keyed on the CAD, not the mesh):
   one at ~2270: imperfections and scatter cost ~10 %.
 * Every run passed the quasi-static check (kinetic / external work < 0.1) with < 0.3 %
   added mass.
-* **Time compression** (`crush --fidelity standard --seed 0 --rate-check`): F_u 2279 kgf
-  at 100 mm/s, 2243 kgf at 50 mm/s (-1.6 %); extrapolated to a jack at rest 2206 kgf.
+* **Time compression** (`crush --fidelity standard --seed 0 --rate-check`, x0.75): F_u
+  2197 kgf at 100 mm/s, 2182 kgf at 50 mm/s (-0.7 %); extrapolated to a jack at rest
+  2168 kgf. (On the x1 mesh: 2279 and 2243 kgf, -1.6 %.)
 * **The load curve**: along the jack travel, no step: the largest change within 0.01 mm
   of travel before the failure call is within the bridge's stiffness x 0.01 mm + 1 %.
   It bends over before the peak: the secant stiffness from 50 to 90 % of the peak is
   14 % below that from 10 to 50 % (quick, seed 0: 376 and 439 kgf/mm).
 * **Stick modulus**: with the material file's 10 GPa instead of the 7.1 GPa crush
-  placeholder (the published craft-stick value), standard seed 0 gives F_u 2161 kgf
-  (-5.2 %) and a deflection at F_u of 3.91 mm instead of 5.67: the strength is set by
+  placeholder (the published craft-stick value), standard seed 0 gives F_u 2202 kgf
+  (+0.2 %) and a deflection at F_u of 4.17 mm instead of 5.54: the strength is set by
   the joints and the splits, the deflection by E.
 * **What limits the bridge** (`diagnose -n 2 --fidelity quick --candidates 3`, seeds 1
   and 2): strengthening the End Post joints to their T1 covers (glue x1.5) raises F_u by
