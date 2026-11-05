@@ -62,9 +62,10 @@ and white glue (validation, which needs physical tests).
   `quality.rate_check` reports the change of F_u (Bridge_v6, standard fidelity: see
   below). More than 5 % makes the result untrustworthy.
 * **Mesh**: `validation/convergence_study.py BRIDGE.SLDPRT` crushes the bridge with the
-  quick, standard and fine meshes (element size x1.6, x1, x0.75), all at 100 mm/s, for
-  seeds 0, 1 and 2, and prints F_u and the first failure of each. Results for Bridge_v6
-  are in 3.4.
+  quick, standard and fine meshes (element size x1.6, x1, x0.75; `--scales` for others),
+  all at 100 mm/s, for seeds 0, 1 and 2, and prints F_u and the first failure of each;
+  `--amplitude 0.1` scales the imperfections down for a nearly perfect bridge. Results
+  for Bridge_v6 are in 3.4.
 
 ### 3.3 Validation plan (needs your tests)
 
@@ -99,39 +100,46 @@ loads are not out of scale.
 ### 3.4 Bridge_v6: mesh convergence and time compression
 
 `validation/convergence_study.py examples/cad/Bridge_v6.SLDPRT` (a real team design, 100
-bodies, 7.15 kg; placeholder materials), every mesh at a jack speed of 100 mm/s.
+bodies, 7.15 kg; placeholder materials), every mesh at a jack speed of 100 mm/s. Round 13:
+a frame's plies keep the sheet's axis, torsion loads each family of planes by its own
+shear, wood bends over before it crushes, correlated scatter. The one `important`
+question, the cross-beam under the plate ("Body 21531"), the designer answered: a
+laminated block of sticks, 31-ply UD, which is the model these runs used (identical,
+array for array, with and without the answer).
 
-**The perfect bridge** (`--seeds -1`: no imperfections, no scatter, so a change between
-meshes is discretisation alone):
+**A nearly perfect bridge** (`--seeds 0 --amplitude 0.1`: every imperfection and scatter
+of seed 0 at a tenth). A perfect bridge is symmetric, near and far, left and right:
+which of its identical sides gives way first is a bifurcation that round-off decides,
+so a different mesh also breaks the symmetry at a different moment. A tenth of the
+imperfections lets the seed pick the side at every mesh, the bridge still nearly
+perfect:
 
-| element size | x2 | x1 (standard) | x0.75 (fine) |
-|---|---|---|---|
-| F_u (kgf) | 2079 | 2512 | 2272 |
-| deflection at F_u (mm) | 6.3 | 9.7 | 5.7 |
-| what governs the collapse | hub cheek crushing | outer hub tie strap breaks (far side) | Hub Core arm breaks (near side) |
+| element size | x2 | x1 (standard) | x0.75 (fine) | x0.5 |
+|---|---|---|---|---|
+| F_u (kgf) | 2063 | 2362 | 2270 | 2403 |
+| deflection at F_u (mm) | 5.5 | 5.7 | 5.7 | 6.2 |
+| first joint to separate (kgf) | 956 | 725 | 776 | 724 |
+| what governs the collapse | inner hub tie strap splits | Hub Core splits (far) | outer hub tie strap breaks | Hub Core splits (near) |
 
-Round 12 (the stick modulus 7.1 GPa, interlaminar strength by ply angle, the Hub Core a
-frame, ply splits judged over a section depth). The perfect bridge is symmetric, near
-and far, left and right: which of its identical sides gives way first is a bifurcation
-that round-off decides, and here the standard mesh lets the far hub go, the fine mesh
-the near one, 10 % lower. (Up to the hub the two sequences match: the first joint to
-let go, the hub tie strap's lap to the hub spreader, at 706 and 770 kgf; the deck
-stringers' joints to the cross-beam at 1083 and 1163 kgf.) Round 11 found 2300 / 2411 /
-2419 kgf, round 10 2703 / 2640 / 2674; with which side goes first left to chance, the
-perfect bridge does not measure the mesh error. The seeds below do: their imperfections
-pick the side, the same at every mesh. The bridge is judged failed when the load falls
-30 % below its peak (§12.5's "moment of failure").
+The perfect bridge itself (`--seeds -1`) gives 2351 and 2257 kgf at x1 and x0.75,
+within 0.6 % of these. (Round 12's perfect bridge, 2079 / 2512 / 2272 kgf at x2 / x1 /
+x0.75, swung by +21 % and -10 %.) From x1 down, F_u stays within +-3 % of the mean of
+the three (2345 kgf) with no trend: the fine mesh lowest, x0.5 highest. The load curves
+of x1, x0.75 and x0.5 lie on top of each other up to 90 % of the peak (1951 kgf at 5.5
+mm of jack travel on all three); they part only in which hub part gives way first and
+when. The hub is where it fails at every mesh but x2.
 
-Below x0.75 the plates left as shells get elements smaller than they are thick, and
-crack onset at a stress concentration becomes local. That is the known limit of a
-**local** damage model: the crack band makes the *energy* of a crack independent of the
-mesh, not *where and when it starts* at a sharp stress raiser, whose resolved peak grows
-as the elements shrink. The same holds in LS-DYNA's MAT_054 or Ansys' progressive damage:
-the element size is tied to the material's scale and not refined below it. bridgesim's
-finest fidelity is therefore x0.75, where every plate element is still larger than the
-plate is thick (round 9: F_u -9 % at x0.5). For the members, ply splits are judged on the
-shear averaged over a section depth along the member (ASSUMPTIONS-SIM.md section 4), so
-they do not start earlier on a finer mesh.
+**x0.5 and local crack onset.** A plate left as a shell cracks where its strain first
+reaches the strength in one element: the crack band makes the *energy* of a crack
+independent of the mesh, not *when it starts* at a sharp stress raiser, whose resolved
+peak grows as elements shrink (the known limit of a local damage model, as in LS-DYNA's
+MAT_054 or Ansys' progressive damage). Until round 12 this showed at x0.5 (round 9: F_u
+-9 %), and fine (x0.75) was the finest fidelity. Since the narrow plates are frames
+(round 11) the stress raisers that mattered are no longer resolved by shells, and x0.5
+stays in the same band as x1 and x0.75 (above and below). (A first x0.5 run gave 2088
+kgf, -8 %: frames then merged every node within 0.3 x the arm width, so at x0.5 the hub
+plates' frames lost most of their elements. Fixed in round 13; the quick, standard and
+fine models are unchanged by the fix, `test_a_fine_frame_keeps_its_elements`.)
 
 A nonlocal (process-zone) crack onset was tried: on a plate pulled through a third of
 its end (`lab.shell_strip_tension(h, L=40, W=30, angles=(90,), weak=1, grip=1/3)`), the
@@ -157,77 +165,82 @@ every mesh, its random values being keyed on the CAD, not the mesh):
 
 | mesh (element size) | F_u by seed 0 / 1 / 2 (kgf) | mean | spread |
 |---|---|---|---|
-| quick (x1.6) | 2031 / 1903 / 1739 | 1891 | 292 |
-| standard (x1.0) | 2218 / 2162 / 1860 | 2080 | 358 |
-| fine (x0.75) | 2199 / 2095 / 1813 | 2036 | 386 |
+| quick (x1.6) | 2038 / 1973 / 1679 | 1897 | 359 |
+| standard (x1.0) | 2279 / 2311 / 1851 | 2147 | 460 |
+| fine (x0.75) | 2197 / 2131 / 1823 | 2050 | 375 |
+| x0.5 | 2189 / (running) / - | | |
 
 | mesh | seed | F_u (kgf) | deflection at F_u (mm) | what governs the collapse | `competing` |
 |---|---|---|---|---|---|
-| quick | 0 | 2031 | 6.07 | member shear: Hub Tie Strap In - Far | 8 |
-| quick | 1 | 1903 | 4.52 | joint failure: cross-beam \| Deck Stringer - L Far | 8 |
-| quick | 2 | 1739 | 4.63 | joint failure: End Post - L Near \| T1 Cover - L Near | 8 |
-| standard | 0 | 2218 | 5.49 | member shear: Top Rail Plate - R Near | 3 |
-| standard | 1 | 2162 | 5.11 | member shear: cross-beam | 1 |
-| standard | 2 | 1860 | 4.61 | joint failure: End Post - L Near \| T1 Cover - L Near | 2 |
-| fine | 0 | 2199 | 5.60 | joint failure: End Post - L Near \| T1 Cover - L Near | 8 |
-| fine | 1 | 2095 | 5.02 | member shear: Hub Core - Far | 3 |
-| fine | 2 | 1813 | 4.54 | joint failure: Hub Cheek - Far \| Deck Rib Hub - L | 6 |
+| quick | 0 | 2038 | 6.07 | joint failure: End Post - L Near \| T1 Cover - L Near | 8 |
+| quick | 1 | 1973 | 4.65 | member crushing: Hub Cheek - Far | 8 |
+| quick | 2 | 1679 | 4.36 | joint failure: End Post - L Near \| T1 Cover - L Near | 4 |
+| standard | 0 | 2279 | 5.67 | joint failure: End Post - L Near \| T1 Cover - L Near | 6 |
+| standard | 1 | 2311 | 5.55 | member fracture: Hub Core - Far | 8 |
+| standard | 2 | 1851 | 4.49 | joint failure: End Post - L Near \| T1 Cover - L Near | 3 |
+| fine | 0 | 2197 | 5.54 | member shear: Hub Core - Near | 7 |
+| fine | 1 | 2131 | 5.26 | member shear: Hub Core - Far | 2 |
+| fine | 2 | 1823 | 4.49 | joint failure: End Post - L Near \| T1 Cover - L Near | 1 |
+| x0.5 | 0 | 2189 | 5.42 | member shear: Top Rail Plate - R Far | 0 |
+(`competing`: the other parts that broke within 10 % of F_u.)
 
-(The cross-beam is the body named "Body 21531", the 221 x 88 x 63 mm piece under the
-plate, a deep member. `competing`: the other parts that broke within 10 % of F_u.)
-
-* **Per seed**, the standard mesh is within 3.2 % of the fine one (+0.8 %, +3.2 %,
-  +2.6 %), the means within 2.2 % (2080 and 2036 kgf); the quick mesh is 4-9 % lower
-  (it is for ranking designs on the same mesh). All three rank the seeds alike. (Before
-  the splits were judged over a section depth, standard was up to 8.8 % off the fine
-  mesh, seed 1.)
+* **Per seed**, F_u on the standard, fine and x0.5 meshes lies within a band of a few %
+  with no trend toward a lower value: standard is +3.7 %, +8.5 %, +1.5 % against fine,
+  and x0.5 -0.4 % (seed 0). The band is that of failure sites competing within a few %
+  (the End Post joints to their T1 covers, the Hub Core, the top rail plates):
+  which one the mesh tips first moves F_u by up to ~8 %. The quick mesh is 7-8 % lower
+  than fine on every seed (it is for ranking designs on the same mesh). All four rank
+  the seeds alike.
+* **Where it fails**: seed 2 at the End Post joint on all three meshes; seed 1 in the
+  Hub Core at standard and fine; seed 0 at the End Post joint (quick, standard), the
+  Hub Core (fine) or a top rail plate (x0.5). `diagnose` (below) measures which of them
+  the load depends on; design decisions go through it and `ab`, not one run's label.
 * **The strict reading** (`Fu_first_joint_failure_kgf`, the first joint to separate):
-  546 / 565 / 405 kgf at standard, 597 / 730 / 444 at fine, 849 / 921 / 794 at quick:
-  read it at standard or fine, and as an order of magnitude.
-* **Where it fails**: several parts break within a few % of F_u (`competing`), and
-  which one starts the collapse changes with the mesh: on seed 2 standard and quick name
-  the End Post joint to its T1 Cover, which fine names on seed 0. F_u does not depend
-  on which goes first (per seed within 3.2 %); design decisions go through `diagnose`
-  and `ab`, not one run's label.
-* The spread between seeds (~360 kgf, ~17 %) comes from the imperfections (bows, the
-  lean, out-of-level supports, plate placement) and the scatter, now with a bridge-wide
-  glue factor (15 %) on top of the joint-to-joint one: repeat builds of one design differ
-  by about that much. Give F_u as the `montecarlo` range and judge design changes with
-  `ab` over several seeds.
-* The imperfect bridge fails at ~2080 kgf, the perfect one at ~2270-2510: imperfections
-  and scatter cost ~10-15 %.
-* Every run passed the quasi-static check (kinetic / external work < 0.1) with < 1 %
+  572 / 582 / 428 kgf at standard, 615 / 718 / 466 at fine, 579 at x0.5 (seed 0), 826 /
+  887 / 779 at quick (the inner hub tie straps' laps to the hub spreader, which the
+  coarse quick frames load less): read it at standard or finer, as an order of magnitude.
+* The spread between seeds (~460 kgf, ~21 % at standard) comes from the imperfections
+  (bows, the lean, out-of-level supports, plate placement) and the scatter, with a
+  bridge-wide glue factor (15 %) on top of the joint-to-joint one: repeat builds of one
+  design differ by about that much. Give F_u as the `montecarlo` range and judge design
+  changes with `ab` over several seeds.
+* The imperfect bridge fails at ~2150 kgf (standard, mean of 3 seeds), the nearly
+  perfect one at ~2350: imperfections and scatter cost ~8 %.
+* Every run passed the quasi-static check (kinetic / external work < 0.1) with < 0.3 %
   added mass.
-* **Time compression** (`crush --fidelity standard --seed 0 --rate-check`): F_u 2218 kgf
-  at 100 mm/s, 2217 kgf at 50 mm/s (-0.06 %); extrapolated to a jack at rest 2215 kgf.
+* **Time compression** (`crush --fidelity standard --seed 0 --rate-check`): F_u 2279 kgf
+  at 100 mm/s, 2243 kgf at 50 mm/s (-1.6 %); extrapolated to a jack at rest 2206 kgf.
 * **The load curve**: along the jack travel, no step: the largest change within 0.01 mm
   of travel before the failure call is within the bridge's stiffness x 0.01 mm + 1 %.
+  It bends over before the peak: the secant stiffness from 50 to 90 % of the peak is
+  14 % below that from 10 to 50 % (quick, seed 0: 376 and 439 kgf/mm).
 * **Stick modulus**: with the material file's 10 GPa instead of the 7.1 GPa crush
-  placeholder (the published craft-stick value), standard seed 0 gives F_u 2243 kgf
-  (+1.1 %) and a deflection at F_u of 4.17 mm instead of 5.49: the strength is set by the
-  joints and the splits, the deflection by E.
+  placeholder (the published craft-stick value), standard seed 0 gives F_u 2161 kgf
+  (-5.2 %) and a deflection at F_u of 3.91 mm instead of 5.67: the strength is set by
+  the joints and the splits, the deflection by E.
 * **What limits the bridge** (`diagnose -n 2 --fidelity quick --candidates 3`, seeds 1
-  and 2): strengthening the hub covers (section x1.25) raises F_u by 5.1 % (+3.4 % and
-  +6.7 %, both seeds), the hub cheeks by 4.9 % (+11.5 %, -1.7 %), the top rail plates by
-  2.4 %.
+  and 2): strengthening the End Post joints to their T1 covers (glue x1.5) raises F_u by
+  5.1 % (0.0 % and +10.2 %); the joints of the top rail plates to the T-nodes and the
+  T1 gussets, by -1.4 % and -1.9 % (the failure moves to the hub).
 * **Design loop**: the `strengthen` what-if of a quick crush of Bridge_v6 (seed 0: the
-  hub covers x1.25 in section, the inner hub tie straps' laps to the hub spreader x1.5
-  glue, on every copy), tested with `ab -n 3 --fidelity quick`: F_u +4.0 % (+9.6 %,
-  -0.5 %, +2.8 %), 90 % interval -4.7 % to +12.6 %: not proven with 3 seeds; the failure
-  moved on 2 of 3 seeds (`failure_moved`).
+  inner hub tie straps, hub cheeks and hub covers x1.25 in section, on every copy),
+  tested with `ab -n 3 --fidelity quick`: F_u +7.0 % (+12.5 %, +0.1 %, +8.2 %), 90 %
+  interval -3.6 % to +17.5 %: not proven with 3 seeds; the failure moved to the T-nodes
+  on 2 of 3 seeds (`failure_moved`).
 
 ### 3.5 The linear screen against the crush
 
 `bridgesim screen` solves the same model linearly (seconds) and says where damage starts.
 On Bridge_v6 (perfect bridge, standard mesh, 5 s) it puts the bridge's stiffness under the
-plate at 501 kgf/mm (the crush's load against jack travel, 373 kgf/mm, includes the
+plate at 497 kgf/mm (the crush's load against jack travel, 375 kgf/mm, includes the
 press's own compliance and the 0.3 mm seating; against the deck's deflection the crush
-gives 464 kgf/mm). Its first limit is the Euler buckling of an arm of the thin +-45 End
-Diaphragms (34 kgf: a brace that carries little and that the crush follows through
+gives 471 kgf/mm). Its first limit is the Euler buckling of an arm of the thin +-45 End
+Diaphragms (35 kgf: a brace that carries little and that the crush follows through
 without a failure), then the four end-grain joints of the deck stringers to the
-cross-beam under the plate (91-98 kgf), where the crush's glue damage starts (103-108
-kgf), and later the joints of the hub tie straps to the hub spreader (568 kgf), the
-first joints the crush separates (706 kgf). It does not give F_u: those first joints let
-go long before the peak, as the load finds other paths, which only the crush follows
+cross-beam under the plate (87-94 kgf), where the crush's glue damage starts (98 kgf),
+the top rail plates' buckling (146-148 kgf), and later the joints of the inner hub tie
+straps to the hub spreader (597-634 kgf), where the crush's glue starts to fail (628
+kgf) and the first joint separates (724 kgf). It does not give F_u: those first joints
+let go long before the peak, as the load finds other paths, which only the crush follows
 (`test_linear_screen_matches_beam_theory` checks its stiffness and fibre limits against
 beam theory within 3 %).

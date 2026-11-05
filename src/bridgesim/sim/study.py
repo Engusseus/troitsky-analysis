@@ -555,11 +555,12 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
     if progress is not None:
         progress(0.0, f"read {len(bodies)} bodies; building the structural model")
     model = _build(bodies, mat, sp, ov, seed, scale, strict)
-    if scale < 0.75:
-        model.notes.append(f"mesh_scale {scale:g} is finer than the fine fidelity (0.75): "
+    if scale < 0.5:
+        model.notes.append(f"mesh_scale {scale:g} is finer than any mesh studied (x0.5 on "
+                           "Bridge_v6 stayed within the same few % as standard and fine): "
                            "plate elements may be thinner than their plates, and a crack "
-                           "starts earlier at a stress concentration the finer the mesh "
-                           "(local damage; ASSUMPTIONS-SIM.md)")
+                           "may start earlier at a sharp stress concentration (local "
+                           "damage; ASSUMPTIONS-SIM.md)")
     rules = _rules(bodies, mat, rs, model)
     # the fine mesh needs a smaller time step, or too much mass scaling would be added
     opt = options or CrushOptions(speed_mm_s=speed,
@@ -986,8 +987,8 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
         if rep.fidelity == "quick":
             steps.append(NextStep(
                 action="confirm", why="quick fidelity is for ranking designs: its F_u can "
-                "differ from standard by up to ~10 % (Bridge_v6: coarser mesh, twice the "
-                "jack speed), the part that breaks first can differ at standard, and the "
+                "be 10-15 % below standard (Bridge_v6: coarser mesh, twice the jack "
+                "speed), the part that breaks first can differ at standard, and the "
                 "strict reading (Fu_first_joint_failure_kgf) is not converged at quick",
                 cli=f"bridgesim crush {f}{ov} --fidelity standard --out {out}_standard "
                     "--json --brief"))

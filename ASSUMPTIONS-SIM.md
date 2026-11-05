@@ -334,20 +334,25 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   designs with `ab` (paired seeds), and read `failure_sequence` to see which modes
   compete.
 * **Mesh convergence** (`validation/convergence_study.py`; Bridge_v6 in
-  `validation/README.md` §3.4): seed by seed the standard mesh is within 3.2 % of the
-  fine mesh, the quick mesh 4-9 % lower, the seeds ranked alike. The perfect bridge is
-  symmetric: which side gives way first is a bifurcation round-off decides, so its F_u
-  moves by up to 10 % between meshes and does not measure the mesh error. Which part
-  goes first (`governing`) changes with the mesh: several compete within a few %
-  (`competing`).
-* **Crack onset is local.** A plate cracks where its strain first reaches the strength
-  in one element; the crack band makes the energy of the crack independent of the mesh,
-  not its onset at a sharp stress raiser (the end of a glued lap, a re-entrant corner),
-  which comes at a lower load the finer the mesh: at element size x0.5 the Bridge_v6 tie
-  strap starts cracking at 1339 kgf instead of 1760 at x0.75. Do not refine beyond
-  `fine` (x0.75, elements still larger than the plate thickness). A nonlocal
-  process-zone onset was tried and not adopted (it doubled the strength of off-axis
-  plies; `validation/README.md` §3.4).
+  `validation/README.md` §3.4): on the standard, fine and x0.5 meshes F_u lies within a
+  band of a few % with no trend toward a lower value (a nearly perfect bridge: 2362 /
+  2270 / 2403 kgf; seed 0: 2279 / 2197 / 2189), and the load curves coincide up to 90 %
+  of the peak; the quick mesh is 7-8 % lower (for ranking designs). The band is that of
+  failure sites competing within a few % (`competing`): which part goes first
+  (`governing`) can change with the mesh and moves F_u by up to ~8 %. A perfect bridge is
+  symmetric, so which side gives way first is a bifurcation round-off decides;
+  `--amplitude 0.1` keeps the seed's asymmetry at a tenth of its imperfections for a mesh
+  study.
+* **Crack onset is local.** A plate left as a shell cracks where its strain first
+  reaches the strength in one element; the crack band makes the energy of the crack
+  independent of the mesh, not its onset at a sharp stress raiser (the end of a glued
+  lap, a re-entrant corner), which comes at a lower load the finer the mesh. The narrow
+  plates where that mattered on Bridge_v6 are frames since round 11, and its x0.5 mesh
+  (elements half the standard size) stays in the same band as standard and fine; on a
+  design whose shells have sharp stress raisers in the load path, check with `--fidelity
+  fine` and `convergence_study.py --scales 1,0.75,0.5`. A nonlocal process-zone onset
+  was tried and not adopted (it doubled the strength of off-axis plies;
+  `validation/README.md` §3.4).
 * Time is compressed: the simulated jack moves at ~100 mm/s instead of the real
   mm/min. The material laws have no rate effect, so this changes nothing as long as the
   run stays quasi-static; the replay converts back to real test time.
