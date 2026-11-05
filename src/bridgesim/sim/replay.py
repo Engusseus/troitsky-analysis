@@ -128,8 +128,10 @@ def replay_html(res: CrushResult, bodies: list[CadBody], title: str = "Crush tes
         off = np.clip(np.round(me["off"] * 100), -32767, 32767).astype(np.int16)
         mesh_js.append({
             "name": me["name"], "kind": me["kind"], "body": me["body"],
-            "T": _b64(me["T"].astype(np.uint32)),
-            "idx": _b64(me["idx"].astype(np.uint32)),
+            # indices in 16 bits when they fit (most bodies): the skin is most of the file
+            "T": _b64(me["T"].astype(np.uint16 if len(me["V"]) < 65536 else np.uint32)),
+            "idx": _b64(me["idx"].astype(np.uint16 if nN < 65536 else np.uint32)),
+            "T16": len(me["V"]) < 65536, "idx16": nN < 65536,
             "w": _b64(np.clip(np.round(me["w"] * 255), 0, 255).astype(np.uint8)),
             "off": _b64(off), "nv": len(me["V"]), "nt": len(me["T"])})
     # body state per frame: 0 ok, 1 damaged glue, 2 cracked/broken
@@ -228,7 +230,7 @@ const ctl=new THREE.OrbitControls(cam,renderer.domElement);ctl.target.set(0,250,
 scene.add(new THREE.HemisphereLight(0xffffff,0x666666,1.1));const dl=new THREE.DirectionalLight(0xffffff,1.2);dl.position.set(600,1200,900);scene.add(dl);
 const plat=new THREE.Mesh(new THREE.BoxGeometry(1420,15,500),new THREE.MeshStandardMaterial({color:0x8a9099,metalness:.6,roughness:.5}));plat.position.set(0,D.table_y-7.5,0);scene.add(plat);
 const meshes=[];
-for(const m of D.meshes){const T=dec(m.T,Uint32Array),idx=dec(m.idx,Uint32Array),w8=dec(m.w,Uint8Array),o16=dec(m.off,Int16Array);
+for(const m of D.meshes){const T=dec(m.T,m.T16?Uint16Array:Uint32Array),idx=dec(m.idx,m.idx16?Uint16Array:Uint32Array),w8=dec(m.w,Uint8Array),o16=dec(m.off,Int16Array);
  const w=new Float32Array(w8.length);for(let i=0;i<w8.length;i++)w[i]=w8[i]/255;const off=new Float32Array(o16.length);for(let i=0;i<o16.length;i++)off[i]=o16[i]/100;
  const Tw=new Uint32Array(T.length);Tw.set(T);
  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3*m.nv),3));g.setIndex(new THREE.BufferAttribute(Tw,1));g.computeVertexNormals();

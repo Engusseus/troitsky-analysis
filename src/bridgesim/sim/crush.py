@@ -413,7 +413,12 @@ def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float) -> np.ndarr
     n = max(3, int(round(width / max(h, 1e-12))) | 1)
     k = np.hanning(n + 2)[1:-1]
     k /= k.sum()
-    return np.convolve(raw, k, "same") / np.convolve(np.ones_like(raw), k, "same")
+    # odd reflection at both ends: a load rising from the start (or still changing at
+    # the end) is not biased by a one-sided window there
+    m = min(n // 2, len(raw) - 1)
+    ext = np.concatenate([2 * raw[0] - raw[m:0:-1], raw,
+                          2 * raw[-1] - raw[-2:-m - 2:-1]])
+    return np.convolve(ext, k, "same")[m:m + len(raw)]
 
 
 BREAKS = ("joint_failure", "joint_cracking", "member_fracture", "member_shear",

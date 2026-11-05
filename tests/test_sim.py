@@ -1598,6 +1598,7 @@ def test_reported_load_has_no_lag():
         on[i] = on[i - 1] + a * (raw[i] - on[i - 1])
     rise = (x > 0.5) & (x < 4.0)
     assert np.abs(rep[rise] - true[rise]).max() < 0.02 * 2000  # no lag, ring removed
+    assert abs(rep[0]) < 0.01 * 2000  # no bias where the record starts
     assert (true[rise] - on[rise]).mean() > 0.05 * 2000  # the online reading lags
     i = int(np.argmax(rep))
     assert rep[i] == pytest.approx(2000.0, rel=0.02) and abs(x[i] - 5.0) < 0.5
