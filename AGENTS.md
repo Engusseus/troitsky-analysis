@@ -22,8 +22,8 @@ SolidWorks needed), a Parasolid `.x_b`, or an STL with all bodies in one file.
 
 Every `inspect` and `crush` report ends with **`next_steps`**: this loop worked out for
 the report in hand, most useful first. Each step has an `action` (`fix_cad`,
-`ask_designer`, `screen`, `crush`, `rerun`, `strengthen`, `confirm`, `measure`, `predict`,
-`compare`), `why` in plain words, the `ids` of the questions concerned, the `parts` and
+`ask_designer`, `screen`, `crush`, `rerun`, `strengthen`, `diagnose`, `confirm`, `measure`,
+`predict`, `compare`), `why` in plain words, the `ids` of the questions concerned, the `parts` and
 `where_mm` to point the designer at, and the exact `cli` to run (the MCP tool of the
 same name otherwise). E.g. after a crush: `strengthen` the parts that broke at the peak
 (with a what-if in `overrides` and the `ab` command that tests it), `confirm` a quick
@@ -47,9 +47,10 @@ gets both factors), ready for its `ab ... --overrides-b DIR/whatif.yaml` command
 | `bridgesim sensitivity BRIDGE.SLDPRT [--rel 0.2] [--fidelity quick] [--seeds 1] [--param KEY]... --json` | Which material values move F_u most: each one lowered and raised by `rel`; `measure_first` lists the tests that would narrow the prediction most. `--param` (repeat it) chooses the values, any key of `materials/simulation.yaml` or `material.<key>` (default: the 9 that usually matter most); `--seeds 3` averages over seeds | (1 + 2 x params) x seeds x crush / processes |
 | `bridgesim lab [--data validation/physical] --json` | Simulated coupon tests (stick bending, lap joint, stick column) and their gap to the team's coupon data | ~1 min |
 | `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, f_t/f_c and tau_g so the *simulated* coupons reproduce the measured ones (`lab --data` then shows ~0 % error); f_t, f_c, f_c90, the end-grain factor and the glue's shear stiffness and toughness from the direct coupon tests; with 3+ specimens of a kind also the scatter (`my_material.overrides.yaml`, `params:`). A folder without any test results is an input error (exit 2) | ~1 min |
-| `bridgesim ab A.SLDPRT B.SLDPRT [-n 3] [--overrides-a a.yaml] [--overrides-b b.yaml] [--fidelity standard] --json` | Is B better than A? Both crushed with the same seeds: change of F_u and efficiency with a 90 % interval, `significant`, `verdict`, first failure of each. B may be A with other overrides: a what-if (`section_scale`, `glue_factor`) before changing the CAD | 2n x crush / processes |
+| `bridgesim ab A.SLDPRT B.SLDPRT [-n 3] [--overrides-a a.yaml] [--overrides-b b.yaml] [--fidelity standard] --json` | Is B better than A? Both crushed with the same seeds: change of F_u and efficiency with a 90 % interval, `significant`, `verdict`, what governed each run (`runs_a/b[].governing`, the most frequent in `governing_a/b`) and `failure_moved`: the seeds where B failed somewhere else than A (strengthening one part often moves the failure to the next). B may be A with other overrides: a what-if (`section_scale`, `glue_factor`) before changing the CAD | 2n x crush / processes |
+| `bridgesim diagnose BRIDGE.SLDPRT [-o overrides.yaml] [-n 2] [--fidelity quick] [--candidates 3] [--out DIR] --json` | What really limits the bridge, measured: crushes it with seeds 1..n, strengthens each part that broke near the peak in turn (glue x1.5 for a joint, section x1.25 for a member or plate, on every copy) on the same seeds, and ranks them by the paired rise of F_u (`candidates`, `limiting`, `verdict`; `governing_after`: where the failure moves). The `governing` label of one crush names the first part in a cascade; diagnose says which one the load depends on, or that no single change helps (then strengthen them together). `DIR/whatif.yaml`: the what-if to confirm with `ab` | (1 + candidates) x n x crush / processes |
 | `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity standard] [--processes 4] [--sample-placeholders] [--out DIR] --json` | Spread of F_u over imperfections and material scatter (`min_kgf`, `max_kgf`, p05/p50/p95: below 20 runs read min and max); `recommended_prediction_kgf` for the Load Prediction Form (the 1/F-weighted median, which minimises the §12.7 error). `note` says what the spread leaves out: the placeholder material values, unless `--sample-placeholders` (MCP `sample_placeholders`) draws them per run (lognormal, 20 %; `sampled_placeholders`) so the range includes them | n x crush / processes |
-| `bridgesim schema inspect\|crush\|screen\|reality_gap\|lab\|montecarlo\|design_comparison\|sensitivity\|bridge_calibration\|question` | JSON Schema of each report | instant |
+| `bridgesim schema inspect\|inspect_brief\|crush\|crush_brief\|screen\|reality_gap\|lab\|montecarlo\|design_comparison\|diagnosis\|sensitivity\|bridge_calibration\|question\|job_status` | JSON Schema of each report (the `_brief` forms are what `--brief` and the MCP tools return by default; every MCP tool but `get_schema` publishes its schema as its output schema) | instant |
 | `bridgesim mcp` | The same as MCP tools (`uv sync --extra mcp`) | - |
 
 Fidelity: `quick` (coarser mesh, jack 200 mm/s, ~3 min for a 100-body bridge on 4 cores)
@@ -117,6 +118,7 @@ claude mcp add bridgesim -- uv run --directory /path/to/troitsky-analysis bridge
 | `start_crush(cad_path, out_dir, ...)` then `job_status(out_dir)` | background: poll until `status` is `done` (report included) or `failed` (error included). Use this when tool calls time out |
 | `start_montecarlo(cad_path, out_dir, n, fidelity, sample_placeholders)` then `job_status(out_dir)` | background spread of F_u |
 | `start_compare_designs(cad_a, cad_b, out_dir, n, overrides_a_yaml, overrides_b_yaml)` then `job_status(out_dir)` | background A/B comparison |
+| `start_diagnose(cad_path, out_dir, overrides_yaml, n, fidelity, candidates)` then `job_status(out_dir)` | background: which part really limits the bridge |
 | `start_sensitivity(cad_path, out_dir, overrides_yaml, rel, params, seeds)` then `job_status(out_dir)` | background: what to measure first |
 | `start_calibrate_bridge(cad_path, test_csv_path, out_dir, overrides_yaml, fidelity)` then `job_status(out_dir)` | background: fit stiffness and strength to a physical crush test (writes `out_dir/fitted.overrides.yaml`) |
 | `compare_with_test(crush_json_path, test_csv_path)` | reality gap (a `montecarlo.json` as the first argument: the test against the predicted range) |
@@ -240,7 +242,8 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
 ## What the crush report means
 
 * `Fu_kgf`: predicted ultimate load (§12.5): the peak jack force before the bridge is
-  judged failed (load drop, 50 mm deflection, or contact with the platform); 0 if it
+  judged failed (the load falling 30 % below its peak, 50 mm deflection, or contact with
+  the platform); 0 if it
   collapses under its own weight (`failure_mode: instability`).
 * `failure_sequence` (text) and `failures` (structured: `kind`, `parts`, `load_kgf`,
   `jack_travel_mm`, `where_mm`, `fraction_separated`): what broke, in order, up to the

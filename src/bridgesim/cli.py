@@ -691,11 +691,47 @@ def ab(cad_a: CadArg, cad_b: Annotated[Path, typer.Argument(
     if json_out:
         typer.echo(rep.model_dump_json(indent=2))
         return
-    typer.echo(f"A {rep.a}: mean F_u {rep.Fu_mean_a_kgf:.1f} kgf, first failure: "
+    typer.echo(f"A {rep.a}: mean F_u {rep.Fu_mean_a_kgf:.1f} kgf, governed by "
                f"{rep.governing_a}")
-    typer.echo(f"B {rep.b}: mean F_u {rep.Fu_mean_b_kgf:.1f} kgf, first failure: "
+    typer.echo(f"B {rep.b}: mean F_u {rep.Fu_mean_b_kgf:.1f} kgf, governed by "
                f"{rep.governing_b}")
     typer.echo(rep.verdict)
+    for m in rep.failure_moved:
+        typer.echo(f"  failure moved: {m}")
+
+
+@app.command()
+def diagnose(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = None,
+             n: Annotated[int, typer.Option("-n", help="Seeds per run")] = 2,
+             fidelity: Annotated[str, typer.Option(help="quick, standard, fine")] = "quick",
+             candidates: Annotated[int, typer.Option(
+                 help="Parts that broke near the peak to strengthen in turn")] = 3,
+             processes: Annotated[int | None, typer.Option(
+                 help="Crushes in parallel (default: one per 2 CPU cores)")] = None,
+             out: Annotated[Path | None, typer.Option(
+                 "--out", help="Folder for the runs, diagnosis.json and whatif.yaml")]
+             = None,
+             units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
+             json_out: JsonOpt = False) -> None:
+    """What really limits the bridge: strengthens each part that broke near the peak in
+    turn (same seeds) and ranks them by how much F_u rises. (1 + candidates) x n
+    crushes."""
+    from bridgesim.sim import study
+
+    rep = _guard(json_out, lambda: study.diagnose(
+        cad, n, overrides, material or "popsicle_birch", fidelity=fidelity,
+        candidates=candidates, processes=processes, out_dir=out, progress=_progress,
+        units=units, up=up_axis, span=span_axis))
+    if json_out:
+        typer.echo(rep.model_dump_json(indent=2))
+        return
+    typer.echo(f"{rep.file}: F_u {', '.join(f'{x:.0f}' for x in rep.Fu_base_kgf)} kgf "
+               f"(seeds 1-{rep.n}, {rep.fidelity}), governed by {rep.governing_base}")
+    for it in rep.candidates:
+        typer.echo(f"  {it.Fu_change:+6.1%}  strengthen {it.part} ({it.kind}); then "
+                   f"governed by {it.governing_after}")
+    typer.echo(rep.verdict)
+    _print_next(rep.next_steps)
 
 
 @app.command()
@@ -737,10 +773,12 @@ def sensitivity(cad: CadArg, overrides: OverridesOpt = None, material: MaterialO
 
 
 @app.command()
-def schema(name: Annotated[str, typer.Argument(help="inspect, crush, screen, reality_gap, lab, "
+def schema(name: Annotated[str, typer.Argument(help="inspect, inspect_brief, crush, "
+                                                     "crush_brief, screen, reality_gap, lab, "
                                                      "montecarlo, design_comparison, "
-                                                     "sensitivity, bridge_calibration or "
-                                                     "question")],
+                                                     "diagnosis, sensitivity, "
+                                                     "bridge_calibration, question or "
+                                                     "job_status")],
            json_out: Annotated[bool, typer.Option("--json", help="Errors as JSON too (the "
                                                   "schema is always JSON)")] = False) -> None:
     """Print the JSON Schema of a report (for scripts and AI agents)."""

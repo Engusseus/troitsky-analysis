@@ -251,7 +251,17 @@ def build_server():
                              "pip install 'bridgesim[mcp]' (or uv sync --extra mcp)") from exc
 
     from bridgesim.sim import study
-    from bridgesim.sim.report import SCHEMAS, LabReport, RealityGap
+    from bridgesim.sim.report import (
+        SCHEMAS,
+        CrushBrief,
+        InspectBrief,
+        JobStarted,
+        JobStatus,
+        LabReport,
+        MaterialCalibration,
+        RealityGap,
+        ScreenReport,
+    )
 
     srv = Server("bridgesim", instructions=(
         "Simulates the Troitsky popsicle-stick bridge crushing test on SolidWorks parts. "
@@ -264,7 +274,7 @@ def build_server():
         "guide: AGENTS.md."))
 
     @srv.tool()
-    @_safe
+    @_safe(model=InspectBrief)
     def inspect_bridge(cad_path: str, overrides_yaml: str = "", material: str = "",
                        up_axis: str = "y", span_axis: str = "x", units: str = "",
                        strict: bool = False, brief: bool = True,
@@ -288,7 +298,7 @@ def build_server():
         return json.dumps(study.inspect_brief(rep)) if brief else rep.model_dump_json()
 
     @srv.tool()
-    @_safe
+    @_safe(model=ScreenReport)
     def screen_bridge(cad_path: str, overrides_yaml: str = "", load_kgf: float = 100.0,
                       top: int = 25, material: str = "", up_axis: str = "y",
                       span_axis: str = "x", units: str = "", strict: bool = False) -> str:
@@ -305,7 +315,7 @@ def build_server():
         return rep.model_dump_json()
 
     @srv.tool()
-    @_safe
+    @_safe(model=CrushBrief)
     def crush_bridge(cad_path: str, overrides_yaml: str = "", seed: int = 0,
                      fidelity: str = "standard", out_dir: str = "", material: str = "",
                      up_axis: str = "y", span_axis: str = "x", units: str = "",
@@ -333,7 +343,7 @@ def build_server():
         return json.dumps(study.brief(rep)) if brief else rep.model_dump_json()
 
     @srv.tool()
-    @_safe
+    @_safe(model=JobStarted)
     def start_crush(cad_path: str, out_dir: str, overrides_yaml: str = "", seed: int = 0,
                     fidelity: str = "standard", material: str = "", up_axis: str = "y",
                     span_axis: str = "x", units: str = "", strict: bool = False,
@@ -367,7 +377,7 @@ def build_server():
         return _start(cmd, out)
 
     @srv.tool()
-    @_safe
+    @_safe(model=JobStarted)
     def start_montecarlo(cad_path: str, out_dir: str, n: int = 8, overrides_yaml: str = "",
                          fidelity: str = "standard", material: str = "",
                          sample_placeholders: bool = False) -> str:
@@ -390,7 +400,7 @@ def build_server():
         return _start(cmd, out)
 
     @srv.tool()
-    @_safe
+    @_safe(model=JobStarted)
     def start_compare_designs(cad_a: str, cad_b: str, out_dir: str, n: int = 3,
                               overrides_a_yaml: str = "", overrides_b_yaml: str = "",
                               fidelity: str = "standard", material: str = "") -> str:
@@ -412,7 +422,31 @@ def build_server():
         return _start(cmd, out)
 
     @srv.tool()
-    @_safe
+    @_safe(model=JobStarted)
+    def start_diagnose(cad_path: str, out_dir: str, overrides_yaml: str = "", n: int = 2,
+                       fidelity: str = "quick", candidates: int = 3,
+                       material: str = "") -> str:
+        """What really limits the bridge, measured: in the background, crushes it with
+        seeds 1..n, strengthens each part that broke near the peak in turn (glue x1.5,
+        section x1.25) on the same seeds and ranks the parts by how much F_u rises
+        ((1 + candidates) x n crushes). The report (job_status(out_dir)) names the part to
+        strengthen first, or says no single change helps; out_dir/whatif.yaml holds the
+        what-if to test with start_compare_designs."""
+        cad_path = _infile(cad_path, "CAD file")
+        out = _outpath(out_dir)
+        cmd = [sys.executable, "-m", "bridgesim.cli", "diagnose", cad_path, "-n", str(n),
+               "--fidelity", fidelity, "--candidates", str(candidates), "--out", str(out),
+               "--json"]
+        if overrides_yaml:
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "overrides.yaml").write_text(overrides_yaml, encoding="utf-8")
+            cmd += ["--overrides", str(out / "overrides.yaml")]
+        if material:
+            cmd += ["--material", material]
+        return _start(cmd, out)
+
+    @srv.tool()
+    @_safe(model=JobStarted)
     def start_sensitivity(cad_path: str, out_dir: str, overrides_yaml: str = "",
                           rel: float = 0.2, fidelity: str = "quick", material: str = "",
                           params: list[str] | None = None, seeds: int = 1) -> str:
@@ -436,7 +470,7 @@ def build_server():
         return _start(cmd, out)
 
     @srv.tool()
-    @_safe
+    @_safe(model=JobStarted)
     def start_calibrate_bridge(cad_path: str, test_csv_path: str, out_dir: str,
                                overrides_yaml: str = "", fidelity: str = "standard",
                                seed: int = 0, material: str = "") -> str:
@@ -460,7 +494,7 @@ def build_server():
         return _start(cmd, out)
 
     @srv.tool()
-    @_safe
+    @_safe(model=JobStatus)
     def job_status(out_dir: str) -> str:
         """Status of a background job: queued (waiting for a free slot: the machine runs
         a few crushes at a time, each with its share of the cores), running (with the
@@ -469,7 +503,7 @@ def build_server():
         return job_status_impl(out_dir)
 
     @srv.tool()
-    @_safe
+    @_safe(model=JobStatus)
     def cancel_job(out_dir: str) -> str:
         """Stop a background job started with a start_* tool (queued or running)."""
         return cancel_job_impl(out_dir)
@@ -496,7 +530,7 @@ def build_server():
                          ).model_dump_json()
 
     @srv.tool()
-    @_safe
+    @_safe(model=MaterialCalibration)
     def calibrate_material(data_dir: str, out_path: str = "my_material.yaml",
                            material: str = "") -> str:
         """Fit E, the strengths and the glue strength from coupon CSVs so the simulated
@@ -517,8 +551,9 @@ def build_server():
     @srv.tool()
     @_safe
     def get_schema(name: str) -> str:
-        """JSON Schema of a report: inspect, crush, screen, reality_gap, lab, montecarlo,
-        design_comparison, sensitivity, bridge_calibration or question."""
+        """JSON Schema of a report: inspect, inspect_brief, crush, crush_brief, screen,
+        reality_gap, lab, montecarlo, design_comparison, diagnosis, sensitivity,
+        bridge_calibration, question or job_status."""
         if name not in SCHEMAS:
             raise ValueError(f"unknown schema {name!r}; use one of {', '.join(SCHEMAS)}")
         return json.dumps(SCHEMAS[name].model_json_schema())

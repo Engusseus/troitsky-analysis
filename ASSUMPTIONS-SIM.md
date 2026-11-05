@@ -120,7 +120,12 @@ sections: linear elastic; tension softens to zero after f_t with fracture energy
 (crushing). A single stick so modelled breaks in 3-point bending at the material's
 f_b (within 4 %; the test allows 10 %): compression yielding on top and tension softening below give
 the bending strength, as in wood. A member **splits in shear** when 1.5 V/A + T/W_t
-reaches min(f_v, tau_g) on the glue planes between its plies, or f_v across them; it is
+reaches min(f_v, 1.155 tau_g) on the glue planes between its plies (the glue line's own
+strength, the peak the glue points use: tau_g is the average over a lap, lowered by the
+stress concentration at the lap's ends), or f_v across them. It splits at once, as a
+laminated beam does in a short-span shear test. When a member breaks, the stress wave can
+split its neighbours in the same instant; the crush then names the break, not the splits,
+as the cause. A split member is
 not deleted: it delaminates (its n plies then bend each about their own axis, 1/n^2 of
 the bending stiffness through the plies, half across the width for a split) and keeps
 its axial strength, so a split member still props what it carried. Glue and floss: see
@@ -195,8 +200,10 @@ an edit elsewhere in the design. Monte Carlo over seeds gives the spread of F_u.
 * The **deflection** reported is that of the deck points the plate rests on when the
   jack starts, followed as material points (not the jack stroke, which also includes the
   20 kN/mm machine compliance).
-* **F_u** = peak jack force up to the moment the bridge is judged failed: a load drop to
-  half the peak after the peak (collapse), mid-span deflection > 50 mm, or contact of a
+* **F_u** = peak jack force up to the moment the bridge is judged failed: the load falling
+  30 % below its peak (collapse: a fracture the judges see and the load cell shows, even
+  if the bridge then picks up some load again; §12.5 takes the load "at the moment of
+  failure"), mid-span deflection > 50 mm, or contact of a
   part with the platform other than the original supports (§12.5) or with the press
   uprights (debris flying off a broken part does not count). A glued joint letting
   go inside the bridge is also a §12.5 failure ("shear, including joint failure"), but

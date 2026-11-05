@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 SCHEMA_VERSION = "1.0"
 
@@ -83,18 +83,22 @@ class RulesSummary(BaseModel):
 class NextStep(BaseModel):
     """One thing to do next, most useful first: the loop an agent drives."""
     action: Literal["ask_designer", "fix_cad", "screen", "crush", "rerun", "strengthen",
-                    "confirm", "measure", "predict", "compare"] = Field(description=(
+                    "diagnose", "confirm", "measure", "predict", "compare"] = Field(
+                        description=(
         "ask_designer: put the open questions to the designer; fix_cad: change the "
         "SolidWorks model (a failing rule); screen: the linear pre-screen (seconds: "
         "stiffness and the most loaded parts); crush: run the crushing test; rerun: the "
         "result is not trustworthy, run it again as `cli` says; strengthen: the parts "
-        "that broke at the peak, then check the change with `ab`; confirm: check the "
+        "that broke at the peak, then check the change with `ab`; diagnose: measure which "
+        "of the parts that broke near the peak limits the bridge; confirm: check the "
         "answer at a finer fidelity; measure: test sticks and glue (placeholders); "
         "predict: the value for the Load Prediction Form; compare: after a real test"))
     why: str
     parts: list[str] = Field([], description="Body or joint names concerned (as inspect "
                                              "lists them)")
-    where_mm: list[list[float]] = Field([], description="Where those parts are (x, y, z)")
+    where_mm: list[list[float]] = Field([], description="Where each of those parts failed "
+                                                        "(x, y, z), one per part, in the "
+                                                        "same order")
     ids: list[str] = Field([], description="Question ids concerned")
     cli: str | None = Field(None, description="The command to run (MCP: the matching tool)")
     overrides: dict[str, Any] = Field({}, description=(
@@ -221,6 +225,9 @@ class CrushReport(BaseModel):
                                                   "self-weight, F_u = 0), "
                                                   "none (no failure within the jack travel)")
     failure_detail: str
+    governing: str = Field("", description=(
+        "What broke at the peak load (the reason the bridge failed): '<kind>: <part>', "
+        "'glue giving way: A | B', 'buckling or sway', or the failure mode"))
     deflection_at_Fu_mm: float
     mass_kg: float
     efficiency_kgf_per_kg: float = Field(description="§12.6: Fu / mass")
@@ -325,7 +332,9 @@ class DesignRun(BaseModel):
     Fu_kgf: float
     mass_kg: float
     efficiency_kgf_per_kg: float
-    first_failure: str
+    first_failure: str = Field(description="The first part that let go (often long before "
+                                           "the peak)")
+    governing: str = Field("", description="What broke at the peak: why this run failed")
     trustworthy: bool
 
 
@@ -351,8 +360,12 @@ class DesignComparison(BaseModel):
     efficiency_change_ci90: tuple[float, float]
     significant: bool = Field(description="True if the F_u confidence interval excludes 0")
     verdict: str
-    governing_a: str = Field(description="Most frequent first failure of A")
-    governing_b: str
+    governing_a: str = Field(description="Most frequent governing failure of A (what broke "
+                                         "at the peak), by part with its copies")
+    governing_b: str = Field(description="The same for B")
+    failure_moved: list[str] = Field([], description=(
+        "Seeds where B failed somewhere else than A ('seed 2: A <failure> -> B <failure>'): "
+        "the change moved the failure to another part, which then sets F_u"))
     untrustworthy_runs: int = 0
 
 
@@ -458,8 +471,131 @@ class ScreenReport(BaseModel):
     next_steps: list[NextStep] = []
 
 
+class DiagnosisItem(BaseModel):
+    part: str = Field(description="A part (or 'A | B' joint) that broke near the peak, "
+                                  "with its copies")
+    kind: str = Field(description="How it broke (joint failure, member shear, ...)")
+    seen: int = Field(description="In how many of the base runs it broke near the peak")
+    overrides: dict[str, Any] = Field(description="The what-if that strengthened it "
+                                                  "(glue x1.5 for a joint, section x1.25 "
+                                                  "for a member or plate)")
+    Fu_change: float = Field(description="Mean paired change of F_u when it is "
+                                         "strengthened")
+    Fu_changes: list[float] = Field(description="Per seed")
+    stronger_with: int = Field(description="Seeds where F_u rose")
+    governing_after: str = Field(description="What governs once it is strengthened (most "
+                                             "frequent)")
+
+
+class DiagnosisReport(BaseModel):
+    """What really limits the bridge, measured rather than read off one run: each part
+    that broke near the peak is strengthened in turn on the same seeds, and the parts
+    are ranked by how much that raises F_u. A part whose strengthening changes nothing
+    is not what limits the bridge, even if it broke first."""
+
+    schema_version: str = SCHEMA_VERSION
+    kind: Literal["diagnosis"] = "diagnosis"
+    file: str
+    fidelity: str
+    n: int = Field(description="Seeds (1..n) of every run")
+    Fu_base_kgf: list[float]
+    governing_base: str = Field(description="Most frequent governing failure of the base")
+    candidates: list[DiagnosisItem] = Field(description="Most effective first")
+    limiting: str = Field(description="The part to strengthen first, or 'none' when no "
+                                      "single change helps")
+    verdict: str
+    next_steps: list[NextStep] = []
+
+
+# ------------------------------------------------------------ what the MCP tools return
+
+
+class BriefFailure(BaseModel):
+    """A failure in a crush brief (an EventOut without its time, newtons and parts)."""
+    model_config = ConfigDict(extra="allow")
+
+    jack_travel_mm: float
+    load_kgf: float
+    kind: str
+    what: str = Field(description="The part, or 'A | B' for a glued joint")
+    detail: str = ""
+    where_mm: list[float] | None = None
+    fraction_separated: float | None = None
+
+
+def _brief_model(name: str, full: type[BaseModel], drop: set[str], kinds: tuple[str, str],
+                 extra: dict, doc: str) -> type[BaseModel]:
+    """A report's brief form: the full report's fields minus ``drop`` (left optional, so
+    the full report validates too), kind either form, plus ``extra``."""
+    fields: dict = {}
+    for k, f in full.model_fields.items():
+        if k == "kind":
+            continue
+        if k in drop:
+            fields[k] = (f.annotation | None, Field(None, description=f.description))
+        else:
+            fields[k] = (f.annotation, f)
+    fields["kind"] = (Literal[kinds], Field(kinds[1]))  # type: ignore[valid-type]
+    fields.update(extra)
+    return create_model(name, __doc__=doc, __config__=ConfigDict(extra="allow"), **fields)
+
+
+CrushBrief = _brief_model(
+    "CrushBrief", CrushReport, {"curve", "events", "failure_sequence", "assumed_parameters"},
+    ("crush", "crush_brief"),
+    {"failures": (list[BriefFailure], Field([], description="The first failures (10 in the "
+                                                           "brief) in order")),
+     "n_failures_total": (int | None, None),
+     "n_assumed_parameters": (int | None, None),
+     "n_questions": (dict[str, int] | None, Field(None, description="Open questions by "
+                                                                    "severity")),
+     "peak": (dict[str, float] | None, Field(None, description="Where F_u was reached: "
+                                                               "load, jack travel, "
+                                                               "deflection"))},
+    "A crush report cut to what an agent needs for its next step (crush --brief, the MCP "
+    "default): no curve, event log or failure sequence; the first failures; the important "
+    "questions in full and the others counted; next steps. crush.json has everything.")
+
+InspectBrief = _brief_model(
+    "InspectBrief", InspectReport, {"bodies", "joints"}, ("inspect", "inspect_brief"),
+    {"bodies_by_kind": (dict[str, int] | None, None), "n_joints": (int | None, None)},
+    "An inspect report without the per-body and per-joint lists (inspect --brief, the MCP "
+    "default): counts, questions, failed rules, warnings, next steps.")
+
+
+class JobStarted(BaseModel):
+    status: Literal["running"]
+    out_dir: str
+    poll: str = ""
+
+
+class JobStatus(BaseModel):
+    """A background job, read from its folder (works from any server, a restarted one
+    too)."""
+    model_config = ConfigDict(extra="allow")
+
+    status: Literal["queued", "running", "done", "failed", "cancelled", "unknown",
+                    "finished already"]
+    progress: float | None = None
+    message: str | None = None
+    report: dict[str, Any] | None = Field(None, description="The job's report when done "
+                                                            "(its kind says which)")
+    error: dict[str, Any] | None = Field(None, description="The JSON error object when "
+                                                           "failed")
+    out_dir: str | None = None
+
+
+class MaterialCalibration(BaseModel):
+    material: str = Field(description="The material YAML written (pass it as `material`)")
+    changes: list[str]
+    overrides_yaml: str = Field("", description="The specimens' scatter as params: to put "
+                                                "in overrides_yaml (empty without 3+ "
+                                                "specimens of a kind)")
+
+
 SCHEMAS = {"inspect": InspectReport, "crush": CrushReport, "reality_gap": RealityGap,
            "lab": LabReport, "montecarlo": MonteCarloReport, "question": Question,
            "design_comparison": DesignComparison,
            "sensitivity": SensitivityReport, "bridge_calibration": BridgeCalibration,
-           "screen": ScreenReport}
+           "screen": ScreenReport, "crush_brief": CrushBrief, "inspect_brief": InspectBrief,
+           "job_status": JobStatus, "diagnosis": DiagnosisReport}

@@ -22,7 +22,7 @@ Failure criteria tracked (first time each happens):
 * **Instability**: the bridge collapses under self-weight before loading.
 
 The reported ultimate load F_u is the highest jack force reached before the bridge is
-judged failed: by a clear load drop (collapse), by the 50 mm deflection limit or by
+judged failed: by a load drop of 30 % (collapse), by the 50 mm deflection limit or by
 contact with the platform. A bridge that fails under its own weight has F_u = 0. A glued
 joint letting go inside the bridge is also a §12.5 failure ("shear, including joint
 failure") but the judges only see it when the bridge visibly gives way, which shows as a
@@ -118,6 +118,7 @@ class CrushResult:
     speed_mm_s: float = 0.0
     holds: int = 0  # times the jack was held while something broke
     hold_time_s: float = 0.0
+    governing: str = ""  # what broke at the peak ("member shear: <part>", ...)
 
 
 def _quat(R: np.ndarray) -> np.ndarray:
@@ -350,7 +351,10 @@ class CrushOptions:
     settle_max_s: float = 0.4
     max_travel_mm: float = 70.0
     deflection_limit_mm: float = 50.0
-    drop_ratio: float = 0.5  # stop when load < drop_ratio * peak, after the peak
+    # judged failed when the load falls below drop_ratio x its peak: a 30 % fall is a
+    # fracture the judges see and the load cell shows (§12.5 takes the load "at the
+    # moment of failure"), even if the bridge then picks up some load again
+    drop_ratio: float = 0.7
     after_failure_mm: float = 15.0  # keep going this far past failure (collapse replay)
     frame_mm: float = 0.15  # replay frame every this much jack travel
     alpha: float = 25.0
@@ -685,7 +689,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                                     minlength=n_patch) / np.maximum(patch_area, 1e-12)
             curve["glue_broken"].append(int((pfrac >= JOINT_FAILED).sum()))
             curve["members_broken"].append(int((st.b_fractured | st.b_shear).sum()))
-            if force > peak:
+            if force > peak and fail_at is None:  # F_u: the peak before the failure call
                 peak, peak_travel, peak_defl = force, travel, defl
             # ---- events
             def ev(kind, what, detail="", where=None, _tr=travel, _f=force, fraction=None):
@@ -826,18 +830,28 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     first_major = near[0] if near else next(
         (e for e in before if e.kind in ("joint_failure", "member_fracture", "member_shear",
                                          "plate_crack", "floss_break")), None)
+    if first_major is not None and first_major.kind == "member_shear":
+        # a member breaking sends a stress wave that can split its neighbours (or itself)
+        # in the same instant: the break is the cause, not the splits
+        root = [e for e in before if e.kind == "member_fracture"
+                and abs(e.t - first_major.t) <= 0.002]
+        if root:
+            first_major = root[0]
+    governing = fail_mode
     if fail_mode == "collapse" and first_major:
-        fail_detail = f"{first_major.kind.replace('_', ' ')}: {first_major.what}. " + \
-            fail_detail
+        governing = f"{first_major.kind.replace('_', ' ')}: {first_major.what}"
+        fail_detail = f"{governing}. " + fail_detail
     elif fail_mode == "collapse":
         soft = list(dict.fromkeys(e.what for e in before if e.kind == "glue_damage"
                                   and e.force_N >= 0.9 * peak))
         if soft:
+            governing = f"glue giving way: {soft[0]}"
             fail_detail = ("no part broke before the load fell, but the glue of "
                            + "; ".join(soft[:3]) + (f" (and {len(soft) - 3} more)"
                                                     if len(soft) > 3 else "")
                            + " was giving way at the peak: " + fail_detail)
         else:
+            governing = "buckling or sway"
             fail_detail = ("no part broke: a buckling or sway mechanism (see the replay), "
                            "the " + fail_detail)
     m.mass = phys_mass
@@ -855,7 +869,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     max_ke_ratio = float((KE[sel] / W[sel]).max()) if sel.any() else 0.0
     res = CrushResult(
         Fu_N=float(Fu_at_fail), Fu_kgf=float(Fu_at_fail) / KGF, failure_mode=fail_mode,
-        failure_detail=fail_detail, t_failure=float(fail_at or 0.0),
+        failure_detail=fail_detail, governing=governing, t_failure=float(fail_at or 0.0),
         deflection_at_Fu_mm=float(peak_defl), curve=curve, events=events, frames=frames,
         criteria=criteria, dt=dt, steps=steps, wall_s=time.time() - t0,
         added_mass_kg=added * 1000, added_mass_frac=added / phys_mass.sum(),

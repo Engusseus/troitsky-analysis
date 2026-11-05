@@ -432,13 +432,15 @@ def test_next_steps_and_job_commands_parse(synthetic_crush, tmp_path):
     pytest.importorskip("mcp")
     cmds = []
     real = M._start
-    M._start = lambda cmd, out: cmds.append(cmd) or "{}"
+    M._start = lambda cmd, out: cmds.append(cmd) or json.dumps(
+        {"status": "running", "out_dir": str(out)})
     try:
         srv = M.build_server()
         for tool, args in (
                 ("start_crush", {"rate_check": True, "strict": True}),
                 ("start_montecarlo", {"n": 2}),
                 ("start_sensitivity", {"rel": 0.1}),
+                ("start_diagnose", {"n": 1, "candidates": 2}),
                 ("start_compare_designs", {"cad_a": cad, "cad_b": cad, "n": 2})):
             a = {"out_dir": str(tmp_path / tool), "overrides_yaml": "params: {}\n", **args}
             if "cad_a" not in a:
@@ -446,7 +448,7 @@ def test_next_steps_and_job_commands_parse(synthetic_crush, tmp_path):
             asyncio.run(srv.call_tool(tool, a))
     finally:
         M._start = real
-    assert len(cmds) == 4
+    assert len(cmds) == 5
     for cmd in cmds:
         assert cmd[1:3] == ["-m", "bridgesim.cli"]
         _parse_cli(cmd[3:])
@@ -1491,3 +1493,162 @@ def test_linear_screen_matches_beam_theory(tmp_path):
     assert r.exit_code == 0, r.stderr
     out = json.loads(r.stdout)
     assert out["kind"] == "screen" and len(out["limits"]) == 3
+
+
+def test_mcp_outputs_match_their_published_schemas(tmp_path):
+    """Every tool but get_schema publishes a typed output schema, and what the tools
+    return (the briefs by default, the full reports on request, job states) validates
+    against it; `bridgesim schema crush_brief` prints the brief's schema."""
+    pytest.importorskip("mcp")
+    jsonschema = pytest.importorskip("jsonschema")
+    import asyncio
+
+    from typer.testing import CliRunner
+
+    from bridgesim.cli import app
+    from bridgesim.sim.mcp_server import build_server
+
+    srv = build_server()
+    tools = asyncio.run(srv.list_tools())
+    tools = {t.name: (getattr(t, "output_schema", None) or getattr(t, "outputSchema", None))
+             for t in getattr(tools, "tools", tools)}
+    for name, schema in tools.items():
+        if name != "get_schema":
+            assert len(schema.get("properties", {})) > 2, name
+
+    def call(tool, **kw):
+        out = asyncio.run(srv.call_tool(tool, kw))
+        out = out[1] if isinstance(out, tuple) else getattr(out, "structured_content", out)
+        jsonschema.validate(out, tools[tool])
+        return out
+
+    stl = tmp_path / "b.stl"
+    write_stl(simple_beam_bridge(), stl)
+    assert call("inspect_bridge", cad_path=str(stl))["kind"] == "inspect_brief"
+    assert call("inspect_bridge", cad_path=str(stl), brief=False)["kind"] == "inspect"
+    assert call("screen_bridge", cad_path=str(stl))["kind"] == "screen"
+    assert call("job_status", out_dir=str(tmp_path / "nothing"))["status"] == "unknown"
+    r = CliRunner().invoke(app, ["schema", "crush_brief"])
+    assert r.exit_code == 0 and json.loads(r.stdout)["title"] == "CrushBrief"
+
+
+# ------------------------------------------------------------- round 9: exact, measured
+
+
+def test_suggested_commands_keep_the_run_context(tmp_path):
+    """Following a next_steps command never changes the model: a Z-up STL inspected with
+    a material file gets commands carrying --material and --up-axis (and absolute output
+    folders), which run as they are; a crush's commands also keep its seed, and ab keeps
+    its fidelity."""
+    import shlex
+    import shutil
+
+    from typer.testing import CliRunner
+
+    from bridgesim.cli import app
+    from bridgesim.sim import study
+    from bridgesim.sim.report import NextStep
+    from bridgesim.sim.study import _context, _with_context
+
+    bodies = simple_beam_bridge()
+    for b in bodies:  # stand it on its side: Z up
+        b.mesh.vertices[:] = b.mesh.vertices[:, [0, 2, 1]] * np.array([1, -1, 1])
+    cad = tmp_path / "bz.stl"
+    write_stl(bodies, cad)
+    mat = tmp_path / "my_material.yaml"
+    shutil.copy(ROOT / "materials" / "popsicle_birch.yaml", mat)
+    rep = study.inspect(cad, material=str(mat), up="z")
+    clis = [s.cli for s in rep.next_steps if s.cli]
+    assert clis and all(f"--material {mat}" in c and "--up-axis z" in c for c in clis)
+    for c in clis:
+        argv = shlex.split(c)
+        if "--out" in argv:
+            assert Path(argv[argv.index("--out") + 1]).is_absolute()
+        _parse_cli(argv[1:])
+    screen = next(c for c in clis if c.startswith("bridgesim screen"))
+    r = CliRunner().invoke(app, shlex.split(screen)[1:])
+    assert r.exit_code == 0, r.stderr
+    steps = _with_context([NextStep(action="rerun", why="", cli="bridgesim crush a.stl --json"),
+                           NextStep(action="strengthen", why="",
+                                    cli="bridgesim ab a.stl a.stl -n 3 --json")],
+                          _context(str(mat), up="z", seed=3, fidelity="quick"))
+    assert "--seed 3" in steps[0].cli and "--fidelity quick" in steps[1].cli
+    assert "--seed" not in steps[1].cli  # ab runs its own seeds
+
+
+def test_ab_says_what_governed_and_where_the_failure_moved():
+    from bridgesim.sim.study import summarize_pairs
+
+    def run(seed, F, gov):
+        return {"seed": seed, "Fu_kgf": F, "mass_kg": 2.0, "efficiency_kgf_per_kg": F / 2,
+                "first_failure": "joint failure: Hub Tie Strap - Far | Hub Spreader - R",
+                "governing": gov, "trustworthy": True}
+
+    a = [run(1, 2000, "member shear: Deck Stringer (3-ply) - R Far"),
+         run(2, 1800, "joint failure: End Post - L Near | T1 Cover - L Near")]
+    b = [run(1, 2050, "member shear: Deck Stringer (3-ply) - L Near"),
+         run(2, 2100, "member shear: Deck Stringer (3-ply) - R Near")]
+    rep = summarize_pairs(a, b, "A", "B", "quick")
+    assert rep.governing_b == "member shear: Deck Stringer (3-ply)"  # by part with copies
+    assert rep.runs_a[1].governing.startswith("joint failure: End Post")
+    assert len(rep.failure_moved) == 1 and rep.failure_moved[0].startswith("seed 2")
+    assert "moved" in rep.verdict
+
+
+def test_diagnose_ranks_what_limits_the_bridge(tmp_path, monkeypatch):
+    """diagnose strengthens each part that broke near the peak in turn on the same seeds
+    and ranks them by the rise of F_u (the crushes are stubbed here: the ranking, the
+    what-ifs and the verdict are what is tested)."""
+    import yaml
+
+    from bridgesim.sim import study
+
+    cad = tmp_path / "b.stl"
+    write_stl(simple_beam_bridge(), cad)
+    joint = {"kind": "joint_failure", "what": "End Post - L | T1 Cover - L",
+             "parts": ["End Post - L", "T1 Cover - L"]}
+    shear = {"kind": "member_shear", "what": "Stringer - R", "parts": ["Stringer - R"]}
+    gains = {"base": 1.0, "c0": 1.0, "c1": 1.15}  # strengthening the joint (c1) helps
+
+    def fake_pool(args, n_runs, processes, progress, label):
+        out = []
+        for tag, a in args:
+            ov = a[1] or {}
+            first = "c0" if "bodies" in ov else "c1" if "glue" in ov else "base"
+            out.append({"tag": tag, "seed": a[5], "Fu_kgf": 1000.0 * gains[first] + a[5],
+                        "first_failure": "x", "governing": "member shear: Stringer - R",
+                        "trustworthy": True, "mass_kg": 2.0, "efficiency_kgf_per_kg": 500.0,
+                        "at_peak": [shear, joint] if a[5] == 1 else [shear]})
+        return out
+
+    monkeypatch.setattr(study, "_pool_runs", fake_pool)
+    rep = study.diagnose(cad, n=2, candidates=2, out_dir=tmp_path / "d")
+    assert [c.kind for c in rep.candidates] == ["joint failure", "member shear"]
+    assert rep.candidates[0].Fu_change == pytest.approx(0.15, abs=0.001)
+    assert rep.candidates[1].seen == 2 and rep.candidates[1].Fu_change == pytest.approx(0)
+    assert rep.limiting == "End Post | T1 Cover" and "Strengthen End Post" in rep.verdict
+    wi = yaml.safe_load((tmp_path / "d" / "whatif.yaml").read_text())
+    assert wi["glue"] == {"End Post* | T1 Cover*": 1.5}
+    assert str((tmp_path / "d" / "whatif.yaml").resolve()) in rep.next_steps[0].cli
+
+
+def test_coupon_files_are_found_by_name_or_columns(tmp_path):
+    from bridgesim.sim.study import coupon_files
+
+    (tmp_path / "tension_feb.csv").write_text(
+        "specimen,width_mm,thickness_mm,failure_load_N\nT1,10,2,1600\n")
+    (tmp_path / "pulls.csv").write_text(
+        "specimen,width_mm,thickness_mm,failure_load_N\nT1,10,2,1600\n")
+    (tmp_path / "bend.csv").write_text(
+        "specimen,span_L_mm,width_b_mm,thickness_t_mm,load_F_N,deflection_mm,"
+        "failure_load_N\nB1,100,10,2,1,0.5,20\n")
+    (tmp_path / "laps.csv").write_text("specimen,overlap_mm,width_mm,faces,failure_load_N\n"
+                                       "L1,20,10,1,400\n")
+    (tmp_path / "notes.csv").write_text("a,b\n1,2\n")
+    (tmp_path / "bridge.csv").write_text("test,load_kgf\nT,100\n")
+    found, warn = coupon_files(tmp_path)
+    assert [f.name for f in found["stick_tension"]] == ["tension_feb.csv"]
+    assert [f.name for f in found["stick_bending"]] == ["bend.csv"]
+    assert [f.name for f in found["glue_joint"]] == ["laps.csv"]
+    assert any("pulls.csv" in w and "tension" in w for w in warn)
+    assert any("notes.csv" in w for w in warn) and not any("bridge.csv" in w for w in warn)

@@ -378,7 +378,9 @@ def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
                "platform_contact_points": int(len(model.p_att)),
                "plate_contact_points": int(len(model.q_att))},
         warnings=list(model.notes))
-    rep.next_steps = _next_inspect(rep, path, _ov_ref(overrides, ov_raw))
+    rep.next_steps = _with_context(
+        _next_inspect(rep, path, _ov_ref(overrides, ov_raw)),
+        _context(material, sim_params, ruleset, units, up, span))
     return rep
 
 
@@ -428,16 +430,21 @@ def screen(cad: str | Path, overrides=None, material=None, sim_params=None, rule
         warnings=list(model.notes))
     f, ov_arg = shlex.quote(str(path.resolve())), _ov_arg(_ov_ref(overrides, ov_raw))
     weak = list(dict.fromkeys(lm.part for lm in lims[:5]))
+    at = {}
+    for lm in lims:
+        at.setdefault(lm.part, list(lm.where_mm))
     rep.next_steps = [
         NextStep(action="crush", why="the screen ranks the weak spots; the crush follows "
                                      "the bridge to its collapse and gives F_u",
-                 parts=weak, cli=f"bridgesim crush {f}{ov_arg} --fidelity quick "
-                                 "--stop-at-failure --out results --json --brief"),
-        NextStep(action="strengthen", parts=weak[:3],
+                 parts=weak, where_mm=[at[p] for p in weak],
+                 cli=f"bridgesim crush {f}{ov_arg} --fidelity quick --stop-at-failure "
+                     f"--out {_results_dir(path)} --json --brief"),
+        NextStep(action="strengthen", parts=weak[:3], where_mm=[at[p] for p in weak[:3]],
                  why="the most loaded parts, where damage starts: whether strengthening "
                      "them raises F_u depends on what governs the collapse; crush shows "
                      "it, then test a what-if (overrides: glue_factor, section_scale) "
                      "with ab")]
+    _with_context(rep.next_steps, _context(material, sim_params, ruleset, units, up, span))
     return rep
 
 
@@ -572,7 +579,8 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
     rep = CrushReport(
         file=path.name, sha256=_sha(path), seed=seed, overrides=ov_raw,
         Fu_kgf=round(res.Fu_kgf, 2), Fu_N=round(res.Fu_N, 1), failure_mode=res.failure_mode,
-        failure_detail=res.failure_detail, deflection_at_Fu_mm=round(res.deflection_at_Fu_mm, 2),
+        failure_detail=res.failure_detail, governing=res.governing,
+        deflection_at_Fu_mm=round(res.deflection_at_Fu_mm, 2),
         mass_kg=round(mass, 3), efficiency_kgf_per_kg=round(res.Fu_kgf / mass, 2),
         criteria=_criteria(res.criteria),
         failures=_failures(res.events, _fail_time(res)),
@@ -583,8 +591,10 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         assumed_parameters=_assumed(mat, sp),
         fidelity=fidelity, Fu_first_joint_failure_kgf=_first_joint(res),
         warnings=list(model.notes))
-    rep.next_steps = _next_crush(rep, path, _ov_ref(overrides, ov_raw),
-                                 out_dir)
+    rep.next_steps = _with_context(
+        _next_crush(rep, path, _ov_ref(overrides, ov_raw), out_dir),
+        _context(material, sim_params, ruleset, units, up, span, seed=seed,
+                 fidelity=fidelity))
     if out_dir:
         out = Path(out_dir).resolve()
         out.mkdir(parents=True, exist_ok=True)
@@ -698,6 +708,63 @@ def _ask_steps(qs: list[Question]) -> list[NextStep]:
     return out
 
 
+# the options each suggested command takes, of those that describe the run's context
+_CTX_OPTS = {
+    "crush": ("material", "sim-params", "rules", "units", "up-axis", "span-axis", "seed"),
+    "screen": ("material", "sim-params", "rules", "units", "up-axis", "span-axis"),
+    "inspect": ("material", "sim-params", "rules", "units", "up-axis", "span-axis"),
+    "sensitivity": ("material", "units", "up-axis", "span-axis", "seed"),
+    "montecarlo": ("material", "units", "up-axis", "span-axis"),
+    "ab": ("material", "units", "up-axis", "span-axis", "fidelity"),
+    "diagnose": ("material", "units", "up-axis", "span-axis"),
+}
+
+
+def _ref(x, default: str | None = None) -> str | None:
+    """A material, simulation-parameter or rules reference as a command-line value: an
+    existing file as an absolute path, a bundled name as itself, the default as None."""
+    if x is None or not isinstance(x, (str, Path)) or str(x) == (default or ""):
+        return None
+    p = Path(x)
+    return str(p.resolve()) if p.exists() else str(x)
+
+
+def _context(material=None, sim_params=None, ruleset=None, units=None, up: str = "y",
+             span: str = "x", seed: int | None | bool = False,
+             fidelity: str | None = None) -> dict[str, str]:
+    """The options that make a suggested command run on the same model as this report:
+    the material, parameters and rules files, the file's axes and units, the seed and
+    (for ab) the fidelity."""
+    ctx = {"material": _ref(material, "popsicle_birch"), "sim-params": _ref(sim_params),
+           "rules": _ref(ruleset, "troitsky_2027"), "units": units or None,
+           "up-axis": None if up == "y" else up, "span-axis": None if span == "x" else span,
+           "seed": None if seed is False else str(-1 if seed is None else seed),
+           "fidelity": fidelity}
+    return {k: v for k, v in ctx.items() if v is not None}
+
+
+def _with_context(steps: list[NextStep], ctx: dict[str, str]) -> list[NextStep]:
+    """Add the run's context to every suggested command that takes it (and does not set
+    it already), so following a step never silently changes the model."""
+    for st in steps:
+        if not st.cli or not st.cli.startswith("bridgesim "):
+            continue
+        cmd = st.cli.split()[1]
+        extra = "".join(f" --{k} {shlex.quote(v)}" for k, v in ctx.items()
+                        if k in _CTX_OPTS.get(cmd, ()) and f"--{k}" not in st.cli)
+        if extra:
+            head, sep, tail = st.cli.partition(" --json")
+            st.cli = head + extra + sep + tail
+    return steps
+
+
+def _results_dir(path: Path, out_dir=None) -> str:
+    """Where a suggested crush writes: the given folder, or one next to the CAD file
+    (absolute either way)."""
+    d = Path(out_dir) if out_dir else path.parent / f"{path.stem}_results"
+    return shlex.quote(str(d.resolve()))
+
+
 def _ov_ref(overrides, ov_raw: dict):
     """What next_steps say about the overrides: the file the CLI user named, True when
     they came inline (typed in the app or sent over MCP: never their content, which is
@@ -771,7 +838,8 @@ def _next_inspect(rep: InspectReport, path: Path, overrides) -> list[NextStep]:
                           cli=f"bridgesim screen {f}{ov} --json"))
     steps.append(NextStep(action="crush", why="simulate the §12.5 crushing test (standard "
                           "fidelity, ~5 min; --fidelity quick ~2 min to screen variants)",
-                          cli=f"bridgesim crush {f}{ov} --out results --json --brief"))
+                          cli=f"bridgesim crush {f}{ov} --out {_results_dir(path)} "
+                              "--json --brief"))
     return steps + _measure_step(rep.assumed_parameters, f, ov)
 
 
@@ -802,7 +870,7 @@ def _whatif(gov: list[EventOut]) -> dict:
 
 def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextStep]:
     f, ov = shlex.quote(str(path.resolve())), _ov_arg(overrides)
-    out = shlex.quote(str(Path(out_dir).resolve())) if out_dir else "results"
+    out = _results_dir(path, out_dir)
     # the what-if (with the user's overrides) is written there by crush(out_dir=...)
     wy = (shlex.quote(str(Path(out_dir).resolve() / "whatif.yaml")) if out_dir
           else "whatif.yaml")
@@ -829,8 +897,8 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
                        for a, b in (w.split(" | ", 1) for w in soft if " | " in w)}}
         ova = ov.replace(" -o ", " --overrides-a ")
         steps.append(NextStep(
-            action="strengthen", parts=sorted({p for w in soft for p in w.split(" | ")}),
-            where_mm=[at[w] for w in soft if at[w]],
+            action="strengthen", parts=[p for w in soft if at[w] for p in w.split(" | ")],
+            where_mm=[at[w] for w in soft if at[w] for _p in w.split(" | ")],
             why=rep.failure_detail + ". Those joints gave way without a clean break: give "
                 "them more glued area or a gusset; try it first as the what-if in "
                 "`overrides` (with your own overrides: whatif.yaml in the output folder) "
@@ -851,13 +919,17 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
                               cli=f"bridgesim ab {f} <changed design> -n 3 --json"))
     elif gov:
         parts: list[str] = []
+        where: list[list[float]] = []  # one per part: where its failure happened
         for e in gov:
-            parts += [p for p in (e.parts or [e.what]) if p not in parts]
+            for p in e.parts or [e.what]:
+                if p not in parts and e.where_mm:
+                    parts.append(p)
+                    where.append(e.where_mm)
         wi = _whatif(gov)
         ova = ov.replace(" -o ", " --overrides-a ")
         steps.append(NextStep(
             action="strengthen", parts=parts,
-            where_mm=[e.where_mm for e in gov if e.where_mm],
+            where_mm=where,
             why="; ".join(f"{e.what}: {e.kind.replace('_', ' ')} at {e.load_kgf:.0f} kgf "
                           f"({e.load_kgf / max(rep.Fu_kgf, 1e-9):.0%} of F_u)" for e in gov)
             + ". The bridge failed there: strengthen it (glued area, a gusset, a deeper "
@@ -869,6 +941,14 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
             overrides=wi,
             cli=(f"bridgesim ab {f} {f}{ova} --overrides-b {wy} -n 3 --json" if wi
                  else f"bridgesim ab {f} <changed design> -n 3 --json")))
+        steps.append(NextStep(
+            action="diagnose", parts=parts,
+            why="which of these parts really limits the bridge (several often break "
+                "within a few % of each other, and the label names the first in a "
+                "cascade): diagnose strengthens each in turn on the same seeds and ranks "
+                "them by the rise of F_u",
+            cli=f"bridgesim diagnose {f}{ov} -n 2 --fidelity quick --out {out}_diagnose "
+                "--json"))
         close = {e.what for e in gov if e.load_kgf <= 1.03 * gov[0].load_kgf}
         if rep.fidelity == "quick":
             steps.append(NextStep(
@@ -969,9 +1049,7 @@ def brief(rep: CrushReport, n_failures: int = 10) -> dict:
                   or ln.get("penalty") or ln.get("bans")]
     d["n_questions"] = {sev: sum(q["severity"] == sev for q in d["questions"])
                         for sev in ("important", "check", "info")}
-    d["questions"] = [{"id": q["id"], "severity": q["severity"], "question": q["question"],
-                       "assumed": q.get("assumed"), "answer_with": q.get("answer_with")}
-                      for q in d["questions"] if q["severity"] == "important"]
+    d["questions"] = [q for q in d["questions"] if q["severity"] == "important"]
     d["next_steps"] = [{k: v for k, v in st.items() if v not in (None, [], {}, "")}
                        for st in d["next_steps"]]
     c = rep.curve
@@ -1333,9 +1411,8 @@ def _lab_gaps(d: Path, mat: Material, sp: SimParams) -> list[RealityGap]:
                                                    Gf=sp["wood.G_f_N_per_mm"])
         return memo[key]
 
-    f = d / "stick_bending_template.csv"
-    if f.exists():
-        rows = [r for r in csv.DictReader(f.read_text(encoding="utf-8").splitlines())]
+    rows = _coupon_rows(d, "stick_bending")
+    if rows:
         mets = []
         for r in rows:
             L, b, t = _float(r, "span_L_mm"), _float(r, "width_b_mm"), _float(r,
@@ -1359,9 +1436,8 @@ def _lab_gaps(d: Path, mat: Material, sp: SimParams) -> list[RealityGap]:
             err = np.mean([min(1, abs(m_.error)) for m_ in mets if m_.error is not None])
             gaps.append(RealityGap(subject="stick bending", metrics=mets,
                                    score_0_100=round(100 * (1 - err), 1)))
-    f = d / "glue_joint_template.csv"
-    if f.exists():
-        rows = [r for r in csv.DictReader(f.read_text(encoding="utf-8").splitlines())]
+    rows = _coupon_rows(d, "glue_joint")
+    if rows:
         mets = []
         for r in rows:
             ov, w, Ff = _float(r, "overlap_mm"), _float(r, "width_mm"), _float(
@@ -1407,10 +1483,9 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
     assumed_changes: dict[str, float] = {}
     notes: dict[str, str] = {}
     params: dict[str, float] = {}
-    f = d / "stick_bending_template.csv"
-    if f.exists():
+    if _coupon_rows(d, "stick_bending"):
         Es, fails = [], []
-        for r in csv.DictReader(f.read_text(encoding="utf-8").splitlines()):
+        for r in _coupon_rows(d, "stick_bending"):
             L, b, t = _float(r, "span_L_mm"), _float(r, "width_b_mm"), _float(r,
                                                                              "thickness_t_mm")
             F, dl, Ff = _float(r, "load_F_N"), _float(r, "deflection_mm"), _float(
@@ -1458,10 +1533,9 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
             log.append(f"f_b = {fb:.1f} MPa from {len(fails)} tests; f_t and f_c scaled by "
                        f"{k:.3f} so the simulated sticks break at the measured "
                        f"{target:.1f} N")
-    f = d / "glue_joint_template.csv"
-    if f.exists():
+    if _coupon_rows(d, "glue_joint"):
         joints = []
-        for r in csv.DictReader(f.read_text(encoding="utf-8").splitlines()):
+        for r in _coupon_rows(d, "glue_joint"):
             ov, w, Ff = _float(r, "overlap_mm"), _float(r, "width_mm"), _float(
                 r, "failure_load_N")
             faces = _float(r, "faces") or 1
@@ -1494,14 +1568,16 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
                 tj = [F_ / (ov * w) for ov, w, F_ in joints]
                 params["scatter.glue_cov"] = float(np.std(tj, ddof=1) / np.mean(tj))
     _direct_coupons(d, mat, sp, changes, notes, params, log)
+    log += coupon_files(d)[1] if d.is_dir() else []
     if not changes and not params:
         if not d.is_dir():
             raise FileNotFoundError(f"no such folder: {d}")
         raise ValueError(
             f"no coupon test results in {d.name}: fill one or more of the templates of "
             "validation/physical/ (stick_bending, glue_joint, stick_tension, "
-            "stick_compression, crush_across, end_grain, lap_slip: *_template.csv, a row "
-            "per specimen) and run calibrate on that folder")
+            "stick_compression, crush_across, end_grain, lap_slip; any file name with "
+            "their columns, a row per specimen) and run calibrate on that folder"
+            + ("; " + "; ".join(coupon_files(d)[1]) if coupon_files(d)[1] else ""))
     for k, v in params.items():
         if k.startswith("scatter."):
             log.append(f"{k} = {v:.3f} from the scatter of the specimens")
@@ -1520,6 +1596,67 @@ def _rows(f: Path) -> list[dict]:
         if f.exists() else []
 
 
+#: coupon tests: kind -> (words its file name may contain, columns it needs), in the
+#: order a name is matched (the more specific first)
+COUPONS: dict[str, tuple[tuple[str, ...], set[str]]] = {
+    "lap_slip": (("slip",), {"overlap_mm", "width_mm", "load_N", "slip_mm"}),
+    "end_grain": (("end_grain", "endgrain", "end-grain", "butt"),
+                  {"width_mm", "thickness_mm", "failure_load_N"}),
+    "crush_across": (("crush_across", "across", "c90", "perpendicular"),
+                     {"contact_length_mm", "width_mm", "plateau_load_N"}),
+    "stick_compression": (("compression", "compress"),
+                          {"length_mm", "width_mm", "thickness_mm", "failure_load_N"}),
+    "stick_tension": (("tension", "tensile"), {"width_mm", "thickness_mm", "failure_load_N"}),
+    "stick_bending": (("bending", "bend", "3pt", "three_point", "flex"),
+                      {"span_L_mm", "width_b_mm", "thickness_t_mm"}),
+    "glue_joint": (("glue", "lap_shear", "lap_joint", "joint"),
+                   {"overlap_mm", "width_mm", "failure_load_N"}),
+}
+
+
+def coupon_files(d: Path) -> tuple[dict[str, list[Path]], list[str]]:
+    """The coupon test files in folder ``d``, by kind, whatever they are called: by a
+    word of their name (``my_tension_tests.csv``) and their columns, or by their columns
+    alone when they fit one kind only; and a warning for each CSV that is not
+    recognised. Bridge crush records (a load_kgf column) are left to compare."""
+    found: dict[str, list[Path]] = {k: [] for k in COUPONS}
+    warn: list[str] = []
+    for f in sorted(Path(d).glob("*.csv")):
+        try:
+            head = f.read_text(encoding="utf-8").splitlines()[0]
+        except (IndexError, UnicodeDecodeError, OSError):
+            warn.append(f"skipped {f.name}: empty or unreadable")
+            continue
+        cols = {c.strip() for c in head.split(",")}
+        if "load_kgf" in cols:  # a bridge crush record: for compare
+            continue
+        name = f.stem.lower()
+        kind = next((k for k, (words, need) in COUPONS.items()
+                     if need <= cols and any(w in name for w in words)), None)
+        if kind is None:
+            fit = [k for k, (_w, need) in COUPONS.items() if need <= cols]
+            best = max((len(COUPONS[k][1]) for k in fit), default=0)
+            fit = [k for k in fit if len(COUPONS[k][1]) == best]
+            if len(fit) == 1:
+                kind = fit[0]
+            elif fit:
+                warn.append(f"skipped {f.name}: its columns fit {' and '.join(fit)}; put "
+                            f"one of {', '.join(repr(w) for k in fit for w in COUPONS[k][0][:1])} "
+                            "in its name")
+                continue
+            else:
+                warn.append(f"skipped {f.name}: not a coupon test file (columns of "
+                            "validation/physical/*_template.csv expected)")
+                continue
+        found[kind].append(f)
+    return found, warn
+
+
+def _coupon_rows(d: Path, kind: str) -> list[dict]:
+    """Every row of the coupon files of ``kind`` in ``d``."""
+    return [r for f in coupon_files(d)[0][kind] for r in _rows(f)]
+
+
 def _direct_coupons(d: Path, mat: Material, sp: SimParams, changes: dict, notes: dict,
                     params: dict, log: list) -> None:
     """Strength and glue values measured directly (no inverse fit): stick tension and
@@ -1528,14 +1665,14 @@ def _direct_coupons(d: Path, mat: Material, sp: SimParams, changes: dict, notes:
     factor) and the load-slip record of a lap joint (glue shear stiffness and
     toughness)."""
     vals = [_float(r, "failure_load_N") / (_float(r, "width_mm") * _float(r, "thickness_mm"))
-            for r in _rows(d / "stick_tension_template.csv")
+            for r in _coupon_rows(d, "stick_tension")
             if _float(r, "failure_load_N") and _float(r, "width_mm") and _float(r, "thickness_mm")]
     if vals:
         changes["f_t_MPa"] = float(np.mean(vals))
         notes["f_t_MPa"] = f"measured: {len(vals)} stick tension tests (calibrate)"
         log.append(f"f_t = {changes['f_t_MPa']:.1f} MPa from {len(vals)} tension tests")
     comp = []
-    for r in _rows(d / "stick_compression_template.csv"):
+    for r in _coupon_rows(d, "stick_compression"):
         F, w, t, L = (_float(r, k) for k in ("failure_load_N", "width_mm", "thickness_mm",
                                             "length_mm"))
         if F and w and t:
@@ -1550,7 +1687,7 @@ def _direct_coupons(d: Path, mat: Material, sp: SimParams, changes: dict, notes:
         log.append(f"f_c = {changes['f_c_MPa']:.1f} MPa from {len(comp)} compression tests")
     c90 = [_float(r, "plateau_load_N") / (_float(r, "contact_length_mm") * _float(r,
                                                                                "width_mm"))
-           for r in _rows(d / "crush_across_template.csv")
+           for r in _coupon_rows(d, "crush_across")
            if _float(r, "plateau_load_N") and _float(r, "contact_length_mm")
            and _float(r, "width_mm")]
     if c90:
@@ -1558,7 +1695,7 @@ def _direct_coupons(d: Path, mat: Material, sp: SimParams, changes: dict, notes:
         log.append(f"wood.f_c90_MPa = {params['wood.f_c90_MPa']:.2f} from {len(c90)} blocks "
                    "pressed flat")
     ends = [_float(r, "failure_load_N") / (_float(r, "width_mm") * _float(r, "thickness_mm"))
-            for r in _rows(d / "end_grain_template.csv")
+            for r in _coupon_rows(d, "end_grain")
             if _float(r, "failure_load_N") and _float(r, "width_mm") and _float(r, "thickness_mm")]
     if ends:
         tau = changes.get("glue.tau_g_MPa", mat.glue.tau_g_MPa.value)
@@ -1569,7 +1706,7 @@ def _direct_coupons(d: Path, mat: Material, sp: SimParams, changes: dict, notes:
                    "of a face joint)")
     ks, gs = [], []
     by_spec: dict[str, list] = {}
-    for r in _rows(d / "lap_slip_template.csv"):
+    for r in _coupon_rows(d, "lap_slip"):
         if _float(r, "load_N") is not None and _float(r, "slip_mm") is not None:
             by_spec.setdefault(r.get("specimen", ""), []).append(r)
     for rows in by_spec.values():
@@ -1641,7 +1778,8 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
     F = sorted(r["Fu_kgf"] for r in res)
     modes: dict[str, int] = {}
     for r in res:
-        modes[r["first_failure"]] = modes.get(r["first_failure"], 0) + 1
+        key = r.get("governing") or r["first_failure"]
+        modes[key] = modes.get(key, 0) + 1
     p = np.percentile(F, [5, 50, 95])
     rep = MonteCarloReport(file=Path(cad).name, n=n, Fu_kgf=[round(x, 2) for x in F],
                            p05_kgf=round(float(p[0]), 2), p50_kgf=round(float(p[1]), 2),
@@ -1739,7 +1877,11 @@ def _mc_one(a):
     major = next((e for e in rep.failures if e.kind != "joint_cracking"), None)
     where = f"{e_kind(major)}: {major.what}" if major else rep.failure_mode
     strict = rep.Fu_first_joint_failure_kgf
+    at_peak = [{"kind": e.kind, "what": e.what, "parts": e.parts}
+               for e in rep.failures if e.kind != "joint_cracking"
+               and e.load_kgf >= 0.9 * rep.Fu_kgf]
     return {"seed": seed, "Fu_kgf": rep.Fu_kgf, "first_failure": where,
+            "governing": rep.governing, "at_peak": at_peak,
             "Fu_strict_kgf": min(strict, rep.Fu_kgf) if strict else rep.Fu_kgf,
             "trustworthy": rep.quality.trustworthy, "mass_kg": rep.mass_kg,
             "efficiency_kgf_per_kg": rep.efficiency_kgf_per_kg}
@@ -1810,14 +1952,26 @@ def summarize_pairs(ra: list[dict], rb: list[dict], name_a: str, name_b: str,
     sig = bool(ciF[0] > 0 or ciF[1] < 0) if not math.isnan(ciF[0]) else False
     wins = int((d > 0).sum())
 
-    def gov(rs):  # most frequent first failure; ties: the one seed 1 shows
-        cnt: dict[str, int] = {}
-        for r in rs:
-            cnt[r["first_failure"]] = cnt.get(r["first_failure"], 0) + 1
-        if not cnt:
+    def group(label: str) -> str:
+        """A governing failure by part with its copies ('member shear: Deck Stringer
+        (..) - R Far' -> 'member shear: Deck Stringer (..)')."""
+        kind, sep, what = label.partition(": ")
+        if not sep:
+            return label
+        return kind + ": " + " | ".join(_group(p) for p in what.split(" | "))
+
+    def gov(rs):  # most frequent governing failure by part group; ties: the first seed's
+        labels = [group(r.get("governing") or r["first_failure"]) for r in rs]
+        if not labels:
             return ""
-        top = max(cnt.values())
-        return next(r["first_failure"] for r in rs if cnt[r["first_failure"]] == top)
+        top = max(labels.count(x) for x in labels)
+        return next(x for x in labels if labels.count(x) == top)
+
+    moved = [f"seed {a['seed']}: A {a.get('governing') or a['first_failure']} -> B "
+             f"{b.get('governing') or b['first_failure']}"
+             for a, b in zip(ra, rb, strict=True)
+             if group(a.get("governing") or a["first_failure"])
+             != group(b.get("governing") or b["first_failure"])]
 
     seeds = f"B stronger with {wins} of {n} seeds"
     if math.isnan(ciF[0]):
@@ -1831,9 +1985,14 @@ def summarize_pairs(ra: list[dict], rb: list[dict], name_a: str, name_b: str,
         verdict = (f"F_u changes by {dF:+.1%} ({seeds}), but the 90 % interval "
                    f"{ciF[0]:+.1%} to {ciF[1]:+.1%} includes 0: not proven with {n} seeds; "
                    "run more seeds if the difference matters")
+    if moved:
+        verdict += (f". The failure moved in {len(moved)} of {n} seeds (failure_moved): "
+                    "there B is limited by another part, so strengthening that one too may "
+                    "be what it takes")
     runs = [[DesignRun(seed=r["seed"], Fu_kgf=r["Fu_kgf"], mass_kg=r["mass_kg"],
                        efficiency_kgf_per_kg=r["efficiency_kgf_per_kg"],
-                       first_failure=r["first_failure"], trustworthy=r["trustworthy"])
+                       first_failure=r["first_failure"], governing=r.get("governing", ""),
+                       trustworthy=r["trustworthy"])
              for r in rs] for rs in (ra, rb)]
     return DesignComparison(
         a=name_a, b=name_b, n=n, fidelity=fidelity, runs_a=runs[0], runs_b=runs[1],
@@ -1841,7 +2000,7 @@ def summarize_pairs(ra: list[dict], rb: list[dict], name_a: str, name_b: str,
         Fu_mean_b_kgf=round(float(np.mean([r["Fu_kgf"] for r in rb])), 2),
         Fu_change=round(dF, 4), Fu_change_ci90=ciF, efficiency_change=round(dE, 4),
         efficiency_change_ci90=ciE, significant=sig, verdict=verdict,
-        governing_a=gov(ra), governing_b=gov(rb),
+        governing_a=gov(ra), governing_b=gov(rb), failure_moved=moved,
         untrustworthy_runs=sum(1 for r in ra + rb if not r["trustworthy"]))
 
 
@@ -2105,6 +2264,117 @@ def compare_designs(cad_a: str | Path, cad_b: str | Path, n: int = 3, overrides_
         (Path(out_dir) / "comparison.json").write_text(rep.model_dump_json(indent=2),
                                                       encoding="utf-8")
     return rep
+
+
+def diagnose(cad: str | Path, n: int = 2, overrides=None, material=None, sim_params=None,
+             ruleset=None, fidelity: str = "quick", candidates: int = 3,
+             processes: int | None = None, out_dir: str | Path | None = None,
+             progress=None, units=None, up: str = "y", span: str = "x"):
+    """What really limits the bridge: crush it with seeds 1..n, take the parts that
+    broke near the peak (within 10 % of F_u) in those runs, strengthen each in turn (the
+    what-if of next_steps: glue x1.5 for a joint, section x1.25 for a member or plate, on
+    every copy) and crush again with the same seeds. The parts are ranked by the paired
+    change of F_u: the label 'governing failure' of one run is the first thing that
+    broke in a cascade; this measures which part the load really depends on."""
+    from bridgesim.sim.report import DiagnosisItem, DiagnosisReport, EventOut
+
+    if n < 1 or candidates < 1:
+        raise ValueError("n and candidates must be at least 1")
+    path = Path(cad)
+    if not path.exists():
+        raise FileNotFoundError(f"no such file: {path}")
+    _, _, _, ov_raw, _, _, _ = _inputs(cad, overrides, material, sim_params, ruleset, units,
+                                       up, span)
+
+    def run_args(tag, ov):
+        return [(tag, (str(cad), ov, material, sim_params, ruleset, sd, None, fidelity,
+                       str(Path(out_dir) / f"{tag}_seed_{sd}") if out_dir else None,
+                       units, up, span)) for sd in range(1, n + 1)]
+
+    base = _pool_runs(run_args("base", ov_raw or None), n, processes, progress, "base crush")
+    base.sort(key=lambda r: r["seed"])
+    # candidates: what broke near the peak, by part with its copies, most frequent first
+    seen: dict[str, tuple[int, dict]] = {}
+    for r in base:
+        for e in {(_copies_key(e)): e for e in r["at_peak"]}.values():
+            k = _copies_key(e)
+            cnt, ev = seen.get(k, (0, e))
+            seen[k] = (cnt + 1, ev)
+    cands = sorted(seen.items(), key=lambda kv: -kv[1][0])[:candidates]
+    if not cands:
+        raise ValueError("nothing broke near the peak in the base runs: no part to "
+                         "strengthen (see failure_mode: a deflection or contact limit, "
+                         "or buckling)")
+    args, whatifs = [], {}
+    for i, (_k, (_cnt, e)) in enumerate(cands):
+        ev = EventOut(t_s=0.0, jack_travel_mm=0.0, load_N=0.0, load_kgf=0.0,
+                      kind=e["kind"], what=e["what"], parts=e["parts"])
+        wi = _whatif([ev])
+        whatifs[f"c{i}"] = wi
+        args += run_args(f"c{i}", merge_whatif(ov_raw, wi))
+    res = _pool_runs(args, len(args), processes, progress, "what-if crush")
+    items = []
+    for i, (k, (cnt, e)) in enumerate(cands):
+        rb = sorted((r for r in res if r["tag"] == f"c{i}"), key=lambda r: r["seed"])
+        ch = [(b["Fu_kgf"] - a["Fu_kgf"]) / max(a["Fu_kgf"], 1e-9)
+              for a, b in zip(base, rb, strict=True)]
+        govs = [b.get("governing") or b["first_failure"] for b in rb]
+        items.append(DiagnosisItem(
+            part=k.split(": ", 1)[1], kind=e["kind"].replace("_", " "), seen=cnt,
+            overrides=whatifs[f"c{i}"], Fu_change=round(float(np.mean(ch)), 4),
+            Fu_changes=[round(c, 4) for c in ch], stronger_with=int(sum(c > 0 for c in ch)),
+            governing_after=max(set(govs), key=govs.count)))
+    items.sort(key=lambda it: -it.Fu_change)
+    top = items[0]
+    helps = top.Fu_change > 0.02 and top.stronger_with == n
+    govs0 = [r.get("governing") or r["first_failure"] for r in base]
+    rep = DiagnosisReport(
+        file=path.name, fidelity=fidelity, n=n, Fu_base_kgf=[r["Fu_kgf"] for r in base],
+        governing_base=max(set(govs0), key=govs0.count), candidates=items,
+        limiting=top.part if helps else "none",
+        verdict=(f"Strengthen {top.part} ({top.kind}) first: F_u {top.Fu_change:+.1%} "
+                 f"(stronger with {top.stronger_with} of {n} seeds); "
+                 + "; ".join(f"{it.part}: {it.Fu_change:+.1%}" for it in items[1:])
+                 if helps else
+                 "No single part limits the bridge: strengthening any one of them moves "
+                 "the failure to another at about the same load ("
+                 + "; ".join(f"{it.part}: {it.Fu_change:+.1%}" for it in items)
+                 + "). Strengthen them together (one what-if with all of them), or look "
+                   "for what they share (the load path they are on)."))
+    f = shlex.quote(str(path.resolve()))
+    ovs = _ov_arg(_ov_ref(overrides, ov_raw))
+    wi_all = {}
+    for it in (items[:1] if helps else items):
+        wi_all = merge_whatif(wi_all, it.overrides)
+    rep.next_steps = [NextStep(
+        action="strengthen", parts=[it.part for it in (items[:1] if helps else items)],
+        overrides=wi_all,
+        why=("the measured limiting part: make it stronger in the CAD (glued area, a "
+             "gusset, a deeper member) and compare the two files with ab" if helps else
+             "strengthen these parts together: test the combined what-if (`overrides`) "
+             "with ab on more seeds"),
+        cli=f"bridgesim ab {f} {f}{ovs.replace(' -o ', ' --overrides-a ')} --overrides-b "
+            + (shlex.quote(str(Path(out_dir).resolve() / "whatif.yaml")) if out_dir
+               else "<your overrides plus `overrides`>") + " -n 3 --json")]
+    _with_context(rep.next_steps, _context(material, sim_params, ruleset, units, up, span,
+                                           fidelity=fidelity))
+    if out_dir:
+        import yaml
+
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        (Path(out_dir) / "whatif.yaml").write_text(
+            "# your overrides plus the what-if of diagnose\n"
+            + yaml.safe_dump(merge_whatif(ov_raw, wi_all), sort_keys=False,
+                             allow_unicode=True), encoding="utf-8")
+        (Path(out_dir) / "diagnosis.json").write_text(rep.model_dump_json(indent=2),
+                                                     encoding="utf-8")
+    return rep
+
+
+def _copies_key(e: dict) -> str:
+    """A failure by its kind and its part(s) with their copies."""
+    parts = e.get("parts") or [e["what"]]
+    return f"{e['kind']}: " + " | ".join(_group(p) for p in parts)
 
 
 def dump(model_obj) -> str:

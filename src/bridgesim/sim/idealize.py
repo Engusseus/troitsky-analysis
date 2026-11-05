@@ -528,7 +528,7 @@ def _group(name: str) -> str:
 
 
 def _laminated_member(name: str, sh, lam, L: float, mat: Material, o: dict,
-                      questions: list) -> tuple[float, float]:
+                      questions: list, peak: float = 1.155) -> tuple[float, float]:
     """Tension-strength factor and shear strength of a member laminated from sticks.
 
     A ply longer than one stick has butt joints; its load goes round each joint through
@@ -536,14 +536,16 @@ def _laminated_member(name: str, sh, lam, L: float, mat: Material, o: dict,
     path cuts k plies at their joints and shears the glue between them:
     ``P_k = (n - k) P_ply + (k - 1) tau_g w s``, the smallest over k (k = 1 is the net
     section, k = n a path through every joint). Bending shear between plies runs in the
-    glue lines, so the member's shear strength is at most the glue's."""
+    glue lines, so the member's shear strength is at most the glue's: the glue's own
+    strength (``peak`` x tau_g, what the glue points use), not tau_g, the average over a
+    lap that its ends' stress concentration lowers."""
     n = len(lam.angles)
     f_v = mat.f_v_MPa.value
     if sh.layup.kind != "laminate" or n < 2:
         return 1.0, f_v
     gf = float(o.get("glue_factor", 1.0))
     tau = mat.glue.tau_g_MPa.value * max(gf, 1e-3)
-    fv = min(f_v, tau)
+    fv = min(f_v, peak * tau)
     Ls = mat.stick.length_mm
     if L <= 1.02 * Ls or o.get("butt_stagger_mm") == 0:
         return 1.0, fv
@@ -768,7 +770,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             s_v = (b.mesh.vertices - c) @ u
             s0, s1 = float(s_v.min()), float(s_v.max())
             L = s1 - s0
-            kt, fv_lam = _laminated_member(b.name, sh, lam, L, mat, o, questions)
+            kt, fv_lam = _laminated_member(b.name, sh, lam, L, mat, o, questions,
+                                           sp.values.get("glue.tau_peak_over_avg", 1.155))
             # uniform elements; joints attach to the nearest node through a rigid arm
             h = min(30.0 * mesh_scale, L / 4 * min(mesh_scale, 1.5)) if L >= 60 \
                 else max(L / 2, 1e-3)
