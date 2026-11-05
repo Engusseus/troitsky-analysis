@@ -87,6 +87,7 @@ class SimParams:
 PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("wood.nu_LT", 0.0, 0.5, True),
     ("wood.crush_softening", 0.0, 0.99, True),
+    ("wood.fc_proportional", 0.2, 1.0, True),
     ("wood.densification_strain", 0.0, 0.95, False),
     ("glue.peel_to_shear", 0.0, 5.0, False),
     ("glue.end_grain_factor", 0.0, 2.0, True),
@@ -99,6 +100,8 @@ PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("scatter.placement_mm", 0.0, 50.0, True),
     ("scatter.support_level_mm", 0.0, 20.0, True),
     ("scatter.lean_rad", 0.0, 0.1, True),
+    ("scatter.*_corr", 0.0, 1.0, True),
+    ("scatter.amplitude", 0.0, 10.0, True),
     ("wood.E_placeholder_MPa", 0.0, 1e6, True),
     ("*", 0.0, float("inf"), False),  # moduli, strengths, energies, sizes: positive
 ]
@@ -189,6 +192,12 @@ class Layup:
     source: str = "default"  # "name", "override" or "default"
     text: str = ""
     orientation_assumed: bool = False  # "10-ply" without UD / 0-90 / +-45
+    plies_assumed: bool = False  # no ply count given: plies of a stick's thickness
+
+    def with_plies(self, n: int) -> None:
+        """Set the number of plies, keeping the pattern (UD, 0/90 or +-45 alternating)."""
+        a = self.angles or [0.0]
+        self.angles = [a[i % len(a)] if len(a) > 1 else a[0] for i in range(max(1, n))]
 
     @property
     def label(self) -> str:
@@ -214,16 +223,20 @@ def parse_layup(name: str) -> Layup | None:
     m = _PLY.search(t)
     n = int(m.group(1)) if m else None
     grain = "span" if "along the span" in t else "long"
+    lay = None
     if re.search(r"\b(ud|unidirectional)\b", t):
-        return Layup("laminate", [0.0] * (n or 1), grain, "name", name)
-    if re.search(r"0\s*[-/]\s*90", t):
+        lay = Layup("laminate", [0.0] * (n or 1), grain, "name", name)
+    elif re.search(r"0\s*[-/]\s*90", t):
         k = n or 2
-        return Layup("laminate", [0.0 if i % 2 == 0 else 90.0 for i in range(k)], grain,
-                     "name", name)
-    if re.search(r"(\+-|±|\+/-)\s*45", t):
+        lay = Layup("laminate", [0.0 if i % 2 == 0 else 90.0 for i in range(k)], grain,
+                    "name", name)
+    elif re.search(r"(\+-|±|\+/-)\s*45", t):
         k = n or 2
-        return Layup("laminate", [45.0 if i % 2 == 0 else -45.0 for i in range(k)], grain,
-                     "name", name)
+        lay = Layup("laminate", [45.0 if i % 2 == 0 else -45.0 for i in range(k)], grain,
+                    "name", name)
+    if lay is not None:
+        lay.plies_assumed = n is None  # the ply count follows from the thickness
+        return lay
     if "block" in t:
         return Layup("block", [0.0] * (n or 1), grain, "name", name)
     if n:  # "10-ply" with no orientation: sticks all along the member, the usual case
@@ -350,3 +363,45 @@ def fibre_spread(n: int) -> float:
     """Factor on the spacing of n equal fibres across a rectangle so that they give the
     rectangle's exact second moment (n equally spaced fibres give (1 - 1/n^2) of it)."""
     return math.sqrt(n * n / (n * n - 1.0)) if n > 1 else 1.0
+
+
+def rect_torsion(w: float, t: float) -> tuple[float, float, float]:
+    """Saint-Venant torsion of a w x t rectangle (w along the section's e2, t along e3):
+    the torsion constant J and the two torsional moduli T / tau: on the planes normal to
+    e2 and on those normal to e3 (the glue lines between plies stacked along e3).
+
+    The largest shear (Roark, Table 10.7, case 4) acts at the middle of the long sides,
+    along them, so on the planes normal to the short dimension; the middle of each short
+    side carries 0.742-1 of it (1 for a square, 0.795 at 2:1, 0.745 at 4:1, Timoshenko &
+    Goodier), on the planes normal to the long dimension. A thin flat laminate twisted
+    shears its glue lines at about 3/4 of the peak torsional stress."""
+    a, b = max(w, t) / 2.0, min(w, t) / 2.0
+    if b <= 0:
+        return 0.0, 1e30, 1e30
+    r = b / a
+    J = a * b**3 * (16.0 / 3.0 - 3.36 * r * (1.0 - r**4 / 12.0))
+    tau_per_T = 3.0 / (8.0 * a * b * b) * (1 + 0.6095 * r + 0.8865 * r**2 - 1.8023 * r**3
+                                           + 0.9100 * r**4)
+    short = 0.742 + 0.258 * math.exp(-1.58 * (1.0 / r - 1.0))
+    # planes normal to e3 carry the peak when e3 is the long side (t >= w), else the
+    # short-side value; and the other way round for the planes normal to e2
+    k3 = 1.0 if t >= w else short
+    k2 = 1.0 if w >= t else short
+    return J, 1.0 / (tau_per_T * k2), 1.0 / (tau_per_T * k3)
+
+
+def inplane_split_strength(angles: list[float], f_v: float, f_45: float) -> float:
+    """Shear strength of a laminate on the planes across its width (normal to e2, along
+    the member, cutting every ply): each ply at angle a to the member resists with
+    f_v along or across its grain (a split along the grain; the panel shear of plywood
+    is about f_v) and with its fibres when they cross the plane at 45 degrees (``f_45``:
+    a +-45 pair carries in-plane shear as fibre tension and compression, netting
+    analysis f = min(f_t, f_c) / 2), in a quadratic interaction; the mean over the plies,
+    which all have to fail for the member to split."""
+    if not angles:
+        return f_v
+    tot = 0.0
+    for a in angles:
+        c2, s2 = abs(math.cos(math.radians(2 * a))), abs(math.sin(math.radians(2 * a)))
+        tot += 1.0 / math.hypot(c2 / f_v, s2 / max(f_45, 1e-9))
+    return tot / len(angles)

@@ -1914,3 +1914,119 @@ def test_coupon_files_are_found_by_name_or_columns(tmp_path):
     _, _, params = calibrate(sb)
     assert params["glue.interlaminar_MPa"] == pytest.approx(0.75 * 620 / 80)
     shutil.rmtree(sb)
+
+
+def test_torsion_shears_each_plane_by_saint_venant():
+    """A twisted rectangle: the peak shear (Roark) on the planes normal to its short side,
+    0.742-1 of it on the others (Timoshenko & Goodier: 0.795 at 2:1). A flat laminate's
+    glue lines (normal to its thickness) take the short-side value, not the peak."""
+    from bridgesim.sim.materials import rect_torsion
+
+    J, W2, W3 = rect_torsion(10.0, 10.0)  # square: tau = T / (0.208 a^3), J = 0.1406 a^4
+    assert 1 / W2 == pytest.approx(1 / (0.208 * 1000), rel=0.01) and W2 == W3
+    assert J == pytest.approx(0.1406 * 1e4, rel=0.01)
+    J, W2, W3 = rect_torsion(20.0, 10.0)  # 2:1, long side along e2
+    assert 1 / W2 == pytest.approx(1 / (0.246 * 20 * 100), rel=0.01)  # alpha = 0.246
+    assert W2 / W3 == pytest.approx(0.795, rel=0.01)
+    assert rect_torsion(10.0, 20.0)[1:] == pytest.approx((W3, W2))  # stacked the other way
+    J, W2, W3 = rect_torsion(100.0, 2.0)  # a thin strip: tau = 3 T / (b t^2)
+    assert 1 / W2 == pytest.approx(3 / (100 * 4), rel=0.02)
+    assert W2 / W3 == pytest.approx(0.742, rel=0.01)
+
+
+def test_plies_resist_a_split_across_the_width_with_their_fibres():
+    """A member splits across its width (along it, through every ply) at f_v when its
+    plies run along or across it, at the fibres' strength (netting: min(f_t, f_c) / 2)
+    when they cross the plane at 45 degrees, in a quadratic interaction between."""
+    from bridgesim.sim.materials import inplane_split_strength
+
+    assert inplane_split_strength([0, 0, 0], 6.0, 15.0) == pytest.approx(6.0)
+    assert inplane_split_strength([0, 90], 6.0, 15.0) == pytest.approx(6.0)
+    assert inplane_split_strength([45, -45], 6.0, 15.0) == pytest.approx(15.0)
+    assert 6.0 < inplane_split_strength([30, -30], 6.0, 15.0) < 15.0
+
+
+def test_frame_plies_follow_the_sheet_or_the_arm():
+    """A cross-ply or angle-ply frame is a sheet cut to shape: its plies keep the plate's
+    axis, so an arm at 45 degrees to a +-45 plate is 0/90 (stiffer); a UD frame is built
+    arm by arm, its sticks along each arm."""
+    from shapely.geometry import LineString
+    from shapely.ops import unary_union
+
+    from bridgesim.cad.synthetic import prism
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    outline = unary_union([LineString([(-400, 0), (400, 0)]).buffer(6, cap_style=2)] + [
+        LineString([(0, 0), (sx * 60, sz * 60)]).buffer(6, cap_style=2)
+        for sx in (-1, 1) for sz in (-1, 1)])  # symmetric: its long axis is x
+    pts = np.asarray(outline.exterior.coords)[:-1]
+    ply = Ply.from_material(MAT, SP)
+    E, qs = {}, {}
+    for lay in ("4-ply +-45", "4-ply UD", "4-ply +-45 arm"):
+        name = f"Rib ({lay.replace(' arm', '')})"
+        plate = prism(name, pts, 20.0, 28.0)
+        ov = Overrides.from_dict({"bodies": {"Rib*": {"grain": "arm"}}} if "arm" in lay
+                                 else {})
+        m = build_model(simple_beam_bridge() + [plate], MAT, SP, ov, seed=None)
+        rib = next(b for b in m.bodies if b.name.startswith("Rib"))
+        assert rib.kind == "frame"
+        qs[lay] = {q["id"] for q in m.questions}
+        d = m.X[m.b_j[rib.beams]] - m.X[m.b_i[rib.beams]]
+        diag = np.abs(d[:, 0]) < 0.9 * np.linalg.norm(d, axis=1)
+        E[lay] = (float(np.median(m.b_E[rib.beams][~diag])),
+                  float(np.median(m.b_E[rib.beams][diag])))
+    e45 = laminate(ply, [45, -45, 45, -45], 8.0).E_x  # (build_model: the file's E)
+    e090 = laminate(ply, [0, 90, 0, 90], 8.0).E_x
+    assert E["4-ply +-45"][0] == pytest.approx(e45, rel=0.05)  # along the plate's axis
+    assert E["4-ply +-45"][1] == pytest.approx(e090, rel=0.05)  # the 45-degree arm
+    assert E["4-ply UD"][0] == pytest.approx(E["4-ply UD"][1], rel=0.01)  # along each arm
+    # which: asked (the sheet's axis is assumed); laid along each arm, both arms +-45
+    assert "frame_plies:Rib (4-ply +-45)" in qs["4-ply +-45"]
+    assert not any(q.startswith("frame_plies") for q in qs["4-ply UD"] | qs["4-ply +-45 arm"])
+    assert E["4-ply +-45 arm"] == pytest.approx((e45, e45), rel=0.05)
+
+
+def test_stick_scatter_is_correlated_and_averaged_by_lamination():
+    """Each body's stiffness and strength factors: the strength has the stated CoV and
+    the stated correlation with the stiffness; a member of n plies averages its partly
+    alike sticks (CoV x sqrt((1 + (n - 1) rho) / n)); the amplitude scales both."""
+    from bridgesim.sim.idealize import stick_factors
+
+    def stats(n, sp):
+        f = np.log(np.array([stick_factors(0, f"Body {i}", n, sp) for i in range(4000)]))
+        cov = np.sqrt(np.exp(f.var(0)) - 1)
+        return cov, float(np.corrcoef(f.T)[0, 1])
+
+    cov, r = stats(1, SP)
+    assert cov == pytest.approx([SP["scatter.E_cov"], SP["scatter.strength_cov"]], rel=0.05)
+    assert r == pytest.approx(SP["scatter.E_strength_corr"], abs=0.03)
+    cov10, r10 = stats(10, SP)
+    k = math.sqrt((1 + 9 * SP["scatter.ply_corr"]) / 10)
+    assert cov10 == pytest.approx(cov * k, rel=0.03) and r10 == pytest.approx(r, abs=1e-9)
+    cov_a, _ = stats(1, SP.updated({"scatter.amplitude": 0.1}))
+    assert cov_a == pytest.approx(0.1 * cov, rel=0.05)
+    assert stick_factors(None, "Body 1", 1, SP) == (1.0, 1.0)
+
+
+def test_wood_softens_before_it_crushes():
+    """A short stack in compression: straight to the proportional limit (0.65 f_c), then
+    bending over to f_c at (2 - 0.65) f_c / E, as wood does; elastic-perfectly plastic
+    with the limit at 1."""
+    for kap in (0.65, 1.0):
+        m = lab.blank_model(np.array([[0.0, 0, 0], [100.0, 0, 0]]))
+        lab.add_beam_line(m, [0, 1], lab.BeamSpec(b=10, d=10, E=7100, ft=40, fc=30,
+                                                   fv=1e9))
+        m.params["fc_proportional"] = kap
+        r = lab.drive(m, {0: "xyzr", 1: "yzr"}, 1, 0, 5.0, max_disp=1.0, sign=-1.0,
+                      stop_drop=0.0)
+        ec0, A = 30 / 7100, 100.0
+        f = np.interp([0.5 * ec0 * 100, ec0 * 100], r.disp, r.force)
+        assert f[0] == pytest.approx(0.5 * 30 * A, rel=0.02)  # linear below the limit
+        assert r.peak == pytest.approx(30 * A, rel=0.02)
+        u_pk = float(r.disp[np.argmax(r.force)])
+        if kap < 1:
+            # at f_c / E: on the curve, 1 - 0.35 (1 - 0.5)^2 = 0.9125 of f_c
+            assert f[1] == pytest.approx(0.9125 * 30 * A, rel=0.03)
+            assert u_pk == pytest.approx(1.35 * ec0 * 100, rel=0.15)
+        else:
+            assert f[1] == pytest.approx(30 * A, rel=0.02)

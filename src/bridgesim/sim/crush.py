@@ -709,8 +709,10 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     prev_bs = st.b_shear.copy()
     prev_s = st.s_dmg > 0.5
     prev_k = st.k_alive.copy()
-    # a member crushing: a fibre's plastic strain in compression past its onset strain
-    crush_eps = -np.asarray(m.b_fc) / np.maximum(np.asarray(m.b_E), 1e-9) \
+    # a member crushing: a fibre's plastic strain in compression past f_c by its onset
+    # strain (past the rising curve's (1 - kap) f_c / E)
+    kap = float(m.params.get("fc_proportional", 1.0))
+    crush_eps = -(2.0 - kap) * np.asarray(m.b_fc) / np.maximum(np.asarray(m.b_E), 1e-9) \
         if len(m.b_i) else np.zeros(0)
     prev_c = np.zeros(len(m.b_i), bool)
     patch_of = m.c_patch

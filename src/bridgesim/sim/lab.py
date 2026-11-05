@@ -26,6 +26,7 @@ import numpy as np
 from bridgesim.sim import shell as shellmod
 from bridgesim.sim import solver as S
 from bridgesim.sim.materials import fibre_spread as _exact
+from bridgesim.sim.materials import rect_torsion
 from bridgesim.sim.model import Model
 
 
@@ -36,7 +37,7 @@ def blank_model(X: np.ndarray, nf: int = 15) -> Model:
         X=np.asarray(X, float), mass=z(n), rot_inertia=z(n), node_body=z(n, int),
         b_i=z(0, int), b_j=z(0, int), b_L0=z(0), b_E0=z((0, 3, 3)), b_fy=z((0, nf)),
         b_fz=z((0, nf)), b_fA=z((0, nf)), b_E=z(0), b_ft=z(0), b_fc=z(0), b_Gf=z(0),
-        b_GJ=z(0), b_A=z(0), b_fv=z(0), b_fv3=z(0), b_nply=z(0), b_Wt=z(0), b_kGA=z(0),
+        b_GJ=z(0), b_A=z(0), b_fv=z(0), b_fv3=z(0), b_nply=z(0), b_Wt=z((0, 2)), b_kGA=z(0),
         b_body=z(0, int),
         s_nodes=z((0, 3), int), s_E0=z((0, 3, 3)), s_P=z((0, 3, 3)), s_t=z(0),
         s_body=z(0, int), **shellmod.empty(), a_node=z(0, int), a_r0=z((0, 3)),
@@ -74,8 +75,7 @@ def add_beam_line(m: Model, nodes: list[int], spec: BeamSpec, up=(0.0, 0.0, 1.0)
     FY, FZ = np.meshgrid(gy, gz, indexing="ij")
     A = spec.b * spec.d
     fA = np.full(spec.ny * spec.nz, A / (spec.ny * spec.nz))
-    bb, dd = max(spec.b, spec.d), min(spec.b, spec.d)
-    J = bb * dd**3 * (1 / 3 - 0.21 * dd / bb * (1 - dd**4 / (12 * bb**4)))
+    J, Wt2, Wt3 = rect_torsion(spec.b, spec.d)
     rows = {k: [] for k in ("i", "j", "L0", "E0")}
     for a, b in zip(nodes[:-1], nodes[1:], strict=True):
         d = m.X[b] - m.X[a]
@@ -107,8 +107,9 @@ def add_beam_line(m: Model, nodes: list[int], spec: BeamSpec, up=(0.0, 0.0, 1.0)
     for name, v in (("b_E", spec.E), ("b_ft", spec.ft), ("b_fc", spec.fc),
                     ("b_Gf", spec.Gf), ("b_GJ", spec.G * J), ("b_A", A),
                     ("b_fv", spec.fv), ("b_fv3", spec.fv), ("b_nply", 2.0),
-                    ("b_Wt", J / dd), ("b_kGA", 5 / 6 * spec.G * A if spec.shear else 0.0)):
+                    ("b_kGA", 5 / 6 * spec.G * A if spec.shear else 0.0)):
         cat(name, np.full(k, float(v)))
+    cat("b_Wt", np.tile([Wt2, Wt3], (k, 1)))
     cat("b_body", np.zeros(k, int))
 
 
@@ -208,10 +209,14 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
 
 def three_point_bending(E: float, ft: float, fc: float, span: float = 100.0,
                         b: float = 10.0, t: float = 2.0, Gf: float = 3.0, n_el: int = 16,
-                        rate: float = 50.0) -> TestResult:
-    """A stick (b x t) simply supported over ``span``, loaded at mid-span (vertical Y)."""
+                        rate: float = 50.0, fc_prop: float = 1.0,
+                        crush_softening: float = 0.3) -> TestResult:
+    """A stick (b x t) simply supported over ``span``, loaded at mid-span (vertical Y).
+    ``fc_prop``: the proportional limit in compression (wood.fc_proportional; 1 =
+    elastic-perfectly plastic)."""
     X = np.c_[np.linspace(0, span, n_el + 1), np.zeros(n_el + 1), np.zeros(n_el + 1)]
     m = blank_model(X)
+    m.params.update(fc_proportional=fc_prop, crush_softening=crush_softening)
     add_beam_line(m, list(range(n_el + 1)), BeamSpec(b=b, d=t, E=E, ft=ft, fc=fc, Gf=Gf),
                   up=(0, 1, 0))
     mid = n_el // 2
@@ -398,6 +403,7 @@ def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2
     m.s_t = np.full(len(nodes), t)
     m.s_body = np.zeros(len(nodes), int)
     m.params["crush_softening"] = sp["wood.crush_softening"]
+    m.params["fc_proportional"] = sp.values.get("wood.fc_proportional", 1.0)
     left = [nid(0, j) for j in range(ny + 1)]
     right = [nid(nx, j) for j in range(ny + 1)
              if abs(ys[j] - W / 2) <= grip * W / 2 + 1e-9]

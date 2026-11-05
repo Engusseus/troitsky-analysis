@@ -1,13 +1,18 @@
 """Mesh convergence of the crush simulation at a fixed jack speed.
 
     uv run python validation/convergence_study.py BRIDGE.SLDPRT [--out results.json]
-        [--save runs/] [--scales 1.6,1,0.75] [--seeds 0,1,2]
+        [--save runs/] [--scales 1.6,1,0.75] [--seeds 0,1,2] [--amplitude 1]
 
 Crushes the bridge with each element size (x1.6 = quick, x1 = standard, x0.75 = fine
 by default) for each seed, all at 100 mm/s, two runs at a time, and prints F_u, the
 deflection at F_u and the first failure of each, plus the mean and spread per mesh.
 ``--seeds -1`` is the perfect bridge (no imperfections, no scatter): with it, a change
 of F_u between meshes is discretisation error alone, not a different random bridge.
+But a symmetric bridge fails on whichever side round-off picks, at a load that depends
+on how early the symmetry breaks (an imperfection-sensitive bifurcation), so its F_u
+mixes the mesh error with that: ``--amplitude 0.1`` scales every seeded imperfection
+and scatter of the seeds to a tenth (``scatter.amplitude``), a nearly perfect bridge
+whose asymmetry is set by the seed at every mesh.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ import argparse
 import concurrent.futures as cf
 import json
 import multiprocessing as mp
+import os
 import statistics
 import time
 from pathlib import Path
@@ -28,13 +34,13 @@ def _name(scale: float) -> str:
 
 
 def _one(args):
-    cad, scale, seed, save = args
+    cad, scale, seed, save, amp, threads = args
     done = Path(save) / f"{_name(scale)}_seed{seed}" / "result.json" if save else None
     if done is not None and done.exists():  # finished before a restart: keep it
         return json.loads(done.read_text())
     import numba
 
-    numba.set_num_threads(2)
+    numba.set_num_threads(threads)
     from bridgesim.sim import study
     from bridgesim.sim.crush import CrushOptions
 
@@ -43,11 +49,13 @@ def _one(args):
     full = seed in (0, -1) and bool(save)  # replay (and the collapse) for one seed
     rep, _ = study.crush(cad, seed=None if seed < 0 else seed, fidelity="standard",
                          mesh_scale=scale, replay=full, out_dir=out,
+                         overrides=({"params": {"scatter.amplitude": amp}} if amp != 1
+                                    else None),
                          options=CrushOptions(speed_mm_s=100.0,
                                               dt_target=3e-6 * min(1.0, scale / 1.0) ** 1.1,
                                               after_failure_mm=15.0 if full else 2.0))
     first = next((f for f in rep.failures if f.kind != "joint_cracking"), None)
-    res = {"mesh": _name(scale), "element_scale": scale, "seed": seed,
+    res = {"mesh": _name(scale), "element_scale": scale, "seed": seed, "amplitude": amp,
            "Fu_kgf": rep.Fu_kgf, "deflection_at_Fu_mm": rep.deflection_at_Fu_mm,
            "first_failure": f"{first.kind}: {first.what}" if first else rep.failure_mode,
            "governing": rep.governing, "competing": rep.competing,
@@ -65,15 +73,19 @@ def main() -> None:
     ap.add_argument("--out", default="convergence.json")
     ap.add_argument("--scales", default="1.6,1,0.75", help="element sizes (x standard)")
     ap.add_argument("--seeds", default="0,1,2", help="-1: the perfect bridge")
+    ap.add_argument("--amplitude", type=float, default=1.0,
+                    help="scale on the seeded imperfections and scatter (scatter.amplitude)")
+    ap.add_argument("--processes", type=int, default=2, help="runs at a time")
     ap.add_argument("--save", default="", help="folder for each run's crush.json, curves, "
                     "events (and the replay of seed 0 or -1); a run whose result.json is "
                     "there already is not run again (resume after an interruption)")
     a = ap.parse_args()
     scales = [float(x) for x in a.scales.split(",")]
     seeds = [int(s) for s in a.seeds.split(",")]
-    jobs = [(a.cad, sc, sd, a.save) for sc in scales for sd in seeds]
+    threads = max(1, (os.cpu_count() or 4) // a.processes)
+    jobs = [(a.cad, sc, sd, a.save, a.amplitude, threads) for sc in scales for sd in seeds]
     res = []
-    with cf.ProcessPoolExecutor(2, mp_context=mp.get_context("spawn")) as ex:
+    with cf.ProcessPoolExecutor(a.processes, mp_context=mp.get_context("spawn")) as ex:
         for r in ex.map(_one, jobs):
             res.append(r)
             print(json.dumps(r), flush=True)

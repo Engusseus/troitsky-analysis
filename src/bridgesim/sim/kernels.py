@@ -53,7 +53,7 @@ def _log3(R, out):
 @njit(cache=True, fastmath=True, error_model="numpy")
 def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv3, Wt, nply,
                 kGA, gam, s2, s3, soft, eps_p, dmg_t, alive, fractured, shear, F, Mo, update,
-                beta, dt, prev, rat2, rat3):
+                beta, dt, prev, rat2, rat3, kap):
     nb = bi.shape[0]
     nf = fA.shape[1]
     Ti = np.empty((3, 3))
@@ -170,17 +170,26 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
                     sig = (1.0 - dm) * E_ * ee
                 else:
                     sig = E_ * ee
-                r = -ep / (5.0 * ec0)
-                if r > 1.0:
-                    r = 1.0
-                elif r < 0.0:
-                    r = 0.0
-                fce = fc[e] * (1.0 - soft * r)
+                # compression: linear to kap f_c, then rising smoothly to f_c (wood's
+                # proportional limit; the plastic strain at f_c is (1 - kap) f_c / E),
+                # then crushing down to (1 - soft) f_c over 5 more f_c / E
+                q = -ep
+                qp = (1.0 - kap) * ec0
+                hard = 0.0
+                if q < qp:
+                    u = math.sqrt(q / qp) if q > 0.0 else 0.0
+                    fce = fc[e] * (1.0 - (1.0 - kap) * (1.0 - u) * (1.0 - u))
+                    hard = 1.0 - u  # tangent on the rising curve: (1 - u) E
+                else:
+                    r = (q - qp) / (5.0 * ec0)
+                    if r > 1.0:
+                        r = 1.0
+                    fce = fc[e] * (1.0 - soft * r)
                 Et = E_ if ee <= 0.0 else (1.0 - dm) * E_
                 if sig < -fce:
                     ep = eps + fce / E_
                     sig = -fce
-                    Et = 0.0
+                    Et = hard * E_
                 if update:
                     dmg_t[e, g, f] = dm
                     eps_p[e, g, f] = ep
@@ -249,9 +258,10 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
                 # shear along e3 runs on the glue planes between the plies, along e2
                 # across the width: the stress over strength of each, for the split check
                 # (solver.split_members: averaged over a section depth along the member)
-                tt = abs(T) / Wt[e]
-                rat3[e] = (1.5 * abs(Vy) / Ar[e] + tt) / fv3[e]
-                rat2[e] = (1.5 * abs(Vz) / Ar[e] + tt) / fv[e]
+                # (torsion: the shear on each family of planes, Wt[e, 0] on those
+                # normal to e2, Wt[e, 1] on the glue lines; materials.rect_torsion)
+                rat3[e] = (1.5 * abs(Vy) / Ar[e] + abs(T) / Wt[e, 1]) / fv3[e]
+                rat2[e] = (1.5 * abs(Vz) / Ar[e] + abs(T) / Wt[e, 0]) / fv[e]
             if cracked_max / Atot > 0.9:
                 fractured[e] = True
         if not alive[e]:

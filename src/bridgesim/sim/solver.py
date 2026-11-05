@@ -200,6 +200,7 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     lch = (0.5 * L0)[:, None]
     eu = np.maximum(et0 + 2 * m.b_Gf[:, None] / (ft * lch), 1.5 * et0)
     soft = m.params.get("crush_softening", 0.3)
+    kap = float(m.params.get("fc_proportional", 1.0))
     ec0 = fc / E_
     # Timoshenko shear flexibility (see kernels.beam_kernel)
     EIz = (m.b_E[:, None] * m.b_fA * m.b_fy**2).sum(1) * st.b_s2**2
@@ -227,9 +228,16 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
                                                              * (eu - et0)), 0, 1), 0.0)
         dm2 = np.maximum(dm, dnew)
         sig = np.where(ee > 0, (1 - dm2) * E_ * ee, E_ * ee)
-        fce = fc * (1 - soft * np.clip(-ep / (5 * ec0), 0, 1))
+        # compression: linear to kap f_c, rising to f_c, then crushing (kernels)
+        q = np.maximum(-ep, 0.0)
+        qp = (1 - kap) * ec0
+        rising = q < qp
+        u = np.sqrt(np.where(rising, q / np.maximum(qp, 1e-30), 1.0))
+        fce = np.where(rising, fc * (1 - (1 - kap) * (1 - u) ** 2),
+                       fc * (1 - soft * np.clip((q - qp) / (5 * ec0), 0, 1)))
         over = sig < -fce
-        Et = np.where(over, 0.0, np.where(ee > 0, (1 - dm2) * E_, E_))
+        Et = np.where(over, np.where(rising, (1 - u) * E_, 0.0),
+                      np.where(ee > 0, (1 - dm2) * E_, E_))
         ep2 = np.where(over, eps + fce / E_, ep)
         sig = np.where(over, -fce, sig)
         EIzt += 0.5 * (Et * m.b_fA * m.b_fy**2).sum(1) * st.b_s2**2
@@ -274,9 +282,10 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
         big = st.b_alive & (((th_i**2).sum(1) > 1.0) | ((th_j**2).sum(1) > 1.0))
         st.b_alive &= ~big
         st.b_fractured |= big
-        tt = np.abs(T) / m.b_Wt
-        st.b_rat3 = np.where(alive, (1.5 * np.abs(Vy) / m.b_A + tt) / m.b_fv3, 0.0)
-        st.b_rat2 = np.where(alive, (1.5 * np.abs(Vz) / m.b_A + tt) / m.b_fv, 0.0)
+        st.b_rat3 = np.where(alive, (1.5 * np.abs(Vy) / m.b_A + np.abs(T) / m.b_Wt[:, 1])
+                             / m.b_fv3, 0.0)
+        st.b_rat2 = np.where(alive, (1.5 * np.abs(Vz) / m.b_A + np.abs(T) / m.b_Wt[:, 0])
+                             / m.b_fv, 0.0)
         cracked = (st.dmg_t > 0.99) * m.b_fA[:, None, :]
         frac = cracked.sum(2).max(1) / m.b_fA.sum(1)
         st.b_fractured |= frac > 0.9
@@ -799,7 +808,8 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
                       m.b_nply, m.b_kGA, st.b_gam, st.b_s2, st.b_s3,
                       float(m.params.get("crush_softening", 0.3)), st.eps_p, st.dmg_t,
                       st.b_alive, st.b_fractured, st.b_shear, F, Mo, update,
-                      s.beta if update else 0.0, s.dt, st.b_prev, st.b_rat2, st.b_rat3)
+                      s.beta if update else 0.0, s.dt, st.b_prev, st.b_rat2, st.b_rat3,
+                      float(m.params.get("fc_proportional", 1.0)))
         if update:
             split_members(m, st)
     if len(m.s_nodes):

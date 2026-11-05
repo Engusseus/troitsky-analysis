@@ -42,9 +42,11 @@ from bridgesim.sim.materials import (
     Layup,
     Ply,
     SimParams,
+    inplane_split_strength,
     laminate,
     parse_layup,
     parse_override_layup,
+    rect_torsion,
 )
 from bridgesim.sim.materials import fibre_spread as _exact
 from bridgesim.sim.model import G_MM_S2, TONNE_PER_KG, BodyInfo, Model, Patch
@@ -59,7 +61,7 @@ class Overrides:
 
     ``bodies`` maps a body name or glob pattern (``"Floss*"``) to fields: ``kind``
     (bar/shell/block/cable/ignore), ``layup`` (any text bridgesim can parse, e.g.
-    ``"6-ply UD"``), ``grain`` (``long``/``span``), ``glue_factor`` (multiplies the
+    ``"6-ply UD"``), ``grain`` (``long``/``span``/``arm``), ``glue_factor`` (multiplies the
     strength of every glue line on that body, e.g. 0.5 for a poorly glued part) and
     ``strength_factor``; ``butt_stagger_mm`` is the distance between the butt joints of
     adjacent plies of a laminated member longer than one stick (0: no butt joints, e.g.
@@ -116,8 +118,9 @@ class Overrides:
                 elif k == "layup" and parse_override_layup(str(v)) is None:
                     out.append(f"overrides: layup {v!r} for {pat!r} cannot be read (write "
                                "e.g. '10-ply UD', '2-ply 0-90', '4-ply +-45', 'block')")
-                elif k == "grain" and v not in ("long", "span"):
-                    out.append(f"overrides: grain {v!r} for {pat!r} must be long or span")
+                elif k == "grain" and v not in ("long", "span", "arm"):
+                    out.append(f"overrides: grain {v!r} for {pat!r} must be long, span or "
+                               "arm (a frame's plies laid along each of its arms)")
                 elif k in ("section_scale", "glue_factor", "strength_factor") and not (
                         isinstance(v, (int, float)) and 0 <= v <= 10
                         and (k != "section_scale" or v > 0)):
@@ -535,6 +538,34 @@ def _group(name: str) -> str:
     return re.sub(r"( - .*| \(mirror copy\).*| #\d+)$", "", name).strip()
 
 
+def stick_factors(seed: int | None, name: str, n_plies: int, sp: SimParams
+                  ) -> tuple[float, float]:
+    """The seeded stiffness and strength factors of a body (lognormal, mean 1): a
+    member of n plies averages its sticks, which are partly alike (``scatter.ply_corr``
+    rho), so both vary by CoV x sqrt((1 + (n - 1) rho) / n); and a stiffer body is
+    stronger, the two correlated by ``scatter.E_strength_corr`` (in log terms). Each
+    draw comes from a stream named after the body; ``scatter.amplitude`` scales both."""
+    if seed is None:
+        return 1.0, 1.0
+    amp = float(sp.values.get("scatter.amplitude", 1.0))
+    r_p = float(sp.values.get("scatter.ply_corr", 0.0))
+    n = max(1, int(n_plies))
+    k_lam = math.sqrt((1 + (n - 1) * r_p) / n)
+    rho = float(sp.values.get("scatter.E_strength_corr", 0.0))
+
+    def z(key):
+        return float(np.random.default_rng(
+            [int(seed), zlib.crc32(key.encode("utf-8"))]).standard_normal())
+
+    def ln(cov, zz):
+        s_ = math.sqrt(math.log(1 + (cov * k_lam) ** 2)) * amp
+        return math.exp(s_ * zz - 0.5 * s_ * s_)
+
+    zE, zS = z(f"E:{name}"), z(f"S:{name}")
+    return (ln(sp["scatter.E_cov"], zE),
+            ln(sp["scatter.strength_cov"], rho * zE + math.sqrt(max(0.0, 1 - rho**2)) * zS))
+
+
 def interlaminar_strength(angles, f_v: float, f_rolling: float, bond: float) -> float:
     """Shear strength of the glue lines between the plies of a laminate (plies at
     ``angles`` degrees to the member's axis): the lower of the bond line's own strength
@@ -649,12 +680,21 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     questions: list[dict] = []
     notes: list[str] = []
 
+    # one scale on every seeded imperfection and scatter (1: as set; 0.1: a nearly
+    # perfect bridge whose asymmetry is still set by the seed, for mesh studies)
+    amp = float(sp.values.get("scatter.amplitude", 1.0))
+
+    def lognormal(cov: float, z: float) -> float:
+        """The lognormal factor of mean 1 and CoV ``cov`` (times the amplitude) at the
+        standard normal value ``z``."""
+        s = math.sqrt(math.log(1 + cov * cov)) * amp
+        return float(np.exp(s * z - 0.5 * s * s))
+
     def scatter(cov: float, key: str = "") -> float:
         r = rng_for(key) if key else rng
         if r is None or cov <= 0:
             return 1.0
-        s = math.sqrt(math.log(1 + cov * cov))
-        return float(np.exp(r.normal(-0.5 * s * s, s)))
+        return lognormal(cov, float(r.standard_normal()))
 
     # ---------------------------------------------------------------- body analysis
     shapes: list[Shape] = []
@@ -668,13 +708,15 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         if lay is None:
             lay = parse_layup(b.name)
         if lay is None:
-            lay = Layup("laminate", [0.0] * max(1, round(0)), "long", "default", "")
+            lay = Layup("laminate", [0.0], "long", "default", "")
+            lay.plies_assumed = True
             questions.append({
                 "id": f"layup:{b.name}", "body": b.name, "topic": "material",
                 "severity": "important",
                 "question": f"What is '{b.name}' made of (number of stick plies and their "
                             "direction)? Its name does not say.",
-                "assumed": "solid sticks along its long axis (UD)",
+                "assumed": "sticks along its long axis (UD), in plies of a stick's "
+                           "thickness glued together",
                 "answer_with": {"bodies": {b.name: {
                     "layup": "<N>-ply <UD | 0-90 | +-45>, or block"}}},
             })
@@ -697,6 +739,15 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 questions[-1].get("id") == f"layup:{b.name}":
             questions.pop()  # set rigid or left out: what it is made of changes nothing
         sh = analyse_shape(b, lay, forced)
+        if lay.plies_assumed and lay.kind == "laminate" and sh.kind in ("bar", "shell"):
+            # a part of a stick bridge is built of sticks: plies of a stick's thickness
+            # glued together (glue lines that can split), never one solid piece of wood
+            t_s = float(getattr(mat.stick, "thickness_mm", 2.0) or 2.0)
+            lay.with_plies(round(sh.T / t_s))
+            if questions and questions[-1].get("id") == f"layup:{b.name}":
+                questions[-1]["assumed"] = (f"{lay.label}: sticks along its long axis, "
+                                            f"{len(lay.angles)} plies of a stick's "
+                                            f"thickness ({t_s:g} mm) glued together")
         if lay.source == "default" and sh.kind == "block" and questions and \
                 questions[-1].get("id") == f"layup:{b.name}":
             questions[-1]["question"] += (" It is compact, so it is modelled as a rigid "
@@ -752,7 +803,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     # scatter.lean_rad (EN 1995-1-1 5.4.4: 0.005 rad), applied to every node and glue
     # point alike so the parts stay together and unstressed
     rl = rng_for("lean")
-    lean = 0.0 if rl is None else sp.values.get("scatter.lean_rad", 0.0) * rl.uniform(-1, 1)
+    lean = 0.0 if rl is None else \
+        amp * sp.values.get("scatter.lean_rad", 0.0) * rl.uniform(-1, 1)
     if lean:
         y_base = min(float(b.mesh.vertices[:, 1].min()) for b in bodies)
         bld.imperf = lambda p: p + np.array([0.0, 0.0, lean * (p[1] - y_base)])
@@ -811,27 +863,59 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             L_ = float(np.linalg.norm(np.diff(ch.pts, axis=0), axis=1).sum())
             if rb is None or ratio <= 0 or L_ <= 0 or ch.spur:
                 return [None] * len(ch.pts)
-            amp = L_ / ratio * rb.uniform(0.3, 1.7)
+            a_ = amp * L_ / ratio * rb.uniform(0.3, 1.7)
             ang = rb.uniform(0, 2 * math.pi)
             d2 = ch.pts[-1] - ch.pts[0]
             d2 = d2 / max(float(np.linalg.norm(d2)), 1e-9)
             w3 = -d2[1] * sh.e1 + d2[0] * sh.e2
             direc = math.cos(ang) * w3 + math.sin(ang) * sh.n
             s_ = np.r_[0, np.cumsum(np.linalg.norm(np.diff(ch.pts, axis=0), axis=1))]
-            return [amp * math.sin(math.pi * x / L_) * direc for x in s_]
+            return [a_ * math.sin(math.pi * x / L_) * direc for x in s_]
 
-        # grain: along each arm (sticks run along the arm) unless it follows the span
-        gspan = None
+        # grain: a UD frame's sticks run along each arm (it is built arm by arm); a
+        # cross-ply or angle-ply frame is a sheet cut to shape, its plies fixed to the
+        # plate's axis (the long side of its bounding rectangle) whatever the arm's
+        # direction (an arm at 45 degrees to a +-45 plate is 0/90), unless its grain is
+        # "arm" (plies laid along each arm); either follows the span when its grain says so
+        gref = None
         if sh.layup.grain == "span":
             gx = np.array([1.0, 0, 0]) - sh.n * sh.n[0]
             if np.linalg.norm(gx) > 0.3:
-                gspan = gx / np.linalg.norm(gx)
+                gref = gx / np.linalg.norm(gx)
+        multi = len({round(a) % 180 for a in sh.layup.angles}) > 1
+        if gref is None and multi and sh.layup.grain != "arm":
+            gref = sh.u
+            g_ = _group(b.name)
+            if not any(q["id"] == f"frame_plies:{g_}" for q in questions):
+                ax = ", ".join(f"{v:+.2f}" for v in sh.u)
+                questions.append({
+                    "id": f"frame_plies:{g_}", "body": b.name, "topic": "material",
+                    "severity": "check",
+                    "question": f"'{g_}' is a {sh.layup.label} plate cut to the shape of "
+                                "its arms (a frame). Are its plies one sheet laid at "
+                                f"{sh.layup.label.split()[-1]} to its long axis "
+                                f"(direction {ax}) in every arm, or laid along each arm?",
+                    "assumed": "one sheet: the plies keep the plate's long axis in every "
+                               "arm (an arm at 45 degrees to a +-45 plate is 0/90)",
+                    "answer_with": {"bodies": {g_ + "*": {
+                        "grain": "<long (one sheet, as assumed) | arm (laid along each "
+                                 "arm)>"}}}})
         lam_cache: dict[float, object] = {}
+        gf_b = max(float(o.get("glue_factor", 1.0)), 1e-3)
+        f_45 = 0.5 * min(ply.f_t, ply.f_c)
 
         def lam_at(rel: float):
             key = round(rel, 0)
             if key not in lam_cache:
-                lam_cache[key] = laminate(ply, [a + key for a in sh.layup.angles], T)
+                angs = [a + key for a in sh.layup.angles]
+                lam_ = laminate(ply, angs, T)
+                fv3_ = mat.f_v_MPa.value
+                if sh.layup.kind == "laminate" and len(angs) >= 2:
+                    fv3_ = interlaminar_strength(angs, mat.f_v_MPa.value,
+                                                 il_strength["f_rolling"],
+                                                 il_strength["bond"] * gf_b)
+                lam_cache[key] = (lam_, fv3_, inplane_split_strength(
+                    angs, mat.f_v_MPa.value, f_45))
             return lam_cache[key]
 
         elems = []  # (a, b, width, L0, chain index)
@@ -871,17 +955,16 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             e3v = np.cross(e1v, e2v)
             Ein = np.stack([e1v, e2v, e3v], axis=1)
             rel = 0.0
-            if gspan is not None:
-                rel = math.degrees(math.atan2(float(gspan @ e2v), float(gspan @ e1v)))
-            lam = lam_at(rel)
-            kt, fv_lam = kt_fv[ci]
+            if gref is not None:
+                rel = math.degrees(math.atan2(float(gref @ e2v), float(gref @ e1v)))
+            lam, fv_lam, fv_in = lam_at(rel)
+            kt = kt_fv[ci][0]
             ny, nz = (5, 3) if We >= T else (3, 5)
             gy = ((np.arange(ny) + 0.5) / ny - 0.5) * We * _exact(ny)
             gz = ((np.arange(nz) + 0.5) / nz - 0.5) * T * _exact(nz)
             FY, FZ = np.meshgrid(gy, gz, indexing="ij")
             A_e = We * T
-            bb, dd = max(We, T), min(We, T)
-            J = bb * dd**3 * (1 / 3 - 0.21 * dd / bb * (1 - dd**4 / (12 * bb**4)))
+            J, Wt2, Wt3 = rect_torsion(We, T)
             beams["i"].append(a_)
             beams["j"].append(b_)
             beams["L0"].append(L0)
@@ -895,10 +978,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             beams["Gf"].append(G_f * Sf)
             beams["GJ"].append(lam.G_xy * Ef * J)
             beams["A"].append(A_e)
-            beams["fv"].append(mat.f_v_MPa.value * Sf)
+            beams["fv"].append(fv_in * Sf)
             beams["fv3"].append(fv_lam * Sf)
             beams["nply"].append(float(max(2, len(lam.angles))))
-            beams["Wt"].append(J / dd)
+            beams["Wt"].append((Wt2, Wt3))
             beams["kGA"].append(5 / 6 * lam.G_xy * Ef * A_e)
             beams["body"].append(bi)
             info.beams.append(len(beams["i"]) - 1)
@@ -953,9 +1036,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         if sh.kind == "ignore":
             infos.append(info)
             continue
-        Ef = scatter(sp["scatter.E_cov"], f"E:{b.name}")
-        Sf = scatter(sp["scatter.strength_cov"], f"S:{b.name}") * float(
-            o.get("strength_factor", 1.0))
+        # stick scatter (stick_factors); strengths below are scaled by Ef x Sf
+        Ef, St = stick_factors(seed, b.name, len(sh.layup.angles)
+                               if sh.layup.kind == "laminate" else 1, sp)
+        Sf = St / Ef * float(o.get("strength_factor", 1.0))
         if sh.kind == "bar":
             T, Wp = sh.T * ssc, sh.Wp * ssc
             if sh.layup.kind == "toothpick":
@@ -971,23 +1055,25 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             L = s1 - s0
             kt, fv_lam = _laminated_member(b.name, sh, lam, L, mat, o, questions,
                                            **il_strength)
+            fv_in = inplane_split_strength(lam.angles, mat.f_v_MPa.value,
+                                           0.5 * min(ply.f_t, ply.f_c))
             # uniform elements; joints attach to the nearest node through a rigid arm
-            h = min(30.0 * mesh_scale, L / 4 * min(mesh_scale, 1.5)) if L >= 60 \
+            h = min(30.0 * mesh_scale, L / 4 * min(mesh_scale, 1.0)) if L >= 60 \
                 else max(L / 2, 1e-3)
             n_el = max(2, int(math.ceil(L / h - 1e-9)))
             st2 = list(np.linspace(s0, s1, n_el + 1))
             st2 = np.array(st2)
             ratio = sp["scatter.bow_L_over"]
-            amp = 0.0
+            bow_a = 0.0
             ang = 0.0
             rb = rng_for(f"bow:{b.name}")
             if rb is not None and ratio > 0:
-                amp = L / ratio * rb.uniform(0.3, 1.7)
+                bow_a = amp * L / ratio * rb.uniform(0.3, 1.7)
                 ang = rb.uniform(0, 2 * math.pi)
             bow_dir = math.cos(ang) * w + math.sin(ang) * nrm
             ids = []
             for s in st2:
-                p = c + s * u + amp * math.sin(math.pi * (s - s0) / L) * bow_dir
+                p = c + s * u + bow_a * math.sin(math.pi * (s - s0) / L) * bow_dir
                 ids.append(bld.node(p, bi))
             ids = np.array(ids)
             body_nodes[bi] = ids
@@ -1015,8 +1101,6 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 wid *= vol / (T * float((wid * dl).sum()))  # same volume as the solid
             gz = ((np.arange(nz) + 0.5) / nz - 0.5) * T * _exact(nz)
             Wm = float(np.mean(wid))
-            bb, dd = max(Wm, T), min(Wm, T)
-            J = bb * dd**3 * (1 / 3 - 0.21 * dd / bb * (1 - dd**4 / (12 * bb**4)))
             E0 = np.stack([u, w, nrm], axis=1)
             for k_e, (a_, b_) in enumerate(zip(ids[:-1], ids[1:], strict=True)):
                 We = float(wid[k_e])
@@ -1024,8 +1108,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 gy = off[k_e] + ((np.arange(ny) + 0.5) / ny - 0.5) * We * _exact(ny)
                 FY, FZ = np.meshgrid(gy, gz, indexing="ij")
                 fA = np.full(ny * nz, A_e / (ny * nz))
-                bb, dd = max(We, T), min(We, T)
-                J = bb * dd**3 * (1 / 3 - 0.21 * dd / bb * (1 - dd**4 / (12 * bb**4)))
+                J, Wt2, Wt3 = rect_torsion(We, T)
                 L0 = float(np.linalg.norm(bld.X[b_] - bld.X[a_]))
                 e1v = (bld.X[b_] - bld.X[a_]) / L0
                 e3v = np.cross(e1v, w)
@@ -1045,10 +1128,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 beams["Gf"].append(G_f * Sf)
                 beams["GJ"].append(lam.G_xy * Ef * J)
                 beams["A"].append(A_e)
-                beams["fv"].append(mat.f_v_MPa.value * Sf)
+                beams["fv"].append(fv_in * Sf)
                 beams["fv3"].append(fv_lam * Sf)
                 beams["nply"].append(float(max(2, len(lam.angles))))
-                beams["Wt"].append(J / dd)
+                beams["Wt"].append((Wt2, Wt3))
                 beams["kGA"].append(5 / 6 * lam.G_xy * Ef * A_e)
                 beams["body"].append(bi)
                 info.beams.append(len(beams["i"]) - 1)
@@ -1473,7 +1556,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     if rl is not None and sp["scatter.support_level_mm"] > 0:
         Pp = np.array([bld.X[bld.att_node[a]] + bld.att_r0[a] for a in p_att])
         zc0 = 0.5 * (sup[:, 2].min() + sup[:, 2].max())
-        lv = rl.uniform(0, sp["scatter.support_level_mm"], 4)
+        lv = amp * rl.uniform(0, sp["scatter.support_level_mm"], 4)
         lv -= lv.min()
         corner = (Pp[:, 0] >= xc0).astype(int) * 2 + (Pp[:, 2] >= zc0).astype(int)
         p_lift = np.where(np.array(p_sup, bool), lv[corner], 0.0)
@@ -1481,7 +1564,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     off = np.asarray(plate_offset_mm, float)
     rp = rng_for("plate")
     if rp is not None and sp["scatter.placement_mm"] > 0 and not off.any():
-        off = rp.uniform(-1, 1, 2) * sp["scatter.placement_mm"]
+        off = amp * rp.uniform(-1, 1, 2) * sp["scatter.placement_mm"]
     mid_x = 0.5 * (left[:, 0].mean() + right[:, 0].mean()) + off[0]
     zmin, zmax = Vall[:, 2].min(), Vall[:, 2].max()
     deck_z = 0.5 * (zmin + zmax) + off[1]
@@ -1571,7 +1654,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         b_fc=arr(beams["fc"]), b_Gf=arr(beams["Gf"]), b_GJ=arr(beams["GJ"]),
         b_A=arr(beams["A"]), b_fv=arr(beams["fv"]), b_fv3=arr(beams["fv3"]),
         b_nply=arr(beams["nply"]),
-        b_Wt=arr(beams["Wt"]), b_kGA=arr(beams["kGA"]),
+        b_Wt=arr(beams["Wt"], (0, 2)), b_kGA=arr(beams["kGA"]),
         b_body=arr(beams["body"], dtype=int),
         s_nodes=arr(shells["nodes"], (0, 3), int),
         s_E0=arr(shells["E0"], (0, 3, 3)), s_P=arr(shells["P"], (0, 3, 3)),
@@ -1595,6 +1678,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         mid_x=mid_x, deck_z=deck_z,
         bridge_mass_kg=float(sum(i.mass_kg for i in infos if i.kind != "ignore")),
         params={"crush_softening": sp["wood.crush_softening"],
+                "fc_proportional": sp.values.get("wood.fc_proportional", 1.0),
                 "friction_platform": sp["contact.friction_platform"],
                 "friction_plate": sp["contact.friction_plate"],
                 "crusher_k_N_per_mm": sp.values.get("crusher.stiffness_N_per_mm", 20000.0),

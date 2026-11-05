@@ -1400,6 +1400,12 @@ def _same_part(observed: str, simulated: str) -> bool:
 # --------------------------------------------------------------------------- lab tests
 
 
+def _wood_law(sp: SimParams) -> dict:
+    """The fibre law's compression parameters of the bridge, for the coupon models."""
+    return {"fc_prop": sp.values.get("wood.fc_proportional", 1.0),
+            "crush_softening": sp["wood.crush_softening"]}
+
+
 def lab(material=None, sim_params=None, csv_dir: str | Path | None = None) -> LabReport:
     """Simulate the standard coupon tests with the current material (and, where the CSVs
     in ``csv_dir`` hold data, the team's own specimens) and report the reality gap."""
@@ -1410,7 +1416,7 @@ def lab(material=None, sim_params=None, csv_dir: str | Path | None = None) -> La
     st = mat.stick
     tests: list[dict] = []
     r = labmod.three_point_bending(E, ft, fc, span=100.0, b=st.width_mm, t=st.thickness_mm,
-                                   Gf=sp["wood.G_f_N_per_mm"])
+                                   Gf=sp["wood.G_f_N_per_mm"], **_wood_law(sp))
     I = st.width_mm * st.thickness_mm**3 / 12
     mor = r.peak * 100 / 4 / (st.width_mm * st.thickness_mm**2 / 6)
     tests.append({"test": "stick 3-point bending, span 100 mm", "peak_N": round(r.peak, 2),
@@ -1454,7 +1460,7 @@ def _lab_gaps(d: Path, mat: Material, sp: SimParams) -> list[RealityGap]:
         if key not in memo:
             memo[key] = labmod.three_point_bending(mat.E_MPa.value, mat.f_t_MPa.value,
                                                    mat.f_c_MPa.value, span=L, b=b, t=t,
-                                                   Gf=sp["wood.G_f_N_per_mm"])
+                                                   Gf=sp["wood.G_f_N_per_mm"], **_wood_law(sp))
         return memo[key]
 
     rows = _coupon_rows(d, "stick_bending")
@@ -1530,7 +1536,7 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
     notes: dict[str, str] = {}
     params: dict[str, float] = {}
     if _coupon_rows(d, "stick_bending"):
-        Es, fails = [], []
+        Es, fails, pairs = [], [], []
         for r in _coupon_rows(d, "stick_bending"):
             L, b, t = _float(r, "span_L_mm"), _float(r, "width_b_mm"), _float(r,
                                                                              "thickness_t_mm")
@@ -1540,6 +1546,8 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
                 Es.append(F * L**3 / (48 * dl * b * t**3 / 12))
             if L and b and t and Ff:
                 fails.append((L, b, t, Ff))
+                if F and dl:
+                    pairs.append((Es[-1], Ff * L / 4 / (b * t * t / 6)))
         E = float(np.mean(Es)) if Es else mat.E_MPa.value
         if Es:
             changes["E_MPa"] = E
@@ -1555,6 +1563,11 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
         if len(fails) >= 3:
             fl = [x[3] * x[0] / (x[1] * x[2] ** 2) for x in fails]  # ~ bending strength
             params["scatter.strength_cov"] = float(np.std(fl, ddof=1) / np.mean(fl))
+        if len(pairs) >= 5:  # stiffer sticks are stronger: the correlation of E and f_b
+            pe, pf = np.log(np.array(pairs)).T
+            if np.std(pe) > 0 and np.std(pf) > 0:
+                params["scatter.E_strength_corr"] = float(
+                    np.clip(np.corrcoef(pe, pf)[0, 1], 0.0, 0.95))
         if fails:
             fb = float(np.mean([Ff * L / 4 / (b * t * t / 6) for L, b, t, Ff in fails]))
             changes["f_b_MPa"] = fb
@@ -1566,7 +1579,7 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
             for _ in range(3):
                 sim = labmod.three_point_bending(E, mat.f_t_MPa.value * k,
                                                  mat.f_c_MPa.value * k, span=L, b=b, t=t,
-                                                 Gf=sp["wood.G_f_N_per_mm"])
+                                                 Gf=sp["wood.G_f_N_per_mm"], **_wood_law(sp))
                 k *= target / max(sim.peak, 1e-9)
                 if abs(sim.peak / target - 1) < 0.005:
                     break

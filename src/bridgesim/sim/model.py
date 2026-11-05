@@ -81,7 +81,8 @@ class Model:
     b_fv3: np.ndarray  # shear strength on the planes between plies (glue lines, normal
     #                   to e3: plies are stacked through the thickness e3), shear along e3
     b_nply: np.ndarray  # plies stacked through e3 (the parts a glue-line split leaves)
-    b_Wt: np.ndarray  # torsional section modulus (mm^3)
+    b_Wt: np.ndarray  # (nb, 2) torsional moduli T / tau (mm^3) on the planes normal to
+    #                  e2 and on those normal to e3 (materials.rect_torsion)
     b_kGA: np.ndarray  # shear stiffness k G A (N); 0 = no shear deformation (Euler-Bernoulli)
     b_body: np.ndarray
     # shells

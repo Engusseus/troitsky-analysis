@@ -162,7 +162,8 @@ meanwhile, and `answer_with`: how to answer, as an overrides fragment (`bodies`,
 (a change to make in SolidWorks) or `cli` (a command to run). Typical ones:
 
 * a body whose name does not say its layup (`layup:<body>`, important: its stiffness
-  and strength are guessed) or its grain direction (`orientation:<body>`);
+  and strength are guessed; meanwhile it is UD sticks in plies of a stick's thickness,
+  glued together) or its grain direction (`orientation:<body>`);
 * wrong orientation or units (`geometry:orientation`);
 * a part that touches nothing, or a floss end tied to nothing (`floating:`, `loose:`,
   `floss_end:`);
@@ -171,7 +172,9 @@ meanwhile, and `answer_with`: how to answer, as an overrides fragment (`bodies`,
   twentieth of the body's surface): a spline, cone or freeform surface flattened, or a
   face that could not be decoded closed over;
 * plates made of narrow arms (an L-shaped leg, an X, a curved rib) are modelled as
-  frames of members along their arms (`frame_plates`, info: which ones); one whose glued
+  frames of members along their arms (`frame_plates`, info: which ones; a cross-ply or
+  angle-ply one is taken as one sheet whose plies keep the plate's long axis in every
+  arm, `frame_plies:<part>`, `grain: arm` if they were laid along each arm); one whose glued
   parts lie off its arms stays a plate with about one shell element across an arm, ~4x
   too stiff in in-plane bending (`narrow_plates`): if the part is really members, draw
   each as its own body (it becomes a bar);
@@ -206,6 +209,7 @@ bodies:                     # by exact body name or glob pattern
   "Hub Tie Strap*": {glue_factor: 0.7}          # poorly glued part (x glue strength)
   "Spacer*": {glue_factor: 0}                   # touching but NOT glued
   "Top Chord*": {strength_factor: 0.9, grain: span}
+  "Hub Cover*": {grain: arm}                    # a +-45 frame's plies laid along each arm
   "Deck Stringer*": {butt_stagger_mm: 30}       # joints of neighbouring plies 30 mm apart
   "Bottom Chord*": {butt_stagger_mm: 0}         # plies without butt joints (long strips)
   "Deck Stringer*": {section_scale: 1.25}       # what-if: section x1.25 (area x1.56)

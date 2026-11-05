@@ -22,13 +22,16 @@ relevant parts in your Design Validation (§10). Units: mm, N, MPa, s.
 | extrusion at least 2x longer than its section, section no flatter than 1:4 (a deep cross-beam 221 x 88 x 63 mm is one) | **bar**: chain of corotational fibre beams on its centre line, ~25-30 mm elements (>= 4), real section and length, Timoshenko (shear-flexible) | members carry axial force + bending; buckling needs >= 4 elements |
 | slender but tapered extrusion (a wedge, a lip or filler cut along a diagonal: 40-75 % of its bounding box) | **tapered bar**: as above, each element with the width and centre offset of the profile at its position (same volume as the solid) | still a member; a rigid block would make the load path too stiff |
 | thin extrusion (width >= 3 x thickness) | **shell**: CST membrane + DKT bending triangles on the mid-surface, meshed from the real outline (holes > element size kept), integrated ply by ply (layered) | gussets, webs, decks, diaphragms |
-| plate made of narrow arms (an L-shaped leg, an X, a curved rib, a strut-like plate): arms narrower than 1.6 standard shell elements, or 3 when they are slender (centre lines >= 4x their width), arms covering >= 80 % of the plate and carrying what is glued to it (a part glued off the arms, a wing of a hub plate, gets an arm of its own out to it, if that runs inside the plate) | **frame**: fibre beams along the centre lines of its arms (the medial axis of its outline, `sim/skeleton.py`), each with the arm's local width and the plate's thickness, plies stacked through the thickness with their grain along the arm (or the span), butt joints per arm as for bars, arms sharing nodes where they meet, glue on rigid arms to the nearest node | a strip of constant-strain triangles one or two elements wide is 2-4x too stiff in in-plane bending, and a 20 mm thick plate is no thin plate; a beam is exact there (`test_frame_plate_bends_like_a_beam`: beam theory within 3 %, the same strip as shells 70 % too stiff). The `frame_plates` question lists them; a plate whose glued parts cannot be reached that way stays a shell and the `narrow_plates` question asks about it |
-| compact piece (less than 2x longer than its section, not thin), a body named a block, short toothpick | **rigid body** with its real mass and inertia | much stiffer than the members; a question lists those in the load path |
+| plate made of narrow arms (an L-shaped leg, an X, a curved rib, a strut-like plate): arms narrower than 1.6 standard shell elements, or 3 when they are slender (centre lines >= 4x their width), arms covering >= 80 % of the plate and carrying what is glued to it (a part glued off the arms, a wing of a hub plate, gets an arm of its own out to it, if that runs inside the plate) | **frame**: fibre beams along the centre lines of its arms (the medial axis of its outline, `sim/skeleton.py`), each with the arm's local width and the plate's thickness, plies stacked through the thickness: a UD frame's sticks along each arm (it is built arm by arm), a cross-ply or angle-ply frame a sheet cut to shape whose plies keep the plate's long axis in every arm (an arm at 45 degrees to a +-45 plate is 0/90; asked as `frame_plies:`, `grain: arm` if they were laid along each arm; `test_frame_plies_follow_the_sheet_or_the_arm`), or the span; butt joints per arm as for bars, arms sharing nodes where they meet, glue on rigid arms to the nearest node | a strip of constant-strain triangles one or two elements wide is 2-4x too stiff in in-plane bending, and a 20 mm thick plate is no thin plate; a beam is exact there (`test_frame_plate_bends_like_a_beam`: beam theory within 3 %, the same strip as shells 70 % too stiff). The `frame_plates` question lists them; a plate whose glued parts cannot be reached that way stays a shell and the `narrow_plates` question asks about it |
+| compact piece (less than 2x longer than its section, not thin), a body named a block, short toothpick | **rigid body** with its real mass and the mean of its principal moments of inertia (one value for all axes: the loading is quasi-static, kinetic energy below 1 % of the jack's work, so a block's rotational inertia only enters the time step) | much stiffer than the members; a question lists those in the load path |
 | floss (by name) | **cable**: tension only, snaps at its breaking load | §8.4.5 |
 
 Laminates come from the body name (`10-ply UD`, `2-ply 0-90`, `4-ply +-45`, `block`,
 `round toothpick`, `waxed floss`) or the overrides file; an unknown one is assumed UD
-along the long axis and reported as a question. Stiffness from classical lamination
+along the long axis in plies of a stick's thickness (2 mm) glued together, since a part
+of a stick bridge is built of sticks (its glue lines can split), and reported as an
+important question; a layup named without a ply count (`UD`, `0-90`) gets its plies
+from the thickness the same way. Stiffness from classical lamination
 theory with orthotropic plies (E_L, E_T, G_LT, nu_LT), including the membrane-bending
 coupling of unsymmetric layups (a 2-ply 0/90 plate bends when stretched). UD bars and
 plates take their grain along the long axis (or the global X with "along the span"; for
@@ -123,11 +126,24 @@ has the opposite. `bridgesim sensitivity` shows how much each
 placeholder moves F_u for your design. Your own stick tests replace them
 (`bridgesim calibrate`). In the fibre
 sections: linear elastic; tension softens to zero after f_t with fracture energy G_f
-(3 N/mm, element-length regularised); compression yields at f_c and softens to 70 %
-(crushing). A single stick so modelled breaks in 3-point bending at the material's
+(3 N/mm, element-length regularised); compression is straight to the proportional limit
+(`wood.fc_proportional`, 0.65 f_c: clear wood 0.6-0.75, *Wood Handbook*), bends over
+smoothly to f_c (reached at 1.35 f_c / E, unloading at E), then crushes, softening to
+70 % (`test_wood_softens_before_it_crushes`), so a member near its crushing strength
+loses stiffness before it crushes (tangent-modulus buckling). A single stick so modelled breaks in 3-point bending at the material's
 f_b (within 4 %; the test allows 10 %): compression yielding on top and tension softening below give
-the bending strength, as in wood. A member **splits in shear** when 1.5 V/A + T/W_t
-reaches the strength of the glue planes between its plies, or f_v across them. The glue
+the bending strength, as in wood. A member **splits in shear** when the shear on a
+family of planes along it reaches their strength: on the glue planes between its plies,
+1.5 V/A plus the torsional shear acting on those planes; across its width (a crack
+through every ply), 1.5 V/A plus the torsional shear on those. Saint-Venant torsion of a
+rectangle (Roark; `materials.rect_torsion`) puts the peak shear on the planes normal to
+the short side and 0.74-1 of it on the others, so a flat laminate twisted shears its
+glue lines at about 3/4 of the peak (`test_torsion_shears_each_plane_by_saint_venant`).
+Across the width every ply has to fail: f_v for plies along or across the member, the
+fibres' strength for plies crossing the plane at 45 degrees (a +-45 pair carries
+in-plane shear as fibre tension and compression, netting analysis min(f_t, f_c) / 2),
+a quadratic interaction between, averaged over the plies
+(`test_plies_resist_a_split_across_the_width_with_their_fibres`). The glue
 planes of a laminate (pressed while they cured, long and continuous) are not a hand-made
 lap joint between parts (tau_g, an average over the lap): they split at the lower of the
 bond line's strength (`glue.interlaminar_MPa`, 6 MPa: PVA bond lines in pressed wood
@@ -168,7 +184,13 @@ counted in the warnings. An element is removed only when every ply is torn wide 
 (twice the strain at which it carries nothing) or when it is distorted beyond 0.5 rad.
 
 **Scatter** (seeded, `--seed`; `--seed -1` for a perfect bridge): per body, E (CoV 12 %)
-and strength (CoV 18 %); per joint, glue strength (CoV 30 %); per bar, an initial bow of
+and strength (CoV 18 %), correlated (`scatter.E_strength_corr`, 0.7: stiffer wood is
+stronger, MOE-MOR r = 0.6-0.8, which machine stress grading relies on; paired bending
+tests measure it, `calibrate`), both for a single stick: a member of n plies averages its
+sticks, which are partly alike (`scatter.ply_corr`, 0.3: one batch, often one tree), so
+its CoV is that x sqrt((1 + (n - 1) 0.3) / n), 61 % of it for 10 plies (the laminating
+effect on the scatter; on the mean strength it is not modelled), `test_stick_scatter_is_
+correlated_and_averaged_by_lamination`; per joint, glue strength (CoV 30 %); per bar, an initial bow of
 L/400 on average (0.3-1.7 of that) in a random direction; per bridge, the plate placed up
 to 3 mm off-centre, the support corners up to 0.5 mm out of level, and the whole bridge
 leaning out of its plane by up to 0.005 rad either way (`scatter.lean_rad`, the initial
@@ -181,6 +203,9 @@ than independent joints would make them. Each value is drawn
 from a stream named after its body or joint (a joint by its two bodies and where they
 overlap in the CAD), so a seed is the same imperfect bridge at every fidelity and after
 an edit elsewhere in the design. Monte Carlo over seeds gives the spread of F_u.
+`scatter.amplitude` scales every seeded imperfection and scatter at once (0.1: a nearly
+perfect bridge whose asymmetry is still the seed's, for a mesh or imperfection-
+sensitivity study: `validation/convergence_study.py --amplitude`).
 
 ## 5. The test
 
@@ -356,7 +381,8 @@ an edit elsewhere in the design. Monte Carlo over seeds gives the spread of F_u.
 * Splitting of a member along the grain other than by shear, knots and stick-to-stick
   variation inside one body; butt joints in plates (in bars and frame arms only). A member that splits
   in shear switches to its split section at once (no fracture energy for the split
-  itself); its axial strength is kept.
+  itself, as a pressed glue line fails brittly in a short-beam shear test; the energy it
+  releases goes into the dynamics and the damping); its axial strength is kept.
 * A crushed part keeps its full section in the rest of the model: crushing is in the
   glue line between two parts (permanent set, compaction), not a loss of the part's
   own area.
@@ -375,4 +401,10 @@ an edit elsewhere in the design. Monte Carlo over seeds gives the spread of F_u.
   real test takes minutes, so a real curve bends over more before the peak and the
   deflection at the peak is larger than simulated; slip in imperfect joints (gaps, glue
   starved at the edges) adds to it. The simulated curve is that of perfect joints:
-  the toe from seating, then near-linear to ~90 % of the peak.
+  the toe from seating, then near-linear to ~90 % of the peak (on Bridge_v6 the secant
+  stiffness falls ~15 % from the 10-50 % to the 50-90 % range of the peak). Coupons
+  loaded at the test's own pace (failure in about the same minutes as the crush test;
+  EN 408 asks 300 +- 120 s) carry the creep of that duration in the E and the glue
+  stiffness that `calibrate` fits (stick bending, lap load-slip), so a calibrated model
+  includes it to first order; what is left out is how creep grows with the stress near
+  the peak.

@@ -28,6 +28,8 @@ wood:
                    note: "Fracture energy of a ply parting across the grain (sticks separating edge to edge, or splitting along the grain). Wood: 0.2-0.5 N/mm along the grain (TL/RL crack systems)."}
   G_v_N_per_mm: {value: 1.0, source: assumed,
                  note: "Fracture energy of a ply failing in shear along the grain (mode II). Wood: 0.5-2 N/mm."}
+  fc_proportional: {value: 0.65, source: assumed,
+                    note: "Proportional limit of wood in compression along the grain, as a share of f_c: the stress-strain curve is straight to here, then bends over smoothly to f_c (reached at (2 - this) f_c / E), so a member near its crushing strength softens before it crushes (tangent-modulus buckling). Clear wood: 0.6-0.75 (USDA Wood Handbook, fiber stress at proportional limit against maximum crushing strength). 1 = elastic-perfectly plastic. From the load-strain curve of a short stack in compression."}
   crush_softening: {value: 0.3, source: assumed,
                     note: "Compressive strength lost after crushing (0.3 = strength drops to 70 % of f_c)."}
   densification_strain: {value: 0.45, source: assumed,
@@ -82,12 +84,18 @@ crusher:
 scatter:
   E_cov: {value: 0.12, source: assumed, note: "Stick-to-stick coefficient of variation of E (from your bending tests)."}
   strength_cov: {value: 0.18, source: assumed, note: "Coefficient of variation of stick strength."}
+  E_strength_corr: {value: 0.7, source: assumed,
+                    note: "Correlation of a stick's strength with its stiffness (in log terms): stiffer wood is stronger, which is why machine stress grading predicts strength from E (USDA Wood Handbook ch. 6-7: r = 0.6-0.8 between MOE and MOR). Each body's strength factor has the CoV strength_cov and this correlation with its E factor. From paired bending tests (E and strength of each stick: calibrate)."}
+  ply_corr: {value: 0.3, source: assumed,
+             note: "Correlation between the sticks of one laminated member (same batch, often the same tree). A member of n plies averages its sticks, so its E and strength vary by CoV x sqrt((1 + (n - 1) rho) / n): 0 = independent sticks (CoV / sqrt n), 1 = all alike (no averaging). From the scatter of laminated coupons against single sticks."}
   glue_cov: {value: 0.30, source: assumed, note: "Coefficient of variation of glue-joint strength (hand-made joints vary a lot)."}
   bow_L_over: {value: 400, source: assumed,
                note: "Typical initial bow of a member, as span/bow (L/400). Measure the crookedness of your built members."}
   placement_mm: {value: 3.0, source: assumed, note: "How far off-centre the plate may be placed (each way)."}
   glue_bridge_cov: {value: 0.15, source: assumed,
                     note: "Coefficient of variation of the workmanship of a whole build: one factor on every glue joint of the bridge (glue batch, curing, the builders' hands), on top of the joint-to-joint glue_cov, so repeat builds differ by more than independent joints would make them. From the scatter of whole-bridge or sub-assembly tests."}
+  amplitude: {value: 1.0, source: assumed,
+              note: "Scale on every seeded imperfection and scatter (bows, lean, support level, plate placement, material and glue scatter, all at once): 1 = the values above; 0.1 = a nearly perfect bridge whose asymmetry is still set by the seed, not by round-off (for an imperfection-sensitivity or mesh study, validation/convergence_study.py --amplitude)."}
   lean_rad: {value: 0.005, source: assumed,
              note: "How far the built bridge leans out of its plane (sway): each seed leans it by up to this angle, either way, the height times the angle at every point (EN 1995-1-1 5.4.4: 0.005 rad). Measure how far the top of your built bridge stands off the vertical."}
   support_level_mm: {value: 0.5, source: assumed,
