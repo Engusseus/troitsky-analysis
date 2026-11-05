@@ -26,7 +26,8 @@ from bridgesim.cad import CadBody
 from bridgesim.sim.crush import KGF, CrushResult
 from bridgesim.sim.model import Model
 
-KIND_COLOUR = {"bar": "#c8955a", "shell": "#d9b27c", "block": "#a8794a", "cable": "#f2f2f2"}
+KIND_COLOUR = {"bar": "#c8955a", "shell": "#d9b27c", "frame": "#cfa36b", "block": "#a8794a",
+               "cable": "#f2f2f2"}
 
 
 def _subdivide(V: np.ndarray, T: np.ndarray, max_edge: float) -> tuple[np.ndarray, np.ndarray]:

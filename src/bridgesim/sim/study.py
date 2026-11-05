@@ -511,6 +511,7 @@ def _sequence(events: list) -> list[str]:
             continue
         seen.add(key)
         verb = {"member_fracture": "member broke", "member_shear": "member split in shear",
+                "member_crushing": "member crushing",
                 "plate_crack": "plate cracked", "joint_failure": "glued joint separated",
                 "joint_cracking": "glued joint cracking",
                 "floss_break": "floss snapped", "criterion": "§12.5 failure criterion",
@@ -664,7 +665,7 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
 
 
 MAJOR = ("joint_cracking", "joint_failure", "member_fracture", "member_shear",
-         "plate_crack", "floss_break")
+         "member_crushing", "plate_crack", "floss_break")
 
 
 def _failures(events, fail_t: float | None, limit: int = 60) -> list[EventOut]:
@@ -885,7 +886,7 @@ def _whatif(gov: list[EventOut]) -> dict:
     for e in gov:
         if e.kind in ("joint_failure", "joint_cracking") and len(e.parts) == 2:
             glue[f"{_copies(e.parts[0])} | {_copies(e.parts[1])}"] = 1.5
-        elif e.kind in ("member_shear", "member_fracture", "plate_crack"):
+        elif e.kind in ("member_shear", "member_fracture", "member_crushing", "plate_crack"):
             for p in e.parts or [e.what]:
                 bodies[_copies(p)] = {"section_scale": 1.25}
     return {k: v for k, v in (("bodies", bodies), ("glue", glue)) if v}
@@ -907,8 +908,12 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
     broke = [e for e in rep.failures if e.kind != "joint_cracking"]
     # the governing failure first (the break that started the fall of the load), then
     # the others that broke within 10 % of F_u
-    lead = [e for e in rep.failures
-            if f"{e.kind.replace('_', ' ')}: {e.what}" == rep.governing][:1]
+    pool = list(rep.failures) + list(rep.events or [])
+    lead = [e for e in pool if f"{e.kind.replace('_', ' ')}: {e.what}" == rep.governing][:1]
+    if not lead and rep.governing.startswith("joint failure: "):  # let go during the fall
+        part = rep.governing.split(": ", 1)[1]
+        lead = [e.model_copy(update={"kind": "joint_failure"}) for e in pool
+                if e.what == part and e.kind in ("joint_cracking", "glue_damage")][:1]
     gov = (lead + [e for e in broke if e.load_kgf >= 0.9 * rep.Fu_kgf
                    and e not in lead])[:3] or broke[:3]
     if rep.failure_mode == "instability":

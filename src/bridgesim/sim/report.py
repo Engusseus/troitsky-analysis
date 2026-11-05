@@ -128,7 +128,8 @@ class InspectReport(BaseModel):
     next_steps: list[NextStep] = Field([], description="What to do next, most useful first")
 
 
-EventKind = Literal["member_fracture", "member_shear", "plate_crack", "glue_damage",
+EventKind = Literal["member_fracture", "member_shear", "member_crushing", "plate_crack",
+                    "glue_damage",
                     "joint_cracking", "joint_failure", "floss_break", "criterion",
                     "instability", "numerical"]
 FailureMode = Literal["collapse", "deflection", "contact", "instability", "none"]
@@ -141,7 +142,8 @@ class EventOut(BaseModel):
     load_kgf: float
     kind: EventKind = Field(description=(
         "member_fracture (fibres cracked through), member_shear (split along the glue "
-        "lines or grain), plate_crack, glue_damage (a joint's glue starts to soften), "
+        "lines or grain), member_crushing (fibres folding in compression past f_c), "
+        "plate_crack, glue_damage (a joint's glue starts to soften), "
         "joint_cracking (>= 30 % of a joint's glued area has let go), joint_failure "
         "(>= 90 %: separated), floss_break, criterion (§12.5), instability, numerical"))
     what: str = Field(description="The part, or 'A | B' for a glued joint")

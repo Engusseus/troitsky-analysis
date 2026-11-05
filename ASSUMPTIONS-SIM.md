@@ -257,9 +257,17 @@ an edit elsewhere in the design. Monte Carlo over seeds gives the spread of F_u.
   smoothing leads a sudden drop). A part that broke before that was survived: the load
   came back, as it did on Bridge_v6 seed 1 after a deck-stringer joint let go at the peak
   (5 % drop), before the End Post joints went at 96 % of the peak and the load fell 40 %.
-  A member split in the same 2 ms as a member fracture is put down to the fracture.
-  `competing` lists the other parts that broke within 10 % of F_u: the failure can start
-  at one of them on another seed or mesh; `diagnose` measures which one F_u depends on.
+  A member split in the same 2 ms as a member fracture is put down to the fracture; a
+  clean break comes before a joint that only cracked or a member crushing. Only what
+  happened up to the failure call counts: what breaks after it is the collapse. When
+  nothing broke, the joint whose glue let go during the fall (at least 20 % of its area
+  between the load leaving its peak and the call) governs, although it has not reached
+  the 30 % of `joint_cracking` yet; else "buckling or sway". A member **crushing** (a
+  fibre folding in compression past f_c, beyond its onset strain) is an event too: a
+  laminated beam that fails in bending by crushing on its compression face is named so,
+  and its what-if is a bigger section, not more glue. `competing` lists the other parts
+  that broke within 10 % of F_u: the failure can start at one of them on another seed or
+  mesh; `diagnose` measures which one F_u depends on.
 * **Rate check** (`--rate-check`): the crush again at half the jack speed. F_u is
   roughly linear in the speed over this range, so `Fu_extrapolated_kgf` = 2 F(v/2) -
   F(v) estimates it for a jack at rest (the real test's mm/min).

@@ -262,7 +262,8 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
   `jack_travel_mm`, `where_mm`, `fraction_separated`): what broke, in order, up to the
   collapse. The entries near the peak are the reason the bridge failed: strengthen
   *that*. A joint is `joint_cracking` when 30 % of its glued area has let go and
-  `joint_failure` (separated) at 90 %; `member_shear` means the member split along its
+  `joint_failure` (separated) at 90 %; `member_crushing` that a member's fibres fold in
+  compression past f_c (it bends on, more softly); `member_shear` means the member split along its
   glue lines or grain (it keeps carrying axial load). Which part goes first can change
   with the mesh when two parts are close to failing together: check with
   `--fidelity fine` before redesigning around one part, and use `ab` to confirm.

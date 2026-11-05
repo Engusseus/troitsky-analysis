@@ -441,7 +441,7 @@ def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
 
 
 BREAKS = ("joint_failure", "joint_cracking", "member_fracture", "member_shear",
-          "plate_crack", "floss_break")
+          "plate_crack", "floss_break", "member_crushing")
 
 
 def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
@@ -459,8 +459,9 @@ def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
     governing one (not the cascade after it), as '<kind>: <part>'."""
     tol = 0.25 * LOAD_CELL_MM / max(speed_mm_s, 1e-9)
 
-    def clean(evs):  # a clean break before a joint that only cracked
-        return [e for e in evs if e.kind != "joint_cracking"] or evs
+    def clean(evs):  # a clean break before a joint that only cracked or a member crushing
+        return [e for e in evs if e.kind not in ("joint_cracking", "member_crushing")] or \
+            [e for e in evs if e.kind != "joint_cracking"] or evs
 
     falling = [e for e in before if e.kind in BREAKS and e.t >= t_c - tol]
     survived = [e for e in before if e.kind in BREAKS and e.t < t_c - tol
@@ -708,6 +709,10 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     prev_bs = st.b_shear.copy()
     prev_s = st.s_dmg > 0.5
     prev_k = st.k_alive.copy()
+    # a member crushing: a fibre's plastic strain in compression past its onset strain
+    crush_eps = -np.asarray(m.b_fc) / np.maximum(np.asarray(m.b_E), 1e-9) \
+        if len(m.b_i) else np.zeros(0)
+    prev_c = np.zeros(len(m.b_i), bool)
     patch_of = m.c_patch
     n_patch = len(m.patches)
     prev_patch_broken = np.zeros(n_patch, bool)
@@ -733,6 +738,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     last_force = 0.0
     force_f = 0.0
     raw_sum, raw_n = 0.0, 0  # the raw jack force, averaged between curve samples
+    glue_hist: list[np.ndarray] = []
     k = 0
     throttle = 1.0
     hold_until = -1.0
@@ -794,6 +800,10 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                 pfrac = np.bincount(patch_of, weights=m.c_area * (st.c_d >= 0.999),
                                     minlength=n_patch) / np.maximum(patch_area, 1e-12)
             curve["glue_broken"].append(int((pfrac >= JOINT_FAILED).sum()))
+            # each joint's glued area let go so far (damage-weighted), for what governs
+            glue_hist.append((np.bincount(patch_of, weights=m.c_area * st.c_d,
+                                          minlength=n_patch) if len(patch_of)
+                              else np.zeros(n_patch)).astype(np.float32))
             curve["members_broken"].append(int((st.b_fractured | st.b_shear).sum()))
             if force > peak and fail_at is None:  # F_u: the peak before the failure call
                 peak, peak_travel, peak_defl = force, travel, defl
@@ -826,6 +836,13 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             for c in np.where(kb)[0]:
                 ev("floss_break", m.bodies[m.k_body[c]].name, "floss snapped",
                    mid([m.a_node[m.k_a[c]], m.a_node[m.k_b[c]]]))
+            if len(m.b_i):
+                crushed = (st.eps_p.reshape(len(m.b_i), -1).min(1) <= crush_eps) & st.b_alive
+                for e in np.where(crushed & ~prev_c)[0]:
+                    ev("member_crushing", m.bodies[m.b_body[e]].name,
+                       "member crushing in compression (its fibres fold past f_c)",
+                       mid([m.b_i[e], m.b_j[e]]))
+                prev_c = prev_c | crushed
             started = pdmg > 0.0
             cracked = pfrac >= JOINT_CRACKED
             broken = pfrac >= JOINT_FAILED
@@ -965,13 +982,34 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             for e in events:
                 if e.kind == "criterion" and e.what == "collapse":
                     e.detail = fail_detail
-    end = (fail_at if fail_at is not None else np.inf) + 0.5
-    before = [e for e in events if e.travel_mm <= end]
+    # what happened up to the failure call (the online reading lags the fall of the
+    # load, so what broke before the call caused it; what breaks after is the collapse)
+    t_call = float(curve["t"][i_fail]) if (i_fail is not None and curve["t"]) else np.inf
+    before = [e for e in events if e.t <= t_call]
     first_major, competing = attribute(before, t_c, peak, peak_travel, opt.speed_mm_s)
+    # no part broke before the call: the joint whose glue let go during the fall (it is
+    # the cause even before 30 % of it has let go; one that lets go after the call is
+    # the collapse)
+    glue_fall = None
+    if first_major is None and glue_hist and np.isfinite(t_c) and len(patch_area):
+        tt = np.asarray(curve["t"])
+        lag = LOAD_CELL_MM / max(opt.speed_mm_s, 1e-9)
+        i0 = max(0, int(np.searchsorted(tt, t_c - lag)))
+        i1 = min(len(glue_hist) - 1, int(np.searchsorted(tt, t_call + lag)))
+        lost = (glue_hist[i1] - glue_hist[i0]) / np.maximum(patch_area, 1e-12)
+        k = int(np.argmax(lost)) if len(lost) else -1
+        if k >= 0 and lost[k] >= 0.2:
+            pa = m.patches[k]
+            glue_fall = (f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
+                         float(lost[k]))
     governing = fail_mode
     if fail_mode == "collapse" and first_major:
         governing = f"{first_major.kind.replace('_', ' ')}: {first_major.what}"
         fail_detail = f"{governing}. " + fail_detail
+    elif fail_mode == "collapse" and glue_fall:
+        governing = f"joint failure: {glue_fall[0]}"
+        fail_detail = (f"{governing}: {glue_fall[1]:.0%} of its glue let go as the load "
+                       "fell. " + fail_detail)
     elif fail_mode == "collapse":
         soft = list(dict.fromkeys(e.what for e in before if e.kind == "glue_damage"
                                   and e.force_N >= 0.9 * peak))
