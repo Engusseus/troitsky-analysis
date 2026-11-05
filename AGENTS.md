@@ -56,14 +56,13 @@ gets both factors), ready for its `ab ... --overrides-b DIR/whatif.yaml` command
 Fidelity: `quick` (coarser mesh, jack 200 mm/s, ~3 min for a 100-body bridge on 4 cores)
 to screen design changes, `standard` (100 mm/s, ~5-8 min) for the answer, `fine` (finer
 mesh, 50 mm/s, ~15 min) to check that the answer has converged. Mesh convergence on
-Bridge_v6 (`validation/README.md` §3.4, all at 100 mm/s): the perfect bridge gives 2300,
-2411, 2419 kgf with elements x2, x1, x0.75 (x1 to x0.75: +0.3 %); seed by seed (a seed is
-the same imperfect bridge at every fidelity) the standard mesh is within 4 % of the fine
-one and the quick mesh within 8 % (quick fidelity as run, at 200 mm/s, a few % higher
-still), the means within 1.4 %. The spread *between* seeds is ~10 %: several failure
-sites (the End Post joints, the hub tie straps, the deck stringers under the plate, the
-T-Nodes) compete within a few %, and which goes first changes with the mesh and the seed
-(`competing` lists them). So rank designs with one fidelity and the same seeds
+Bridge_v6 (`validation/README.md` §3.4, all at 100 mm/s): seed by seed (a seed is the
+same imperfect bridge at every fidelity) the standard mesh is within 3.2 % of the fine
+one and the quick mesh 4-9 % lower, all three ranking the seeds alike; the perfect
+bridge, being symmetric, fails on whichever side round-off picks and is no measure of
+the mesh. The spread *between* seeds is ~17 %: several failure sites (the hub plates and
+straps, the End Post joints, the deck stringers under the plate) compete within a few %,
+and which goes first changes with the mesh and the seed (`competing` lists them). So rank designs with one fidelity and the same seeds
 (`ab`, n >= 3), give F_u as the `montecarlo` range, and never compare F_u across
 fidelities. Do not go finer than `fine`: crack onset at a stress concentration is local
 (ASSUMPTIONS-SIM.md). `ab`, `montecarlo`, `sensitivity` and `calibrate-bridge`
@@ -233,10 +232,9 @@ CAD and its glued areas are unchanged, and each what-if is listed in `warnings`.
 copy of the parts that broke, since a design change is made on all of them) and the `ab`
 command that tests it on the same seeds: if it helps, make the change in SolidWorks and
 compare the two files with `ab`. (On Bridge_v6 the what-if of a quick crush raised F_u by
-3.1 %, 90 % interval -10.3 % to +16.5 %, not proven, and the failure moved to another part
-on 1 of 3 seeds; `diagnose` then measured that the inner hub tie straps limit the bridge
-(+4.1 % when strengthened, both seeds) while the deck stringers, which also broke near
-the peak, do not (-1.8 %): `validation/README.md` §3.4.) When `competing` is not empty,
+4.0 %, 90 % interval -4.7 % to +12.6 %, not proven, and the failure moved to another part
+on 2 of 3 seeds; `diagnose` then measured that the hub covers limit the bridge most
+(+5.1 % when strengthened, both seeds): `validation/README.md` §3.4.) When `competing` is not empty,
 run `diagnose` before redesigning.
 
 Body names are exactly as `inspect` lists them (SolidWorks body names; mirrored copies
