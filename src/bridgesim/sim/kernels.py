@@ -53,7 +53,7 @@ def _log3(R, out):
 @njit(cache=True, fastmath=True, error_model="numpy")
 def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv3, Wt, nply,
                 kGA, gam, s2, s3, soft, eps_p, dmg_t, alive, fractured, shear, F, Mo, update,
-                beta, dt, prev):
+                beta, dt, prev, rat2, rat3):
     nb = bi.shape[0]
     nf = fA.shape[1]
     Ti = np.empty((3, 3))
@@ -246,16 +246,12 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
             fractured[e] = True
         if update:
             if alive[e]:
-                # shear along e3 runs on the glue planes between the plies: the member
-                # delaminates into its plies; along e2 it splits the wood across the
-                # width in two. Either way it keeps its axial strength (no deletion).
+                # shear along e3 runs on the glue planes between the plies, along e2
+                # across the width: the stress over strength of each, for the split check
+                # (solver.split_members: averaged over a section depth along the member)
                 tt = abs(T) / Wt[e]
-                if s3[e] == 1.0 and (1.5 * abs(Vy) / Ar[e] + tt) / fv3[e] > 1.0:
-                    shear[e] = True
-                    s3[e] = 1.0 / nply[e]
-                if s2[e] == 1.0 and (1.5 * abs(Vz) / Ar[e] + tt) / fv[e] > 1.0:
-                    shear[e] = True
-                    s2[e] = 0.5
+                rat3[e] = (1.5 * abs(Vy) / Ar[e] + tt) / fv3[e]
+                rat2[e] = (1.5 * abs(Vz) / Ar[e] + tt) / fv[e]
             if cracked_max / Atot > 0.9:
                 fractured[e] = True
         if not alive[e]:

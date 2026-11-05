@@ -114,6 +114,9 @@ class State:
     c_crush: np.ndarray = field(default_factory=lambda: np.zeros(0))  # glue-line set
     b_s2: np.ndarray = field(default_factory=lambda: np.zeros(0))
     b_s3: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    # shear stress / strength of each beam (through the plies, across the width)
+    b_rat2: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    b_rat3: np.ndarray = field(default_factory=lambda: np.zeros(0))
     # Timoshenko shear strain correction of each beam, bending about e3 and e2
     b_gam: np.ndarray = field(default_factory=lambda: np.zeros((0, 2)))
     sc: object | None = None  # self-contact (bridgesim.sim.contact.SelfContact)
@@ -147,6 +150,7 @@ def initial_state(m: Model, jack_y: float) -> State:
         c_prev=np.zeros((nc, 3)), c_alive=np.ones(nc, bool), loose=np.zeros(n, bool),
         s_hist=np.zeros((len(m.s_nodes), 9 * m.s_lay.shape[1], 5)),
         s_gone=np.zeros(len(m.s_nodes), bool), b_s2=np.ones(nb), b_s3=np.ones(nb),
+        b_rat2=np.zeros(nb), b_rat3=np.zeros(nb),
         b_gam=np.zeros((nb, 2)), c_crush=np.zeros(nc))
 
 
@@ -271,11 +275,8 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
         st.b_alive &= ~big
         st.b_fractured |= big
         tt = np.abs(T) / m.b_Wt
-        f3 = alive & (st.b_s3 == 1.0) & ((1.5 * np.abs(Vy) / m.b_A + tt) > m.b_fv3)
-        f2 = alive & (st.b_s2 == 1.0) & ((1.5 * np.abs(Vz) / m.b_A + tt) > m.b_fv)
-        st.b_s3 = np.where(f3, 1.0 / m.b_nply, st.b_s3)
-        st.b_s2 = np.where(f2, 0.5, st.b_s2)
-        st.b_shear |= f2 | f3
+        st.b_rat3 = np.where(alive, (1.5 * np.abs(Vy) / m.b_A + tt) / m.b_fv3, 0.0)
+        st.b_rat2 = np.where(alive, (1.5 * np.abs(Vz) / m.b_A + tt) / m.b_fv, 0.0)
         cracked = (st.dmg_t > 0.99) * m.b_fA[:, None, :]
         frac = cracked.sum(2).max(1) / m.b_fA.sum(1)
         st.b_fractured |= frac > 0.9
@@ -642,6 +643,53 @@ class Settings:
         return self.beta_frac * self.dt
 
 
+def split_averaging(m: Model):
+    """The averaging of the split check (cached on the model): each beam element's
+    shear stress over strength is averaged, by length, over the elements of the same body
+    whose centres lie within half a section depth (the larger of its width and its
+    thickness) of its own, so that a split starts where the shear acts over a member's
+    depth, not where one element resolves a peak next to a glued joint (a local onset
+    would come earlier the finer the mesh). Returns a sparse averaging matrix."""
+    W = getattr(m, "_split_W", None)
+    if W is not None and W.shape[0] == len(m.b_i):
+        return W
+    from scipy.sparse import csr_matrix
+
+    nb = len(m.b_i)
+    c = 0.5 * (m.X[m.b_i] + m.X[m.b_j])
+    rows, cols, vals = [], [], []
+    for bd in np.unique(m.b_body):
+        idx = np.where(m.b_body == bd)[0]
+        sec = m.bodies[bd].section_mm if 0 <= bd < len(m.bodies) else None
+        depth = float(max(sec)) if sec and max(sec) > 0 else \
+            2.0 * float(np.abs(np.r_[m.b_fy[idx].ravel(), m.b_fz[idx].ravel()]).max())
+        d = np.linalg.norm(c[idx, None, :] - c[None, idx, :], axis=2)
+        for a, e in enumerate(idx):
+            near = idx[d[a] <= max(0.5 * depth, 0.5 * m.b_L0[e])]
+            w = m.b_L0[near] / m.b_L0[near].sum()
+            rows += [e] * len(near)
+            cols += list(near)
+            vals += list(w)
+    W = csr_matrix((vals, (rows, cols)), shape=(nb, nb))
+    m._split_W = W
+    return W
+
+
+def split_members(m: Model, st: State) -> None:
+    """Members split in shear where their averaged shear (``split_averaging``) reaches
+    the strength: through the plies the member delaminates into its plies (1/n), across
+    the width the wood splits in two. Either way it keeps its axial strength."""
+    W = split_averaging(m)
+    r3, r2 = W @ st.b_rat3, W @ st.b_rat2
+    alive = st.b_alive
+    f3 = alive & (st.b_s3 == 1.0) & (r3 > 1.0)
+    f2 = alive & (st.b_s2 == 1.0) & (r2 > 1.0)
+    if f3.any() or f2.any():
+        st.b_s3 = np.where(f3, 1.0 / m.b_nply, st.b_s3)
+        st.b_s2 = np.where(f2, 0.5, st.b_s2)
+        st.b_shear |= f2 | f3
+
+
 def internal_and_contact(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarray,
                          update: bool = True) -> dict:
     if s.use_numba and K.HAVE_NUMBA:
@@ -751,7 +799,9 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
                       m.b_nply, m.b_kGA, st.b_gam, st.b_s2, st.b_s3,
                       float(m.params.get("crush_softening", 0.3)), st.eps_p, st.dmg_t,
                       st.b_alive, st.b_fractured, st.b_shear, F, Mo, update,
-                      s.beta if update else 0.0, s.dt, st.b_prev)
+                      s.beta if update else 0.0, s.dt, st.b_prev, st.b_rat2, st.b_rat3)
+        if update:
+            split_members(m, st)
     if len(m.s_nodes):
         ns = len(m.s_nodes)
         if st.work is None or st.work[0].shape[0] != ns:
@@ -799,6 +849,8 @@ def internal_and_contact_numpy(m: Model, st: State, s: Settings, F: np.ndarray,
     Mo[:] = 0
     b = s.beta if update else 0.0
     info = beam_forces(m, st, F, Mo, update, b, s.dt)
+    if update and len(m.b_i):
+        split_members(m, st)
     shell_forces(m, st, F, Mo, update, b, s.dt)
     glue_forces(m, st, F, Mo, update, b, s.dt)
     cable_forces(m, st, F, Mo, update)

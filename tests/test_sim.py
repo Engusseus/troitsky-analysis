@@ -1534,6 +1534,34 @@ def test_interlaminar_strength_follows_the_plies():
     assert fr < a45 < fv
 
 
+def test_members_split_on_their_shear_over_a_section_depth():
+    """A member splits where its shear, averaged over a section depth along it, reaches
+    the strength: a peak on one element next to a joint (finer the mesh, sharper the
+    peak) does not split it, the same shear over the whole member does."""
+    from bridgesim.cad.synthetic import box
+    from bridgesim.sim import solver as S_
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    bodies = [box("Pier L", (-550, 0, -40), (-540, 150, 40)),
+              box("Pier R", (540, 0, -40), (550, 150, 40)),
+              box("Beam (14-ply UD)", (-550, 150, -25), (550, 179.4, 25))]
+    m = build_model(bodies, MAT, SP, Overrides.from_dict(
+        {"bodies": {"Pier*": {"kind": "block"}}}), seed=None, mesh_scale=0.5)
+    st = S_.initial_state(m, 0.0)
+    bar = next(b for b in m.bodies if b.kind == "bar")
+    els = np.asarray(bar.beams)
+    mid = els[len(els) // 2]
+    assert max(bar.section_mm) > 2 * m.b_L0[mid]  # several elements within a depth
+    st.b_rat3[:] = 0.0
+    st.b_rat3[els] = 0.6
+    st.b_rat3[mid] = 1.5  # one element over its strength
+    S_.split_members(m, st)
+    assert not st.b_shear.any()
+    st.b_rat3[els] = 1.2  # the whole member
+    S_.split_members(m, st)
+    assert st.b_shear[els].all() and (st.b_s3[els] < 1).all()
+
+
 def test_frame_plate_bends_like_a_beam(tmp_path):
     """A strip of plate standing on its edge on two piers (in-plane bending, ~2.5 shell
     elements across) becomes a frame member and has beam theory's stiffness and first
