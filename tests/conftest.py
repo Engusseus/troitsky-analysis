@@ -53,3 +53,32 @@ def example_bridge() -> Bridge:
 def default_result(default_bridge: Bridge, material: Material) -> AnalysisResult:
     """Linear analysis of the default Warren truss at P_ref."""
     return analyze(default_bridge, material)
+
+
+# ------------------------------------------------------------------ fast and slow tests
+#
+# A handful of tests run small crush simulations or calibration loops and take two thirds
+# of the suite's time. They are marked `slow`, so a quick check while iterating is
+# `pytest -m "not slow"` (about 2 minutes instead of 6 on 4 cores); a plain `pytest` (and
+# CI) runs everything.
+
+SLOW_TESTS = {
+    "test_bridge_calibration_recovers_known_factors",
+    "test_three_point_bending",
+    "test_calibration_closes_the_loop",
+    "test_simply_supported_beam_matches_beam_theory",
+    "test_agent_loop_through_mcp",
+}
+
+
+def pytest_configure(config) -> None:
+    config.addinivalue_line(
+        "markers", "slow: runs crush simulations or calibration loops (deselect with "
+                   "-m 'not slow')")
+
+
+def pytest_collection_modifyitems(config, items) -> None:
+    for item in items:
+        # the shared synthetic crush (a fixture) is the single most expensive setup
+        if item.name in SLOW_TESTS or "synthetic_crush" in getattr(item, "fixturenames", ()):
+            item.add_marker(pytest.mark.slow)

@@ -337,7 +337,9 @@ set `source: measured`. Templates for your test data are in
 
 ## Validation status
 
-Automated in CI (`uv run pytest`), see [validation/README.md](validation/README.md):
+Automated in CI (`uv run pytest`, ~6 min on 4 cores; `uv run pytest -m "not slow"` skips
+the dozen tests that run crush simulations, ~2 min, for quick checks while you work), see
+[validation/README.md](validation/README.md):
 
 * simply supported beam deflection $PL^3/48EI$ within 0.5 %;
 * global buckling eigen-solver against Euler for a pinned column;
