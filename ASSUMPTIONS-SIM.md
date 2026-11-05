@@ -203,8 +203,10 @@ an edit elsewhere in the design. Monte Carlo over seeds gives the spread of F_u.
   low-pass over 0.3 mm of jack travel, which decides when to hold the jack and when the
   bridge is judged failed, as a load cell would in real time; and *reported*, the raw
   force smoothed by a centred Hann window three times as wide (0.9 mm of travel at full
-  speed), which rejects the ringing as well but has no lag. The curve, F_u, the
-  deflection at F_u and the load of every event are the reported one. (Until round 10
+  speed), which rejects the ringing as well but has no lag. The stretches where the jack
+  moves and where it is held are smoothed apart, so the window never carries the load of
+  a moving jack into a hold (it would show as a load rising at constant travel). The
+  curve, F_u, the deflection at F_u and the load of every event are the reported one. (Until round 10
   the online reading was reported: the same F_u within 0.2 % on Bridge_v6, but its lag
   put the rising branch 0.3 mm late, the secant stiffness 7 % low.)
 * **Failures run their course at constant load**, as in the real test where the jack

@@ -403,12 +403,16 @@ def _node_diag(m: Model, st: S.State, n: int) -> str:
 LOAD_CELL_MM = 0.3  # time constant of the online load-cell filter, in jack travel
 
 
-def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float) -> np.ndarray:
+def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
+                  hold: np.ndarray | None = None) -> np.ndarray:
     """The load reported for a crush: the raw jack force smoothed by a centred Hann
     window three load-cell time constants wide (0.9 mm of jack travel at full speed).
     Centred, so it has no lag (the rising branch, the stiffness and F_u are where they
     are), while it removes the stress waves ringing through the bridge as well as the
-    online filter that decides when the bridge is judged failed."""
+    online filter that decides when the bridge is judged failed. ``hold``: 1 where the
+    jack was held, 0 where it moved; each stretch is smoothed on its own, so the load
+    of a moving jack never leaks into a hold (where it would show as a load rising at
+    constant travel) and the other way round."""
     raw = np.asarray(raw, float)
     if len(raw) < 3:
         return raw.copy()
@@ -417,12 +421,27 @@ def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float) -> np.ndarr
     n = max(3, int(round(width / max(h, 1e-12))) | 1)
     k = np.hanning(n + 2)[1:-1]
     k /= k.sum()
-    # odd reflection at both ends: a load rising from the start (or still changing at
-    # the end) is not biased by a one-sided window there
-    m = min(n // 2, len(raw) - 1)
-    ext = np.concatenate([2 * raw[0] - raw[m:0:-1], raw,
-                          2 * raw[-1] - raw[-2:-m - 2:-1]])
-    return np.convolve(ext, k, "same")[m:m + len(raw)]
+    if hold is None:
+        cuts = [0, len(raw)]
+    else:
+        hb = np.asarray(hold) > 0.5
+        cuts = [0] + [int(i) + 1 for i in np.where(hb[1:] != hb[:-1])[0]] + [len(raw)]
+    out = np.empty_like(raw)
+    for a, b in zip(cuts[:-1], cuts[1:], strict=True):
+        x = raw[a:b]
+        m = min(n // 2, len(x) - 1)
+        if m < 1:
+            out[a:b] = x
+            continue
+        # the ends of the record: odd reflection (a load rising from the start is not
+        # biased); between a hold and a moving stretch: the window cut off there
+        lo = 2 * x[0] - x[m:0:-1] if a == 0 else np.zeros(m)
+        hi = 2 * x[-1] - x[-2:-m - 2:-1] if b == len(raw) else np.zeros(m)
+        w = np.r_[np.full(m, 1.0 if a == 0 else 0.0), np.ones(len(x)),
+                  np.full(m, 1.0 if b == len(raw) else 0.0)]
+        ext = np.r_[lo, x, hi]
+        out[a:b] = (np.convolve(ext, k, "same") / np.convolve(w, k, "same"))[m:m + len(x)]
+    return out
 
 
 BREAKS = ("joint_failure", "joint_cracking", "member_fracture", "member_shear",
@@ -766,6 +785,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             curve["travel"].append(travel)
             curve["force"].append(force)
             curve.setdefault("force_raw", []).append(raw_mean)
+            curve.setdefault("hold", []).append(1.0 if throttle < 0.5 else 0.0)
             curve["deflection"].append(defl)
             curve["kinetic"].append(kin)
             curve["plate_load"].append(0.0)
@@ -925,7 +945,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     t_c = np.inf  # where the load last stood within 5 % of F_u before the failure call
     if curve["t"] and not unstable:
         tt = np.asarray(curve["t"])
-        fz = reported_load(tt, np.asarray(curve["force_raw"]), opt.speed_mm_s)
+        fz = reported_load(tt, np.asarray(curve["force_raw"]), opt.speed_mm_s,
+                           np.asarray(curve["hold"]))
         curve["force_online"] = curve["force"]
         curve["force"] = [float(f) for f in fz]
         for e in events:

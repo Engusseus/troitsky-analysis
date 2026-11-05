@@ -1691,6 +1691,18 @@ def test_reported_load_has_no_lag():
     assert (true[rise] - on[rise]).mean() > 0.05 * 2000  # the online reading lags
     i = int(np.argmax(rep))
     assert rep[i] == pytest.approx(2000.0, rel=0.02) and abs(x[i] - 5.0) < 0.5
+    # a hold (the jack at 2 % speed for 30 ms): smoothed apart from the moving stretches,
+    # the load does not keep rising at constant travel (only as the jack creeps on)
+    v2 = np.where((t > 0.03) & (t < 0.05), 0.02 * v, v)
+    x2 = np.cumsum(v2) * np.r_[0, np.diff(t)]
+    raw2 = 400.0 * x2 + 25.0 * np.sin(2 * np.pi * 270 * t)  # ringing ~2 % (Bridge_v6)
+    hold = ((t > 0.03) & (t < 0.05)).astype(float)
+    sel = hold > 0
+    creep = (400 * x2[sel].max() - 400 * x2[sel][0]) / (400 * x2[sel][0])
+    for h_, worst in ((None, 0.03), (hold, 0.005)):
+        r2 = reported_load(t, raw2, v, h_)
+        rise = (r2[sel].max() - r2[sel][0]) / r2[sel][0] - creep
+        assert (rise > worst) if h_ is None else (rise < worst), rise
 
 
 def test_governing_is_the_break_that_started_the_fall():
