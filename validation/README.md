@@ -172,23 +172,31 @@ plate, a deep member.)
   out-of-level supports, plate placement) and glue/strength scatter cost ~20 %.
 * Every run passed the quasi-static check (kinetic / external work < 0.1) with < 1 %
   added mass.
-* **Time compression** (`crush --fidelity standard --seed 0 --rate-check`): F_u 2180 kgf
-  at 100 mm/s, 2144 kgf at 50 mm/s (-1.7 %); kinetic / external work 0.002.
+* **Time compression** (`crush --fidelity standard --seed 0 --rate-check`): F_u 2167 kgf
+  at 100 mm/s, 2140 kgf at 50 mm/s (-1.3 %), the same governing failure; extrapolated to a
+  jack at rest (2 F(v/2) - F(v), `Fu_extrapolated_kgf`) 2112 kgf; kinetic / external work
+  0.002.
+* **What governs.** Since round 10 `governing` is the break that started the fall of the
+  load (ASSUMPTIONS-SIM.md), not the first break near the peak. With quick fidelity the
+  label names the End Post joints (to the T1 Cover or the T1 Gusset, the two locating
+  plates either side of the post's foot) on seeds 0, 1, 2 and 3; before, on seeds 0 and 1
+  it named the deck stringers or their joints to the cross-beam, which had let go at the
+  peak without taking the load down (on seed 1 the load fell 5 % and came back; the End Post joints
+  then went at 96 % of the peak and the load fell 40 %). The deck stringers stay in
+  `competing`.
 * **What limits the bridge** (`diagnose -n 2 --fidelity quick --candidates 3`, seeds 1
   and 2): strengthening the End Post joints to their T1 Covers (glue x1.5) raises F_u by
-  7.3 % (both seeds), those to the T1 Gussets by 3.8 %; the deck stringers x1.25 in section
-  change nothing (-0.6 %), although "member shear: Deck Stringer" is the most frequent
-  `governing` label. The stringers split once a joint has let go and dumped its load on
-  them: the label names the last link of a cascade, `diagnose` the part the load depends
-  on.
+  7.6 % (+1.5 % and +13.6 %, both seeds), those to the T1 Gussets by 4.4 %; the deck
+  stringers x1.25 in section change nothing (-0.5 %). The measured limiting part and the
+  `governing` label now agree.
 * **Design loop**: the `strengthen` what-if of a quick crush of Bridge_v6 (seed 0: the
-  deck stringers x1.25 section, their end joints to the cross-beam and the End Post joints
-  to their T1 Covers x1.5 glue, on every copy), tested with `ab -n 3 --fidelity quick`:
-  F_u +5.9 %, stronger with 3 of 3 seeds, but the 90 % interval (-6.8 % to +18.6 %)
-  includes 0: not proven with 3 seeds. `failure_moved` shows why: on 2 of 3 seeds the
-  failure moved to another part (the End Post joint to the deck stringers on seed 2, the
-  stringer to its joint to the cross-beam on seed 3). `diagnose` gives the part to
-  strengthen first.
+  End Post joints to their T1 Covers, the governing failure, and the deck stringers and
+  their joints to the cross-beam, which broke within 10 % of F_u; glue x1.5, section
+  x1.25, on every copy), tested with `ab -n 3 --fidelity quick`: F_u +6.3 %, stronger with
+  3 of 3 seeds (+1.4 %, +15.1 %, +2.4 %), but the 90 % interval (-6.6 % to +19.2 %)
+  includes 0: not proven with 3 seeds. `failure_moved`: on seeds 2 and 3 the failure moved
+  to the deck stringers; on seed 1 it stayed at the End Post joint to its T1 Gusset, which
+  the what-if did not strengthen (+1.4 %). `diagnose` ranks the two End Post joints first.
 
 ### 3.5 The linear screen against the crush
 

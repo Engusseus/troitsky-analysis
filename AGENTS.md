@@ -230,11 +230,11 @@ CAD and its glued areas are unchanged, and each what-if is listed in `warnings`.
 copy of the parts that broke, since a design change is made on all of them) and the `ab`
 command that tests it on the same seeds: if it helps, make the change in SolidWorks and
 compare the two files with `ab`. (On Bridge_v6 the what-if of a quick crush raised F_u by
-5.9 % with 3 of 3 seeds, 90 % interval -6.8 % to +18.6 %, not proven, and the failure
-moved to another part on 2 of 3 seeds; `diagnose` then showed that the End Post joints
-limit the bridge (+7.3 % when strengthened) while the deck stringers, the most frequent
-`governing` label, do not (-0.6 %): `validation/README.md` §3.4.) When several parts
-break near the peak, run `diagnose` before redesigning.
+6.3 % with 3 of 3 seeds, 90 % interval -6.6 % to +19.2 %, not proven, and the failure
+moved to another part on 2 of 3 seeds; `diagnose` then measured that the End Post joints,
+the `governing` failure, limit the bridge (+7.6 % when strengthened) while the deck
+stringers, which also broke near the peak, do not (-0.5 %): `validation/README.md`
+§3.4.) When `competing` is not empty, run `diagnose` before redesigning.
 
 Body names are exactly as `inspect` lists them (SolidWorks body names; mirrored copies
 get "(mirror copy)"). Joint names are `A | B` as listed in the inspect `joints`; both
