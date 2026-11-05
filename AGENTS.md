@@ -61,7 +61,7 @@ Bridge_v6 (`validation/README.md` §3.4, all at 100 mm/s): the perfect bridge gi
 same imperfect bridge at every fidelity) the standard mesh is within 1.2 % of the fine one
 and the quick mesh 3-6 % high (quick fidelity as run, at 200 mm/s, 4-11 % high), all three
 ranking the seeds alike. The collapse starts at the same joint at standard and fine on 2
-of 3 seeds (the End Post's foot), the third part being in `competing`. The spread *between* seeds is
+of 3 seeds (the End Post's head), the third part being in `competing`. The spread *between* seeds is
 ~20 %: three failure sites (the deck stringers under the plate, the end-post joint, the
 hub tie strap) compete within ~15 %. So rank designs with one fidelity and the same seeds
 (`ab`, n >= 3), give F_u as the `montecarlo` range, and never compare F_u across

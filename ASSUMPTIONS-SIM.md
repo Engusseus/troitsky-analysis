@@ -111,8 +111,12 @@ shear 8.3 MPa (yellow birch: 13.9 GPa, 114, 56, 13 MPa). Craft sticks are thin, 
 growth rings and have defects, so the placeholders (10 GPa; f_b 50, f_c 30, f_v 6 MPa)
 are deliberately lower. The one published measurement on craft sticks we found gives
 E = 7.1 +- 0.2 GPa (cantilever tests, *Emergent Scientist* 1, 3 (2017), "the popsicle
-stick cobra"), 29 % below the 10 GPa placeholder: stiffness, buckling and deflections
-scale with it, so measure your own sticks. `bridgesim sensitivity` shows how much each
+stick cobra"), 29 % below the 10 GPa placeholder (kept because the linear analysis
+shares it): stiffness, buckling and deflections scale with it, so measure your own
+sticks (`params: {material.E_MPa: 7100}` runs the crush with that value). f_t (40 MPa) is below f_b on purpose: a stick
+in tension fails at its weakest cross-section (slope of grain, defects), which bending
+loads only at one face, so graded timber has f_t,0 = 0.6 f_m (EN 338), while clear wood
+has the opposite. `bridgesim sensitivity` shows how much each
 placeholder moves F_u for your design. Your own stick tests replace them
 (`bridgesim calibrate`). In the fibre
 sections: linear elastic; tension softens to zero after f_t with fracture energy G_f
@@ -164,7 +168,7 @@ an edit elsewhere in the design. Monte Carlo over seeds gives the spread of F_u.
 * Gravity acts on everything. The bridge first settles under its own weight; a bridge
   that sags more than 20 mm fails by *instability* ("failure under self-weight") and
   gets F_u = 0.
-* The 200 x 90 mm loading plate (§12.5; two 15 mm steel plates, 3 kg, Appendix B) is a
+* The 200 x 90 mm loading plate (§12.5; two 15 mm steel plates, 4.2 kg, Appendix B) is a
   rigid body resting on the deck at mid-span and the deck centreline. The jack pushes on
   its hemispherical seat, so the plate tilts freely; plate-bridge contact is unilateral
   with friction (mu = 0.3) on any part of the bridge that reaches the plate.

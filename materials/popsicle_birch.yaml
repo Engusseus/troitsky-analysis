@@ -17,7 +17,10 @@ stick:
 E_MPa:
   value: 10000
   source: assumed
-  note: Longitudinal modulus. Measure with 3-point bending, E = F L^3 / (48 delta I).
+  note: >-
+    Longitudinal modulus. Measure with 3-point bending, E = F L^3 / (48 delta I). The one
+    published measurement on craft sticks (cantilever tests, Emergent Scientist 1, 3
+    (2017)) gives 7.1 +- 0.2 GPa; clear birch is 11 GPa (USDA Wood Handbook).
 G_MPa:
   value: 625
   source: assumed
@@ -29,7 +32,12 @@ nu:
 f_t_MPa:
   value: 40
   source: assumed
-  note: Tensile strength parallel to grain. Reduce for splices and knots.
+  note: >-
+    Tensile strength parallel to grain. Below the bending strength on purpose: in clear
+    wood tension exceeds the modulus of rupture, but a whole stick in tension is limited
+    by its weakest cross-section (slope of grain, knots, the cut across growth rings),
+    which bending stresses only at one face; graded timber has f_t,0 = 0.6 f_m (EN 338).
+    Reduce further for splices.
 f_c_MPa:
   value: 30
   source: assumed

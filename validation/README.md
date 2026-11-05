@@ -113,7 +113,7 @@ meshes is discretisation alone):
 From x2 to x0.75 F_u stays within 2.4 % (x1 to x0.75: +1.3 %). The bridge is judged failed
 when the load falls 30 % below its peak (§12.5's "moment of failure"). The first joint to
 let go (the hub tie strap's glued lap to the hub spreader, at ~30 % of F_u) is the same
-at every mesh. From x1 down the collapse starts at the same place, the foot of the End
+at every mesh. From x1 down the collapse starts at the same place, the head of the End
 Post where it is glued between its two locating plates (the joint letting go at x1, the
 plate around it cracking at x0.75); at x2 at the deck stringers, which are in `competing`
 at every mesh: several parts fail within a few % of each other, and `diagnose` measures
@@ -176,9 +176,9 @@ plate, a deep member. `competing`: the other parts that broke within 10 % of F_u
   +1.1 %); the quick mesh is 3.2-5.9 % high, and all three meshes rank the seeds in the
   same order.
 * **Where it fails**: standard and fine name the same joint on seeds 1 and 2 (the End
-  Post's foot, the same corner and plate); on seed 0 the fine mesh starts the collapse at
+  Post's head, the same corner and plate); on seed 0 the fine mesh starts the collapse at
   a deck stringer, which the standard mesh has in `competing`. Every run names either
-  the End Post's foot joints (six of nine, all three at standard) or the deck stringers
+  the End Post's head joints (six of nine, all three at standard) or the deck stringers
   under the plate (three). (Round 9, which named the first break near the peak, matched on
   no seed between standard and fine.)
 * The spread between seeds (~400 kgf, ~20 %) is real: several failure sites compete
@@ -197,7 +197,7 @@ plate, a deep member. `competing`: the other parts that broke within 10 % of F_u
 * **What governs.** Since round 10 `governing` is the break that started the fall of the
   load (ASSUMPTIONS-SIM.md), not the first break near the peak. With quick fidelity as
   run (200 mm/s) the label names the End Post joints (to the T1 Cover or the T1 Gusset, the two locating
-  plates either side of the post's foot) on seeds 0, 1, 2 and 3; before, on seeds 0 and 1
+  plates either side of the post's head) on seeds 0, 1, 2 and 3; before, on seeds 0 and 1
   it named the deck stringers or their joints to the cross-beam, which had let go at the
   peak without taking the load down (on seed 1 the load fell 5 % and came back; the End Post joints
   then went at 96 % of the peak and the load fell 40 %). The deck stringers stay in

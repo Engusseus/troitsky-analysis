@@ -62,8 +62,8 @@ contact:
                note: "Depth over which a bearing face beds in on the steel (roughness, glue beads, fibres crushing at the first touch): its contact stiffness grows from 0 to full over this depth, the soft start ('toe') of a real load-deflection curve. Read it off the start of your crush-test curve."}
 
 crusher:
-  plate_mass_kg: {value: 3.0, source: assumed,
-                  note: "Mass of the loading plates resting on the deck (2 x 15 mm steel plates, Appendix B). Weigh them if you can."}
+  plate_mass_kg: {value: 4.2, source: assumed,
+                  note: "Mass of the loading plates resting on the deck: two 200 x 90 x 15 mm steel plates (Appendix B: 'each is 1.5 cm thick'), 2 x 2.1 kg. Weigh them if you can."}
   jack_diameter_mm: {value: 40, source: assumed, note: "Lower jack rod (Appendix B: 4.0 cm)."}
   frame_clear_width_mm: {value: 1370, source: assumed, note: "Between the press uprights (Appendix B: 137 cm)."}
   test_rate_mm_per_min: {value: 10, source: assumed,
