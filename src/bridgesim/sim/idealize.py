@@ -842,16 +842,28 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         chains = [resample(c, h_e, bnd) for c in sh.frame]
         P2s: list[np.ndarray] = []
         ids_all: list[int] = []
-        tol = 0.3 * arm
+        ends: list[tuple[np.ndarray, int]] = []  # the arms' end nodes (junctions)
+        tol = 0.3 * arm  # arm ends this close are one junction (the medial axis
+        #                  splits a junction into nearby vertices); never the nodes
+        #                  along an arm, which are an element apart
 
-        def nid(q, off=None):
-            for k_, p_ in enumerate(P2s):
+        def end_at(q):
+            for p_, i_ in ends:
                 if float(np.hypot(*(p_ - q))) <= tol:
-                    return ids_all[k_]
+                    return i_
+            return None
+
+        def nid(q, off=None, end=False):
+            if end:
+                i_ = end_at(q)
+                if i_ is not None:
+                    return i_
             p3 = o_mid + q[0] * sh.e1 + q[1] * sh.e2
             i_ = bld.node(p3 if off is None else p3 + off, bi)
             P2s.append(np.asarray(q, float))
             ids_all.append(i_)
+            if end:
+                ends.append((np.asarray(q, float), i_))
             return i_
 
         def bow(ci, ch):
@@ -922,11 +934,17 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         order = sorted(range(len(chains)), key=lambda c_: chains[c_].spur)
         for ci in order:
             ch = chains[ci]
+            last = len(ch.pts) - 1
             if ch.spur and P2s:  # joined to the frame at its nearest node
                 k0 = int(np.argmin([float(np.hypot(*(p_ - ch.pts[0]))) for p_ in P2s]))
-                ids = [ids_all[k0]] + [nid(q) for q in ch.pts[1:]]
+                ids = [ids_all[k0]] + [nid(q, end=k == last)
+                                       for k, q in enumerate(ch.pts[1:], 1)]
             else:
-                ids = [nid(q, off) for q, off in zip(ch.pts, bow(ci, ch), strict=True)]
+                j0, j1 = end_at(ch.pts[0]), end_at(ch.pts[-1])
+                if j0 is not None and j0 == j1 and ch.length < 2 * tol:
+                    continue  # a short link inside one junction
+                ids = [nid(q, off, end=k in (0, last))
+                       for k, (q, off) in enumerate(zip(ch.pts, bow(ci, ch), strict=True))]
             for k in range(len(ids) - 1):
                 a_, b_ = ids[k], ids[k + 1]
                 if a_ == b_:

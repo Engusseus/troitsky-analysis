@@ -2030,3 +2030,24 @@ def test_wood_softens_before_it_crushes():
             assert u_pk == pytest.approx(1.35 * ec0 * 100, rel=0.15)
         else:
             assert f[1] == pytest.approx(30 * A, rel=0.02)
+
+
+def test_a_fine_frame_keeps_its_elements():
+    """Arm ends closer than a third of the arm's width are one junction, but the nodes
+    along an arm never merge: a frame meshed finer than that keeps every element (it
+    used to lose most of them below x0.6, at x0.5 on Bridge_v6's hub plates)."""
+    from bridgesim.cad.synthetic import box
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    bodies = [box("Pier L", (-550, 0, -40), (-540, 150, 40)),
+              box("Pier R", (540, 0, -40), (550, 150, 40)),
+              box("Strip", (-550, 150, -4), (550, 190, 4))]
+    ov = Overrides.from_dict({"bodies": {"Strip": {"kind": "frame", "layup": "4-ply UD"},
+                                         "Pier*": {"kind": "block"}}})
+    for ms in (1.0, 0.3):
+        m = build_model(bodies, MAT, SP, ov, seed=None, mesh_scale=ms)
+        strip = next(b for b in m.bodies if b.name == "Strip")
+        L = m.b_L0[strip.beams]
+        h = 30.0 * ms
+        assert strip.kind == "frame" and L.max() <= 1.1 * h, (ms, L.max())
+        assert L.sum() == pytest.approx(1100 - 40, rel=0.05)  # the arm's centre line
