@@ -86,6 +86,16 @@ the test is calibrated, not validated.
 simulation is verified but not validated, and its absolute F_u carries the uncertainty
 of the placeholder material values (`bridgesim sensitivity` shows how much).
 
+**Plausibility, not validation.** Published Troitsky results put Bridge_v6's prediction
+in the range real bridges reach, nothing more: the 2025 winner (BCIT) was a 7.2 kg
+bridge that carried 1587 kg ([BCIT news](https://educationnewscanada.com/article/organization/24081/1131794/BCIT-Engineering-students-win-big-at-the-Troitsky-Bridge-Building-Competition.htm));
+the record is 4889 kg (University of Toronto, 2026), after 3700 kg (McMaster, 2018)
+([U of T news](https://news.engineering.utoronto.ca/u-of-t-team-sets-new-record-at-premier-student-bridge-building-competition/)).
+Bridge_v6, 7.15 kg, is predicted at 1.9-2.4 t over seeds (standard fidelity, placeholder
+materials): the same order as the 7.2 kg winner and below the record. These are other
+designs, built with measured sticks and glue, so this checks only that the predicted
+loads are not out of scale.
+
 ### 3.4 Bridge_v6: mesh convergence and time compression
 
 `validation/convergence_study.py examples/cad/Bridge_v6.SLDPRT` (a real team design, 100
