@@ -22,7 +22,9 @@ import hashlib
 import json
 import math
 import os
+import re
 import shlex
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -230,6 +232,7 @@ def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: Sim
         by_body.setdefault(p.body_a, []).append(p)
         by_body.setdefault(p.body_b, []).append(p)
     weak_seen: set[str] = set()
+    weak: list[tuple[float, str, float, float]] = []  # ratio, member, glue, member
     for bi, info in enumerate(model.bodies):
         if info.kind != "bar" or info.f_t_eff_MPa <= 0:
             continue
@@ -244,20 +247,27 @@ def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: Sim
         glue = min(e for e in ends if e > 0) * tau if any(ends) else 0.0
         if glue and glue < 0.5 * cap_member and _group(info.name) not in weak_seen:
             weak_seen.add(_group(info.name))
-            qs.append(Question(
-                id=f"weak_joint:{info.name}", topic="design", body=info.name,
-                question=f"The glued area at the weaker end of '{info.name}' (and its "
-                         f"copies) carries about {glue / KGF:.0f} kgf "
-                         f"in shear, much less than the member itself "
-                         f"({cap_member / KGF:.0f} kgf in tension). Is the joint really this "
-                         "small, or is a gusset or lap missing from the CAD?",
-                assumed="the joint is exactly as drawn",
-                answer_with={"cad": f"add the missing gusset or lap on '{info.name}' and "
-                                    "crush again; if the joint is as drawn, nothing to do",
-                             "bodies": {info.name: {
-                                 "glue_factor": "<only if its glue is weaker or stronger "
-                                                "than a full glue line, e.g. 0.7>"}}},
-                severity="check"))
+            weak.append((glue / cap_member, info.name, glue, cap_member))
+    if weak:  # one question for all of them: most are members that never see that force
+        weak.sort()
+        listed = "; ".join(f"'{n}' {g / KGF:.0f} kgf vs {c / KGF:.0f} kgf"
+                           for _, n, g, c in weak[:6])
+        qs.append(Question(
+            id="weak_joints", topic="design", body=weak[0][1],
+            question=f"{len(weak)} member(s) (with their copies) have much less glued area "
+                     "at their weaker end than the member could carry in tension (the glue "
+                     f"in shear vs the member): {listed}"
+                     + (f" (and {len(weak) - 6} more)" if len(weak) > 6 else "")
+                     + ". A member in compression, or lightly loaded, needs far less: "
+                       "`bridgesim screen` shows which joints are actually loaded. Is a "
+                       "gusset or lap missing from the CAD on any of them?",
+            assumed="the joints are exactly as drawn",
+            answer_with={"cad": "add the missing gusset or lap and crush again; if the "
+                                "joints are as drawn, acknowledge weak_joints",
+                         "bodies": {weak[0][1]: {
+                             "glue_factor": "<only if its glue is weaker or stronger "
+                                            "than a full glue line, e.g. 0.7>"}}},
+            severity="check"))
     # rules
     for ln in rules.lines:
         if ln.passed is False:
@@ -293,7 +303,9 @@ def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: Sim
                               if k in mat.assumed_keys()) + " (placeholders)",
             answer_with={"cli": "bridgesim calibrate validation/physical --out "
                                 "my_material.yaml, then crush with --material "
-                                "my_material.yaml"},
+                                "my_material.yaml -o my_material.overrides.yaml (the "
+                                "measured simulation values and scatter; merge it with "
+                                "your own overrides)"},
             severity="important"))
     return qs
 
@@ -560,7 +572,9 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         res2 = run_crush(_build(bodies, mat, sp, ov, seed, scale, False), slow)
         rc = {"speed_mm_s": slow.speed_mm_s, "Fu_kgf": round(res2.Fu_kgf, 2),
               "change": round((res.Fu_kgf - res2.Fu_kgf) / max(res2.Fu_kgf, 1e-9), 4),
-              "failure_mode": res2.failure_mode}
+              "failure_mode": res2.failure_mode, "governing": res2.governing,
+              # F_u linear in the jack speed, extrapolated to a jack at rest
+              "Fu_extrapolated_kgf": round(max(0.0, 2 * res2.Fu_kgf - res.Fu_kgf), 2)}
     qs, acked = _open_questions([Question(**q) for q in model.questions]
                                 + design_questions(bodies, model, mat, sp, rules), ov, model)
     c = res.curve
@@ -580,6 +594,7 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         file=path.name, sha256=_sha(path), seed=seed, overrides=ov_raw,
         Fu_kgf=round(res.Fu_kgf, 2), Fu_N=round(res.Fu_N, 1), failure_mode=res.failure_mode,
         failure_detail=res.failure_detail, governing=res.governing,
+        competing=list(getattr(res, "competing", [])),
         deflection_at_Fu_mm=round(res.deflection_at_Fu_mm, 2),
         mass_kg=round(mass, 3), efficiency_kgf_per_kg=round(res.Fu_kgf / mass, 2),
         criteria=_criteria(res.criteria),
@@ -882,7 +897,12 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
             cli=f"bridgesim crush {f}{ov} --fidelity {rep.fidelity} --rate-check "
                 f"--out {out}_check --json --brief"))
     broke = [e for e in rep.failures if e.kind != "joint_cracking"]
-    gov = [e for e in broke if e.load_kgf >= 0.9 * rep.Fu_kgf][:3] or broke[:3]
+    # the governing failure first (the break that started the fall of the load), then
+    # the others that broke within 10 % of F_u
+    lead = [e for e in rep.failures
+            if f"{e.kind.replace('_', ' ')}: {e.what}" == rep.governing][:1]
+    gov = (lead + [e for e in broke if e.load_kgf >= 0.9 * rep.Fu_kgf
+                   and e not in lead])[:3] or broke[:3]
     if rep.failure_mode == "instability":
         steps.append(NextStep(action="strengthen", why="the bridge collapses under its own "
                               "weight: " + rep.failure_detail,
@@ -953,7 +973,9 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
         if rep.fidelity == "quick":
             steps.append(NextStep(
                 action="confirm", why="quick fidelity is for ranking designs: its F_u is "
-                "3-5 % high and the part that breaks first can differ at standard",
+                "a few % high (4-10 % on Bridge_v6, coarser mesh and twice the jack speed), "
+                "the part that breaks first can differ at standard, and the strict reading "
+                "(Fu_first_joint_failure_kgf) is not converged at quick",
                 cli=f"bridgesim crush {f}{ov} --fidelity standard --out {out}_standard "
                     "--json --brief"))
         elif rep.fidelity == "standard" and len(close) > 1:
@@ -967,11 +989,18 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
         + _ask_steps(rep.questions)
     steps += _measure_step(rep.assumed_parameters, f, ov)
     if rep.Fu_kgf > 0:
+        sample = " --sample-placeholders" if rep.assumed_parameters else ""
         steps.append(NextStep(
             action="predict", why="one seed is one possible build: the spread over "
                                   "imperfections and scatter gives recommended_prediction_kgf "
-                                  "for the Load Prediction Form",
-            cli=f"bridgesim montecarlo {f}{ov} -n 8 --json"))
+                                  "for the Load Prediction Form"
+                                  + (" (--sample-placeholders: the range also covers the "
+                                     "material values not yet measured)" if sample else "")
+                                  + f"; after the real test, `bridgesim compare "
+                                    f"{out}_montecarlo/montecarlo.json my_test.csv` says "
+                                    "whether it fell inside the predicted range",
+            cli=f"bridgesim montecarlo {f}{ov} -n 8{sample} --out {out}_montecarlo "
+                "--json"))
     steps.append(NextStep(
         action="compare", why="after a real crush test (a prototype or the competition): "
                               "the reality gap and what to measure next",
@@ -981,9 +1010,10 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
 
 def select(rep: InspectReport, body: str | list[str] | None = None,
            joint: str | list[str] | None = None) -> InspectReport:
-    """The inspect report with only the bodies whose name matches ``body`` and the joints
-    one of whose parts (or whose 'A | B' name) matches ``joint`` (glob patterns, case
-    ignored), and only the questions about them: to look up a few parts of a big bridge."""
+    """The inspect report with only the bodies whose name matches ``body``, the joints
+    with one of those bodies or one of whose parts (or whose 'A | B' name) matches
+    ``joint`` (glob patterns, case ignored), and only the questions about them: to look
+    up a few parts of a big bridge."""
     def pats(p):
         return [x.lower() for x in ([p] if isinstance(p, str) else list(p or []))]
 
@@ -999,12 +1029,15 @@ def select(rep: InspectReport, body: str | list[str] | None = None,
         names |= {b.name for b in upd["bodies"]}
     else:
         upd["bodies"] = [] if jp else rep.bodies
-    if jp:
-        upd["joints"] = [j for j in rep.joints if hit(f"{j.a} | {j.b}", jp)
-                         or hit(j.a, jp) or hit(j.b, jp)]
-        names |= {p for j in upd["joints"] for p in (j.a, j.b)}
+    if bp or jp:
+        sel_b = set(names)
+        upd["joints"] = [j for j in rep.joints if j.a in sel_b or j.b in sel_b
+                         or (jp and (hit(f"{j.a} | {j.b}", jp) or hit(j.a, jp)
+                                     or hit(j.b, jp)))]
+        if jp:
+            names |= {p for j in upd["joints"] for p in (j.a, j.b)}
     else:
-        upd["joints"] = [] if bp else rep.joints
+        upd["joints"] = rep.joints
     if bp or jp:
         upd["questions"] = [q for q in rep.questions
                             if any(n in q.id or n in q.question for n in names)]
@@ -1882,9 +1915,23 @@ def _mc_one(a):
                and e.load_kgf >= 0.9 * rep.Fu_kgf]
     return {"seed": seed, "Fu_kgf": rep.Fu_kgf, "first_failure": where,
             "governing": rep.governing, "at_peak": at_peak,
+            "secant_deflection": _rising_secant(rep, False),
+            "secant_travel": _rising_secant(rep, True),
             "Fu_strict_kgf": min(strict, rep.Fu_kgf) if strict else rep.Fu_kgf,
             "trustworthy": rep.quality.trustworthy, "mass_kg": rep.mass_kg,
             "efficiency_kgf_per_kg": rep.efficiency_kgf_per_kg}
+
+
+def _rising_secant(rep: CrushReport, jack: bool) -> float:
+    """Secant stiffness of a crush's rising branch (10-50 % of F_u), against the jack
+    travel or the mid-span deflection, kgf/mm (nan without a curve)."""
+    F = float(rep.Fu_kgf)
+    sl = np.array(rep.curve.load_kgf)
+    sx = np.array(rep.curve.jack_travel_mm if jack else rep.curve.deflection_mm)
+    if not len(sl) or F <= 0:
+        return math.nan
+    i_fu = int(np.argmax(sl >= 0.999 * F))
+    return float(_secant(sl[: i_fu + 1], sx[: i_fu + 1], F))
 
 
 def e_kind(e: EventOut) -> str:
@@ -2139,21 +2186,25 @@ STRENGTH_KEYS = ("material.f_t_MPa", "material.f_c_MPa", "material.f_v_MPa",
 def calibrate_bridge(cad: str | Path, test_csv: str | Path, overrides=None, material=None,
                      sim_params=None, ruleset=None, fidelity: str = "standard",
                      seed: int | None = 0, iterations: int = 4, tol: float = 0.03,
-                     progress=None, units=None, up: str = "y", span: str = "x"):
+                     progress=None, units=None, up: str = "y", span: str = "x",
+                     seeds: int = 3, processes: int | None = None):
     """Fit a global stiffness factor (E, G, E_T, glue stiffness) and a global strength
     factor (every strength) so the simulated crush of this bridge reproduces a physical
     crush test of it: the secant stiffness (10-50 % of the peak, if the record has a
-    curve) and the ultimate load. A fixed-point iteration, one crush per step. The fit
-    is model updating: a test used here cannot validate the model any more."""
+    curve) and the ultimate load. A fixed-point iteration: each step crushes the bridge
+    with seeds 1..``seeds`` (in parallel) and fits their median, so the factors do not
+    absorb one seed's imperfections (``seeds=1``: the single ``seed``). The fit is
+    model updating: a test used here cannot validate the model any more."""
     from bridgesim.sim.report import BridgeCalibration, CalibrationStep
 
     t = _read_test_csv(test_csv)
     peak_t = float(t["peak"])
     if not math.isfinite(peak_t) or peak_t <= 0:
         raise ValueError(f"{test_csv}: no load_kgf value")
-    if iterations < 1:
-        raise ValueError("iterations must be at least 1")
+    if iterations < 1 or seeds < 1:
+        raise ValueError("iterations and seeds must be at least 1")
     jack = t["x_kind"] == "jack_travel_mm"
+    seed_list = [seed] if seeds == 1 else list(range(1, seeds + 1))
     k_t = _secant(t["load"], t["x"], float(np.max(t["load"]))) if len(t["load"]) >= 3 \
         else math.nan
     _, _, _, ov_raw, mat, sp, _ = _inputs(cad, overrides, material, sim_params, ruleset,
@@ -2183,24 +2234,25 @@ def calibrate_bridge(cad: str | Path, test_csv: str | Path, overrides=None, mate
         if progress:
             progress(it / iterations, f"calibration step {it + 1}: stiffness x{fE:.3f}, "
                                       f"strength x{fS:.3f}")
-        rep, _ = crush(cad, with_factors(fE, fS), material, sim_params, ruleset, seed=seed,
-                       options=_screening(fidelity), replay=False, fidelity=fidelity,
-                       units=units, up=up, span=span)
-        F = float(rep.Fu_kgf)
-        sl = np.array(rep.curve.load_kgf)
-        sx = np.array(rep.curve.jack_travel_mm if jack else rep.curve.deflection_mm)
-        if len(sl) and F > 0:
-            i_fu = int(np.argmax(sl >= 0.999 * F))
-            sl, sx = sl[: i_fu + 1], sx[: i_fu + 1]
-        k_s = _secant(sl, sx, F) if F > 0 else math.nan
+        args = [(sd, (str(cad), with_factors(fE, fS), material, sim_params, ruleset, sd,
+                      None, fidelity, None, units, up, span)) for sd in seed_list]
+        if len(args) == 1:
+            runs = [_mc_one(args[0][1])]
+        else:
+            runs = _pool_runs(args, len(args), processes, None, "crush")
+        runs.sort(key=lambda r: (r["seed"] is None, r["seed"] or 0))
+        F = float(np.median([r["Fu_kgf"] for r in runs]))
+        ks = [r["secant_travel" if jack else "secant_deflection"] for r in runs]
+        ks = [k for k in ks if math.isfinite(k)]
+        k_s = float(np.median(ks)) if ks and F > 0 else math.nan
         eF = (F - peak_t) / peak_t
         ek = (k_s - k_t) / k_t if math.isfinite(k_s) and math.isfinite(k_t) else None
-        major = next((e for e in rep.failures if e.kind != "joint_cracking"), None)
+        gov = Counter(r["governing"] for r in runs).most_common(1)[0][0]
         steps.append(CalibrationStep(
             stiffness_factor=round(fE, 4), strength_factor=round(fS, 4), Fu_kgf=round(F, 2),
             stiffness_kgf_per_mm=round(k_s, 2) if math.isfinite(k_s) else None,
             Fu_error=round(eF, 4), stiffness_error=round(ek, 4) if ek is not None else None,
-            first_failure=f"{e_kind(major)}: {major.what}" if major else rep.failure_mode))
+            first_failure=gov, Fu_kgf_runs=[round(r["Fu_kgf"], 2) for r in runs]))
         if abs(eF) <= tol and (ek is None or abs(ek) <= tol):
             converged = True
             break
@@ -2212,8 +2264,8 @@ def calibrate_bridge(cad: str | Path, test_csv: str | Path, overrides=None, mate
     last = steps[-1]
     best = with_factors(last.stiffness_factor, last.strength_factor)
     return BridgeCalibration(
-        file=Path(cad).name, test=Path(test_csv).name, fidelity=fidelity, seed=seed,
-        test_Fu_kgf=round(peak_t, 2),
+        file=Path(cad).name, test=Path(test_csv).name, fidelity=fidelity,
+        seed=seed if seeds == 1 else None, seeds=seed_list, test_Fu_kgf=round(peak_t, 2),
         test_stiffness_kgf_per_mm=round(k_t, 2) if math.isfinite(k_t) else None,
         test_failure=(t["fail_parts"][0] if t["fail_parts"] else ""),
         stiffness_factor=last.stiffness_factor, strength_factor=last.strength_factor,
@@ -2305,25 +2357,32 @@ def diagnose(cad: str | Path, n: int = 2, overrides=None, material=None, sim_par
         raise ValueError("nothing broke near the peak in the base runs: no part to "
                          "strengthen (see failure_mode: a deflection or contact limit, "
                          "or buckling)")
-    args, whatifs = [], {}
-    for i, (_k, (_cnt, e)) in enumerate(cands):
+    args, whatifs, tags = [], {}, []
+    for _k, (_cnt, e) in cands:
         ev = EventOut(t_s=0.0, jack_travel_mm=0.0, load_N=0.0, load_kgf=0.0,
                       kind=e["kind"], what=e["what"], parts=e["parts"])
         wi = _whatif([ev])
-        whatifs[f"c{i}"] = wi
-        args += run_args(f"c{i}", merge_whatif(ov_raw, wi))
+        # the runs of each what-if in a folder named after the part it strengthens
+        tag = "whatif_" + (re.sub(r"[^A-Za-z0-9]+", "_", _k.split(": ", 1)[-1])
+                           .strip("_")[:48] or "part")
+        tag = tag if tag not in tags else f"{tag}_{len(tags)}"
+        tags.append(tag)
+        whatifs[tag] = wi
+        args += run_args(tag, merge_whatif(ov_raw, wi))
     res = _pool_runs(args, len(args), processes, progress, "what-if crush")
     items = []
-    for i, (k, (cnt, e)) in enumerate(cands):
-        rb = sorted((r for r in res if r["tag"] == f"c{i}"), key=lambda r: r["seed"])
+    for tag, (k, (cnt, e)) in zip(tags, cands, strict=True):
+        rb = sorted((r for r in res if r["tag"] == tag), key=lambda r: r["seed"])
         ch = [(b["Fu_kgf"] - a["Fu_kgf"]) / max(a["Fu_kgf"], 1e-9)
               for a, b in zip(base, rb, strict=True)]
         govs = [b.get("governing") or b["first_failure"] for b in rb]
         items.append(DiagnosisItem(
             part=k.split(": ", 1)[1], kind=e["kind"].replace("_", " "), seen=cnt,
-            overrides=whatifs[f"c{i}"], Fu_change=round(float(np.mean(ch)), 4),
+            overrides=whatifs[tag], Fu_change=round(float(np.mean(ch)), 4),
             Fu_changes=[round(c, 4) for c in ch], stronger_with=int(sum(c > 0 for c in ch)),
-            governing_after=max(set(govs), key=govs.count)))
+            governing_after=max(set(govs), key=govs.count),
+            runs=(str((Path(out_dir) / f"{tag}_seed_<n>").resolve()) if out_dir
+                  else None)))
     items.sort(key=lambda it: -it.Fu_change)
     top = items[0]
     helps = top.Fu_change > 0.02 and top.stronger_with == n

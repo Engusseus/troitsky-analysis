@@ -118,7 +118,8 @@ class CrushResult:
     speed_mm_s: float = 0.0
     holds: int = 0  # times the jack was held while something broke
     hold_time_s: float = 0.0
-    governing: str = ""  # what broke at the peak ("member shear: <part>", ...)
+    governing: str = ""  # what broke when the load fell ("member shear: <part>", ...)
+    competing: list[str] = field(default_factory=list)  # other breaks within 10 % of F_u
 
 
 def _quat(R: np.ndarray) -> np.ndarray:
@@ -395,6 +396,76 @@ def _node_diag(m: Model, st: S.State, n: int) -> str:
             f"touching {int(st.p_touch[pp].sum())}")
 
 
+LOAD_CELL_MM = 0.3  # time constant of the online load-cell filter, in jack travel
+
+
+def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float) -> np.ndarray:
+    """The load reported for a crush: the raw jack force smoothed by a centred Hann
+    window three load-cell time constants wide (0.9 mm of jack travel at full speed).
+    Centred, so it has no lag (the rising branch, the stiffness and F_u are where they
+    are), while it removes the stress waves ringing through the bridge as well as the
+    online filter that decides when the bridge is judged failed."""
+    raw = np.asarray(raw, float)
+    if len(raw) < 3:
+        return raw.copy()
+    h = float(np.median(np.diff(t)))
+    width = 3 * LOAD_CELL_MM / max(speed_mm_s, 1e-9)
+    n = max(3, int(round(width / max(h, 1e-12))) | 1)
+    k = np.hanning(n + 2)[1:-1]
+    k /= k.sum()
+    return np.convolve(raw, k, "same") / np.convolve(np.ones_like(raw), k, "same")
+
+
+BREAKS = ("joint_failure", "joint_cracking", "member_fracture", "member_shear",
+          "plate_crack", "floss_break")
+
+
+def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
+              speed_mm_s: float) -> tuple[Event | None, list[str]]:
+    """The governing failure and the competing ones, from the events up to the failure
+    call. Governing: the break that started the fall of the load, i.e. the first break
+    from ``t_c``, where the reported load last stood within 5 % of F_u (``peak``); a
+    break before it was survived (the load came back). A quarter of the load-cell time
+    constant of slack before ``t_c``: the centred smoothing leads a sudden drop. Among
+    breaks at the same moment a clean break comes before a joint that only cracked, and
+    a member split within 2 ms of a member fracture is put down to the fracture (its
+    stress wave). Without a break from ``t_c``: the last survived break within 10 % of
+    F_u; else one within 3 mm of jack travel of the peak. Competing: the other breaks
+    within 10 % of F_u that were survived, or that came at the same moment as the
+    governing one (not the cascade after it), as '<kind>: <part>'."""
+    tol = 0.25 * LOAD_CELL_MM / max(speed_mm_s, 1e-9)
+
+    def clean(evs):  # a clean break before a joint that only cracked
+        return [e for e in evs if e.kind != "joint_cracking"] or evs
+
+    falling = [e for e in before if e.kind in BREAKS and e.t >= t_c - tol]
+    survived = [e for e in before if e.kind in BREAKS and e.t < t_c - tol
+                and e.force_N >= 0.9 * peak]
+    if falling:
+        first = clean([e for e in falling if e.t <= falling[0].t + 2 * tol])[0]
+    elif survived:
+        first = clean(survived)[-1]
+    else:
+        near = [e for e in before if e.kind in BREAKS
+                and abs(e.travel_mm - peak_travel) <= 3.0]
+        first = near[0] if near else next(
+            (e for e in before if e.kind in BREAKS and e.kind != "joint_cracking"), None)
+    if first is not None and first.kind == "member_shear":
+        # a member breaking sends a stress wave that can split its neighbours (or itself)
+        # in the same instant: the break is the cause, not the splits
+        root = [e for e in before if e.kind == "member_fracture"
+                and abs(e.t - first.t) <= 0.002]
+        if root:
+            first = root[0]
+    t_gov = first.t if first is not None else t_c
+    gov_what = first.what if first is not None else ""
+    competing = list(dict.fromkeys(
+        f"{e.kind.replace('_', ' ')}: {e.what}"
+        for e in clean(survived + [e for e in falling if e.t <= t_gov + tol])
+        if e.what != gov_what))[:8]
+    return first, competing
+
+
 def run_crush(m: Model, opt: CrushOptions | None = None) -> CrushResult:
     """Simulate the crushing test. If the explicit integration ever starts to diverge
     (a node faster than 1 km/s or a non-finite value), the run restarts with a smaller
@@ -626,6 +697,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     fail_mode = ""
     fail_detail = ""
     Fu_at_fail = None
+    i_fail: int | None = None  # curve sample at which the bridge was judged failed
     est_steps = int((opt.max_travel_mm / opt.speed_mm_s) / dt)
     frame_every = max(1, int(opt.frame_mm / opt.speed_mm_s / dt))
     ramp = 0.02  # s, the jack starts smoothly
@@ -634,6 +706,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     work = 0.0
     last_force = 0.0
     force_f = 0.0
+    raw_sum, raw_n = 0.0, 0  # the raw jack force, averaged between curve samples
     k = 0
     throttle = 1.0
     hold_until = -1.0
@@ -662,10 +735,14 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         last_force = raw
         # the load cell reading: low-pass filtered over ~0.3 mm of jack travel, so a
         # stress wave ringing through the bridge is not taken for its strength
-        a_f = min(1.0, dt * opt.speed_mm_s / 0.3)  # time constant: 0.3 mm at full speed
+        a_f = min(1.0, dt * opt.speed_mm_s / LOAD_CELL_MM)  # 0.3 mm at full speed
         force_f += a_f * (raw - force_f)
         force = force_f
+        raw_sum += raw
+        raw_n += 1
         if k % 25 == 0 or k == 1:
+            raw_mean = raw_sum / raw_n
+            raw_sum, raw_n = 0.0, 0
             defl = deck0 - deck_y()
             # kinetic energy of the bridge, without the plate (it moves with the jack)
             # and without debris (broken-off pieces falling away)
@@ -677,7 +754,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             curve["t"].append(st.t)
             curve["travel"].append(travel)
             curve["force"].append(force)
-            curve.setdefault("force_raw", []).append(raw)
+            curve.setdefault("force_raw", []).append(raw_mean)
             curve["deflection"].append(defl)
             curve["kinetic"].append(kin)
             curve["plate_load"].append(0.0)
@@ -793,6 +870,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                     fail_at, fail_mode = travel, "contact"
                     fail_detail = criteria["contact"].get("part", "")
                     Fu_at_fail = peak
+                if fail_at is not None:
+                    i_fail = len(curve["t"]) - 1
             if opt.progress and k % 2000 == 0:
                 opt.progress(min(1.0, travel / opt.max_travel_mm),
                              f"jack {travel:.1f} mm, load {force / KGF:.1f} kgf, "
@@ -816,27 +895,36 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         fail_mode = "none"
         fail_detail = (f"no failure within {opt.max_travel_mm:g} mm of jack travel")
         Fu_at_fail = peak
-    # the governing failure: what broke around the peak, before the bridge was judged
-    # failed (never something that broke in the collapse afterwards)
+    # ---- the reported load: the raw force smoothed without lag (reported_load). The
+    # online reading above only decided when to hold the jack and when the bridge was
+    # judged failed; F_u, the curve and the load of each event come from this one.
+    t_c = np.inf  # where the load last stood within 5 % of F_u before the failure call
+    if curve["t"] and not unstable:
+        tt = np.asarray(curve["t"])
+        fz = reported_load(tt, np.asarray(curve["force_raw"]), opt.speed_mm_s)
+        curve["force_online"] = curve["force"]
+        curve["force"] = [float(f) for f in fz]
+        for e in events:
+            e.force_N = float(np.interp(e.t, tt, fz))
+        for c in criteria.values():
+            if c and "t_s" in c and "load_N" in c and c["t_s"] >= tt[0]:
+                c["load_N"] = float(np.interp(c["t_s"], tt, fz))
+        n_ok = len(tt) if i_fail is None else i_fail + 1
+        i_pk = int(np.argmax(fz[:n_ok]))
+        peak, peak_travel = float(fz[i_pk]), float(curve["travel"][i_pk])
+        peak_defl = float(curve["deflection"][i_pk])
+        Fu_at_fail = peak
+        high = np.where(fz[i_pk:n_ok] >= 0.95 * peak)[0]
+        t_c = float(tt[i_pk + high[-1]]) if i_fail is not None else np.inf
+        if fail_mode == "collapse":
+            fail_detail = (f"load fell more than {1 - opt.drop_ratio:.0%} below its peak of "
+                           f"{peak / KGF:.1f} kgf")
+            for e in events:
+                if e.kind == "criterion" and e.what == "collapse":
+                    e.detail = fail_detail
     end = (fail_at if fail_at is not None else np.inf) + 0.5
     before = [e for e in events if e.travel_mm <= end]
-    breaks = ("joint_failure", "joint_cracking", "member_fracture", "member_shear",
-              "plate_crack", "floss_break")
-    # what broke at the peak load (within 10 % of it), a clean break before a joint
-    # that only cracked; else what broke within 3 mm of jack travel of the peak
-    at_peak = [e for e in before if e.kind in breaks and e.force_N >= 0.9 * peak]
-    near = [e for e in at_peak if e.kind != "joint_cracking"] or at_peak or [
-        e for e in before if e.kind in breaks and abs(e.travel_mm - peak_travel) <= 3.0]
-    first_major = near[0] if near else next(
-        (e for e in before if e.kind in ("joint_failure", "member_fracture", "member_shear",
-                                         "plate_crack", "floss_break")), None)
-    if first_major is not None and first_major.kind == "member_shear":
-        # a member breaking sends a stress wave that can split its neighbours (or itself)
-        # in the same instant: the break is the cause, not the splits
-        root = [e for e in before if e.kind == "member_fracture"
-                and abs(e.t - first_major.t) <= 0.002]
-        if root:
-            first_major = root[0]
+    first_major, competing = attribute(before, t_c, peak, peak_travel, opt.speed_mm_s)
     governing = fail_mode
     if fail_mode == "collapse" and first_major:
         governing = f"{first_major.kind.replace('_', ' ')}: {first_major.what}"
@@ -869,7 +957,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     max_ke_ratio = float((KE[sel] / W[sel]).max()) if sel.any() else 0.0
     res = CrushResult(
         Fu_N=float(Fu_at_fail), Fu_kgf=float(Fu_at_fail) / KGF, failure_mode=fail_mode,
-        failure_detail=fail_detail, governing=governing, t_failure=float(fail_at or 0.0),
+        failure_detail=fail_detail, governing=governing, competing=competing,
+        t_failure=float(fail_at or 0.0),
         deflection_at_Fu_mm=float(peak_defl), curve=curve, events=events, frames=frames,
         criteria=criteria, dt=dt, steps=steps, wall_s=time.time() - t0,
         added_mass_kg=added * 1000, added_mass_frac=added / phys_mass.sum(),

@@ -190,6 +190,15 @@ an edit elsewhere in the design. Monte Carlo over seeds gives the spread of F_u.
   (74 degrees) or passed through each other stops acting.
 * The jack moves down at constant speed (displacement control); its force is the
   load-cell reading. The crusher + load cell stiffness is 20 kN/mm.
+* **The load reading.** The jack force rings with stress waves that a real test at
+  mm/min never shows (time is compressed). Two filters of it: *online*, a one-pole
+  low-pass over 0.3 mm of jack travel, which decides when to hold the jack and when the
+  bridge is judged failed, as a load cell would in real time; and *reported*, the raw
+  force smoothed by a centred Hann window three times as wide (0.9 mm of travel at full
+  speed), which rejects the ringing as well but has no lag. The curve, F_u, the
+  deflection at F_u and the load of every event are the reported one. (Until round 10
+  the online reading was reported: the same F_u within 0.2 % on Bridge_v6, but its lag
+  put the rising branch 0.3 mm late, the secant stiffness 7 % low.)
 * **Failures run their course at constant load**, as in the real test where the jack
   moves mm per minute: whenever something breaks (a joint lets go, a member or plate
   cracks, floss snaps) the simulated jack slows smoothly to 2 % of its speed and waits
@@ -211,6 +220,18 @@ an edit elsewhere in the design. Monte Carlo over seeds gives the spread of F_u.
   drop; the load at the first complete joint separation is reported separately
   (`Fu_first_joint_failure_kgf`). Every joint failure and member split is logged with
   the load at which it happened.
+* **What governed** (`governing`): the break that started the fall of the load to the
+  failure call, i.e. the first break from the moment the reported load last stood within
+  5 % of F_u (a quarter of the online filter's time constant earlier, since the centred
+  smoothing leads a sudden drop). A part that broke before that was survived: the load
+  came back, as it did on Bridge_v6 seed 1 after a deck-stringer joint let go at the peak
+  (5 % drop), before the End Post joints went at 96 % of the peak and the load fell 40 %.
+  A member split in the same 2 ms as a member fracture is put down to the fracture.
+  `competing` lists the other parts that broke within 10 % of F_u: the failure can start
+  at one of them on another seed or mesh; `diagnose` measures which one F_u depends on.
+* **Rate check** (`--rate-check`): the crush again at half the jack speed. F_u is
+  roughly linear in the speed over this range, so `Fu_extrapolated_kgf` = 2 F(v/2) -
+  F(v) estimates it for a jack at rest (the real test's mm/min).
 
 ## 6. Numerics
 
@@ -247,7 +268,8 @@ an edit elsewhere in the design. Monte Carlo over seeds gives the spread of F_u.
 * **Mesh convergence** (`validation/convergence_study.py`; Bridge_v6 in
   `validation/README.md` §3.4): the perfect bridge converges from element size x2 to
   x0.75 (2706, 2647, 2678 kgf); seed by seed the standard mesh is within 1.8 % of the fine
-  mesh and quick 3-5 % high, with the seeds ranked alike at every fidelity.
+  mesh and the quick mesh 3-5 % high at the same jack speed (quick fidelity as run, at
+  200 mm/s, 4-10 % high), with the seeds ranked alike at every fidelity.
 * **Crack onset is local.** A plate cracks where its strain first reaches the strength
   in one element; the crack band makes the energy of the crack independent of the mesh,
   not its onset at a sharp stress raiser (the end of a glued lap, a re-entrant corner),

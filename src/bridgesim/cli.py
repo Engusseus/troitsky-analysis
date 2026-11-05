@@ -496,9 +496,17 @@ def crush(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = N
     typer.echo(f"  {rep.failure_detail}")
     typer.echo(f"  mass {rep.mass_kg:.2f} kg, efficiency {rep.efficiency_kgf_per_kg:.1f} "
                f"kgf/kg, deck deflection at F_u {rep.deflection_at_Fu_mm:.1f} mm")
+    if rep.competing:
+        typer.echo("  also broke within 10 % of F_u (the failure could start there on "
+                   "another seed): " + "; ".join(rep.competing[:4]))
     if rep.Fu_first_joint_failure_kgf is not None:
         typer.echo(f"  first joint separated (or member split in shear) at "
                    f"{rep.Fu_first_joint_failure_kgf:.1f} kgf")
+    rc = rep.quality.rate_check
+    if rc:
+        typer.echo(f"  at half the jack speed F_u = {rc['Fu_kgf']:.1f} kgf "
+                   f"({-rc['change']:+.1%}); extrapolated to a jack at rest "
+                   f"{rc.get('Fu_extrapolated_kgf', 0):.1f} kgf")
     typer.echo("Failure sequence:")
     for line in rep.failure_sequence[:15]:
         typer.echo(f"  {line}")
@@ -597,23 +605,29 @@ def calibrate_bridge(cad: CadArg,
                      overrides: OverridesOpt = None, material: MaterialOpt = None,
                      fidelity: Annotated[str, typer.Option(help="quick, standard, fine")]
                      = "standard",
-                     seed: Annotated[int, typer.Option(help="Seed (-1: perfect bridge)")]
-                     = 0,
+                     seeds: Annotated[int, typer.Option(
+                         help="Seeds crushed at each step (1..n, in parallel); the fit is "
+                              "to their median, not one seed's imperfections")] = 3,
+                     seed: Annotated[int, typer.Option(
+                         help="With --seeds 1: the seed (-1: perfect bridge)")] = 0,
                      iterations: Annotated[int, typer.Option(
-                         help="Most crushes to run")] = 4,
+                         help="Most fitting steps")] = 4,
+                     processes: Annotated[int | None, typer.Option(
+                         help="Crushes in parallel (default: one per 2 CPU cores)")] = None,
                      out: Annotated[Path, typer.Option(
                          help="Overrides YAML to write: yours plus the fitted params")]
                      = Path("fitted.overrides.yaml"),
                      units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
                      json_out: JsonOpt = False) -> None:
     """Fit a global stiffness and a global strength factor so the simulated crush of
-    this bridge reproduces your physical crush test of it (one crush per step)."""
+    this bridge reproduces your physical crush test of it (each step crushes it with
+    --seeds seeds and fits their median)."""
     from bridgesim.sim import study
 
     rep = _guard(json_out, lambda: study.calibrate_bridge(
         cad, test, overrides, material or "popsicle_birch", fidelity=fidelity,
         seed=None if seed < 0 else seed, iterations=iterations, progress=_progress,
-        units=units, up=up_axis, span=span_axis))
+        units=units, up=up_axis, span=span_axis, seeds=seeds, processes=processes))
     out.write_text(yaml.safe_dump(rep.overrides, sort_keys=False), encoding="utf-8")
     if json_out:
         typer.echo(rep.model_dump_json(indent=2))
@@ -621,7 +635,9 @@ def calibrate_bridge(cad: CadArg,
     for st_ in rep.steps:
         typer.echo(f"  stiffness x{st_.stiffness_factor:.3f}, strength "
                    f"x{st_.strength_factor:.3f}: F_u {st_.Fu_kgf:.1f} kgf "
-                   f"({st_.Fu_error:+.1%})" + (f", stiffness {st_.stiffness_error:+.1%}"
+                   + (f"(median of {', '.join(f'{f:.0f}' for f in st_.Fu_kgf_runs)}) "
+                      if len(st_.Fu_kgf_runs) > 1 else "")
+                   + f"({st_.Fu_error:+.1%})" + (f", stiffness {st_.stiffness_error:+.1%}"
                                                if st_.stiffness_error is not None else ""))
     typer.echo(f"{'Converged' if rep.converged else 'NOT converged'}; wrote {out} "
                f"(use it with -o {out}). {rep.note}")

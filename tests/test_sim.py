@@ -541,7 +541,7 @@ def test_bridge_calibration_recovers_known_factors(tmp_path):
         for i in range(k + 1):
             w.writerow(["T1", L[i], D[i], "failure" if i == k else "", "Beam"])
     cal = study.calibrate_bridge(tmp_path / "beam.stl", tmp_path / "test.csv", ov,
-                                 fidelity="quick", seed=None, iterations=4)
+                                 fidelity="quick", seed=None, seeds=1, iterations=4)
     assert cal.converged, cal.steps
     assert cal.stiffness_factor == pytest.approx(0.8, rel=0.05)
     assert cal.strength_factor == pytest.approx(1.0, rel=0.05)
@@ -580,7 +580,7 @@ def test_agent_loop_through_mcp(tmp_path):
     bodies = {b["name"]: ({"layup": "14-ply UD", "butt_stagger_mm": 0} if b["kind"] == "bar"
                           else {"kind": "block"}) for b in ins["bodies"]}
     ov = {"bodies": bodies, "acknowledge": ["material:*", "rigid_*", "floating:*", "rule:*",
-                                           "weak_joint:*"]}
+                                           "weak_joints"]}
     ov_yaml = yaml.safe_dump(ov)
     ins2 = call("inspect_bridge", cad_path=str(cad), overrides_yaml=ov_yaml, strict=True)
     assert not [q for q in ins2["questions"] if q["severity"] == "important"], \
@@ -1325,7 +1325,10 @@ def test_inspect_selects_bodies_and_joints(tmp_path):
     rep = study.inspect(stl)  # an STL has no body names: "Body 1" ...
     bars = sorted(b.name for b in rep.bodies if b.kind == "bar")
     s = study.select(rep, body=[n.upper() for n in bars])  # case ignored
-    assert sorted(b.name for b in s.bodies) == bars and s.joints == []
+    assert sorted(b.name for b in s.bodies) == bars
+    # with their joints (each stringer: two piers and the deck)
+    assert s.joints and all(j.a in bars or j.b in bars for j in s.joints)
+    assert len(s.joints) == len([j for j in rep.joints if j.a in bars or j.b in bars])
     s = study.select(rep, joint=bars[0])  # a stringer: on two piers, under the deck
     assert s.bodies == [] and len(s.joints) == 3
     assert all(bars[0] in (j.a, j.b) for j in s.joints)
@@ -1576,6 +1579,61 @@ def test_suggested_commands_keep_the_run_context(tmp_path):
     assert "--seed" not in steps[1].cli  # ab runs its own seeds
 
 
+def test_reported_load_has_no_lag():
+    """The reported load (centred smoothing) follows a rising load without the online
+    filter's lag and removes the ringing: a softening rise to 2000 N at 5 mm of jack
+    travel with a 270 Hz ring, then a sudden 40 % drop. Its peak is the true one within
+    2 %, at the right place; the online reading lags the rise."""
+    from bridgesim.sim.crush import LOAD_CELL_MM, reported_load
+
+    v = 100.0  # mm/s
+    t = np.arange(0, 0.06, 3e-5)
+    x = v * t  # jack travel
+    true = np.where(x < 5.0, 2000.0 * (1 - (1 - x / 5.0) ** 2), 1200.0)
+    raw = true + 150.0 * np.sin(2 * np.pi * 270 * t)
+    rep = reported_load(t, raw, v)
+    on = np.zeros_like(raw)  # the online one-pole filter
+    for i in range(1, len(t)):
+        a = min(1.0, (t[i] - t[i - 1]) * v / LOAD_CELL_MM)
+        on[i] = on[i - 1] + a * (raw[i] - on[i - 1])
+    rise = (x > 0.5) & (x < 4.0)
+    assert np.abs(rep[rise] - true[rise]).max() < 0.02 * 2000  # no lag, ring removed
+    assert (true[rise] - on[rise]).mean() > 0.05 * 2000  # the online reading lags
+    i = int(np.argmax(rep))
+    assert rep[i] == pytest.approx(2000.0, rel=0.02) and abs(x[i] - 5.0) < 0.5
+
+
+def test_governing_is_the_break_that_started_the_fall():
+    """Bridge_v6 seed 1 at quick fidelity: a deck-stringer joint let go at the peak (the
+    load fell 5 % and came back), then the End Post joints went at 96 % of the peak and
+    the load fell 40 %. Governing: the End Post joint; the deck joint competes. A member
+    split in the same instant as a member fracture is put down to the fracture."""
+    from bridgesim.sim.crush import KGF, Event, attribute
+
+    def ev(t, kgf, kind, what):
+        return Event(t, 100 * t, kgf * KGF, kind, what)
+
+    seq = [ev(0.0944, 2313, "member_shear", "Deck Stringer - R Far"),
+           ev(0.1124, 2399, "joint_failure", "Body 21531 | Deck Stringer - L Near"),
+           ev(0.1142, 2256, "joint_cracking", "End Post - L Far | T1 Gusset - L Far"),
+           ev(0.1142, 2256, "joint_failure", "End Post - L Far | T1 Gusset - L Far"),
+           ev(0.1149, 2016, "member_shear", "Top Strut Inner - R")]
+    gov, comp = attribute(seq, t_c=0.1139, peak=2405 * KGF, peak_travel=11.18,
+                          speed_mm_s=200.0)
+    assert gov.what == "End Post - L Far | T1 Gusset - L Far" and gov.kind == "joint_failure"
+    assert "joint failure: Body 21531 | Deck Stringer - L Near" in comp
+    assert not any("Top Strut" in c for c in comp)  # the cascade afterwards
+    # nothing broke from t_c: the last survived break near the peak
+    gov, _ = attribute(seq[:2], t_c=0.1139, peak=2405 * KGF, peak_travel=11.18,
+                       speed_mm_s=200.0)
+    assert gov.what == "Body 21531 | Deck Stringer - L Near"
+    split = [ev(0.2, 2000, "member_shear", "Chord - L"),
+             ev(0.2005, 1990, "member_fracture", "Chord - R")]
+    gov, _ = attribute(split, t_c=0.199, peak=2000 * KGF, peak_travel=20.0,
+                       speed_mm_s=100.0)
+    assert gov.kind == "member_fracture"
+
+
 def test_ab_says_what_governed_and_where_the_failure_moved():
     from bridgesim.sim.study import summarize_pairs
 
@@ -1630,6 +1688,37 @@ def test_diagnose_ranks_what_limits_the_bridge(tmp_path, monkeypatch):
     wi = yaml.safe_load((tmp_path / "d" / "whatif.yaml").read_text())
     assert wi["glue"] == {"End Post* | T1 Cover*": 1.5}
     assert str((tmp_path / "d" / "whatif.yaml").resolve()) in rep.next_steps[0].cli
+
+
+def test_bridge_calibration_fits_the_median_over_seeds(tmp_path, monkeypatch):
+    """calibrate-bridge crushes several seeds per step and fits their median, so the
+    strength factor does not absorb one seed's imperfections (crushes stubbed: F_u is
+    proportional to the strength factor, the seeds 10 % weak, nominal, 30 % strong)."""
+    from bridgesim.sim import study
+
+    cad = tmp_path / "b.stl"
+    write_stl(simple_beam_bridge(), cad)
+    (tmp_path / "test.csv").write_text("test,load_kgf,event,notes\nT1,1200,failure,"
+                                       "deck\n", encoding="utf-8")
+    f_b = float(MAT.f_b_MPa.value)
+    seen = []
+
+    def fake_pool(args, n_runs, processes, progress, label):
+        out = []
+        for tag, a in args:
+            fS = a[1]["params"]["material.f_b_MPa"] / f_b
+            seen.append(a[5])
+            out.append({"tag": tag, "seed": a[5], "governing": "joint failure: A | B",
+                        "Fu_kgf": 1000.0 * fS * {1: 0.9, 2: 1.0, 3: 1.3}[a[5]],
+                        "secant_deflection": float("nan"), "secant_travel": float("nan")})
+        return out
+
+    monkeypatch.setattr(study, "_pool_runs", fake_pool)
+    cal = study.calibrate_bridge(cad, tmp_path / "test.csv", fidelity="quick")
+    assert cal.seeds == [1, 2, 3] and cal.seed is None and set(seen) == {1, 2, 3}
+    assert cal.steps[0].Fu_kgf == 1000.0 and cal.steps[0].Fu_kgf_runs == [900, 1000, 1300]
+    assert cal.converged and cal.strength_factor == pytest.approx(1.2, rel=0.01)
+    assert cal.steps[-1].first_failure == "joint failure: A | B"
 
 
 def test_coupon_files_are_found_by_name_or_columns(tmp_path):

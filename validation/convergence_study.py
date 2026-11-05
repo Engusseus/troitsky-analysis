@@ -50,6 +50,8 @@ def _one(args):
     res = {"mesh": _name(scale), "element_scale": scale, "seed": seed,
            "Fu_kgf": rep.Fu_kgf, "deflection_at_Fu_mm": rep.deflection_at_Fu_mm,
            "first_failure": f"{first.kind}: {first.what}" if first else rep.failure_mode,
+           "governing": rep.governing, "competing": rep.competing,
+           "Fu_first_joint_failure_kgf": rep.Fu_first_joint_failure_kgf,
            "trustworthy": rep.quality.trustworthy,
            "added_mass": rep.quality.added_mass_fraction, "wall_s": round(time.time() - t0)}
     if done is not None:

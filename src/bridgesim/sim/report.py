@@ -202,10 +202,12 @@ class Quality(BaseModel):
     holds: int = Field(0, description="Times the jack was slowed to 2 % while something "
                                       "was breaking, until it stopped (quasi-static failure)")
     hold_time_s: float = 0.0
-    rate_check: dict | None = Field(None, description="With --rate-check: the same crush "
-                                    "at half the jack speed (speed_mm_s, Fu_kgf, change = "
-                                    "relative change of F_u). |change| < 0.05 shows the "
-                                    "simulated test is slow enough to stand for the real one.")
+    rate_check: dict | None = Field(None, description=(
+        "With --rate-check: the same crush at half the jack speed (speed_mm_s, Fu_kgf, "
+        "change = relative change of F_u, governing). |change| < 0.05 shows the simulated "
+        "test is slow enough to stand for the real one. Fu_extrapolated_kgf = 2 F(v/2) - "
+        "F(v): F_u extrapolated to a jack at rest (linear in the speed), the closest the "
+        "simulation gets to the real test's mm/min"))
 
 
 class CrushReport(BaseModel):
@@ -217,8 +219,8 @@ class CrushReport(BaseModel):
     overrides: dict[str, Any]
     Fu_kgf: float = Field(description="Predicted ultimate load (rulebook §12.5), kgf.")
     Fu_N: float
-    failure_mode: FailureMode = Field(description="collapse (the load fell to half its "
-                                                  "peak), deflection (> 50 mm), contact "
+    failure_mode: FailureMode = Field(description="collapse (the load fell 30 % below "
+                                                  "its peak), deflection (> 50 mm), contact "
                                                   "(with the platform other than at the "
                                                   "supports, or with the press uprights), "
                                                   "instability (collapsed under "
@@ -226,8 +228,15 @@ class CrushReport(BaseModel):
                                                   "none (no failure within the jack travel)")
     failure_detail: str
     governing: str = Field("", description=(
-        "What broke at the peak load (the reason the bridge failed): '<kind>: <part>', "
-        "'glue giving way: A | B', 'buckling or sway', or the failure mode"))
+        "The break that started the fall of the load (the reason the bridge failed): the "
+        "first break from where the load last stood within 5 % of F_u before the "
+        "failure call (breaks before it were survived). '<kind>: <part>', 'glue giving "
+        "way: A | B', 'buckling or sway', or the failure mode"))
+    competing: list[str] = Field([], description=(
+        "Other parts that broke within 10 % of F_u before the failure call: on another "
+        "seed, mesh or measured material the failure can start at one of them (diagnose "
+        "measures which one the load depends on). Empty: the governing failure stands "
+        "alone"))
     deflection_at_Fu_mm: float
     mass_kg: float
     efficiency_kgf_per_kg: float = Field(description="§12.6: Fu / mass")
@@ -334,7 +343,8 @@ class DesignRun(BaseModel):
     efficiency_kgf_per_kg: float
     first_failure: str = Field(description="The first part that let go (often long before "
                                            "the peak)")
-    governing: str = Field("", description="What broke at the peak: why this run failed")
+    governing: str = Field("", description="The break that started the fall of the load: "
+                                           "why this run failed")
     trustworthy: bool
 
 
@@ -405,7 +415,9 @@ class CalibrationStep(BaseModel):
     stiffness_kgf_per_mm: float | None
     Fu_error: float = Field(description="(simulated - test) / test")
     stiffness_error: float | None = None
-    first_failure: str = ""
+    first_failure: str = Field("", description="What governed (most often over the seeds)")
+    Fu_kgf_runs: list[float] = Field([], description="F_u of each seed; Fu_kgf is their "
+                                                     "median")
 
 
 class BridgeCalibration(BaseModel):
@@ -417,7 +429,9 @@ class BridgeCalibration(BaseModel):
     file: str
     test: str
     fidelity: str
-    seed: int | None
+    seed: int | None = Field(description="The seed, when fitted to one (seeds=1)")
+    seeds: list[int | None] = Field([], description="Seeds crushed at each step: the fit is "
+                                                    "to their median F_u and stiffness")
     test_Fu_kgf: float
     test_stiffness_kgf_per_mm: float | None
     test_failure: str = ""
@@ -485,6 +499,9 @@ class DiagnosisItem(BaseModel):
     stronger_with: int = Field(description="Seeds where F_u rose")
     governing_after: str = Field(description="What governs once it is strengthened (most "
                                              "frequent)")
+    runs: str | None = Field(None, description="With --out: the crushes of this what-if "
+                                               "(<n>: the seed); the base ones are "
+                                               "base_seed_<n>")
 
 
 class DiagnosisReport(BaseModel):

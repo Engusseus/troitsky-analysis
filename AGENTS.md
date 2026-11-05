@@ -43,7 +43,7 @@ gets both factors), ready for its `ab ... --overrides-b DIR/whatif.yaml` command
 | `bridgesim crush BRIDGE.SLDPRT [-o overrides.yaml] [--seed N] [--fidelity quick\|standard\|fine] [--rate-check] [--stop-at-failure] [--out DIR] --json [--brief]` | Simulated crushing test; with `--out`: `crush.json`, `curve.csv`, `events.csv` (every event), `replay.html`. `--rate-check` runs it again at half the jack speed (3x the time). `--stop-at-failure` (the MCP default; `full_collapse=true` to follow the collapse): stop 2 mm of jack travel after the bridge is judged failed, ~1/3 faster, the replay ends there. `--brief`: what an agent needs for its next step, ~12 kB instead of ~200 kB (the MCP crush tools return this by default): no curve, event log or failure sequence; the first 10 `failures` (kind, `what`, load, travel, `where_mm`); the `important` questions in full and `n_questions` by severity (the `check` ids are in the `ask_designer` step; `inspect` has their text and `answer_with`); `next_steps` without empty fields. `crush.json` has everything. A what-if to test: `DIR/whatif.yaml` | minutes |
 | `bridgesim screen BRIDGE.SLDPRT [-o overrides.yaml] [--load 100] [--top 25] --json` | Linear pre-screen, no simulation: the bridge's stiffness under the plate (`stiffness_kgf_per_mm`) and every joint, member (tension, compression, shear, Euler buckling over its length) and plate (per ply and mode) with its `utilisation` at `--load` and the plate load at which it reaches its limit if the bridge stayed linear (`limits`, most loaded first; `first_limit_kgf`: where damage starts, often far below F_u, since the load then finds other paths, which only crush follows). For the stiffness, the most loaded parts, and how a what-if moves them in seconds; judge F_u and design changes with crush and `ab` | seconds |
 | `bridgesim compare DIR/crush.json my_test.csv --json` | Reality gap vs a physical crush test. Given `montecarlo.json` instead of `crush.json`: where the test falls in the predicted range | seconds |
-| `bridgesim calibrate-bridge BRIDGE.SLDPRT my_test.csv [-o overrides.yaml] [--fidelity standard] [--out fitted.overrides.yaml] --json` | After a physical crush test of this bridge: a global stiffness and a global strength factor fitted so the simulated crush reproduces it (one crush per step, up to 4); writes your overrides plus the fitted `params`. The test is then used up for validation | 2-4 x crush |
+| `bridgesim calibrate-bridge BRIDGE.SLDPRT my_test.csv [-o overrides.yaml] [--fidelity standard] [--seeds 3] [--out fitted.overrides.yaml] --json` | After a physical crush test of this bridge: a global stiffness and a global strength factor fitted so the simulated crush reproduces it (up to 4 steps; each crushes seeds 1..`--seeds` and fits their median, so the factors do not absorb one seed's imperfections; `steps[].Fu_kgf_runs`); writes your overrides plus the fitted `params`. The test is then used up for validation | 2-4 x seeds x crush / processes |
 | `bridgesim sensitivity BRIDGE.SLDPRT [--rel 0.2] [--fidelity quick] [--seeds 1] [--param KEY]... --json` | Which material values move F_u most: each one lowered and raised by `rel`; `measure_first` lists the tests that would narrow the prediction most. `--param` (repeat it) chooses the values, any key of `materials/simulation.yaml` or `material.<key>` (default: the 9 that usually matter most); `--seeds 3` averages over seeds | (1 + 2 x params) x seeds x crush / processes |
 | `bridgesim lab [--data validation/physical] --json` | Simulated coupon tests (stick bending, lap joint, stick column) and their gap to the team's coupon data | ~1 min |
 | `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, f_t/f_c and tau_g so the *simulated* coupons reproduce the measured ones (`lab --data` then shows ~0 % error); f_t, f_c, f_c90, the end-grain factor and the glue's shear stiffness and toughness from the direct coupon tests; with 3+ specimens of a kind also the scatter (`my_material.overrides.yaml`, `params:`). A folder without any test results is an input error (exit 2) | ~1 min |
@@ -59,7 +59,8 @@ mesh, 50 mm/s, ~15 min) to check that the answer has converged. Mesh convergence
 Bridge_v6 (`validation/README.md` §3.4, all at 100 mm/s): the perfect bridge gives 2706,
 2647, 2678 kgf with elements x2, x1, x0.75 (within 2.2 %); seed by seed (a seed is the
 same imperfect bridge at every fidelity) the standard mesh is within 1.8 % of the fine one
-and quick 3-5 % high, all three ranking the seeds alike. The spread *between* seeds is
+and the quick mesh 3-5 % high (quick fidelity as run, at 200 mm/s, 4-10 % high), all three
+ranking the seeds alike. The spread *between* seeds is
 ~20 %: three failure sites (the deck stringers under the plate, the end-post joint, the
 hub tie strap) compete within ~15 %. So rank designs with one fidelity and the same seeds
 (`ab`, n >= 3), give F_u as the `montecarlo` range, and never compare F_u across
@@ -120,7 +121,7 @@ claude mcp add bridgesim -- uv run --directory /path/to/troitsky-analysis bridge
 | `start_compare_designs(cad_a, cad_b, out_dir, n, overrides_a_yaml, overrides_b_yaml)` then `job_status(out_dir)` | background A/B comparison |
 | `start_diagnose(cad_path, out_dir, overrides_yaml, n, fidelity, candidates)` then `job_status(out_dir)` | background: which part really limits the bridge |
 | `start_sensitivity(cad_path, out_dir, overrides_yaml, rel, params, seeds)` then `job_status(out_dir)` | background: what to measure first |
-| `start_calibrate_bridge(cad_path, test_csv_path, out_dir, overrides_yaml, fidelity)` then `job_status(out_dir)` | background: fit stiffness and strength to a physical crush test (writes `out_dir/fitted.overrides.yaml`) |
+| `start_calibrate_bridge(cad_path, test_csv_path, out_dir, overrides_yaml, fidelity, seeds)` then `job_status(out_dir)` | background: fit stiffness and strength to a physical crush test (writes `out_dir/fitted.overrides.yaml`) |
 | `compare_with_test(crush_json_path, test_csv_path)` | reality gap (a `montecarlo.json` as the first argument: the test against the predicted range) |
 | `lab_tests(material, data_dir)`, `calibrate_material(data_dir, out_path)` | coupon level |
 | `cancel_job(out_dir)` | stop a background job |
@@ -172,8 +173,9 @@ meanwhile, and `answer_with`: how to answer, as an overrides fragment (`bodies`,
 * plates made of narrow arms (`narrow_plates`: an X, a frame), with about one shell
   element across an arm: their arms are ~4x too stiff in in-plane bending; if the part is
   really members, draw each as its own body (it becomes a bar);
-* a member whose glued area is much weaker than the member (`weak_joint:`) - a missing
-  gusset?
+* members whose glued area is much weaker than the member in tension (`weak_joints`, one
+  question for all of them) - a missing gusset? (`screen` shows which joints are really
+  loaded: a member in compression needs far less);
 * laminated members longer than one stick (`butt_joints`, one question for all of
   them): how far apart the butt joints of neighbouring plies are (it sets each member's
   tension strength);
@@ -186,7 +188,7 @@ meanwhile, and `answer_with`: how to answer, as an overrides fragment (`bodies`,
 
 Ask the `important` ones first. Do not guess an answer the designer can give. A question
 is closed by its answer (setting what it asks), or, when the designer confirms the design
-is as drawn, by listing its id (or a pattern such as `weak_joint:*`) under `acknowledge:`
+is as drawn, by listing its id (or a pattern such as `floating:*`) under `acknowledge:`
 in the overrides; acknowledged ids are reported in `acknowledged_questions`.
 
 Bodies are located by `centroid_mm`, `bbox_min_mm`, `bbox_max_mm` and `axis` in the
@@ -213,7 +215,7 @@ params:                     # any key of materials/simulation.yaml, or material.
   material.glue.tau_g_MPa: 2.6
   glue.end_grain_factor: 0.8                     # end-grain joints sized before gluing
 acknowledge:                # questions the designer has answered "as drawn"
-  - "weak_joint:*"
+  - weak_joints
   - rigid_blocks
 ```
 
@@ -245,8 +247,14 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
 
 * `Fu_kgf`: predicted ultimate load (§12.5): the peak jack force before the bridge is
   judged failed (the load falling 30 % below its peak, 50 mm deflection, or contact with
-  the platform); 0 if it
-  collapses under its own weight (`failure_mode: instability`).
+  the platform); 0 if it collapses under its own weight (`failure_mode: instability`).
+  The load (curve, F_u, each event's load) is the jack force smoothed without lag
+  (ASSUMPTIONS-SIM.md: the load reading).
+* `governing`: the break that started the fall of the load, i.e. the first break from
+  where the load last stood within 5 % of F_u (breaks before it were survived: the load
+  came back). `competing`: the other parts that broke within 10 % of F_u before the
+  failure call. When it is not empty the failure could start at one of them on another
+  seed or mesh, so run `diagnose` before redesigning around the `governing` part.
 * `failure_sequence` (text) and `failures` (structured: `kind`, `parts`, `load_kgf`,
   `jack_travel_mm`, `where_mm`, `fraction_separated`): what broke, in order, up to the
   collapse. The entries near the peak are the reason the bridge failed: strengthen
@@ -264,6 +272,9 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
   `recommended_prediction_strict_kgf` (at the first visible joint failure).
 * `criteria`: when each §12.5 criterion (deflection, contact, joint/shear, instability)
   was first met.
+* `quality.rate_check` (with `--rate-check`): F_u at half the jack speed, the change,
+  and `Fu_extrapolated_kgf` (2 F(v/2) - F(v): F_u for a jack at rest, like the real
+  test's mm/min).
 * `quality.trustworthy`: `false` when the loading was not quasi-static
   (`kinetic_to_work_max` > 0.1: kinetic energy of the bridge over the jack's work while
   the load rises to 95 % of its peak), F_u moved more than 5 % at half speed

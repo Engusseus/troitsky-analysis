@@ -278,17 +278,17 @@ def build_server():
     def inspect_bridge(cad_path: str, overrides_yaml: str = "", material: str = "",
                        up_axis: str = "y", span_axis: str = "x", units: str = "",
                        strict: bool = False, brief: bool = True,
-                       body: list[str] | None = None,
-                       joint: list[str] | None = None) -> str:
+                       body: list[str] | str | None = None,
+                       joint: list[str] | str | None = None) -> str:
         """Read a SolidWorks part (.SLDPRT), Parasolid (.x_b) or STL bridge (use absolute
         paths). Returns JSON: Troitsky 2027 rule check, `warnings` (e.g. overrides that had
         no effect), `questions` the designer should answer (answer them via overrides_yaml,
         or list confirmed ones under `acknowledge:`), the loading position and counts of
         the bodies by kind. brief=false adds every body (how it is modelled, where it is,
-        layup, mass) and glued joint (~100 kB). body / joint (names or glob patterns,
-        e.g. ["Top Chord*"]): only those bodies, the joints with such a part, and the
-        questions about them, in full. bridgesim expects X along the span and Y up; say
-        otherwise with up_axis/span_axis."""
+        layup, mass) and glued joint (~100 kB). body / joint (a name or glob pattern,
+        or a list of them, e.g. "Top Chord*"): only those bodies, the joints with such a
+        part, and the questions about them, in full. bridgesim expects X along the span
+        and Y up; say otherwise with up_axis/span_axis."""
         rep = study.inspect(_infile(cad_path, "CAD file"), None,
                             material or "popsicle_birch", units=units or None, up=up_axis,
                             span=span_axis, strict=strict,
@@ -473,18 +473,19 @@ def build_server():
     @_safe(model=JobStarted)
     def start_calibrate_bridge(cad_path: str, test_csv_path: str, out_dir: str,
                                overrides_yaml: str = "", fidelity: str = "standard",
-                               seed: int = 0, material: str = "") -> str:
+                               seeds: int = 3, material: str = "") -> str:
         """After a physical crush test of this bridge: fit a global stiffness and a
         global strength factor so its simulated crush reproduces the test (up to 4
-        crushes, in the background). The report (job_status) has the factors, each step,
-        and `overrides` (also written to out_dir/fitted.overrides.yaml) to use for the
-        next crushes. The test is then used up for validation."""
+        steps, each crushing it with `seeds` seeds and fitting their median, in the
+        background). The report (job_status) has the factors, each step, and
+        `overrides` (also written to out_dir/fitted.overrides.yaml) to use for the next
+        crushes. The test is then used up for validation."""
         cad_path = _infile(cad_path, "CAD file")
         test_csv_path = _infile(test_csv_path, "test record")
         out = _outpath(out_dir)
         out.mkdir(parents=True, exist_ok=True)
         cmd = [sys.executable, "-m", "bridgesim.cli", "calibrate-bridge", cad_path,
-               test_csv_path, "--fidelity", fidelity, "--seed", str(seed), "--out",
+               test_csv_path, "--fidelity", fidelity, "--seeds", str(seeds), "--out",
                str(out / "fitted.overrides.yaml"), "--json"]
         if overrides_yaml:
             (out / "overrides.yaml").write_text(overrides_yaml, encoding="utf-8")

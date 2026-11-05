@@ -106,7 +106,7 @@ def _b64(a: np.ndarray) -> str:
 
 
 def replay_html(res: CrushResult, bodies: list[CadBody], title: str = "Crush test replay",
-                max_frames: int = 140) -> str:
+                max_frames: int = 90) -> str:
     m = res.model
     skin = build_skin(m, bodies)
     frames = res.frames
@@ -114,12 +114,13 @@ def replay_html(res: CrushResult, bodies: list[CadBody], title: str = "Crush tes
         sel = np.unique(np.linspace(0, len(frames) - 1, max_frames).round().astype(int))
         frames = [frames[i] for i in sel]
     nN = m.n_nodes
-    # node displacement (0.01 mm, int16 if possible) and quaternions (int16)
+    # node displacement (0.01 mm, int16 if possible) and quaternions (int8: renormalised
+    # in the page, within half a degree, plenty for the picture and half the size)
     U = np.stack([f.x - m.X for f in frames]).astype(np.float32)
     scale = 0.01 if np.abs(U).max() < 320 else 0.05
     Uq = np.clip(np.round(U / scale), -32767, 32767).astype(np.int16)
     Q = np.stack([f.q for f in frames])
-    Qq = np.clip(np.round(Q * 32767), -32767, 32767).astype(np.int16)
+    Qq = np.clip(np.round(Q * 127), -127, 127).astype(np.int8)
     # meshes
     mesh_js = []
     for me in skin["meshes"]:
@@ -215,7 +216,7 @@ input[type=range]{width:100%}#events{overflow:auto;flex:1;padding:0 14px 14px;fo
 const D=__DATA__;
 function dec(b,T){const s=atob(b),u=new Uint8Array(s.length);for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i);return new T(u.buffer)}
 document.getElementById('ttl').textContent=D.title;
-const X=dec(D.X,Float32Array),U=dec(D.U,Int16Array),Q=dec(D.Q,Int16Array),BS=dec(D.bstate,Uint8Array);
+const X=dec(D.X,Float32Array),U=dec(D.U,Int16Array),Q=dec(D.Q,Int8Array),BS=dec(D.bstate,Uint8Array);
 const nN=D.nN,nF=D.nF;
 const view=document.getElementById('view');
 const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setPixelRatio(window.devicePixelRatio);
@@ -246,7 +247,7 @@ const cOK=dec(D.cable_ok,Uint8Array);const cg=new THREE.BufferGeometry();const c
 const clines=new THREE.LineSegments(cg,new THREE.LineBasicMaterial({color:dark?0xffffff:0x333333}));scene.add(clines);
 const P=new Float32Array(nN*3),R=new Float32Array(nN*9);
 let MAG=1;function nodes(f){const s=D.scale*MAG;for(let i=0;i<nN;i++){P[3*i]=X[3*i]+U[(f*nN+i)*3]*s;P[3*i+1]=X[3*i+1]+U[(f*nN+i)*3+1]*s;P[3*i+2]=X[3*i+2]+U[(f*nN+i)*3+2]*s;
- let w=Q[(f*nN+i)*4]/32767,x=Q[(f*nN+i)*4+1]/32767,y=Q[(f*nN+i)*4+2]/32767,z=Q[(f*nN+i)*4+3]/32767;const n=Math.hypot(w,x,y,z)||1;w/=n;x/=n;y/=n;z/=n;
+ let w=Q[(f*nN+i)*4],x=Q[(f*nN+i)*4+1],y=Q[(f*nN+i)*4+2],z=Q[(f*nN+i)*4+3];const n=Math.hypot(w,x,y,z)||1;w/=n;x/=n;y/=n;z/=n;
  const r=R,o=9*i;r[o]=1-2*(y*y+z*z);r[o+1]=2*(x*y-z*w);r[o+2]=2*(x*z+y*w);r[o+3]=2*(x*y+z*w);r[o+4]=1-2*(x*x+z*z);r[o+5]=2*(y*z-x*w);r[o+6]=2*(x*z-y*w);r[o+7]=2*(y*z+x*w);r[o+8]=1-2*(x*x+y*y);}}
 function tp(n,ox,oy,oz,out,k){const o=9*n;out[k]=P[3*n]+R[o]*ox+R[o+1]*oy+R[o+2]*oz;out[k+1]=P[3*n+1]+R[o+3]*ox+R[o+4]*oy+R[o+5]*oz;out[k+2]=P[3*n+2]+R[o+6]*ox+R[o+7]*oy+R[o+8]*oz;}
 const tmp=new Float32Array(3);
