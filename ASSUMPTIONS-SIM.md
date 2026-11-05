@@ -246,8 +246,8 @@ an edit elsewhere in the design. Monte Carlo over seeds gives the spread of F_u.
   compete.
 * **Mesh convergence** (`validation/convergence_study.py`; Bridge_v6 in
   `validation/README.md` §3.4): the perfect bridge converges from element size x2 to
-  x0.75 (2710, 2684, 2673 kgf); seed by seed the standard mesh is within 1.3 % of the fine
-  mesh and quick 2-5 % high, with the seeds ranked alike at every fidelity.
+  x0.75 (2706, 2647, 2678 kgf); seed by seed the standard mesh is within 1.8 % of the fine
+  mesh and quick 3-5 % high, with the seeds ranked alike at every fidelity.
 * **Crack onset is local.** A plate cracks where its strain first reaches the strength
   in one element; the crack band makes the energy of the crack independent of the mesh,
   not its onset at a sharp stress raiser (the end of a glued lap, a re-entrant corner),
