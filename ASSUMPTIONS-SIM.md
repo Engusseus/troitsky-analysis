@@ -137,8 +137,12 @@ interlaminar shear running along its grain (f_v) and across it (rolling shear,
 rolling shear for a ply across the member (0-90), in between for +-45. A short-beam
 shear test of a laminate measures it (`short_beam_shear_template.csv`, `calibrate`).
 (Until round 12 it was 1.155 tau_g, 2.3 MPa, for every laminate: most frame arms and
-many members split long before the peak.) It splits at once, as a laminated beam does in
-a short-span shear test. When a member breaks, the stress wave can
+many members split long before the peak.) The shear is compared averaged, by length,
+over the elements of the member within half a section depth of each (`solver.
+split_members`): a split needs the shear over a member's depth, not on the one element
+next to a glued joint, which resolves a sharper peak the finer the mesh
+(`test_members_split_on_their_shear_over_a_section_depth`). It then splits at once, as a
+laminated beam does in a short-span shear test. When a member breaks, the stress wave can
 split its neighbours in the same instant; the crush then names the break, not the splits,
 as the cause. A split member is
 not deleted: it delaminates (its n plies then bend each about their own axis, 1/n^2 of
