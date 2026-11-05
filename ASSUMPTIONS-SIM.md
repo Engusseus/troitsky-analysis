@@ -334,23 +334,24 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   designs with `ab` (paired seeds), and read `failure_sequence` to see which modes
   compete.
 * **Mesh convergence** (`validation/convergence_study.py`; Bridge_v6 in
-  `validation/README.md` §3.4): on the standard, fine and x0.5 meshes F_u lies within a
-  band of a few % with no trend toward a lower value (a nearly perfect bridge: 2362 /
-  2270 / 2403 kgf; seed 0: 2279 / 2197 / 2189), and the load curves coincide up to 90 %
-  of the peak; the quick mesh is 7-8 % lower (for ranking designs). The band is that of
-  failure sites competing within a few % (`competing`): which part goes first
-  (`governing`) can change with the mesh and moves F_u by up to ~8 %. A perfect bridge is
-  symmetric, so which side gives way first is a bifurcation round-off decides;
-  `--amplitude 0.1` keeps the seed's asymmetry at a tenth of its imperfections for a mesh
-  study.
+  `validation/README.md` §3.4): refining from 30 mm members (x1) to x0.75 and x0.5, F_u
+  of a seed falls toward a limit (seed 0: 2279 / 2197 / 2189 kgf; seed 1: 2311 / 2131 /
+  2079), so the standard fidelity is x0.75 (within 2.5 % of x0.5) and the fine one x0.5;
+  the load curves coincide up to 90 % of the peak. The quick mesh (x1.6) is 7-8 % below
+  standard (for ranking designs). Several failure sites compete within a few %
+  (`competing`): which part goes first (`governing`) can change with the mesh, and on a
+  nearly perfect bridge, where the hub parts give way within a few % of each other, F_u
+  moves within +-3 % between meshes with no trend. A perfect bridge is symmetric, so
+  which side gives way first is a bifurcation round-off decides; `--amplitude 0.1` keeps
+  the seed's asymmetry at a tenth of its imperfections for a mesh study.
 * **Crack onset is local.** A plate left as a shell cracks where its strain first
   reaches the strength in one element; the crack band makes the energy of the crack
   independent of the mesh, not its onset at a sharp stress raiser (the end of a glued
   lap, a re-entrant corner), which comes at a lower load the finer the mesh. The narrow
   plates where that mattered on Bridge_v6 are frames since round 11, and its x0.5 mesh
-  (elements half the standard size) stays in the same band as standard and fine; on a
-  design whose shells have sharp stress raisers in the load path, check with `--fidelity
-  fine` and `convergence_study.py --scales 1,0.75,0.5`. A nonlocal process-zone onset
+  converges with x0.75 (above); on a design whose shells have sharp stress raisers in
+  the load path, check with `--fidelity fine` and `convergence_study.py --scales
+  1,0.75,0.5`. A nonlocal process-zone onset
   was tried and not adopted (it doubled the strength of off-axis plies;
   `validation/README.md` §3.4).
 * Time is compressed: the simulated jack moves at ~100 mm/s instead of the real

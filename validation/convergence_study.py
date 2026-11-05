@@ -1,9 +1,9 @@
 """Mesh convergence of the crush simulation at a fixed jack speed.
 
     uv run python validation/convergence_study.py BRIDGE.SLDPRT [--out results.json]
-        [--save runs/] [--scales 1.6,1,0.75] [--seeds 0,1,2] [--amplitude 1]
+        [--save runs/] [--scales 1.6,0.75,0.5] [--seeds 0,1,2] [--amplitude 1]
 
-Crushes the bridge with each element size (x1.6 = quick, x1 = standard, x0.75 = fine
+Crushes the bridge with each element size (x1.6 = quick, x0.75 = standard, x0.5 = fine
 by default) for each seed, all at 100 mm/s, two runs at a time, and prints F_u, the
 deflection at F_u and the first failure of each, plus the mean and spread per mesh.
 ``--seeds -1`` is the perfect bridge (no imperfections, no scatter): with it, a change
@@ -26,7 +26,7 @@ import statistics
 import time
 from pathlib import Path
 
-NAMES = {1.6: "quick", 1.0: "standard", 0.75: "fine"}
+NAMES = {1.6: "quick", 0.75: "standard", 0.5: "fine"}  # crush.FIDELITY
 
 
 def _name(scale: float) -> str:
@@ -42,7 +42,7 @@ def _one(args):
 
     numba.set_num_threads(threads)
     from bridgesim.sim import study
-    from bridgesim.sim.crush import CrushOptions
+    from bridgesim.sim.crush import CrushOptions, dt_target_for
 
     t0 = time.time()
     out = Path(save) / f"{_name(scale)}_seed{seed}" if save else None
@@ -52,7 +52,7 @@ def _one(args):
                          overrides=({"params": {"scatter.amplitude": amp}} if amp != 1
                                     else None),
                          options=CrushOptions(speed_mm_s=100.0,
-                                              dt_target=3e-6 * min(1.0, scale / 1.0) ** 1.1,
+                                              dt_target=dt_target_for(scale),
                                               after_failure_mm=15.0 if full else 2.0))
     first = next((f for f in rep.failures if f.kind != "joint_cracking"), None)
     res = {"mesh": _name(scale), "element_scale": scale, "seed": seed, "amplitude": amp,
@@ -71,7 +71,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("cad")
     ap.add_argument("--out", default="convergence.json")
-    ap.add_argument("--scales", default="1.6,1,0.75", help="element sizes (x standard)")
+    ap.add_argument("--scales", default="1.6,0.75,0.5",
+                    help="element sizes (x the original 30 mm members; standard is 0.75)")
     ap.add_argument("--seeds", default="0,1,2", help="-1: the perfect bridge")
     ap.add_argument("--amplitude", type=float, default=1.0,
                     help="scale on the seeded imperfections and scatter (scatter.amplitude)")

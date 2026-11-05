@@ -340,9 +340,15 @@ def choose_dt(m: Model, s: S.Settings, max_added: float = 0.05,
 
 FIDELITY = {  # mesh scale, simulated jack speed (mm/s)
     "quick": (1.6, 200.0),     # screening design changes (rank designs at one fidelity)
-    "standard": (1.0, 100.0),
-    "fine": (0.75, 50.0),      # convergence check
+    "standard": (0.75, 100.0),  # within ~3 % of x0.5 on Bridge_v6 (x1 was 4-11 % high)
+    "fine": (0.5, 50.0),       # convergence check
 }
+
+
+def dt_target_for(scale: float) -> float:
+    """The time step aimed at for an element size (x standard): smaller elements need a
+    smaller step, or too much mass would be added to reach it."""
+    return 3e-6 * min(1.0, scale) ** 1.1
 
 
 @dataclass

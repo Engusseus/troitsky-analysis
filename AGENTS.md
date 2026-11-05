@@ -53,18 +53,18 @@ gets both factors), ready for its `ab ... --overrides-b DIR/whatif.yaml` command
 | `bridgesim schema inspect\|inspect_brief\|crush\|crush_brief\|screen\|reality_gap\|lab\|montecarlo\|design_comparison\|diagnosis\|sensitivity\|bridge_calibration\|question\|job_status` | JSON Schema of each report (the `_brief` forms are what `--brief` and the MCP tools return by default; every MCP tool but `get_schema` publishes its schema as its output schema) | instant |
 | `bridgesim mcp` | The same as MCP tools (`uv sync --extra mcp`) | - |
 
-Fidelity: `quick` (coarser mesh, jack 200 mm/s, ~3 min for a 100-body bridge on 4 cores)
-to screen design changes, `standard` (100 mm/s, ~5-8 min) for the answer, `fine` (finer
-mesh, 50 mm/s, ~15 min) to check that the answer has converged. Mesh convergence on
+Fidelity: `quick` (coarse mesh, jack 200 mm/s, ~3 min for a 100-body bridge on 4 cores)
+to screen design changes, `standard` (100 mm/s, ~5-10 min) for the answer, `fine` (finest
+mesh, 50 mm/s, ~30-40 min) to check that the answer has converged. Mesh convergence on
 Bridge_v6 (`validation/README.md` §3.4, all at 100 mm/s): seed by seed (a seed is the
-same imperfect bridge at every fidelity) F_u on the standard, fine and x0.5 meshes lies
-within a band of a few % with no trend (standard +1.5 to +8.5 % against fine), the load
-curves coincide up to 90 % of the peak, and the quick mesh is 7-8 % lower, all ranking
-the seeds alike. The spread *between* seeds is ~21 %: several failure sites (the hub
-plates and core, the End Post joints, the top rail plates) compete within a few %, and
-which goes first changes with the mesh and the seed (`competing` lists them). So rank
-designs with one fidelity and the same seeds (`ab`, n >= 3), give F_u as the
-`montecarlo` range, and never compare F_u across fidelities. `ab`, `montecarlo`, `sensitivity` and `calibrate-bridge`
+same imperfect bridge at every fidelity) standard is within 2.5 % of fine, F_u falling
+toward a limit as the mesh is refined, the load curves coincide up to 90 % of the peak,
+and quick is 7-8 % lower than standard, all ranking the seeds alike. The spread
+*between* seeds is ~18 %: several failure sites (the hub plates and core, the End Post
+joints, the top rail plates) compete within a few %, and which goes first changes with
+the mesh and the seed (`competing` lists them). So rank designs with one fidelity and
+the same seeds (`ab`, n >= 3), give F_u as the `montecarlo` range, and never compare F_u
+across fidelities. `ab`, `montecarlo`, `sensitivity` and `calibrate-bridge`
 stop each crush 2 mm of jack travel after the bridge is judged failed (F_u and the
 failures are known by then; no replay), which saves about a third of the time.
 

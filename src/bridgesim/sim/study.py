@@ -540,7 +540,7 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
     studies. ``stop_at_failure``: stop 2 mm of jack travel after the bridge is judged
     failed (F_u and the failures are known; about a third faster; the replay ends
     there) instead of following the collapse for 15 mm."""
-    from bridgesim.sim.crush import FIDELITY
+    from bridgesim.sim.crush import FIDELITY, dt_target_for
 
     if fidelity not in FIDELITY:
         raise ValueError(f"fidelity must be one of {', '.join(FIDELITY)}")
@@ -563,8 +563,7 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
                            "damage; ASSUMPTIONS-SIM.md)")
     rules = _rules(bodies, mat, rs, model)
     # the fine mesh needs a smaller time step, or too much mass scaling would be added
-    opt = options or CrushOptions(speed_mm_s=speed,
-                                  dt_target=2.2e-6 if fidelity == "fine" else 3e-6)
+    opt = options or CrushOptions(speed_mm_s=speed, dt_target=dt_target_for(scale))
     if stop_at_failure:
         import dataclasses
 
@@ -987,9 +986,10 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
         if rep.fidelity == "quick":
             steps.append(NextStep(
                 action="confirm", why="quick fidelity is for ranking designs: its F_u can "
-                "be 10-15 % below standard (Bridge_v6: coarser mesh, twice the jack "
-                "speed), the part that breaks first can differ at standard, and the "
-                "strict reading (Fu_first_joint_failure_kgf) is not converged at quick",
+                "be ~10 % below standard (Bridge_v6: 7-8 % on its coarser mesh, more "
+                "at twice the jack speed), the part that breaks first can differ at "
+                "standard, and the strict reading (Fu_first_joint_failure_kgf) is not "
+                "converged at quick",
                 cli=f"bridgesim crush {f}{ov} --fidelity standard --out {out}_standard "
                     "--json --brief"))
         elif rep.fidelity == "standard" and len(close) > 1:
@@ -1931,12 +1931,12 @@ def _screening(fidelity: str) -> CrushOptions:
     """Options of a crush run only for its numbers (ab, montecarlo, sensitivity): stop
     2 mm after the bridge is judged failed instead of following the collapse (F_u and
     the failures are known by then; about half the time of a full run)."""
-    from bridgesim.sim.crush import FIDELITY
+    from bridgesim.sim.crush import FIDELITY, dt_target_for
 
     if fidelity not in FIDELITY:
         raise ValueError(f"fidelity must be one of {', '.join(FIDELITY)}")
     return CrushOptions(speed_mm_s=FIDELITY[fidelity][1],
-                        dt_target=2.2e-6 if fidelity == "fine" else 3e-6,
+                        dt_target=dt_target_for(FIDELITY[fidelity][0]),
                         after_failure_mm=2.0)
 
 
