@@ -75,6 +75,20 @@ assumed tight in compression (they bear).
   energy (Benzeggagh-Kenane, G_Ic, G_IIc). tau_max is tau_g of the material file times
   the peak/average ratio of the simulated 20 mm lap test (`bridgesim lab`), so a joint
   reproduces the measured tau_g (checked in the tests). Peel strength = 0.5 tau_max.
+* **Workmanship**: each joint's glue strength scatters (`scatter.glue_cov`, 30 %, and a
+  bridge-wide factor), and so does its shear stiffness, in proportion: a joint glued
+  over less of its face (starved edges, gaps) is softer as well as weaker. Bearing in
+  compression keeps the whole contact.
+* **Creep**: PVA is a thermoplastic and creeps. Each glue line's shear slip has a Kelvin
+  element in series with its spring (`glue.creep_factor` phi = 1: under a steady load
+  the slip grows toward (1 + phi) x the elastic slip, retardation `glue.creep_time_s` =
+  600 s), run in physical test time: the jack's travel at the real test rate
+  (`crusher.test_rate_mm_per_min`), so it does not depend on the simulated jack speed.
+  The elastic part of the slip carries the stress and drives the damage, so creep makes
+  a joint softer, not weaker (`test_glue_creeps_in_test_time`: the relaxation of a held
+  glue line matches the Kelvin solution within 0.1 %). Over the ~40 s a test takes to
+  its peak at 10 mm/min it adds a few % to the joints' slip; measure it with a lap
+  joint held at a constant load.
 * A broken glue line keeps **bearing in compression** and **slides with friction**
   (mu = 0.4): pieces still lean on each other after the glue lets go.
 * The wood at a glue line **crushes** when the joint is pressed together, at the
@@ -152,8 +166,11 @@ interlaminar shear running along its grain (f_v) and across it (rolling shear,
 `wood.f_rolling_MPa`, 2 MPa) in proportion to its angle: f_v for a UD stack, the
 rolling shear for a ply across the member (0-90), in between for +-45. A short-beam
 shear test of a laminate measures it (`short_beam_shear_template.csv`, `calibrate`).
-(Until round 12 it was 1.155 tau_g, 2.3 MPa, for every laminate: most frame arms and
-many members split long before the peak.) The shear is compared averaged, by length,
+(Until round 12 it was the hand-made lap joint's average strength, 1.155 tau_g = 2.3
+MPa, which confuses an average over a lap with stress peaks at its ends and partial
+coverage with a pressed, continuous bond line. A PVAc bond line pressed while it cures
+is stronger than birch in shear: EN 204 asks >= 10 MPa of a D1 PVAc adhesive in the EN
+205 lap-shear test on beech, so the line fails in the wood next to it, at about f_v.) The shear is compared averaged, by length,
 over the elements of the member within half a section depth of each (`solver.
 split_members`): a split needs the shear over a member's depth, not on the one element
 next to a glued joint, which resolves a sharper peak the finer the mesh
@@ -228,8 +245,10 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   on three corners until the load beds it down. Both are assumed values: read them off
   the start of a real crush curve and off the bridge on a flat table.
 * **Bearing**: each contact point with the platform or the plate carries at most the
-  crushing strength of the wood under it times the area it stands for (f_c90 for wood
-  pressed across the grain, f_c for a post standing on its end grain): a plate edge
+  crushing strength of the wood under it times the area it stands for, for the angle of
+  each ply's grain to the vertical (Hankinson, averaged over the plies, as at the glue
+  lines: f_c90 for wood pressed across the grain, f_c for a post standing on its end
+  grain, a standing +-45 plate in between; `test_platform_bearing_follows_the_grain`): a plate edge
   digging into the deck, or a support corner, crushes locally instead of carrying an
   unlimited load.
 * **Contact between parts that were not touching at the start** (a broken chord falling
@@ -403,14 +422,12 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
 * Friction in the contact between parts that were not touching at the start.
 * Debris (pieces with nothing left holding them) falls under gravity and lands on the
   platform, but does not hit the bridge or the plate.
-* Creep, humidity, and the time the bridge waits loaded. White (PVA) glue creeps and the
-  real test takes minutes, so a real curve bends over more before the peak and the
-  deflection at the peak is larger than simulated; slip in imperfect joints (gaps, glue
-  starved at the edges) adds to it. The simulated curve is that of perfect joints:
-  the toe from seating, then near-linear to ~90 % of the peak (on Bridge_v6 the secant
-  stiffness falls ~15 % from the 10-50 % to the 50-90 % range of the peak). Coupons
-  loaded at the test's own pace (failure in about the same minutes as the crush test;
-  EN 408 asks 300 +- 120 s) carry the creep of that duration in the E and the glue
-  stiffness that `calibrate` fits (stick bending, lap load-slip), so a calibrated model
-  includes it to first order; what is left out is how creep grows with the stress near
-  the peak.
+* Creep of the wood, humidity, and the time the bridge waits loaded (the glue's creep is
+  modelled, section 3, in physical test time); gaps in butt joints (assumed tight in
+  compression) and joints that slip before their glue lets go. The simulated curve
+  shows the toe from seating, then is near-linear to ~90 % of the peak (on Bridge_v6 the
+  secant stiffness falls ~15 % from the 10-50 % to the 50-90 % range of the peak); a
+  real one may bend over more. Stick coupons loaded at the test's own pace (failure in
+  about the same minutes as the crush test; EN 408 asks 300 +- 120 s) carry the wood's
+  creep of that duration in the E that `calibrate` fits, so a calibrated model includes
+  it to first order; what is left out is how creep grows with the stress near the peak.

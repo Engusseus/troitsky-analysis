@@ -248,11 +248,11 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
             prev[e, 6] = thj[2]
         Vz = (Mzi + Mzj) / l
         Vy = (Myi + Myj) / l
-        # erosion: an element bent or twisted > 1 rad at an end is broken
+        # erosion: an element bent or twisted > 1 rad at an end is removed (reported
+        # as member_erosion, not as a fracture of its fibres)
         if update and alive[e] and (thi[0] ** 2 + thi[1] ** 2 + thi[2] ** 2 > 1.0
                                     or thj[0] ** 2 + thj[1] ** 2 + thj[2] ** 2 > 1.0):
             alive[e] = False
-            fractured[e] = True
         if update:
             if alive[e]:
                 # shear along e3 runs on the glue planes between the plies, along e2
@@ -582,7 +582,7 @@ def _add(F, Mo, nd, arm, f, sign):
 @njit(cache=True, fastmath=True, error_model="numpy")
 def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GIIc, mu,
                 breakable, dmax, dd, slip, F, Mo, update, beta, dt, prev, alive, crush,
-                fc90, cdep, eps_d, E_d):
+                fc90, cdep, eps_d, E_d, creep, cfac, cdec):
     nc = ca.shape[0]
     pa = np.empty(3)
     pb = np.empty(3)
@@ -590,6 +590,7 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
     armb = np.empty(3)
     n = np.empty(3)
     ds = np.empty(3)
+    es = np.empty(3)
     tf = np.empty(3)
     f = np.empty(3)
     for i in range(nc):
@@ -609,10 +610,20 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
         for k in range(3):
             n[k] /= nn
             dn += (pb[k] - pa[k]) * n[k]
-        s2 = 0.0
         for k in range(3):
             ds[k] = pb[k] - pa[k] - dn * n[k]
-            s2 += ds[k] * ds[k]
+        # creep of the glue line in shear (a Kelvin element in series with the spring,
+        # in physical test time): the elastic slip es = ds - creep carries the stress
+        # and drives the damage; the creep slip moves toward cfac x ds by the factor
+        # cdec per step (cfac = phi / (1 + phi), cdec = exp(-(1 + phi) dt_test / t_r))
+        en = 0.0
+        for k in range(3):
+            es[k] = ds[k] - creep[i, k]
+            en += es[k] * n[k]
+        s2 = 0.0
+        for k in range(3):
+            es[k] -= en * n[k]
+            s2 += es[k] * es[k]
         s = math.sqrt(s2)
         kn = Kn[i]
         # the wood at a glue line crushes (permanent set) at fc90[i]: across or along
@@ -663,6 +674,9 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
             if update:
                 dmax[i] = dmx
                 dd[i] = d
+                if cfac > 0.0 and d < 0.999:
+                    for k in range(3):
+                        creep[i, k] = cfac * ds[k] + (creep[i, k] - cfac * ds[k]) * cdec
             # a debonded pair that has turned, parted, or crushed through its whole depth:
             # the two points no longer face each other, so the pair stops acting
             if d >= 0.999 and (nn < 1.6 or crush[i] < -cdep[i] or dn * dn + s2 > 9.0):
@@ -692,7 +706,7 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
                 for k in range(3):
                     slip[i, k] = ds[k]
         for k in range(3):
-            f[k] = (tn * n[k] + (1.0 - d) * ks * ds[k] + d * tf[k]) * area[i]
+            f[k] = (tn * n[k] + (1.0 - d) * ks * es[k] + d * tf[k]) * area[i]
         if beta > 0.0:
             dnr = 0.0
             for k in range(3):

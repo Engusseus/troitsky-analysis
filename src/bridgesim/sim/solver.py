@@ -9,9 +9,12 @@ LS-DYNA and Abaqus/Explicit). Ingredients:
   rotations of any size are exact) with *fibre sections*: each section is a grid of
   wood fibres with their own stress-strain law, integrated at two Gauss points. A fibre is
   linear elastic, softens to zero after reaching f_t in tension (fracture energy G_f,
-  regularised by element length) and yields at f_c in compression with mild softening
-  (crushing). Torsion is elastic; a section whose shear stress 1.5 V/A + T/W_t passes
-  f_v splits and the element is removed.
+  regularised by element length) and in compression bends over from the proportional
+  limit to f_c, then crushes with mild softening. Torsion is elastic. A member whose
+  shear, averaged over a section depth, passes the strength of its glue lines or grain
+  splits (:func:`split_members`): its plies then bend each about its own axis, and it
+  keeps its axial strength. An element bent or twisted past 1 rad at an end is removed
+  (erosion, reported as such).
 * **shells**: corotational CST + DKT triangles with laminate stiffness; a ply strain
   limit reached anywhere in an element cracks it (its stiffness falls to zero over a
   small strain range); a node held only by broken elements becomes loose debris.
@@ -19,8 +22,10 @@ LS-DYNA and Abaqus/Explicit). Ingredients:
   (quadratic initiation, Benzeggagh-Kenane propagation). In compression they keep
   bearing (contact); once broken they slide with Coulomb friction.
 * **floss**: tension-only cables that snap at their breaking load.
-* **contact**: penalty contact with friction against the base platform, the steel
-  loading plate (a rigid body free to tilt on the jack's hemisphere) and the jack rod.
+* **contact**: penalty contact with friction against the base platform and the steel
+  loading plate (a rigid body free to tilt on the jack's hemisphere), and frictionless
+  contact between parts that meet during the collapse (:mod:`bridgesim.sim.contact`).
+  The jack rod above the plate is not a contact body (only drawn in the replay).
 * **gravity** on everything, and mass-proportional damping (bridges are lightly damped).
 
 Initial curvature of members (bow imperfections) and material scatter are set by the
@@ -112,6 +117,9 @@ class State:
     # beams split in shear: factor on the bending lever arms across the width (s2) and
     # through the plies (s3); 1 intact, 1/2 and 1/n after splitting
     c_crush: np.ndarray = field(default_factory=lambda: np.zeros(0))  # glue-line set
+    c_creep: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))  # creep slip
+    creep_dt: float = 0.0  # physical test time of the current step (s): jack travel /
+    #                        the real test rate; 0 while the jack stands
     b_s2: np.ndarray = field(default_factory=lambda: np.zeros(0))
     b_s3: np.ndarray = field(default_factory=lambda: np.zeros(0))
     # shear stress / strength of each beam (through the plies, across the width)
@@ -151,7 +159,7 @@ def initial_state(m: Model, jack_y: float) -> State:
         s_hist=np.zeros((len(m.s_nodes), 9 * m.s_lay.shape[1], 5)),
         s_gone=np.zeros(len(m.s_nodes), bool), b_s2=np.ones(nb), b_s3=np.ones(nb),
         b_rat2=np.zeros(nb), b_rat3=np.zeros(nb),
-        b_gam=np.zeros((nb, 2)), c_crush=np.zeros(nc))
+        b_gam=np.zeros((nb, 2)), c_crush=np.zeros(nc), c_creep=np.zeros((nc, 3)))
 
 
 # ----------------------------------------------------------------------------- kernels
@@ -280,8 +288,7 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     alive = st.b_alive
     if update:
         big = st.b_alive & (((th_i**2).sum(1) > 1.0) | ((th_j**2).sum(1) > 1.0))
-        st.b_alive &= ~big
-        st.b_fractured |= big
+        st.b_alive &= ~big  # erosion (member_erosion), not a fracture of the fibres
         st.b_rat3 = np.where(alive, (1.5 * np.abs(Vy) / m.b_A + np.abs(T) / m.b_Wt[:, 1])
                              / m.b_fv3, 0.0)
         st.b_rat2 = np.where(alive, (1.5 * np.abs(Vz) / m.b_A + np.abs(T) / m.b_Wt[:, 0])
@@ -434,6 +441,18 @@ def shell_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     np.add.at(Mo, sn.ravel(), mg.reshape(-1, 3))
 
 
+def glue_creep(m: Model, st: State) -> tuple[float, float]:
+    """The creep of the glue lines for this step: (phi / (1 + phi), exp(-(1 + phi)
+    dt_test / t_r)) for a Kelvin element of final creep phi x the elastic slip and
+    retardation time t_r (glue.creep_factor, glue.creep_time_s), over the physical test
+    time of the step (``st.creep_dt``)."""
+    phi = float(m.params.get("glue_creep_factor", 0.0))
+    tr = float(m.params.get("glue_creep_time_s", 600.0))
+    if phi <= 0.0 or tr <= 0.0:
+        return 0.0, 1.0
+    return phi / (1.0 + phi), math.exp(-(1.0 + phi) * max(st.creep_dt, 0.0) / tr)
+
+
 def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
                 update: bool = True, beta: float = 0.0, dt: float = 1.0) -> None:
     if len(m.c_a) == 0:
@@ -447,7 +466,12 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     delta = pb - pa
     dn = (delta * n).sum(1)
     ds = delta - dn[:, None] * n
-    s = np.linalg.norm(ds, axis=1)
+    # creep of the glue line in shear (kernels.glue_kernel): the elastic slip carries
+    # the stress and drives the damage
+    cfac, cdec = glue_creep(m, st)
+    es = ds - st.c_creep
+    es = es - (es * n).sum(1)[:, None] * n
+    s = np.linalg.norm(es, axis=1)
     Kn, Ks = m.c_Kn, m.c_Ks
     # the wood under a glue line crushes (permanent set), hardening as it compacts and
     # densified past eps_d of its depth (see kernels.glue_kernel)
@@ -482,6 +506,10 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     if update:
         st.c_dmax = np.where(m.c_breakable, dmax, 0.0)
         st.c_d = d
+        if cfac > 0.0:
+            go = (m.c_breakable & (d < 0.999))[:, None]
+            st.c_creep = np.where(go, cfac * ds + (st.c_creep - cfac * ds) * cdec,
+                                  st.c_creep)
     # a debonded pair that has turned, parted or passed through stops acting as contact
     gone = m.c_breakable & (d >= 0.999) & ((nn < 1.6) | (st.c_crush < -cdep)
                                            | (dn**2 + s**2 > 9.0))
@@ -501,7 +529,7 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     if update:
         new_anchor = ds - tf / Ks[:, None]
         st.c_slip = np.where((d > 0)[:, None], new_anchor, ds)
-    ts = (1 - d)[:, None] * Ks[:, None] * ds + d[:, None] * tf
+    ts = (1 - d)[:, None] * Ks[:, None] * es + d[:, None] * tf
     t = tn[:, None] * n + ts
     f = t * m.c_area[:, None] * live[:, None]  # force pulling B back towards A
     if beta > 0:
@@ -827,7 +855,7 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
                       m.c_Ks, m.c_sig, m.c_tau, m.c_GIc, m.c_GIIc, m.c_mu, m.c_breakable,
                       st.c_dmax, st.c_d, st.c_slip, F, Mo, update,
                       s.beta if update else 0.0, s.dt, st.c_prev, st.c_alive, st.c_crush,
-                      _glue_fc90(m), *_glue_crush(m))
+                      _glue_fc90(m), *_glue_crush(m), st.c_creep, *glue_creep(m, st))
     if len(m.k_a):
         K.cable_kernel(x, R, m.a_node, m.a_r0, m.k_a, m.k_b, m.k_L0, m.k_EA, m.k_Fb,
                        st.k_alive, F, Mo, update)

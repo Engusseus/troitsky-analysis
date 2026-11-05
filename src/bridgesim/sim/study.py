@@ -121,14 +121,7 @@ def _inputs(cad: str | Path, overrides, material, sim_params, ruleset, units=Non
             sp = sp.updated(sim_over)
         except KeyError as exc:
             raise ValueError(str(exc).strip("'\"")) from None
-    # the stick modulus, while it is a placeholder: the published craft-stick value
-    # (wood.E_placeholder_MPa), not the material file's round number
-    e_ph = sp.values.get("wood.E_placeholder_MPa", 0.0)
-    if e_ph and mat.E_MPa.source == "assumed":
-        mat = _material_with(mat, {"E_MPa": e_ph, "G_MPa": e_ph / 16}, {
-            "E_MPa": "placeholder for the crush: craft sticks measured at 7.1 GPa "
-                     "(Emergent Scientist 1, 3, 2017); measure yours",
-            "G_MPa": "E/16"}, source="assumed")
+    mat = _crush_material(mat, sp)
     mat_over = {k.split(".", 1)[1]: v for k, v in ov.params.items() if k.startswith("material.")}
     if mat_over:
         known = set(mat.props())
@@ -512,6 +505,7 @@ def _sequence(events: list) -> list[str]:
         seen.add(key)
         verb = {"member_fracture": "member broke", "member_shear": "member split in shear",
                 "member_crushing": "member crushing",
+                "member_erosion": "member element removed (bent past 1 rad)",
                 "plate_crack": "plate cracked", "joint_failure": "glued joint separated",
                 "joint_cracking": "glued joint cracking",
                 "floss_break": "floss snapped", "criterion": "§12.5 failure criterion",
@@ -665,7 +659,7 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
 
 
 MAJOR = ("joint_cracking", "joint_failure", "member_fracture", "member_shear",
-         "member_crushing", "plate_crack", "floss_break")
+         "member_crushing", "member_erosion", "plate_crack", "floss_break")
 
 
 def _failures(events, fail_t: float | None, limit: int = 60) -> list[EventOut]:
@@ -886,7 +880,8 @@ def _whatif(gov: list[EventOut]) -> dict:
     for e in gov:
         if e.kind in ("joint_failure", "joint_cracking") and len(e.parts) == 2:
             glue[f"{_copies(e.parts[0])} | {_copies(e.parts[1])}"] = 1.5
-        elif e.kind in ("member_shear", "member_fracture", "member_crushing", "plate_crack"):
+        elif e.kind in ("member_shear", "member_fracture", "member_crushing",
+                        "member_erosion", "plate_crack"):
             for p in e.parts or [e.what]:
                 bodies[_copies(p)] = {"section_scale": 1.25}
     return {k: v for k, v in (("bodies", bodies), ("glue", glue)) if v}
@@ -1401,6 +1396,19 @@ def _same_part(observed: str, simulated: str) -> bool:
 # --------------------------------------------------------------------------- lab tests
 
 
+def _crush_material(mat: Material, sp: SimParams) -> Material:
+    """The material the crush (and its coupon models) uses: while the stick modulus is a
+    placeholder, the published craft-stick value (wood.E_placeholder_MPa, 7.1 GPa), not
+    the material file's round number."""
+    e_ph = sp.values.get("wood.E_placeholder_MPa", 0.0)
+    if e_ph and mat.E_MPa.source == "assumed":
+        mat = _material_with(mat, {"E_MPa": e_ph, "G_MPa": e_ph / 16}, {
+            "E_MPa": "placeholder for the crush: craft sticks measured at 7.1 GPa "
+                     "(Emergent Scientist 1, 3, 2017); measure yours",
+            "G_MPa": "E/16"}, source="assumed")
+    return mat
+
+
 def _wood_law(sp: SimParams) -> dict:
     """The fibre law's compression parameters of the bridge, for the coupon models."""
     return {"fc_prop": sp.values.get("wood.fc_proportional", 1.0),
@@ -1409,10 +1417,12 @@ def _wood_law(sp: SimParams) -> dict:
 
 def lab(material=None, sim_params=None, csv_dir: str | Path | None = None) -> LabReport:
     """Simulate the standard coupon tests with the current material (and, where the CSVs
-    in ``csv_dir`` hold data, the team's own specimens) and report the reality gap."""
+    in ``csv_dir`` hold data, the team's own specimens) and report the reality gap. The
+    sticks are those of the crush: while E is a placeholder, the crush's (7.1 GPa)."""
     mat = material if isinstance(material, Material) else load_material(
         material or "popsicle_birch")
     sp = sim_params if isinstance(sim_params, SimParams) else SimParams.load(sim_params)
+    mat = _crush_material(mat, sp)
     E, ft, fc = mat.E_MPa.value, mat.f_t_MPa.value, mat.f_c_MPa.value
     st = mat.stick
     tests: list[dict] = []
@@ -1549,7 +1559,8 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
                 fails.append((L, b, t, Ff))
                 if F and dl:
                     pairs.append((Es[-1], Ff * L / 4 / (b * t * t / 6)))
-        E = float(np.mean(Es)) if Es else mat.E_MPa.value
+        # the simulated sticks: the measured E, else the crush's placeholder
+        E = float(np.mean(Es)) if Es else _crush_material(mat, sp).E_MPa.value
         if Es:
             changes["E_MPa"] = E
             notes["E_MPa"] = f"from {len(Es)} 3-point bending tests (calibrate)"
@@ -1849,13 +1860,18 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
                 progress((k + 1) / n, f"run {k + 1}/{n}: F_u {res[-1]['Fu_kgf']:.1f} kgf")
     F = sorted(r["Fu_kgf"] for r in res)
     modes: dict[str, int] = {}
+    parts: dict[str, int] = {}
     for r in res:
         key = r.get("governing") or r["first_failure"]
         modes[key] = modes.get(key, 0) + 1
+        g = governing_part(key)
+        parts[g] = parts.get(g, 0) + 1
     p = np.percentile(F, [5, 50, 95])
     rep = MonteCarloReport(file=Path(cad).name, n=n, Fu_kgf=[round(x, 2) for x in F],
                            p05_kgf=round(float(p[0]), 2), p50_kgf=round(float(p[1]), 2),
                            p95_kgf=round(float(p[2]), 2), failure_modes=modes,
+                           governing_parts=dict(sorted(parts.items(),
+                                                       key=lambda kv: -kv[1])),
                            recommended_prediction_kgf=round(best_prediction(F), 1),
                            fidelity=fidelity,
                            untrustworthy_runs=sum(1 for r in res if not r["trustworthy"]))
@@ -1887,6 +1903,18 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
         (Path(out_dir) / "montecarlo.json").write_text(rep.model_dump_json(indent=2),
                                                       encoding="utf-8")
     return rep
+
+
+def governing_part(label: str) -> str:
+    """A governing label with every copy of its parts together: 'joint failure: End Post
+    (..) - L Near | T1 Cover (..) - L Near' -> 'joint failure: End Post (..) | T1 Cover
+    (..)'."""
+    from bridgesim.sim.idealize import _group
+
+    kind, sep, what = label.partition(": ")
+    if not sep:
+        return label
+    return f"{kind}: " + " | ".join(_group(p) for p in what.split(" | "))
 
 
 def placeholders(mat: Material, sp: SimParams) -> dict[str, float]:
@@ -2219,7 +2247,8 @@ STIFFNESS_KEYS = ("material.E_MPa", "material.G_MPa", "wood.E_T_MPa",
                   "glue.K_n_N_per_mm3", "glue.K_s_N_per_mm3")
 STRENGTH_KEYS = ("material.f_t_MPa", "material.f_c_MPa", "material.f_v_MPa",
                  "material.f_b_MPa", "material.glue.tau_g_MPa", "wood.f_c90_MPa",
-                 "wood.f_t90_MPa")
+                 "wood.f_t90_MPa", "wood.f_rolling_MPa", "glue.interlaminar_MPa",
+                 "floss.strand_break_N")
 
 
 def calibrate_bridge(cad: str | Path, test_csv: str | Path, overrides=None, material=None,

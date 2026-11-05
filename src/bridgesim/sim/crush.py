@@ -447,7 +447,7 @@ def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
 
 
 BREAKS = ("joint_failure", "joint_cracking", "member_fracture", "member_shear",
-          "plate_crack", "floss_break", "member_crushing")
+          "plate_crack", "floss_break", "member_crushing", "member_erosion")
 
 
 def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
@@ -484,7 +484,7 @@ def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
     if first is not None and first.kind == "member_shear":
         # a member breaking sends a stress wave that can split its neighbours (or itself)
         # in the same instant: the break is the cause, not the splits
-        root = [e for e in before if e.kind == "member_fracture"
+        root = [e for e in before if e.kind in ("member_fracture", "member_erosion")
                 and abs(e.t - first.t) <= 0.002]
         if root:
             first = root[0]
@@ -712,6 +712,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
 
     # ------------------------------------------------------------ 2. load
     prev_b = st.b_fractured.copy()
+    prev_a = st.b_alive.copy()
     prev_bs = st.b_shear.copy()
     prev_s = st.s_dmg > 0.5
     prev_k = st.k_alive.copy()
@@ -757,7 +758,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     ke_q = 0.0  # kinetic energy of the bridge under steady loading (full jack speed)
     recent: list[tuple[float, float]] = []  # (t, load) over the last half settle window
     major = ("joint_cracking", "joint_failure", "plate_crack", "member_fracture",
-             "member_shear", "floss_break")
+             "member_shear", "floss_break", "member_erosion")
+    test_rate = max(float(m.params.get("test_rate_mm_per_min", 10.0)), 1e-6) / 60.0  # mm/s
     while not unstable:
         tl = st.t - t_load0
         target = opt.hold_speed_frac if st.t < hold_until else 1.0
@@ -769,6 +771,9 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         v = opt.speed_mm_s * min(1.0, tl / ramp) * throttle
         st.jack_y -= v * dt
         st.jack_v = -v
+        # the physical test time of this step (glue creep): the jack's travel at the
+        # real test rate, so creep follows the travel, not the compressed time
+        st.creep_dt = v * dt / test_rate
         do_step(1.0, opt.alpha if fail_at is None else opt.alpha_collapse)
         k += 1
         travel = jack0 - st.jack_y
@@ -812,7 +817,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             glue_hist.append((np.bincount(patch_of, weights=m.c_area * st.c_d,
                                           minlength=n_patch) if len(patch_of)
                               else np.zeros(n_patch)).astype(np.float32))
-            curve["members_broken"].append(int((st.b_fractured | st.b_shear).sum()))
+            curve["members_broken"].append(int((st.b_fractured | st.b_shear
+                                                 | ~st.b_alive).sum()))
             if force > peak and fail_at is None:  # F_u: the peak before the failure call
                 peak, peak_travel, peak_defl = force, travel, defl
             # ---- events
@@ -828,6 +834,11 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                 ev("member_fracture", m.bodies[m.b_body[e]].name,
                    "member broke (fibres cracked through the section)",
                    mid([m.b_i[e], m.b_j[e]]))
+            for e in np.where(prev_a & ~st.b_alive & ~st.b_fractured)[0]:
+                ev("member_erosion", m.bodies[m.b_body[e]].name,
+                   "a member element bent or twisted past 1 rad at an end was removed "
+                   "(erosion: a hinge turned past what wood takes, its section not "
+                   "cracked through)", mid([m.b_i[e], m.b_j[e]]))
             ns = st.b_shear & ~prev_bs
             for e in np.where(ns)[0]:
                 ev("member_shear", m.bodies[m.b_body[e]].name,
@@ -870,6 +881,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                    f"glued joint separated ({pfrac[pid]:.0%} of its {pa.area_mm2:.0f} mm^2 "
                    "let go)", pa.centroid, fraction=float(pfrac[pid]))
             prev_b, prev_bs, prev_s = st.b_fractured.copy(), st.b_shear.copy(), st.s_dmg > 0.5
+            prev_a = st.b_alive.copy()
             prev_k = st.k_alive.copy()
             prev_patch_started, prev_patch_broken = started, broken
             prev_patch_cracked = cracked | broken

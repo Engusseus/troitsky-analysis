@@ -128,7 +128,8 @@ class InspectReport(BaseModel):
     next_steps: list[NextStep] = Field([], description="What to do next, most useful first")
 
 
-EventKind = Literal["member_fracture", "member_shear", "member_crushing", "plate_crack",
+EventKind = Literal["member_fracture", "member_shear", "member_crushing", "member_erosion",
+                    "plate_crack",
                     "glue_damage",
                     "joint_cracking", "joint_failure", "floss_break", "criterion",
                     "instability", "numerical"]
@@ -143,6 +144,8 @@ class EventOut(BaseModel):
     kind: EventKind = Field(description=(
         "member_fracture (fibres cracked through), member_shear (split along the glue "
         "lines or grain), member_crushing (fibres folding in compression past f_c), "
+        "member_erosion (an element bent or twisted past 1 rad removed, its section not "
+        "cracked through), "
         "plate_crack, glue_damage (a joint's glue starts to soften), "
         "joint_cracking (>= 30 % of a joint's glued area has let go), joint_failure "
         "(>= 90 %: separated), floss_break, criterion (§12.5), instability, numerical"))
@@ -311,6 +314,11 @@ class MonteCarloReport(BaseModel):
     p50_kgf: float
     p95_kgf: float
     failure_modes: dict[str, int]
+    governing_parts: dict[str, int] = Field({}, description=(
+        "Where the collapse started, counted over the runs by part (every copy of a part "
+        "together, near and far, left and right): the failure site as a distribution. "
+        "Several entries with similar counts mean failure sites competing within the "
+        "scatter: strengthen them together (diagnose ranks them)"))
     recommended_prediction_kgf: float = Field(
         description="Value for the Load Prediction Form (§12.7): the median of the runs "
                     "weighted by 1/F_u, which minimises the expected prediction error "

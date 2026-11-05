@@ -2051,3 +2051,94 @@ def test_a_fine_frame_keeps_its_elements():
         h = 30.0 * ms
         assert strip.kind == "frame" and L.max() <= 1.1 * h, (ms, L.max())
         assert L.sum() == pytest.approx(1100 - 40, rel=0.05)  # the arm's centre line
+
+
+def _one_glue_point(Ks=60.0, tau=1e6):
+    """Two nodes, one glue point of 1 mm^2 between them (normal Y), for law checks."""
+    m = lab.blank_model(np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]))
+    m.mass[:] = 1.0
+    m.rot_inertia[:] = 1.0
+    m.a_node, m.a_r0 = np.array([0, 1]), np.zeros((2, 3))
+    m.c_a, m.c_b, m.c_area = np.array([0]), np.array([1]), np.array([1.0])
+    m.c_n0 = np.array([[0.0, 1.0, 0.0]])
+    m.c_Kn, m.c_Ks = np.array([150.0]), np.array([Ks])
+    m.c_tau, m.c_sig = np.array([tau]), np.array([tau])
+    m.c_GIc, m.c_GIIc, m.c_mu = np.array([1e3]), np.array([1e3]), np.array([0.4])
+    m.c_patch, m.c_breakable = np.array([0]), np.array([True])
+    return m
+
+
+@pytest.mark.parametrize("fast", [False, True])
+def test_glue_creeps_in_test_time(fast):
+    """A glue line held at a fixed slip relaxes like a Kelvin element in series with
+    its spring: the shear force falls from K_s x slip toward K_s x slip / (1 + phi) with
+    the time constant t_r / (1 + phi), in physical test time (the jack's travel at the
+    real rate); with no test time passing (a hold) nothing creeps."""
+    if fast:
+        pytest.importorskip("numba")
+    phi, tr, slip = 1.0, 600.0, 0.01
+    m = _one_glue_point()
+    m.params.update(glue_creep_factor=phi, glue_creep_time_s=tr)
+    st = S.initial_state(m, jack_y=1e12)
+    st.x[1, 0] = slip  # node 1 slid along X by the slip
+    s = S.Settings(dt=1e-6, use_numba=fast)
+
+    def force(dt_test, steps):
+        F, Mo = np.zeros((2, 3)), np.zeros((2, 3))
+        st.creep_dt = dt_test
+        for _ in range(steps):
+            F[:] = 0.0
+            Mo[:] = 0.0
+            S.internal_and_contact(m, st, s, F, Mo, update=True)
+        return abs(F[1, 0])
+
+    f0 = force(0.0, 3)
+    assert f0 == pytest.approx(60.0 * slip, rel=1e-6)  # nothing creeps while the jack stands
+    t = 300.0
+    ft = force(t / 1000, 1000)  # 300 s of test time in 1000 steps
+    expect = 60.0 * slip * (1 - phi / (1 + phi) * (1 - math.exp(-(1 + phi) * t / tr)))
+    assert ft == pytest.approx(expect, rel=1e-3)
+    fl = force(100.0, 200)  # long after: the final, crept stiffness K_s / (1 + phi)
+    assert fl == pytest.approx(60.0 * slip / (1 + phi), rel=1e-3)
+    m.params["glue_creep_factor"] = 0.0
+    st = S.initial_state(m, jack_y=1e12)
+    st.x[1, 0] = slip
+    assert force(100.0, 50) == pytest.approx(60.0 * slip, rel=1e-6)  # no creep
+
+
+@pytest.mark.parametrize("fast", [False, True])
+def test_a_member_bent_past_a_radian_is_eroded_not_fractured(fast):
+    """An element turned past 1 rad at an end is removed: reported as erosion, its
+    fibres not counted as cracked through."""
+    if fast:
+        pytest.importorskip("numba")
+    m = lab.blank_model(np.array([[0.0, 0, 0], [100.0, 0, 0]]))
+    lab.add_beam_line(m, [0, 1], lab.BeamSpec(b=10, d=10, E=7100, ft=40, fc=30))
+    st = S.initial_state(m, jack_y=1e12)
+    c, sn = math.cos(1.2), math.sin(1.2)
+    st.R[1] = np.array([[c, -sn, 0.0], [sn, c, 0.0], [0.0, 0.0, 1.0]])  # 1.2 rad about Z
+    F, Mo = np.zeros((2, 3)), np.zeros((2, 3))
+    S.internal_and_contact(m, st, S.Settings(dt=1e-6, use_numba=fast), F, Mo, update=True)
+    assert not st.b_alive[0] and not st.b_fractured[0]
+
+
+def test_platform_bearing_follows_the_grain():
+    """A part standing on the platform bears by the angle of its plies' grain to the
+    vertical (Hankinson): a standing +-45 plate between a UD plate standing on its
+    end grain and one lying across it."""
+    from bridgesim.cad.synthetic import box
+    from bridgesim.sim.idealize import build_model
+
+    fm = {}
+    for lay in ("4-ply UD", "4-ply +-45"):
+        bodies = [box(f"Leg L ({lay})", (-550, 0, -40), (-540, 150, 40)),
+                  box(f"Leg R ({lay})", (540, 0, -40), (550, 150, 40)),
+                  box("Beam (14-ply UD)", (-550, 150, -25), (550, 179.4, 25))]
+        m = build_model(bodies, MAT, SP, seed=None)
+        sup = np.asarray(m.p_support, bool)
+        fm[lay] = float(np.asarray(m.params["fmax_p"])[sup].sum())
+    ply = Ply.from_material(MAT, SP)
+    from bridgesim.sim.idealize import hankinson
+
+    assert fm["4-ply +-45"] / fm["4-ply UD"] == pytest.approx(
+        hankinson(ply.f_c, ply.f_c90, math.sqrt(0.5)) / ply.f_c, rel=0.05)

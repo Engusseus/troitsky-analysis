@@ -1353,6 +1353,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             if _joint_matches(key, bodies[ia].name, bodies[ib].name):
                 gf *= val
                 ov.used.add(key)
+        # how much of the face is really glued (and how well): a joint glued over less
+        # of its face (starved edges, gaps) is softer in shear as well as weaker, in
+        # proportion; bearing in compression keeps the whole contact
+        k_cov = min(max(gf, 0.2), 3.0)
         pid = len(patches)
         cen = pts3.mean(0)
         poly3 = None
@@ -1383,7 +1387,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             springs["area"].append(float(wa))
             springs["n0"].append(na)
             springs["Kn"].append(sp_glue["K_n_N_per_mm3"])
-            springs["Ks"].append(sp_glue["K_s_N_per_mm3"])
+            springs["Ks"].append(sp_glue["K_s_N_per_mm3"] * k_cov)
             gq = max(gf, 1e-3)  # glue_factor 0 is handled as "already broken" (d0 = 1)
             springs["tau"].append(tau_p * gq)
             springs["sig"].append(tau_p * gq * sp_glue["peel_to_shear"])
@@ -1528,14 +1532,14 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     table_y = float(Vall[:, 1].min())
     active = [i for i in range(len(bodies)) if shapes[i].kind not in ("ignore",)]
     def bearing(bi: int) -> float:
-        """Crushing strength (MPa) of a body pressed vertically: along the grain for
-        a standing bar, across it for anything lying flat."""
+        """Crushing strength (MPa) of a body pressed vertically, by the angle of each
+        ply's grain to the vertical (Hankinson, averaged over the plies, as at the glue
+        lines): f_c for a standing UD bar, f_c90 for anything lying flat, in between
+        for a standing +-45 plate."""
         sh = shapes[bi]
-        if sh.kind == "bar" and sh.layup.kind != "toothpick" and abs(sh.u[1]) > 0.7:
-            return ply.f_c
-        if sh.kind in ("shell", "frame") and abs(sh.n[1]) < 0.7:
-            return 0.5 * (ply.f_c + ply.f_c90)
-        return ply.f_c90
+        if sh.kind == "bar" and sh.layup.kind == "toothpick":
+            return ply.f_c90  # a round dowel bears on its side
+        return grain_bearing(sh, np.array([0.0, 1.0, 0.0]), ply.f_c, ply.f_c90)[0]
 
     V_AREA = 16.0  # mm^2 a mesh corner stands for
     p_att, p_sup, p_fmax = [], [], []
@@ -1696,6 +1700,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         mid_x=mid_x, deck_z=deck_z,
         bridge_mass_kg=float(sum(i.mass_kg for i in infos if i.kind != "ignore")),
         params={"crush_softening": sp["wood.crush_softening"],
+                "glue_creep_factor": sp.values.get("glue.creep_factor", 0.0),
+                "glue_creep_time_s": sp.values.get("glue.creep_time_s", 600.0),
                 "fc_proportional": sp.values.get("wood.fc_proportional", 1.0),
                 "friction_platform": sp["contact.friction_platform"],
                 "friction_plate": sp["contact.friction_plate"],
