@@ -1329,6 +1329,38 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
 
     end_factor = sp.values.get("glue.end_grain_factor", 0.5)
     zone = sp.values.get("wood.crush_zone_depth_factor", 3.0)
+    frame_axes: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+
+    def grain_at(bi: int, p: np.ndarray) -> list[np.ndarray]:
+        """The grain of each ply of a body at the point p: a frame whose plies follow its
+        arms (UD, or grain: arm) has them along the arm nearest to p; anything else as
+        the body (grain_vectors)."""
+        sh = shapes[bi]
+        multi = len({round(a) % 180 for a in sh.layup.angles}) > 1
+        if sh.kind != "frame" or sh.layup.grain == "span" or (
+                multi and sh.layup.grain != "arm") or not infos[bi].beams:
+            return grain_vectors(sh)
+        if bi not in frame_axes:
+            idx = np.asarray(infos[bi].beams)
+            xi = np.array([bld.X[beams["i"][e]] for e in idx])
+            xj = np.array([bld.X[beams["j"][e]] for e in idx])
+            ax = xj - xi
+            frame_axes[bi] = (0.5 * (xi + xj),
+                              ax / np.maximum(np.linalg.norm(ax, axis=1), 1e-9)[:, None])
+        mids, axes = frame_axes[bi]
+        e1 = axes[int(np.argmin(np.linalg.norm(mids - p, axis=1)))]
+        w = np.cross(sh.n, e1)
+        return [math.cos(math.radians(a)) * e1 + math.sin(math.radians(a)) * w
+                for a in sh.layup.angles or [0.0]]
+
+    def bearing_at(bi: int, p: np.ndarray, n: np.ndarray) -> tuple[float, float]:
+        """grain_bearing with the grain at the point p (grain_at)."""
+        gs = grain_at(bi, p)
+        if not gs:
+            return ply.f_c90, 0.0
+        cs = [abs(float(g @ n)) for g in gs]
+        return (float(np.mean([hankinson(ply.f_c, ply.f_c90, c) for c in cs])),
+                float(np.mean([c > 0.866 for c in cs])))
 
     def crush_depth(i: int, n: np.ndarray) -> float:
         ext = float(np.ptp(bodies[i].mesh.vertices @ n))
@@ -1364,8 +1396,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         del pc
         # the wood on either side crushes, across or along its grain (Hankinson), when
         # the joint is pressed together; glue on end grain holds poorly
-        fa, ea = grain_bearing(shapes[ia], na, ply.f_c, ply.f_c90)
-        fb, eb = grain_bearing(shapes[ib], na, ply.f_c, ply.f_c90)
+        fa, ea = bearing_at(ia, cen, na)
+        fb, eb = bearing_at(ib, cen, na)
         f_bear = min(fa, fb)
         # the depth of wood that can crush: the weaker side's extent along the normal,
         # at most a few times its thickness (the zone a local load compacts)
@@ -1531,15 +1563,17 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     Vall = np.vstack(allV)
     table_y = float(Vall[:, 1].min())
     active = [i for i in range(len(bodies)) if shapes[i].kind not in ("ignore",)]
-    def bearing(bi: int) -> float:
-        """Crushing strength (MPa) of a body pressed vertically, by the angle of each
-        ply's grain to the vertical (Hankinson, averaged over the plies, as at the glue
-        lines): f_c for a standing UD bar, f_c90 for anything lying flat, in between
-        for a standing +-45 plate."""
+    UP = np.array([0.0, 1.0, 0.0])
+
+    def bearing(bi: int, p: np.ndarray) -> float:
+        """Crushing strength (MPa) of a body pressed vertically at p, by the angle of
+        each ply's grain there to the vertical (Hankinson, averaged over the plies, as at
+        the glue lines): f_c for a standing UD bar or a frame's standing UD leg, f_c90 for
+        anything lying flat, in between for a standing +-45 plate."""
         sh = shapes[bi]
         if sh.kind == "bar" and sh.layup.kind == "toothpick":
             return ply.f_c90  # a round dowel bears on its side
-        return grain_bearing(sh, np.array([0.0, 1.0, 0.0]), ply.f_c, ply.f_c90)[0]
+        return bearing_at(bi, p, UP)[0]
 
     V_AREA = 16.0  # mm^2 a mesh corner stands for
     p_att, p_sup, p_fmax = [], [], []
@@ -1547,7 +1581,6 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         if shapes[bi].kind == "cable":
             continue
         V = bodies[bi].mesh.vertices
-        fb = bearing(bi)
         extra, areas = [], [np.full(len(V), V_AREA)]
         for f in bodies[bi].faces:
             if f.kind == "plane" and f.normal[1] < -0.9 and \
@@ -1560,7 +1593,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         for p, a in zip(Vb, np.concatenate(areas), strict=True):
             p_att.append(attach(bi, p))
             p_sup.append(p[1] - table_y < 0.5)
-            p_fmax.append(fb * a)
+            p_fmax.append(bearing(bi, p) * a)
     sup = np.array([bld.X[bld.att_node[a]] + bld.att_r0[a] for a, s in zip(p_att, p_sup,
                                                                         strict=True) if s])
     if not len(sup):
@@ -1629,7 +1662,6 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         V = bodies[bi].mesh.vertices
         sel = ((V >= region_lo) & (V <= region_hi)).all(1)
         pts = [V[sel]]
-        fb = bearing(bi)
         areas = [np.full(int(sel.sum()), V_AREA)]
         for f in bodies[bi].faces:
             if f.kind != "plane":
@@ -1645,7 +1677,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             areas.append(np.full(int(keep.sum()), poly.area / max(len(g), 1)))
         for p, a in zip(np.vstack(pts), np.concatenate(areas), strict=True):
             q_att.append(attach(bi, p))
-            q_fmax.append(fb * a)
+            q_fmax.append(bearing(bi, p) * a)
 
     plate_mass = sp["crusher.plate_mass_kg"] * TONNE_PER_KG
     pc = np.array([mid_x, plate_bottom + PT / 2 + 0.02, deck_z])

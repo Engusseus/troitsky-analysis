@@ -2142,3 +2142,41 @@ def test_platform_bearing_follows_the_grain():
 
     assert fm["4-ply +-45"] / fm["4-ply UD"] == pytest.approx(
         hankinson(ply.f_c, ply.f_c90, math.sqrt(0.5)) / ply.f_c, rel=0.05)
+
+
+def _standing(body):
+    """A flat prism turned upright (+90 degrees about X: (x, y, z) -> (x, -z, y))."""
+    from bridgesim.cad import CadBody
+    from bridgesim.cad.mesh import tessellate
+    from bridgesim.cad.parasolid import Body
+
+    Rm = np.array([[1.0, 0, 0], [0, 0, -1.0], [0, 1.0, 0]])
+    faces = [type(f)(f.kind, [lp @ Rm.T for lp in f.loops], normal=Rm @ f.normal,
+                     origin=Rm @ f.origin) for f in body.faces]
+    return CadBody(body.name, tessellate(Body(0, body.name, faces)), faces, 0,
+                   named_in_cad=True)
+
+
+def test_a_frame_leg_bears_on_its_sticks_end_grain():
+    """An L-shaped UD leg (a frame, its sticks along each arm) stands on the platform on
+    the end grain of its vertical arm (f_c); the same leg with its grain along the span
+    bears across it (f_c90)."""
+    from bridgesim.cad.synthetic import box, prism
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    def leg(name, x0, s):  # outline in (x, -y), turned upright: the leg stands at y = 0
+        P = [(x0, 0), (x0 + 20 * s, 0), (x0 + 20 * s, -130), (x0 + 150 * s, -130),
+             (x0 + 150 * s, -150), (x0, -150)]
+        return _standing(prism(name, P, -4.0, 4.0))
+
+    fm = {}
+    for grain in ("long", "span"):
+        bodies = [leg("Leg L (4-ply UD)", -550.0, 1), leg("Leg R (4-ply UD)", 550.0, -1),
+                  box("Beam (14-ply UD)", (-550, 150, -25), (550, 179.4, 25))]
+        ov = Overrides.from_dict({"bodies": {"Leg*": {"kind": "frame", "grain": grain}}})
+        m = build_model(bodies, MAT, SP, ov, seed=None)
+        assert {b.name: b.kind for b in m.bodies}["Leg L (4-ply UD)"] == "frame"
+        sup = np.asarray(m.p_support, bool)
+        fm[grain] = float(np.asarray(m.params["fmax_p"])[sup].sum())
+    ply = Ply.from_material(MAT, SP)
+    assert fm["long"] / fm["span"] == pytest.approx(ply.f_c / ply.f_c90, rel=0.02)

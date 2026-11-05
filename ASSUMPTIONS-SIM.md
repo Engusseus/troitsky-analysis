@@ -248,7 +248,10 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   crushing strength of the wood under it times the area it stands for, for the angle of
   each ply's grain to the vertical (Hankinson, averaged over the plies, as at the glue
   lines: f_c90 for wood pressed across the grain, f_c for a post standing on its end
-  grain, a standing +-45 plate in between; `test_platform_bearing_follows_the_grain`): a plate edge
+  grain, a standing +-45 plate in between; `test_platform_bearing_follows_the_grain`);
+  for a frame whose sticks follow its arms, the grain of the arm at that point (a UD
+  L-shaped leg stands on its sticks' end grain: `test_a_frame_leg_bears_on_its_sticks_
+  end_grain`), there and at its glue lines: a plate edge
   digging into the deck, or a support corner, crushes locally instead of carrying an
   unlimited load.
 * **Contact between parts that were not touching at the start** (a broken chord falling
