@@ -56,11 +56,12 @@ gets both factors), ready for its `ab ... --overrides-b DIR/whatif.yaml` command
 Fidelity: `quick` (coarser mesh, jack 200 mm/s, ~3 min for a 100-body bridge on 4 cores)
 to screen design changes, `standard` (100 mm/s, ~5-8 min) for the answer, `fine` (finer
 mesh, 50 mm/s, ~15 min) to check that the answer has converged. Mesh convergence on
-Bridge_v6 (`validation/README.md` §3.4, all at 100 mm/s): the perfect bridge gives 2706,
-2647, 2678 kgf with elements x2, x1, x0.75 (within 2.2 %); seed by seed (a seed is the
-same imperfect bridge at every fidelity) the standard mesh is within 1.8 % of the fine one
-and the quick mesh 3-5 % high (quick fidelity as run, at 200 mm/s, 4-10 % high), all three
-ranking the seeds alike. The spread *between* seeds is
+Bridge_v6 (`validation/README.md` §3.4, all at 100 mm/s): the perfect bridge gives 2703,
+2640, 2674 kgf with elements x2, x1, x0.75 (within 2.4 %); seed by seed (a seed is the
+same imperfect bridge at every fidelity) the standard mesh is within 1.2 % of the fine one
+and the quick mesh 3-6 % high (quick fidelity as run, at 200 mm/s, 4-11 % high), all three
+ranking the seeds alike. The collapse starts at the same joint at standard and fine on 2
+of 3 seeds (the End Post's foot), the third part being in `competing`. The spread *between* seeds is
 ~20 %: three failure sites (the deck stringers under the plate, the end-post joint, the
 hub tie strap) compete within ~15 %. So rank designs with one fidelity and the same seeds
 (`ab`, n >= 3), give F_u as the `montecarlo` range, and never compare F_u across
