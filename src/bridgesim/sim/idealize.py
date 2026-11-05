@@ -862,6 +862,9 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             beams["kGA"].append(5 / 6 * lam.G_xy * Ef * A_e)
             beams["body"].append(bi)
             info.beams.append(len(beams["i"]) - 1)
+            while len(info.chains) <= ci:
+                info.chains.append([])
+            info.chains[ci].append(len(beams["i"]) - 1)
             me = mass_t * We * L0 / wl  # the plate's mass spread over its arms
             bld.mass[a_] += me / 2
             bld.mass[b_] += me / 2

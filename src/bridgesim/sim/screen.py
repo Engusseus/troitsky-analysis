@@ -290,6 +290,7 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
         zmax = np.sqrt(3 * Iy / np.maximum(A, 1e-12))
         worst: dict[int, tuple] = {}
         Nmin: dict[int, float] = {}
+        Nel = np.zeros(len(m.b_i))
         for e in range(len(m.b_i)):
             dl = sol["beamT"][e] @ np.r_[u[m.b_i[e]], u[m.b_j[e]]]
             fl = sol["Kb"][e] @ dl
@@ -307,19 +308,32 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
                 if ut > worst.get((bd, mode), (0,))[0]:
                     worst[(bd, mode)] = (ut, mid)
             Nmin[bd] = min(Nmin.get(bd, 0.0), N)
+            Nel[e] = N
         for (bd, mode), (ut, mid) in worst.items():
             add(m.bodies[bd].name, mode, ut, mid)
         for bd, N in Nmin.items():
             if N >= 0:
                 continue
             info = m.bodies[bd]
-            sel = m.b_body == bd
-            EI = float(np.min(m.b_E[sel] * np.minimum(Iy[sel], Iz[sel])))
-            # a member buckles over its length; a frame over its longest arm
-            Lm = info.length_mm if info.kind == "frame" else \
-                max(info.length_mm, float(m.b_L0[sel].sum()))
-            Ncr = math.pi**2 * EI / Lm**2
-            add(info.name, "buckling", -N / max(Ncr, 1e-9), info.centroid_mm)
+            sel = np.where(m.b_body == bd)[0]
+            # a member buckles over its length (pinned); a frame arm by arm, each between
+            # its junctions with its own compression
+            groups = [np.asarray(g, int) for g in getattr(info, "chains", []) if len(g)] \
+                if info.kind == "frame" else [sel]
+            best = None
+            for g in groups or [sel]:
+                Ng = float(Nel[g].min())
+                if Ng >= 0:
+                    continue
+                EI = float(np.min(m.b_E[g] * np.minimum(Iy[g], Iz[g])))
+                Lm = float(m.b_L0[g].sum()) if info.kind == "frame" else \
+                    max(info.length_mm, float(m.b_L0[g].sum()))
+                ut = -Ng / max(math.pi**2 * EI / Lm**2, 1e-9)
+                if best is None or ut > best[0]:
+                    mid = m.X[np.r_[m.b_i[g], m.b_j[g]]].mean(0)
+                    best = (ut, mid)
+            if best is not None:
+                add(info.name, "buckling", best[0], best[1])
     # plates: ply strains at each element's centre against the ply's limits
     if len(m.s_nodes):
         worst_s: dict[tuple, tuple] = {}

@@ -39,6 +39,7 @@ class BodyInfo:
     centroid_mm: tuple = (0.0, 0.0, 0.0)
     bbox_mm: tuple | None = None
     axis: tuple | None = None
+    chains: list = field(default_factory=list)  # a frame's beams, arm by arm
 
 
 @dataclass

@@ -972,10 +972,10 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
         close = {e.what for e in gov if e.load_kgf <= 1.03 * gov[0].load_kgf}
         if rep.fidelity == "quick":
             steps.append(NextStep(
-                action="confirm", why="quick fidelity is for ranking designs: its F_u is "
-                "a few % high (4-11 % on Bridge_v6, coarser mesh and twice the jack speed), "
-                "the part that breaks first can differ at standard, and the strict reading "
-                "(Fu_first_joint_failure_kgf) is not converged at quick",
+                action="confirm", why="quick fidelity is for ranking designs: its F_u can "
+                "differ from standard by up to ~8 % (Bridge_v6: coarser mesh, twice the "
+                "jack speed), the part that breaks first can differ at standard, and the "
+                "strict reading (Fu_first_joint_failure_kgf) is not converged at quick",
                 cli=f"bridgesim crush {f}{ov} --fidelity standard --out {out}_standard "
                     "--json --brief"))
         elif rep.fidelity == "standard" and len(close) > 1:
