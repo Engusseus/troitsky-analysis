@@ -55,10 +55,10 @@ gets both factors), ready for its `ab ... --overrides-b DIR/whatif.yaml` command
 Fidelity: `quick` (coarser mesh, jack 200 mm/s, ~3 min for a 100-body bridge on 4 cores)
 to screen design changes, `standard` (100 mm/s, ~5-8 min) for the answer, `fine` (finer
 mesh, 50 mm/s, ~15 min) to check that the answer has converged. Mesh convergence on
-Bridge_v6 (`validation/README.md` §3.4, all at 100 mm/s): the perfect bridge gives 2717,
-2686, 2657 kgf with elements x2, x1, x0.75 (-1.1 % per step); seed by seed (a seed is the
-same imperfect bridge at every fidelity) the standard mesh is within 1 % of the fine one
-and quick ~3.5 % high, all three ranking the seeds alike. The spread *between* seeds is
+Bridge_v6 (`validation/README.md` §3.4, all at 100 mm/s): the perfect bridge gives 2710,
+2684, 2673 kgf with elements x2, x1, x0.75 (-1.0 %, then -0.4 %); seed by seed (a seed is
+the same imperfect bridge at every fidelity) the standard mesh is within 1.3 % of the fine
+one and quick 2-5 % high, all three ranking the seeds alike. The spread *between* seeds is
 ~20 %: three failure sites (the deck stringers under the plate, the end-post joint, the
 hub tie strap) compete within ~15 %. So rank designs with one fidelity and the same seeds
 (`ab`, n >= 3), give F_u as the `montecarlo` range, and never compare F_u across
@@ -226,7 +226,9 @@ CAD and its glued areas are unchanged, and each what-if is listed in `warnings`.
 copy of the parts that broke, since a design change is made on all of them) and the `ab`
 command that tests it on the same seeds: if it helps, make the change in SolidWorks and
 compare the two files with `ab`. (On Bridge_v6 the what-if of a quick crush raised F_u by
-13.5 %, 90 % interval +3.7 % to +23.4 %, with 3 of 3 seeds: `validation/README.md` §3.4.)
+7.0 % with 3 of 3 seeds, 90 % interval -7.4 % to +21.5 %: +17 % on the seed where the
+strengthened joint governed, 1-3 % where three parts under the plate fail together, so
+`ab` called it not proven: `validation/README.md` §3.4.)
 
 Body names are exactly as `inspect` lists them (SolidWorks body names; mirrored copies
 get "(mirror copy)"). Joint names are `A | B` as listed in the inspect `joints`; both
