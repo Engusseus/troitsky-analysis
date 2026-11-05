@@ -573,7 +573,7 @@ def test_agent_loop_through_mcp(tmp_path):
     cad = tmp_path / "beam.stl"
     write_stl([box("Pier L", (-550, 0, -40), (-540, 150, 40)),
                box("Pier R", (540, 0, -40), (550, 150, 40)),
-               box("Beam", (-550, 150, -25), (550, 179.4, 25))], cad)
+               box("Beam", (-550, 150, -25), (550, 192, 25))], cad)  # breaks < 50 mm
     srv = build_server()
 
     def call(tool, **kw):
@@ -585,7 +585,7 @@ def test_agent_loop_through_mcp(tmp_path):
     assert ins["questions"] and ins["next_steps"]
     # the designer's answers: what each body is (an STL has no names: the agent reads
     # them, and where each body is, from the full inspect report)
-    bodies = {b["name"]: ({"layup": "14-ply UD", "butt_stagger_mm": 0} if b["kind"] == "bar"
+    bodies = {b["name"]: ({"layup": "20-ply UD", "butt_stagger_mm": 0} if b["kind"] == "bar"
                           else {"kind": "block"}) for b in ins["bodies"]}
     ov = {"bodies": bodies, "acknowledge": ["material:*", "rigid_*", "floating:*", "rule:*",
                                            "weak_joints"]}
