@@ -356,16 +356,20 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   designs with `ab` (paired seeds), and read `failure_sequence` to see which modes
   compete.
 * **Mesh convergence** (`validation/convergence_study.py`; Bridge_v6 in
-  `validation/README.md` §3.4): refining from 30 mm members (x1) to x0.75 and x0.5, F_u
-  of a seed falls toward a limit (seed 0: 2279 / 2197 / 2189 kgf; seed 1: 2311 / 2131 /
-  2079), so the standard fidelity is x0.75 (within 2.5 % of x0.5) and the fine one x0.5;
-  the load curves coincide up to 90 % of the peak. The quick mesh (x1.6) is 7-8 % below
-  standard (for ranking designs). Several failure sites compete within a few %
-  (`competing`): which part goes first (`governing`) can change with the mesh, and on a
-  nearly perfect bridge, where the hub parts give way within a few % of each other, F_u
-  moves within +-3 % between meshes with no trend. A perfect bridge is symmetric, so
-  which side gives way first is a bifurcation round-off decides; `--amplitude 0.1` keeps
-  the seed's asymmetry at a tenth of its imperfections for a mesh study.
+  `validation/README.md` §3.4, five seeds): the fine mesh (x0.5) is +4.6 % above the
+  standard one (x0.75) on average, -1.1 % to +11 % seed by seed, and the same part
+  governs on 2 of 5 seeds; on the others another of the sites competing within a few %
+  (`competing`: the hub core, the End Post joints, the cross-beam's joints to the deck
+  stringers) goes first. Read F_u at standard with ~5 % discretisation uncertainty, on
+  the safe side. The load curves coincide up to ~90 % of the peak; the first joint to
+  separate agrees within 10 %. The quick mesh (x1.6) is 7 % below standard on average
+  (for ranking designs). A perfect bridge is symmetric, so which side gives way first is
+  a bifurcation round-off decides; `--amplitude 0.1` keeps the seed's asymmetry at a
+  tenth of its imperfections for a mesh study.
+* **Uncertainty** (`montecarlo -n 20 --sample-placeholders`, standard): with the build
+  scatter and the nine placeholder material values drawn per run, Bridge_v6's F_u is
+  1720 / 2095 / 2317 kgf at p05 / p50 / p95 (-18 % / +11 %); `sensitivity` ranks the
+  lap joints' glue strength and toughness and the sticks' shear strength first.
 * **Crack onset is local.** A plate left as a shell cracks where its strain first
   reaches the strength in one element; the crack band makes the energy of the crack
   independent of the mesh, not its onset at a sharp stress raiser (the end of a glued

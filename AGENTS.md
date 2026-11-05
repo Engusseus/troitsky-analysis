@@ -56,15 +56,15 @@ gets both factors), ready for its `ab ... --overrides-b DIR/whatif.yaml` command
 Fidelity: `quick` (coarse mesh, jack 200 mm/s, ~3 min for a 100-body bridge on 4 cores)
 to screen design changes, `standard` (100 mm/s, ~5-10 min) for the answer, `fine` (finest
 mesh, 50 mm/s, ~30-40 min) to check that the answer has converged. Mesh convergence on
-Bridge_v6 (`validation/README.md` §3.4, all at 100 mm/s): seed by seed (a seed is the
-same imperfect bridge at every fidelity) standard is within 2.5 % of fine, F_u falling
-toward a limit as the mesh is refined, the load curves coincide up to 90 % of the peak,
-and quick is 7-8 % lower than standard, all ranking the seeds alike. The spread
-*between* seeds is ~18 %: several failure sites (the hub plates and core, the End Post
-joints, the top rail plates) compete within a few %, and which goes first changes with
-the mesh and the seed (`competing` lists them). So rank designs with one fidelity and
-the same seeds (`ab`, n >= 3), give F_u as the `montecarlo` range, and never compare F_u
-across fidelities. `ab`, `montecarlo`, `sensitivity` and `calibrate-bridge`
+Bridge_v6 (`validation/README.md` §3.4, five seeds at 100 mm/s; a seed is the same
+imperfect bridge at every fidelity): fine is +4.6 % above standard on average (-1.1 % to
++11 % seed by seed), so read F_u at standard with ~5 % mesh uncertainty; the load curves
+coincide up to ~90 % of the peak, and quick is ~7 % below standard. The spread
+*between* seeds is ~20 %: several failure sites (the hub core, the End Post joints, the
+cross-beam's joints to the deck stringers) compete within a few %, and which goes first
+changes with the mesh and the seed (`competing` lists them; `montecarlo` counts them in
+`governing_parts`). So rank designs with one fidelity and the same seeds (`ab`, n >= 3),
+give F_u as the `montecarlo` range, and never compare F_u across fidelities. `ab`, `montecarlo`, `sensitivity` and `calibrate-bridge`
 stop each crush 2 mm of jack travel after the bridge is judged failed (F_u and the
 failures are known by then; no replay), which saves about a third of the time.
 
@@ -235,10 +235,10 @@ CAD and its glued areas are unchanged, and each what-if is listed in `warnings`.
 copy of the parts that broke, since a design change is made on all of them) and the `ab`
 command that tests it on the same seeds: if it helps, make the change in SolidWorks and
 compare the two files with `ab`. (On Bridge_v6 the what-if of a quick crush, the hub
-parts that broke at the peak x1.25 in section, raised F_u by 7.0 %, 90 % interval -3.6 %
-to +17.5 %, not proven, and the failure moved to the T-nodes on 2 of 3 seeds; `diagnose`
-then measured that the End Post joints to their T1 covers limit the bridge most (+5.1 %
-with their glue x1.5): `validation/README.md` §3.4.) When `competing` is not empty,
+parts that broke at the peak strengthened, raised F_u by 3.3 %, 90 % interval -0.3 % to
++6.9 %, stronger on all three seeds but not proven, and the failure moved on all three;
+`diagnose` then measured that no single part carries the bridge: the inner hub tie
+straps +2.8 %: `validation/README.md` §3.4.) When `competing` is not empty,
 run `diagnose` before redesigning.
 
 Body names are exactly as `inspect` lists them (SolidWorks body names; mirrored copies
@@ -289,7 +289,9 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
   which. Re-run with `--rate-check` or a finer `--fidelity` before relying on an
   untrustworthy F_u.
 * `assumed_parameters`: values still not measured. With placeholders the absolute load
-  is uncertain (maybe +-40 %), while design comparisons (A vs B) are much more reliable.
+  is uncertain: on Bridge_v6, `montecarlo -n 20 --sample-placeholders` (build scatter and
+  the placeholder values drawn per run) gives -18 % / +11 % around the median (p05 /
+  p95), while design comparisons (A vs B, same seeds) are much more reliable.
 * `rules`: the 2027 dimensional rules measured on the solids (penalties, bans).
 * `warnings`: overrides without effect, CAD faces that had to be closed over, etc.
 
@@ -344,7 +346,8 @@ print(crush.model_dump_json(indent=2))
 Read [ASSUMPTIONS-SIM.md](ASSUMPTIONS-SIM.md). In short: material values are placeholders
 until measured, and the model is verified (the equations are solved right) but not yet
 validated against a physical crush test, so give F_u with its uncertainty and lean on
-design comparisons; glue lines are perfect over the whole touching area unless a
+design comparisons; glue lines cover the whole touching area, joint to joint they vary in
+strength and in stiffness alike, and they creep (in physical test time), unless a
 `glue_factor` says otherwise; butt joints in laminated members are assumed in a brick
 pattern unless `butt_stagger_mm` says otherwise; members are shear-flexible fibre beams
 (no splitting along the grain except through shear), tapered ones with their real
@@ -354,5 +357,6 @@ plates otherwise use thin-plate elements); the bearing faces seat over 0.3 mm, t
 corners are up to 0.5 mm out of level and the bridge leans out of its plane by up to
 0.005 rad (`contact.seating_mm`, `scatter.support_level_mm`, `scatter.lean_rad`: measure
 them on the built bridge); parts that come into contact during the test push on each other without
-friction; time is compressed (the jack moves ~mm/s instead of mm/min; the
-materials have no rate effect, and `--rate-check` shows the speed does not matter).
+friction; time is compressed (the jack moves ~mm/s instead of mm/min; the glue's creep
+runs on the physical test time, the jack's travel at the real rate, and `--rate-check`
+shows the simulated speed does not matter).
