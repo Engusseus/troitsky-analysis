@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import io
+import json
 import math
 import sys
 from pathlib import Path
@@ -21,8 +23,32 @@ from bridgesim.schema import Bridge, Material
 from bridgesim.textsafe import csv_row, friendly_error, printable
 from bridgesim.units import n_to_kgf
 
-app = typer.Typer(help="Troitsky popsicle-stick bridge analysis (bridgesim).",
-                  no_args_is_help=True, add_completion=False)
+
+class _App(typer.Typer):
+    """With --json, a usage error (unknown option, missing argument) is also one JSON
+    object on stderr and exit code 2, like every other bad input."""
+
+    def __call__(self, *args, **kwargs):
+        if args or kwargs or "--json" not in sys.argv[1:]:
+            return super().__call__(*args, **kwargs)
+        try:  # typer >= 0.20 carries its own click
+            from typer._click import exceptions as cx
+        except ImportError:  # pragma: no cover
+            from click import exceptions as cx
+        try:
+            rv = super().__call__(standalone_mode=False)
+        except cx.UsageError as exc:
+            if type(exc).__name__ == "NoArgsIsHelpError":
+                exc.show()
+                sys.exit(2)
+            sys.stderr.write(json.dumps({"error": exc.format_message(), "kind": "bad_input",
+                                         "exit_code": 2, "type": "UsageError"}) + "\n")
+            sys.exit(2)
+        sys.exit(rv if isinstance(rv, int) else 0)
+
+
+app = _App(help="Troitsky popsicle-stick bridge analysis (bridgesim).",
+           no_args_is_help=True, add_completion=False)
 
 MaterialOpt = Annotated[
     str | None, typer.Option("--material", "-m", help="Material YAML path or bundled name")
@@ -232,6 +258,563 @@ def version() -> None:
     from bridgesim import PYNITE_VERSION
 
     typer.echo(f"bridgesim {__version__} (Pynite {PYNITE_VERSION})")
+
+
+# ------------------------------------------------------------------- crush simulation
+# These commands work on CAD files (.SLDPRT, .x_b, .stl). With --json they print one
+# JSON document on stdout (schema: `bridgesim schema <name>`); progress and errors go to
+# stderr, errors as one JSON object {"error", "kind", "exit_code"}.
+# Exit codes: 0 ok, 2 bad input (file, overrides, options), 3 simulation problem.
+
+CadArg = Annotated[Path, typer.Argument(help="SolidWorks part (.SLDPRT), Parasolid .x_b "
+                                             "or STL (all bodies in one file)")]
+OverridesOpt = Annotated[Path | None, typer.Option(
+    "--overrides", "-o", help="YAML answering the questions inspect asks (layups, glue "
+                              "quality, floss strands, measured values)")]
+JsonOpt = Annotated[bool, typer.Option("--json", help="Print the report as JSON only")]
+SimOpt = Annotated[str | None, typer.Option("--sim-params", help="Simulation parameter "
+                                                                 "YAML (default: bundled)")]
+UnitsOpt = Annotated[str | None, typer.Option(
+    help="Units of an STL file: mm (default), cm, m or in")]
+UpOpt = Annotated[str, typer.Option("--up-axis", help="Which file axis is up (y, z, -z..)")]
+SpanOpt = Annotated[str, typer.Option("--span-axis", help="Which file axis runs along "
+                                                          "the span (x, z, ..)")]
+StrictOpt = Annotated[bool, typer.Option(
+    "--strict", help="Treat overrides that have no effect (typos) as errors (exit 2)")]
+
+
+def _bad_input_types() -> tuple:
+    from bridgesim.cad.parasolid import ParasolidError
+    from bridgesim.cad.sldprt import SolidWorksFormatError
+
+    extra: tuple = ()
+    try:
+        from scipy.spatial import QhullError
+
+        extra = (QhullError,)
+    except ImportError:  # pragma: no cover
+        pass
+    return BAD_INPUT + (KeyError, FileNotFoundError, SolidWorksFormatError,
+                        ParasolidError) + extra
+
+
+def _guard(json_out: bool, fn):
+    """Run a command body with the error contract above."""
+    try:
+        return fn()
+    except typer.Exit:
+        raise
+    except _bad_input_types() as exc:
+        kind, code = "bad_input", 2
+        err = exc
+    except Exception as exc:  # noqa: BLE001 - every failure gets the contract
+        kind, code = "simulation_failed", 3
+        err = exc
+    msg = printable(friendly_error(err))
+    if json_out:
+        import json as _json
+
+        typer.echo(_json.dumps({"error": msg, "kind": kind, "exit_code": code,
+                                "type": type(err).__name__}), err=True)
+    else:
+        typer.secho(f"ERROR ({kind.replace('_', ' ')}): {msg}", fg=typer.colors.RED,
+                    err=True)
+    raise typer.Exit(code=code)
+
+
+def _progress(f: float, msg: str) -> None:
+    typer.echo(f"  {f:4.0%} {msg}", err=True)
+
+
+def _print_questions(qs) -> None:
+    if not qs:
+        return
+    typer.echo("\nQuestions for the designer (answer them in an overrides YAML):")
+    for q in qs:
+        typer.echo(f"  [{q.severity}] {q.question}")
+        typer.echo(f"      assumed: {q.assumed}")
+
+
+def _print_next(steps) -> None:
+    if not steps:
+        return
+    typer.echo("\nNext steps:")
+    for k, st in enumerate(steps, 1):
+        typer.echo(f"  {k}. {st.action}: {st.why}")
+        if st.cli:
+            typer.echo(f"       {st.cli}")
+
+
+@app.command()
+def inspect(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = None,
+            rules: RulesOpt = "troitsky_2027", sim_params: SimOpt = None,
+            units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
+            strict: StrictOpt = False,
+            brief: Annotated[bool, typer.Option(
+                "--brief", help="With --json: questions, counts, failed rules and warnings "
+                                "only (a few kB instead of ~100 kB)")] = False,
+            body: Annotated[list[str] | None, typer.Option(
+                "--body", help="Only the bodies matching this name or glob (repeat it), "
+                               "with the questions about them")] = None,
+            joint: Annotated[list[str] | None, typer.Option(
+                "--joint", help="Only the glued joints with a part matching this name or "
+                                "glob, or 'A | B' (repeat it)")] = None,
+            json_out: JsonOpt = False) -> None:
+    """Read a CAD bridge and report how bridgesim understood it (members, plates, joints,
+    loading, rules) and what it had to assume. Fast: no simulation."""
+    from bridgesim.sim import study
+
+    rep = _guard(json_out, lambda: study.inspect(
+        cad, overrides, material or "popsicle_birch", sim_params, rules, units=units,
+        up=up_axis, span=span_axis, strict=strict))
+    if body or joint:  # the selected bodies and joints in full (--brief does not apply)
+        rep = study.select(rep, body, joint)
+        brief = False
+        if not json_out:
+            for b in rep.bodies:
+                typer.echo(f"{b.name}: {b.kind}, {b.layup}, {b.mass_g:.1f} g, centroid "
+                           f"{b.centroid_mm} mm")
+            for j in rep.joints:
+                typer.echo(f"{j.a} | {j.b}: {j.kind}, {j.area_mm2:.0f} mm2, shear capacity "
+                           f"{j.shear_capacity_N:.0f} N")
+            _print_questions(rep.questions)
+            return
+    if json_out:
+        if brief:
+            import json as _json
+
+            typer.echo(_json.dumps(study.inspect_brief(rep), indent=2))
+        else:
+            typer.echo(rep.model_dump_json(indent=2))
+        return
+    typer.echo(f"{rep.file}: {rep.n_bodies} bodies, {rep.mass_kg:.2f} kg")
+    kinds: dict[str, int] = {}
+    for b in rep.bodies:
+        kinds[b.kind] = kinds.get(b.kind, 0) + 1
+    typer.echo("  modelled as: " + ", ".join(f"{v} {k}" for k, v in kinds.items()))
+    typer.echo(f"  glued joints: {len(rep.joints)}; model: {rep.model}")
+    typer.echo(f"  loading plate at {rep.loading['plate_centre_mm']} mm on "
+               f"{', '.join(rep.loading['deck_bodies'])}")
+    typer.echo(f"Rules: penalty {rep.rules.total_penalty:g}, bans {rep.rules.bans or 'none'}")
+    for ln in rep.rules.lines:
+        if ln.passed is not None:
+            typer.echo(f"  [{'PASS' if ln.passed else 'FAIL'}] §{ln.section:9s} {ln.title}: "
+                       f"{ln.measured}")
+    for w in rep.warnings:
+        typer.secho(f"  warning: {w}", fg=typer.colors.YELLOW)
+    _print_questions(rep.questions)
+    _print_next(rep.next_steps)
+
+
+@app.command()
+def screen(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = None,
+           rules: RulesOpt = "troitsky_2027", sim_params: SimOpt = None,
+           load: Annotated[float, typer.Option(
+               "--load", help="Reference plate load, kgf")] = 100.0,
+           top: Annotated[int, typer.Option(
+               "--top", help="Most utilised parts to list")] = 25,
+           units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
+           strict: StrictOpt = False, json_out: JsonOpt = False) -> None:
+    """Linear pre-screen in seconds: the bridge's stiffness under the plate and how close
+    each joint, member and plate is to its limit (where damage starts). Ranks the weak
+    spots and shows in seconds how a what-if moves them; F_u needs crush."""
+    from bridgesim.sim import study
+
+    rep = _guard(json_out, lambda: study.screen(
+        cad, overrides, material or "popsicle_birch", sim_params, rules, load_kgf=load,
+        units=units, up=up_axis, span=span_axis, strict=strict, n_limits=top))
+    if json_out:
+        typer.echo(rep.model_dump_json(indent=2))
+        return
+    typer.echo(f"{rep.file}: stiffness {rep.stiffness_kgf_per_mm:.0f} kgf/mm under the "
+               f"plate; damage starts at {rep.first_limit_kgf:.0f} kgf ({rep.first_limit})"
+               f" [{rep.wall_s:.1f} s, linear]")
+    for lm in rep.limits:
+        typer.echo(f"  {lm.load_kgf:9.0f} kgf  {lm.utilisation:6.3f}  {lm.mode}: {lm.part}")
+    typer.echo(rep.note)
+    _print_next(rep.next_steps)
+
+
+@app.command()
+def crush(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = None,
+          rules: RulesOpt = "troitsky_2027", sim_params: SimOpt = None,
+          seed: Annotated[int, typer.Option(help="Random imperfections/scatter seed "
+                                                 "(-1: perfect bridge)")] = 0,
+          speed: Annotated[float | None, typer.Option(
+              help="Simulated jack speed, mm/s (default from --fidelity)")] = None,
+          fidelity: Annotated[str, typer.Option(
+              help="quick (screening), standard, fine")] = "standard",
+          out: Annotated[Path | None, typer.Option("--out", help="Folder for crush.json, "
+                                                                 "curve.csv, events.csv, "
+                                                                 "replay.html")] = None,
+          units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
+          strict: StrictOpt = False,
+          rate_check: Annotated[bool, typer.Option(
+              "--rate-check", help="Crush again at half the jack speed and report how "
+                                   "much F_u changes (evidence the test is slow enough)")
+          ] = False,
+          brief: Annotated[bool, typer.Option(
+              "--brief", help="With --json: leave out the curve and the event log (they "
+                              "are in curve.csv / events.csv with --out); a few kB")
+          ] = False,
+          threads: Annotated[int | None, typer.Option(
+              help="CPU threads for this crush (default: all cores; give each of two "
+                   "crushes run side by side half of them)")] = None,
+          stop_at_failure: Annotated[bool, typer.Option(
+              "--stop-at-failure", help="Stop 2 mm of jack travel after the bridge is "
+                                        "judged failed (F_u and the failures are known; "
+                                        "~1/3 faster; the replay ends there)")] = False,
+          json_out: JsonOpt = False) -> None:
+    """Simulate the §12.5 crushing test of a CAD bridge (nonlinear, dynamic): joints
+    break, members buckle and crack, the bridge collapses. Writes an interactive 3D
+    replay with --out."""
+    from bridgesim.sim import study
+    from bridgesim.sim.crush import CrushOptions
+
+    if threads:
+        with contextlib.suppress(Exception):  # numba missing: nothing to limit
+            import numba
+
+            numba.set_num_threads(max(1, min(int(threads), numba.config.NUMBA_NUM_THREADS)))
+
+    rep, _ = _guard(json_out, lambda: study.crush(
+        cad, overrides, material or "popsicle_birch", sim_params, rules,
+        seed=None if seed < 0 else seed, out_dir=out,
+        options=CrushOptions(speed_mm_s=speed) if speed else None, progress=_progress,
+        fidelity=fidelity, units=units, up=up_axis, span=span_axis, strict=strict,
+        rate_check=rate_check, stop_at_failure=stop_at_failure))
+    if json_out:
+        if brief:
+            import json as _json
+
+            typer.echo(_json.dumps(study.brief(rep), indent=2))
+        else:
+            typer.echo(rep.model_dump_json(indent=2))
+        return
+    typer.echo(f"\n{rep.file}: predicted ultimate load F_u = {rep.Fu_kgf:.1f} kgf "
+               f"({rep.Fu_N:.0f} N), {rep.failure_mode}")
+    typer.echo(f"  {rep.failure_detail}")
+    typer.echo(f"  mass {rep.mass_kg:.2f} kg, efficiency {rep.efficiency_kgf_per_kg:.1f} "
+               f"kgf/kg, deck deflection at F_u {rep.deflection_at_Fu_mm:.1f} mm")
+    if rep.competing:
+        typer.echo("  also broke within 10 % of F_u (the failure could start there on "
+                   "another seed): " + "; ".join(rep.competing[:4]))
+    if rep.Fu_first_joint_failure_kgf is not None:
+        typer.echo(f"  first joint separated (or member split in shear) at "
+                   f"{rep.Fu_first_joint_failure_kgf:.1f} kgf")
+    rc = rep.quality.rate_check
+    if rc:
+        typer.echo(f"  at half the jack speed F_u = {rc['Fu_kgf']:.1f} kgf "
+                   f"({-rc['change']:+.1%}); extrapolated to a jack at rest "
+                   f"{rc.get('Fu_extrapolated_kgf', 0):.1f} kgf")
+    typer.echo("Failure sequence:")
+    for line in rep.failure_sequence[:15]:
+        typer.echo(f"  {line}")
+    q = rep.quality
+    trust = "trustworthy" if q.trustworthy else "NOT trustworthy: " + "; ".join(q.reasons)
+    typer.echo(f"Numerics: dt {q.dt_s * 1e6:.2f} us, {q.steps} steps, {q.wall_s:.0f} s, added "
+               f"mass {q.added_mass_fraction:.1%}, peak kinetic/work "
+               f"{q.kinetic_to_work_max:.3f} -> {trust}")
+    for w in rep.warnings:
+        typer.secho(f"  warning: {w}", fg=typer.colors.YELLOW)
+    for k, v in rep.artifacts.items():
+        typer.echo(f"  {k}: {v}")
+    _print_questions(rep.questions)
+    _print_next(rep.next_steps)
+
+
+@app.command()
+def compare(result: Annotated[Path, typer.Argument(
+                help="crush.json from bridgesim crush, or montecarlo.json from "
+                     "bridgesim montecarlo --out")],
+            test: Annotated[Path, typer.Argument(help="Your crush test CSV (format of "
+                                                      "validation/physical/"
+                                                      "crush_test_template.csv)")],
+            json_out: JsonOpt = False) -> None:
+    """How close is the simulation to your real crush test? Prints a reality-gap score."""
+    from bridgesim.sim import study
+
+    gap = _guard(json_out, lambda: study.compare(result, test))
+    if json_out:
+        typer.echo(gap.model_dump_json(indent=2))
+        return
+    typer.echo(f"{gap.subject}: reality-gap score {gap.score_0_100:.0f}/100")
+    for mt in gap.metrics:
+        err = "" if mt.error is None else f" ({mt.error:+.0%})"
+        typer.echo(f"  {mt.name}: simulated {mt.simulated} vs measured {mt.measured} "
+                   f"{mt.unit}{err}")
+    for a in gap.advice:
+        typer.echo(f"  - {a}")
+
+
+@app.command()
+def lab(material: MaterialOpt = None, sim_params: SimOpt = None,
+        data: Annotated[Path | None, typer.Option(help="Folder with your test CSVs "
+                                                        "(validation/physical)")] = None,
+        json_out: JsonOpt = False) -> None:
+    """Simulate stick bending, a glued lap joint and a stick column with the current
+    material, and compare with your coupon tests if --data has them."""
+    from bridgesim.sim import study
+
+    rep = _guard(json_out, lambda: study.lab(material or "popsicle_birch", sim_params, data))
+    if json_out:
+        typer.echo(rep.model_dump_json(indent=2))
+        return
+    for t in rep.tests:
+        typer.echo("  " + ", ".join(f"{k}: {v}" for k, v in t.items()))
+    for g in rep.gaps:
+        typer.echo(f"{g.subject}: reality-gap score {g.score_0_100:.0f}/100")
+
+
+@app.command()
+def calibrate(data: Annotated[Path, typer.Argument(help="Folder with your test CSVs")],
+              material: MaterialOpt = None,
+              out: Annotated[Path, typer.Option(help="Material YAML to write")] = Path(
+                  "my_material.yaml"),
+              json_out: JsonOpt = False) -> None:
+    """Fit E, strengths and glue strength from your test CSVs into a material YAML."""
+    from bridgesim.sim import study
+
+    mat, log, params = _guard(json_out, lambda: study.calibrate(
+        data, material or "popsicle_birch"))
+    out.write_text(yaml.safe_dump(mat.model_dump(mode="json"), sort_keys=False),
+                   encoding="utf-8")
+    ov_path = None
+    if params:
+        ov_path = out.with_name(out.stem + ".overrides.yaml")
+        ov_path.write_text(yaml.safe_dump({"params": {k: round(v, 4)
+                                                      for k, v in params.items()}}),
+                           encoding="utf-8")
+    if json_out:
+        import json as _json
+        typer.echo(_json.dumps({"material": str(out), "changes": log,
+                                "overrides": str(ov_path) if ov_path else None,
+                                "params": params}))
+        return
+    for line in log:
+        typer.echo(f"  {line}")
+    typer.echo(f"Wrote {out} (use it with --material {out})"
+               + (f" and {ov_path} (use it with -o {ov_path})" if ov_path else ""))
+
+
+@app.command("calibrate-bridge")
+def calibrate_bridge(cad: CadArg,
+                     test: Annotated[Path, typer.Argument(
+                         help="Your crush test CSV of this bridge (format of "
+                              "validation/physical/crush_test_template.csv)")],
+                     overrides: OverridesOpt = None, material: MaterialOpt = None,
+                     fidelity: Annotated[str, typer.Option(help="quick, standard, fine")]
+                     = "standard",
+                     seeds: Annotated[int, typer.Option(
+                         help="Seeds crushed at each step (1..n, in parallel); the fit is "
+                              "to their median, not one seed's imperfections")] = 3,
+                     seed: Annotated[int, typer.Option(
+                         help="With --seeds 1: the seed (-1: perfect bridge)")] = 0,
+                     iterations: Annotated[int, typer.Option(
+                         help="Most fitting steps")] = 4,
+                     processes: Annotated[int | None, typer.Option(
+                         help="Crushes in parallel (default: one per 2 CPU cores)")] = None,
+                     out: Annotated[Path, typer.Option(
+                         help="Overrides YAML to write: yours plus the fitted params")]
+                     = Path("fitted.overrides.yaml"),
+                     units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
+                     json_out: JsonOpt = False) -> None:
+    """Fit a global stiffness and a global strength factor so the simulated crush of
+    this bridge reproduces your physical crush test of it (each step crushes it with
+    --seeds seeds and fits their median)."""
+    from bridgesim.sim import study
+
+    rep = _guard(json_out, lambda: study.calibrate_bridge(
+        cad, test, overrides, material or "popsicle_birch", fidelity=fidelity,
+        seed=None if seed < 0 else seed, iterations=iterations, progress=_progress,
+        units=units, up=up_axis, span=span_axis, seeds=seeds, processes=processes))
+    out.write_text(yaml.safe_dump(rep.overrides, sort_keys=False), encoding="utf-8")
+    if json_out:
+        typer.echo(rep.model_dump_json(indent=2))
+        return
+    for st_ in rep.steps:
+        typer.echo(f"  stiffness x{st_.stiffness_factor:.3f}, strength "
+                   f"x{st_.strength_factor:.3f}: F_u {st_.Fu_kgf:.1f} kgf "
+                   + (f"(median of {', '.join(f'{f:.0f}' for f in st_.Fu_kgf_runs)}) "
+                      if len(st_.Fu_kgf_runs) > 1 else "")
+                   + f"({st_.Fu_error:+.1%})" + (f", stiffness {st_.stiffness_error:+.1%}"
+                                               if st_.stiffness_error is not None else ""))
+    typer.echo(f"{'Converged' if rep.converged else 'NOT converged'}; wrote {out} "
+               f"(use it with -o {out}). {rep.note}")
+
+
+@app.command()
+def montecarlo(cad: CadArg, n: Annotated[int, typer.Option("--n", "-n",
+                                                            help="Number of runs")] = 8,
+               overrides: OverridesOpt = None, material: MaterialOpt = None,
+               fidelity: Annotated[str, typer.Option(help="quick, standard, fine")]
+               = "standard",
+               processes: Annotated[int | None, typer.Option(
+                   help="Runs in parallel (default: one per 2 CPU cores)")] = None,
+               out: Annotated[Path | None, typer.Option(
+                   "--out", help="Folder: one crush.json per seed and montecarlo.json")]
+               = None,
+               sample_placeholders: Annotated[bool, typer.Option(
+                   "--sample-placeholders",
+                   help="Also draw the material values that are still placeholders, per "
+                        "run (+-20 %), so the range includes them")] = False,
+               units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
+               json_out: JsonOpt = False) -> None:
+    """Crush the bridge n times with different imperfections and material scatter: the
+    spread of F_u, and the value to put on the Load Prediction Form (§12.7)."""
+    from bridgesim.sim import study
+
+    rep = _guard(json_out, lambda: study.montecarlo(
+        cad, n, overrides, material or "popsicle_birch", fidelity=fidelity,
+        processes=processes, out_dir=out, progress=_progress, units=units, up=up_axis,
+        span=span_axis, sample_placeholders=sample_placeholders))
+    if json_out:
+        typer.echo(rep.model_dump_json(indent=2))
+        return
+    typer.echo(f"F_u over {n} runs: min {rep.min_kgf:.1f}, 5 % {rep.p05_kgf:.1f}, median "
+               f"{rep.p50_kgf:.1f}, 95 % {rep.p95_kgf:.1f}, max {rep.max_kgf:.1f} kgf. "
+               f"Predict {rep.recommended_prediction_kgf:.1f} kgf.")
+    typer.echo(rep.note)
+    typer.echo(f"First failures: {rep.failure_modes}")
+
+
+@app.command()
+def ab(cad_a: CadArg, cad_b: Annotated[Path, typer.Argument(
+           metavar="CAD_B", help="The other design (may be the same file with other "
+                                 "overrides)")],
+       n: Annotated[int, typer.Option("-n", help="Seeds per design")] = 3,
+       overrides_a: Annotated[Path | None, typer.Option("--overrides-a",
+                                                        help="Overrides YAML for A")] = None,
+       overrides_b: Annotated[Path | None, typer.Option("--overrides-b",
+                                                        help="Overrides YAML for B")] = None,
+       material: MaterialOpt = None,
+       fidelity: Annotated[str, typer.Option(help="quick, standard, fine")] = "standard",
+       processes: Annotated[int | None, typer.Option(
+           help="Crushes in parallel (default: one per 2 CPU cores)")] = None,
+       out: Annotated[Path | None, typer.Option("--out", help="Folder for the crush "
+                                                              "reports and comparison.json")]
+       = None,
+       units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
+       json_out: JsonOpt = False) -> None:
+    """Is design B really better than design A? Crushes both with the same seeds and
+    reports the change of F_u and of the efficiency with a 90 % confidence interval."""
+    from bridgesim.sim import study
+
+    rep = _guard(json_out, lambda: study.compare_designs(
+        cad_a, cad_b, n, overrides_a, overrides_b, material or "popsicle_birch",
+        fidelity=fidelity, processes=processes, out_dir=out, progress=_progress,
+        units=units, up=up_axis, span=span_axis))
+    if json_out:
+        typer.echo(rep.model_dump_json(indent=2))
+        return
+    typer.echo(f"A {rep.a}: mean F_u {rep.Fu_mean_a_kgf:.1f} kgf, governed by "
+               f"{rep.governing_a}")
+    typer.echo(f"B {rep.b}: mean F_u {rep.Fu_mean_b_kgf:.1f} kgf, governed by "
+               f"{rep.governing_b}")
+    typer.echo(rep.verdict)
+    for m in rep.failure_moved:
+        typer.echo(f"  failure moved: {m}")
+
+
+@app.command()
+def diagnose(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = None,
+             n: Annotated[int, typer.Option("-n", help="Seeds per run")] = 2,
+             fidelity: Annotated[str, typer.Option(help="quick, standard, fine")] = "quick",
+             candidates: Annotated[int, typer.Option(
+                 help="Parts that broke near the peak to strengthen in turn")] = 3,
+             processes: Annotated[int | None, typer.Option(
+                 help="Crushes in parallel (default: one per 2 CPU cores)")] = None,
+             out: Annotated[Path | None, typer.Option(
+                 "--out", help="Folder for the runs, diagnosis.json and whatif.yaml")]
+             = None,
+             units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
+             json_out: JsonOpt = False) -> None:
+    """What really limits the bridge: strengthens each part that broke near the peak in
+    turn (same seeds) and ranks them by how much F_u rises. (1 + candidates) x n
+    crushes."""
+    from bridgesim.sim import study
+
+    rep = _guard(json_out, lambda: study.diagnose(
+        cad, n, overrides, material or "popsicle_birch", fidelity=fidelity,
+        candidates=candidates, processes=processes, out_dir=out, progress=_progress,
+        units=units, up=up_axis, span=span_axis))
+    if json_out:
+        typer.echo(rep.model_dump_json(indent=2))
+        return
+    typer.echo(f"{rep.file}: F_u {', '.join(f'{x:.0f}' for x in rep.Fu_base_kgf)} kgf "
+               f"(seeds 1-{rep.n}, {rep.fidelity}), governed by {rep.governing_base}")
+    for it in rep.candidates:
+        typer.echo(f"  {it.Fu_change:+6.1%}  strengthen {it.part} ({it.kind}); then "
+                   f"governed by {it.governing_after}")
+    typer.echo(rep.verdict)
+    _print_next(rep.next_steps)
+
+
+@app.command()
+def sensitivity(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = None,
+                rel: Annotated[float, typer.Option(help="Relative change of each value")]
+                = 0.2,
+                seed: Annotated[int, typer.Option(help="Seed (-1: perfect bridge)")] = 0,
+                fidelity: Annotated[str, typer.Option(help="quick, standard, fine")]
+                = "quick",
+                processes: Annotated[int | None, typer.Option(
+                    help="Crushes in parallel (default: one per 2 CPU cores)")] = None,
+                param: Annotated[list[str] | None, typer.Option(
+                    "--param", help="A value to vary (repeat the option; any key of "
+                                    "materials/simulation.yaml or material.<key>). "
+                                    "Default: the 9 that usually matter most")] = None,
+                seeds: Annotated[int, typer.Option(
+                    help="Average the effect over this many seeds (paired)")] = 1,
+                units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",
+                json_out: JsonOpt = False) -> None:
+    """Which material values move F_u most? Crushes the bridge with each one lowered
+    and raised: the measurements that would narrow the prediction most."""
+    from bridgesim.sim import study
+
+    rep = _guard(json_out, lambda: study.sensitivity(
+        cad, overrides, material or "popsicle_birch", params=param or None, rel=rel,
+        seed=None if seed < 0 else seed, fidelity=fidelity, processes=processes,
+        progress=_progress, units=units, up=up_axis, span=span_axis, seeds=seeds))
+    if json_out:
+        typer.echo(rep.model_dump_json(indent=2))
+        return
+    typer.echo(f"F_u = {rep.Fu_base_kgf:.1f} kgf; each value varied by +-{rep.rel:.0%}:")
+    for it in rep.items:
+        typer.echo(f"  {it.param:28s} {it.Fu_low_kgf:8.1f} .. {it.Fu_high_kgf:8.1f} kgf  "
+                   f"elasticity {it.elasticity:+.2f}  ({it.source})")
+    if rep.measure_first:
+        typer.echo("Measure first:")
+        for m_ in rep.measure_first:
+            typer.echo(f"  - {m_}")
+
+
+@app.command()
+def schema(name: Annotated[str, typer.Argument(help="inspect, inspect_brief, crush, "
+                                                     "crush_brief, screen, reality_gap, lab, "
+                                                     "montecarlo, design_comparison, "
+                                                     "diagnosis, sensitivity, "
+                                                     "bridge_calibration, question or "
+                                                     "job_status")],
+           json_out: Annotated[bool, typer.Option("--json", help="Errors as JSON too (the "
+                                                  "schema is always JSON)")] = False) -> None:
+    """Print the JSON Schema of a report (for scripts and AI agents)."""
+    from bridgesim.sim.report import SCHEMAS
+
+    def body():
+        if name not in SCHEMAS:
+            raise ValueError(f"unknown schema {name!r}; use one of {', '.join(SCHEMAS)}")
+        typer.echo(json.dumps(SCHEMAS[name].model_json_schema(), indent=2))
+
+    _guard(json_out, body)
+
+
+@app.command()
+def mcp() -> None:
+    """Run bridgesim as an MCP server (stdio) so an AI agent can call inspect, crush,
+    compare, lab and calibrate as tools. Needs: pip install "bridgesim[mcp]"."""
+    from bridgesim.sim.mcp_server import main
+
+    main()
 
 
 if __name__ == "__main__":

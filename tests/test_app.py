@@ -127,3 +127,13 @@ def test_buckling_view_describes_the_mode_and_offers_its_csv() -> None:
     assert not app.exception, [e.value for e in app.exception]
     assert any("**Mode 1:** lengthwise" in c.value for c in app.caption)
     assert "Buckling mode CSV" in [b.label for b in app.get("download_button")]
+
+
+def test_solidworks_page_waits_for_a_file() -> None:
+    """The SolidWorks crush page loads and asks for a file."""
+    page = str(Path(__file__).resolve().parents[1] / "app" / "pages" /
+               "1_SolidWorks_crush_test.py")
+    at = AppTest.from_file(page, default_timeout=60)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("Waiting for a file" in i.value for i in at.info)

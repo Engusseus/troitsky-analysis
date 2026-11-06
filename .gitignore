@@ -11,3 +11,6 @@ build/
 out/
 _site/
 web/wheels/
+
+# Teams' CAD files are not committed (they are your design)
+examples/cad/

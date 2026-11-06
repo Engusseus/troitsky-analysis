@@ -1,0 +1,106 @@
+# Parameters of the nonlinear crush simulation (bridgesim.sim) that the linear analysis
+# does not need. The wood's E, G, density and strengths along the grain still come from
+# the material file (materials/popsicle_birch.yaml) so there is one place to put your
+# measurements.
+#
+# EVERY VALUE IS A PLACEHOLDER (source: assumed) unless you measured it. Each `note` says
+# how to measure it; enter your values here or as `params:` in an overrides file.
+# (`bridgesim calibrate` fits E, the strengths and the glue strength of the *material*
+# file from the CSV templates in validation/physical/, not the values below.
+# `bridgesim sensitivity` shows which of them matter for your design.)
+# Units: mm, N, MPa (= N/mm^2), N/mm^3, N/mm, kg.
+name: Troitsky crush simulation defaults (placeholder)
+
+wood:
+  E_placeholder_MPa: {value: 7100, source: assumed,
+                      note: "Stick modulus the crush uses while the material's E is a placeholder (source: assumed): the one published measurement on craft sticks, 7.1 +- 0.2 GPa (cantilever tests, Emergent Scientist 1, 3 (2017)); G is taken as E/16. A measured E (calibrate, or material.E_MPa in the overrides) replaces it; 0 keeps the material file's value."}
+  E_T_MPa: {value: 500, source: assumed,
+            note: "Modulus across the grain of one stick. Birch: about E_L/20."}
+  nu_LT: {value: 0.35, source: assumed, note: "Major Poisson ratio of one ply."}
+  f_t90_MPa: {value: 1.0, source: assumed,
+              note: "Tension across the grain of a ply. Sticks laid side by side are barely joined edge to edge, so this is low."}
+  f_c90_MPa: {value: 5.0, source: assumed, note: "Crushing across the grain."}
+  f_rolling_MPa: {value: 2.0, source: assumed,
+                  note: "Rolling shear: shear across the grain of a ply, which limits the glue line between crossed plies (0-90, +-45) in a laminated member or plate. Softwood about 1-1.5 MPa (EN 16351), birch plywood about 2."}
+  G_f_N_per_mm: {value: 3.0, source: assumed,
+                 note: "Fracture energy of a stick breaking in tension along the grain (sets how suddenly it snaps)."}
+  G_f90_N_per_mm: {value: 0.3, source: assumed,
+                   note: "Fracture energy of a ply parting across the grain (sticks separating edge to edge, or splitting along the grain). Wood: 0.2-0.5 N/mm along the grain (TL/RL crack systems)."}
+  G_v_N_per_mm: {value: 1.0, source: assumed,
+                 note: "Fracture energy of a ply failing in shear along the grain (mode II). Wood: 0.5-2 N/mm."}
+  fc_proportional: {value: 0.65, source: assumed,
+                    note: "Proportional limit of wood in compression along the grain, as a share of f_c: the stress-strain curve is straight to here, then bends over smoothly to f_c (reached at (2 - this) f_c / E), so a member near its crushing strength softens before it crushes (tangent-modulus buckling). Clear wood: 0.6-0.75 (USDA Wood Handbook, fiber stress at proportional limit against maximum crushing strength). 1 = elastic-perfectly plastic. From the load-strain curve of a short stack in compression."}
+  crush_softening: {value: 0.3, source: assumed,
+                    note: "Compressive strength lost after crushing (0.3 = strength drops to 70 % of f_c)."}
+  densification_strain: {value: 0.45, source: assumed,
+                         note: "Wood crushed at a glue line or under a load compacts until its cells have collapsed, at about this share of the crushed depth (birch, relative density ~0.4: 0.4-0.5); past it, densified wood is about as stiff as wood across the grain."}
+  crush_zone_depth_factor: {value: 3.0, source: assumed,
+                            note: "Depth of wood a local load compacts, in thicknesses of the part being crushed (the crushed depth is also at most the part's own extent)."}
+
+glue:
+  K_n_N_per_mm3: {value: 150, source: assumed,
+                  note: "Peel (normal) stiffness of a glue line plus the wood next to it, per mm^2 of glued area."}
+  K_s_N_per_mm3: {value: 60, source: assumed, note: "Shear stiffness of the glue line per mm^2 (short-term: the first seconds of a lap's load-slip record)."}
+  creep_factor: {value: 1.0, source: assumed,
+                 note: "Creep of a PVA glue line in shear: under a steady load its slip grows toward (1 + this) x the elastic slip (a Kelvin element in series with K_s), with the retardation time creep_time_s, in physical test time (the jack's travel at crusher.test_rate_mm_per_min). PVA is a thermoplastic and creeps; over the ~1 min a crush test takes it adds a few % to the joints' slip. Measure it with a lap joint held at a constant load (its slip over a few minutes); 0 = no creep."}
+  creep_time_s: {value: 600, source: assumed,
+                 note: "Retardation time of the glue line's creep (s): how fast the creep slip approaches its final value."}
+  interlaminar_MPa: {value: 6.0, source: assumed,
+                     note: "Shear strength of the glue line between the plies of a laminated member or plate (pressed while it cured, long and continuous), as opposed to tau_g, the average over a hand-made lap joint between parts (stress peaks at its ends, partial coverage). A pressed PVAc bond line is stronger than the wood next to it: EN 204 asks >= 10 MPa of a D1 PVAc adhesive in the EN 205 lap-shear test on beech, so the line fails in the wood, at about f_v (6 MPa here, the stick's own placeholder). A member's plies split at the lower of this and what each ply takes at its grain angle (f_v along the grain, wood.f_rolling_MPa across). Measure it with short-beam shear tests of a 3-5 ply laminate (validation/physical/short_beam_shear_template.csv)."}
+  peel_to_shear: {value: 0.5, source: assumed,
+                  note: "Peel strength / shear strength of a white-glue joint (peel is weaker)."}
+  G_Ic_N_per_mm: {value: 0.25, source: assumed, note: "Fracture energy, opening (peel)."}
+  G_IIc_N_per_mm: {value: 0.6, source: assumed, note: "Fracture energy, sliding (shear)."}
+  end_grain_factor: {value: 0.5, source: assumed,
+                     note: "Strength of a glue line on end grain (a member's end, a plate's edge) / on side grain. End grain soaks up the glue; 0.3-0.6 without sizing. Glue two sticks end to end and pull them apart to measure it."}
+  friction: {value: 0.4, source: assumed,
+             note: "Wood-on-wood friction once a glue line has broken (pieces still bear and rub)."}
+  tau_peak_over_avg: {value: 1.155, source: assumed,
+                      note: "Peak cohesive strength / average lap-joint strength tau_g, for a joint whose glue points hang on several nodes per side. 1.155 makes the simulated 20 x 10 mm single-lap test (bridgesim lab) reproduce tau_g; with the glue on one node per side the factor falls smoothly to 1 (uniform shear). Recompute it if you change the glue stiffness or fracture energies."}
+
+floss:
+  strands: {value: 4, source: assumed,
+            note: "Strands of floss in each modelled floss tie (count the passes you actually make)."}
+  strand_break_N: {value: 25, source: assumed,
+                   note: "Breaking load of one strand of your waxed floss. Hang weights on a strand."}
+  strand_EA_N: {value: 300, source: assumed,
+               note: "Axial stiffness of one strand (load / strain). From the same hanging test."}
+
+contact:
+  friction_platform: {value: 0.35, source: assumed,
+                      note: "Wood on the crusher's steel base platform."}
+  friction_plate: {value: 0.3, source: assumed, note: "Wood on the steel loading plate."}
+  seating_mm: {value: 0.3, source: assumed,
+               note: "Depth over which a bearing face beds in on the steel (roughness, glue beads, fibres crushing at the first touch): its contact stiffness grows from 0 to full over this depth, the soft start ('toe') of a real load-deflection curve. Read it off the start of your crush-test curve."}
+
+crusher:
+  plate_mass_kg: {value: 4.2, source: assumed,
+                  note: "Mass of the loading plates resting on the deck: two 200 x 90 x 15 mm steel plates (Appendix B: 'each is 1.5 cm thick'), 2 x 2.1 kg. Weigh them if you can."}
+  jack_diameter_mm: {value: 40, source: assumed, note: "Lower jack rod (Appendix B: 4.0 cm)."}
+  stiffness_N_per_mm: {value: 20000, source: assumed,
+                       note: "Axial stiffness of the crusher and its load cell between the jack and the frame (it is in the jack-stroke curve, not in the deck deflection). Measure: the jack stroke against the load on a steel block."}
+  lateral_N_per_mm: {value: 2000, source: assumed,
+                     note: "Sideways stiffness of the jack rod and its hemisphere at the loading plate (how much it holds the plate from sliding along the deck)."}
+  frame_clear_width_mm: {value: 1370, source: assumed, note: "Between the press uprights (Appendix B: 137 cm)."}
+  test_rate_mm_per_min: {value: 10, source: assumed,
+                         note: "Real jack speed at the competition, used only to replay the simulation in real time."}
+
+scatter:
+  E_cov: {value: 0.12, source: assumed, note: "Stick-to-stick coefficient of variation of E (from your bending tests)."}
+  strength_cov: {value: 0.18, source: assumed, note: "Coefficient of variation of stick strength."}
+  E_strength_corr: {value: 0.7, source: assumed,
+                    note: "Correlation of a stick's strength with its stiffness (in log terms): stiffer wood is stronger, which is why machine stress grading predicts strength from E (USDA Wood Handbook ch. 6-7: r = 0.6-0.8 between MOE and MOR). Each body's strength factor has the CoV strength_cov and this correlation with its E factor. From paired bending tests (E and strength of each stick: calibrate)."}
+  ply_corr: {value: 0.3, source: assumed,
+             note: "Correlation between the sticks of one laminated member (same batch, often the same tree). A member of n plies averages its sticks, so its E and strength vary by CoV x sqrt((1 + (n - 1) rho) / n): 0 = independent sticks (CoV / sqrt n), 1 = all alike (no averaging). From the scatter of laminated coupons against single sticks."}
+  glue_cov: {value: 0.30, source: assumed, note: "Coefficient of variation of glue-joint strength (hand-made joints vary a lot)."}
+  bow_L_over: {value: 400, source: assumed,
+               note: "Typical initial bow of a member, as span/bow (L/400). Measure the crookedness of your built members."}
+  placement_mm: {value: 3.0, source: assumed, note: "How far off-centre the plate may be placed (each way)."}
+  glue_bridge_cov: {value: 0.15, source: assumed,
+                    note: "Coefficient of variation of the workmanship of a whole build: one factor on every glue joint of the bridge (glue batch, curing, the builders' hands), on top of the joint-to-joint glue_cov, so repeat builds differ by more than independent joints would make them. From the scatter of whole-bridge or sub-assembly tests."}
+  amplitude: {value: 1.0, source: assumed,
+              note: "Scale on every seeded imperfection and scatter (bows, lean, support level, plate placement, material and glue scatter, all at once): 1 = the values above; 0.1 = a nearly perfect bridge whose asymmetry is still set by the seed, not by round-off (for an imperfection-sensitivity or mesh study, validation/convergence_study.py --amplitude)."}
+  lean_rad: {value: 0.005, source: assumed,
+             note: "How far the built bridge leans out of its plane (sway): each seed leans it by up to this angle, either way, the height times the angle at every point (EN 1995-1-1 5.4.4: 0.005 rad). Measure how far the top of your built bridge stands off the vertical."}
+  support_level_mm: {value: 0.5, source: assumed,
+                     note: "How far the four support corners of the built bridge are out of one plane: each is lifted by up to this much (seeded), so the bridge rocks on three corners until the load beds it down. Stand the bridge on a flat table and measure the gap under the corner that rocks."}
