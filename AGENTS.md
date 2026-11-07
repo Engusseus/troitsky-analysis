@@ -199,8 +199,9 @@ meanwhile, and `answer_with`: how to answer, as an overrides fragment (`bodies`,
 * laminated members and stick plates longer than one stick (`butt_joints`, one question
   for all of them): how far apart the butt joints of neighbouring plies are (it sets each
   member's tension strength: in the default brick pattern every other ply is cut at the
-  same section, so a 13-ply member keeps 46 % of its tension strength, a deck about
-  half);
+  same section, so a 13-ply member keeps 0.8 x 6/13 = 37 % of its tension strength, a
+  deck about 40 %; and how the ends meet: a gap over 0.5 mm, as rounded stick ends
+  leave, does not close and leaves the joint out in compression too);
 * a loading plate that does not fit where it goes (`plate_fit`, important: parts closer
   together than the plate is wide; meanwhile they are taken as clear of it);
 * a rigid block directly under the loading plate (`rigid_under_plate:`), and the compact
@@ -354,7 +355,7 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
    `event = failure` and the part that broke first in `notes`, with its side: "top chord,
    far side, left"). The peak load and the broken part alone are enough (that is what the
    competition gives you). Then `bridgesim compare results/crush.json my_test.csv --json`:
-   errors on ultimate load, stiffness (secant 10-50 % of the peak), deflection at peak,
+   errors on ultimate load, stiffness (secant 10-40 % of the peak, as EN 12512), deflection at peak,
    curve shape and failure location (side included), a 0-100 score (0 when off by 1.5x
    in load or 2x in stiffness), the §12.7 prediction error, and advice on what to measure
    next. Do it **blind**: crush (and `montecarlo --out DIR`) before the physical test,

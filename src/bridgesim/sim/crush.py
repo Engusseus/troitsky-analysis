@@ -925,6 +925,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     patch_of = m.c_patch
     n_patch = len(m.patches)
     prev_patch_broken = np.zeros(n_patch, bool)
+    ga_, gp_ = S.glue_shape(m)
+    d_peak = 1.0 - 1.0 / gp_ if gp_ > 1.0 else 0.0  # a glue point's damage at its peak
     prev_patch_started = np.zeros(n_patch, bool)
     prev_patch_cracked = np.zeros(n_patch, bool)
     # glue points never glued (glue 0: a cut end left dry; the part of a face a fit-up
@@ -1051,13 +1053,16 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             curve["plate_load"].append(0.0)
             pdmg = np.zeros(n_patch)
             pfrac = np.zeros(n_patch)
+            # damage past each point's peak (the glue law's pre-peak bend is not yet
+            # failure: 0 at the peak, 1 separated)
+            d_post = np.clip((st.c_d - d_peak) / (1.0 - d_peak), 0.0, 1.0)
             if len(patch_of):
-                np.maximum.at(pdmg, patch_of, st.c_d * wet)
+                np.maximum.at(pdmg, patch_of, d_post * wet)
                 pfrac = np.bincount(patch_of, weights=m.c_area * wet * (st.c_d >= 0.999),
                                     minlength=n_patch) / np.maximum(patch_area, 1e-12)
             curve["glue_broken"].append(int(((pfrac >= JOINT_FAILED) & glued_patch).sum()))
             # each joint's glued area let go so far (damage-weighted), for what governs
-            glue_hist.append((np.bincount(patch_of, weights=m.c_area * wet * st.c_d,
+            glue_hist.append((np.bincount(patch_of, weights=m.c_area * wet * d_post,
                                           minlength=n_patch) if len(patch_of)
                               else np.zeros(n_patch)).astype(np.float32))
             curve["members_broken"].append(int((st.b_fractured | st.b_shear

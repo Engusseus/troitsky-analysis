@@ -63,8 +63,15 @@ class JointReport(BaseModel):
         "between them breaks at the wood's shear strength f_v / 1.5 averaged, as a "
         "notched end, and its tension across the grain)"))
     area_mm2: float
-    shear_capacity_N: float = Field(description="Glue area x tau_g: what a lap test of "
-                                                "this joint would give in pure shear.")
+    lamination: bool = Field(False, description=(
+        "Two plates glued face to face (a deck's plies drawn as separate bodies): glued "
+        "as the plies inside one laminated body, at glue.interlaminar_MPa and "
+        "glue.lamination_K_s_N_per_mm3, with no size effect"))
+    shear_capacity_N: float = Field(description=(
+        "Area x the face's average shear strength, what a lap test of this joint would "
+        "give in pure shear: tau_g times the lap size factor (glue.weibull_m, up to "
+        "glue.size_cap_mm2), glue.interlaminar_MPa for a lamination, f_v / 1.5 for a "
+        "solid face; before the joint-to-joint scatter, glue_factor and end grain"))
 
 
 class RuleLine(BaseModel):

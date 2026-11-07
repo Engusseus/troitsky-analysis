@@ -348,7 +348,7 @@ def modes(m: Model, sol: dict, k: int = 6) -> list[dict]:
 
 
 def utilisations(m: Model, sol: dict, load_N: float, ply=None,
-                 peak_over_avg: float = 1.10) -> list[Limit]:
+                 peak_over_avg: float = 1.075) -> list[Limit]:
     """Every joint's, member's and plate's utilisation at ``load_N``."""
     from bridgesim.sim import shell as shellmod
 

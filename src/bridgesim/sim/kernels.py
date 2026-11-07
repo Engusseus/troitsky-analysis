@@ -580,9 +580,37 @@ def _add(F, Mo, nd, arm, f, sign):
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
+def _trilinear_damage(dmx, dm0, keff, Gc, ga, gp):
+    """Damage of a glue point at the largest mixed-mode separation ``dmx`` reached: the
+    traction rises with keff to ga x its strength (at ga dm0), bends over to the
+    strength at gp dm0 (a PVA line's pre-peak work, Serrano 2000) and falls linearly to
+    nothing at the separation where the work done is Gc. ga = gp = 1: bilinear."""
+    e = ga * dm0
+    if dmx <= e:
+        return 0.0
+    q = gp * dm0
+    lf = gp + 2.0 * Gc / (keff * dm0 * dm0) - ga * ga - (ga + 1.0) * (gp - ga)
+    if lf < 1.05 * gp:
+        lf = 1.05 * gp
+    dmf = lf * dm0
+    if dmx <= q:
+        T = dm0 * (ga + (1.0 - ga) * (dmx - e) / (q - e))
+    elif dmx < dmf:
+        T = dm0 * (dmf - dmx) / (dmf - q)
+    else:
+        return 1.0
+    d = 1.0 - T / dmx
+    if d < 0.0:
+        return 0.0
+    if d > 1.0:
+        return 1.0
+    return d
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
 def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GIIc, mu,
                 breakable, dmax, dd, slip, F, Mo, update, beta, dt, prev, alive, crush,
-                fc90, cdep, eps_d, E_d, fcap, creep, cfac, cdec):
+                fc90, cdep, eps_d, E_d, fcap, creep, cfac, cdec, ga, gp):
     nc = ca.shape[0]
     pa = np.empty(3)
     pb = np.empty(3)
@@ -664,15 +692,8 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
             B = Gs / (Gs + Gn) if Gs + Gn > 1e-30 else 0.0
             Gc = GIc[i] + (GIIc[i] - GIc[i]) * B * B
             keff = (Gn + Gs) / (dm * dm) if dm > 1e-12 else ks
-            dmf = 2.0 * Gc / (keff * (dm0 if dm0 > 1e-12 else 1e-12))
-            if dmf < 1.05 * dm0:
-                dmf = 1.05 * dm0
             dmx = dmax[i] if dmax[i] > dm else dm
-            dnew = dmf * (dmx - dm0) / ((dmx if dmx > 1e-12 else 1e-12) * (dmf - dm0))
-            if dnew < 0.0:
-                dnew = 0.0
-            elif dnew > 1.0:
-                dnew = 1.0
+            dnew = _trilinear_damage(dmx, dm0 if dm0 > 1e-12 else 1e-12, keff, Gc, ga, gp)
             d = dd[i] if dd[i] > dnew else dnew
             if update:
                 dmax[i] = dmx

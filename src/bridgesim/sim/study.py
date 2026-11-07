@@ -399,7 +399,9 @@ def _joint_reports(model: Model, mat: Material) -> list[JointReport]:
     tau = mat.glue.tau_g_MPa.value
     return [JointReport(a=model.bodies[p.body_a].name, b=model.bodies[p.body_b].name,
                         kind=p.kind, area_mm2=round(p.area_mm2, 1),
+                        lamination=p.lamination,
                         shear_capacity_N=round(p.area_mm2 * (
+                            p.strength_MPa if p.strength_MPa > 0 else
                             mat.f_v_MPa.value / 1.5 if p.kind == "solid" else tau), 1))
             for p in model.patches]
 
@@ -469,7 +471,7 @@ def screen(cad: str | Path, overrides=None, material=None, sim_params=None, rule
     F = load_kgf * KGF
     sol = scr.solve(model, F)
     lims = scr.utilisations(model, sol, F,
-                            peak_over_avg=sp.values.get("glue.tau_peak_over_avg", 1.10))
+                            peak_over_avg=sp.values.get("glue.tau_peak_over_avg", 1.075))
     mass = rules.measurements.get("mass_kg", model.bridge_mass_kg)
     first = lims[0] if lims else None
     rep = ScreenReport(
@@ -1296,7 +1298,10 @@ def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = N
 
 def _secant(load, x, pk) -> float:
     """Secant stiffness on the rising branch between the first points where the load
-    reaches 10 % and 50 % of the peak (interpolated: the sampling does not matter)."""
+    reaches 10 % and 40 % of the peak (interpolated: the sampling does not matter), as
+    EN 12512 and EN 26891 take a timber joint's or structure's stiffness (Debertolis et
+    al. 2025 for glued trusses); a glue line stays straight to ~65 % of its peak, so the
+    range sees the elastic structure, not the bend before the peak."""
     load, x = np.asarray(load, float), np.asarray(x, float)
     if not len(load):
         return math.nan
@@ -1312,10 +1317,10 @@ def _secant(load, x, pk) -> float:
         f = (level - load[i - 1]) / max(load[i] - load[i - 1], 1e-12)
         return float(x[i - 1] + f * (x[i] - x[i - 1]))
 
-    d10, d50 = cross(0.1 * pk), cross(0.5 * pk)
-    if not (math.isfinite(d10) and math.isfinite(d50)) or d50 <= d10:
+    d10, d40 = cross(0.1 * pk), cross(0.4 * pk)
+    if not (math.isfinite(d10) and math.isfinite(d40)) or d40 <= d10:
         return math.nan
-    return 0.4 * pk / (d50 - d10)
+    return 0.3 * pk / (d40 - d10)
 
 
 def _read_test_csv(path: str | Path) -> dict[str, Any]:
@@ -1440,7 +1445,7 @@ def compare(sim: CrushReport | MonteCarloReport | str | Path,
                       simulated=round(k_s, 2) if math.isfinite(k_s) else "n/a",
                       measured=round(k_t, 2) if math.isfinite(k_t) else "n/a",
                       error=rel(k_s, k_t), unit="kgf/mm",
-                      meaning=f"secant of load vs {what} between 10 % and 50 % of the peak"),
+                      meaning=f"secant of load vs {what} between 10 % and 40 % of the peak (EN 12512)"),
             GapMetric(name=f"{what} at ultimate load", simulated=round(x_s, 2),
                       measured=round(x_t, 2), error=rel(x_s, x_t), unit="mm"),
             GapMetric(name="curve shape", simulated="", measured="", error=curve_err,
@@ -1576,13 +1581,20 @@ def _lap(sp: SimParams, tau_peak: float, overlap: float, width: float, E: float,
 
     tau_peak = tau_peak * lap_size_factor(overlap * width,
                                           sp.values.get("glue.size_ref_mm2", 200.0),
-                                          sp.values.get("glue.weibull_m", 6.0))
+                                          sp.values.get("glue.weibull_m", 10.0),
+                                          sp.values.get("glue.size_cap_mm2", 3000.0))
     peel = min(sp["glue.peel_to_shear"] * tau_peak, sp["wood.f_t90_MPa"]) / max(tau_peak,
                                                                                 1e-12)
     return labmod.lap_shear(tau_peak, peel, sp["glue.K_n_N_per_mm3"],
                             sp["glue.K_s_N_per_mm3"], sp["glue.G_Ic_N_per_mm"],
                             sp["glue.G_IIc_N_per_mm"], overlap=overlap, width=width, t=t,
-                            E=E)
+                            E=E, **glue_law(sp))
+
+
+def glue_law(sp: SimParams) -> dict:
+    """The glue law's pre-peak shape of the bridge model, for the coupon models."""
+    return {"onset": sp.values.get("glue.prepeak_onset", 1.0),
+            "peak_slip": sp.values.get("glue.peak_slip_ratio", 1.0)}
 
 
 def lab(material=None, sim_params=None, csv_dir: str | Path | None = None) -> LabReport:
@@ -1606,7 +1618,7 @@ def lab(material=None, sim_params=None, csv_dir: str | Path | None = None) -> La
                   "modulus_of_rupture_MPa": round(mor, 1),
                   "material_f_b_MPa": mat.f_b_MPa.value})
     ov, wd = mat.glue.overlap_mm.value, st.width_mm
-    tau_peak = mat.glue.tau_g_MPa.value * sp.values.get("glue.tau_peak_over_avg", 1.10)
+    tau_peak = mat.glue.tau_g_MPa.value * sp.values.get("glue.tau_peak_over_avg", 1.075)
     g = _lap(sp, tau_peak, ov, wd, E, t=st.thickness_mm)
     tests.append({"test": f"single-lap glue joint {ov:g} x {wd:g} mm", "peak_N": round(g.peak, 1),
                   "tau_avg_MPa": round(g.peak / (ov * wd), 3),
@@ -1676,7 +1688,7 @@ def _lab_gaps(d: Path, mat: Material, sp: SimParams) -> list[RealityGap]:
             if not (ov and w and Ff):
                 continue
             tau_peak = mat.glue.tau_g_MPa.value * sp.values.get("glue.tau_peak_over_avg",
-                                                                 1.10)
+                                                                 1.075)
             sim = _lap(sp, tau_peak, ov, w, mat.E_MPa.value)
             mets.append(GapMetric(name=f"{r['specimen']} joint strength",
                                   simulated=round(sim.peak * faces, 1), measured=Ff,
@@ -1785,7 +1797,7 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
                 joints.append((ov, w, Ff / faces))
         if joints:
             tau = float(np.mean([F_ / (ov * w) for ov, w, F_ in joints]))
-            ratio = sp.values.get("glue.tau_peak_over_avg", 1.10)
+            ratio = sp.values.get("glue.tau_peak_over_avg", 1.075)
             E = changes.get("E_MPa", mat.E_MPa.value)
             # inverse fit through the simulated lap joint of each measured geometry
             for _ in range(3):
@@ -1982,7 +1994,7 @@ def _direct_coupons(d: Path, mat: Material, sp: SimParams, changes: dict, notes:
     if ks:
         params["glue.K_s_N_per_mm3"] = float(np.mean(ks))
         log.append(f"glue.K_s_N_per_mm3 = {params['glue.K_s_N_per_mm3']:.1f} from {len(ks)} "
-                   "lap load-slip records (secant 10-50 % of the peak / glued area; it "
+                   "lap load-slip records (secant 10-40 % of the peak / glued area; it "
                    "includes the sticks' own stretching over the overlap)")
     if gs:
         params["glue.G_IIc_N_per_mm"] = float(np.mean(gs))
@@ -2178,8 +2190,10 @@ def draw_placeholders(overrides: dict | None, drawn: dict[str, float], seed: int
     for k in keys:
         v = drawn[k]
         x = v * float(np.exp(z[k] * PLACEHOLDER_PRIORS.get(k, PLACEHOLDER_COV)))
-        if k == "glue.end_grain_factor":
-            x = min(x, 1.0)  # end grain never glues better than side grain
+        if k in ("glue.end_grain_factor", "glue.prepeak_onset") or k.endswith("_efficiency"):
+            x = min(x, 1.0)  # end grain never glues better than side grain; shares
+        elif k == "glue.peak_slip_ratio":
+            x = max(x, 1.0)  # the peak is never before the straight line reaches it
         prm[k] = round(x, 6)
     doc["params"] = prm
     return doc
@@ -2256,7 +2270,7 @@ def _finished(out, cad, seed, fidelity, overrides, material=None, sim_params=Non
 
 
 def _rising_secant(rep: CrushReport, jack: bool) -> float:
-    """Secant stiffness of a crush's rising branch (10-50 % of F_u), against the jack
+    """Secant stiffness of a crush's rising branch (10-40 % of F_u), against the jack
     travel or the mid-span deflection, kgf/mm (nan without a curve)."""
     F = float(rep.Fu_kgf)
     sl = np.array(rep.curve.load_kgf)
@@ -2457,8 +2471,13 @@ PLACEHOLDER_PRIORS = {
     # Bridge_v10 fails (halved, its failure moved from node A to node M at -1.7 % F_u);
     # nothing measures it yet: a fully bonded line between 2 mm sticks ~350-550 N/mm^3, a
     # hand-made lap with gaps far softer
-    "glue.K_s_N_per_mm3": 0.50, "glue.K_n_N_per_mm3": 0.50,
-    "glue.weibull_m": 0.30,  # the lap size effect's modulus: 4-10 (literature, round 18)
+    "glue.K_s_N_per_mm3": 0.60, "glue.K_n_N_per_mm3": 0.50,
+    "glue.weibull_m": 0.35,  # the lap size effect's modulus: 6-20 (literature, round 19)
+    # round 20 (the literature review): the glue law's pre-peak bend (pressed PVAc bends
+    # from 60-70 % of its peak, peaks at 0.05-0.07 mm), butt joints in thin plies in
+    # tension (0.53-0.8 of the statics) and in compression (0.94-0.96 when they bear)
+    "glue.prepeak_onset": 0.10, "glue.peak_slip_ratio": 0.25,
+    "wood.butt_tension_efficiency": 0.15, "wood.butt_bearing_efficiency": 0.05,
 }
 
 SENSITIVITY = {  # key: (meaning, how to measure)
@@ -2603,7 +2622,7 @@ def calibrate_bridge(cad: str | Path, test_csv: str | Path, overrides=None, mate
                      seeds: int = 3, processes: int | None = None):
     """Fit a global stiffness factor (E, G, E_T, glue stiffness) and a global strength
     factor (every strength) so the simulated crush of this bridge reproduces a physical
-    crush test of it: the secant stiffness (10-50 % of the peak, if the record has a
+    crush test of it: the secant stiffness (10-40 % of the peak, if the record has a
     curve) and the ultimate load. A fixed-point iteration: each step crushes the bridge
     with seeds 1..``seeds`` (in parallel) and fits their median, so the factors do not
     absorb one seed's imperfections (``seeds=1``: the single ``seed``). The fit is
@@ -2692,7 +2711,7 @@ def calibrate_bridge(cad: str | Path, test_csv: str | Path, overrides=None, mate
                                  " The record has no curve, so only the strength was "
                                  "fitted.")
               + (" The loading plate is a large share of this peak load, so the stiffness "
-                 "(10-50 % of the peak) is poorly defined." if peak_t < 10 * float(
+                 "(10-40 % of the peak) is poorly defined." if peak_t < 10 * float(
                      sp["crusher.plate_mass_kg"]) else "")))
 
 

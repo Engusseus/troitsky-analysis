@@ -45,7 +45,13 @@ f_t_MPa:
     Kruger et al. 2025, doi:10.5281/zenodo.17201843), but craft sticks are about half as
     strong as clear birch of the same size: one broke at 0.52 of a solid birch strip in
     3-point bending (Karplus 1996, ASEE, Craft Stick Beams), so their lathe checks, grain
-    slope and edges cost strength more than stiffness; 40 MPa here. Strength follows
+    slope and edges cost strength more than stiffness; 40 MPa here. That ratio is weak
+    evidence: recomputed with Karplus's own stick size and span, his Table 1 loads give
+    148 MPa for one stick and 181-286 MPa for solid birch, 2-3x the modulus of rupture he
+    quotes, so they are not simple 3-point failure loads (the round-19 literature
+    review). A 115 x 8.4 x 2 mm Brazilian stick broke at 883 N in tension, ~53 MPa
+    (Avila 2009, UFJF bridge-contest handout), consistent with 40-50. Pull ten sticks
+    (stick_tension_template.csv). Strength follows
     stiffness stick to stick (r = 0.64-0.69 between ln E and ln f_t in the veneer data;
     scatter.E_strength_corr). Butt joints in a laminated member are a separate reduction
     (butt_stagger_mm).

@@ -678,35 +678,45 @@ def interlaminar_strength(angles, f_v: float, f_rolling: float, bond: float) -> 
     return min(bond, worst)
 
 
-def cross_ply_sheet_shear(angles, t_over_a: float = 0.2) -> tuple[float, float]:
+def cross_ply_sheet_shear(angles, t_over_a: float = 0.2,
+                          tor_over_fv: float = math.inf) -> tuple[float, float]:
     """In-plane shear of a 0/90 sheet laid from sticks whose edges are not glued: its
     shear stiffness and strength factors (Bogensperger, Moosbrugger & Silly 2010, WCTE,
     cross-laminated timber with unglued narrow faces: G* / G0 = 1 / (1 + 6 F (t/a)^2),
     F = 0.5345 (t/a)^-0.7947 for 3 layers, 0.4253 (t/a)^-0.7941 for 5 or more, t/a a
     stick's thickness over its width; the shear in the boards' cross-sections doubles,
-    so the nominal shear strength is halved). (1, 1) for a sheet that is not 0/90."""
+    so the nominal shear strength is halved). The glued crossings carry the shear by
+    torsion, tau_T = 3 tau t* / a with t* = n t / (n - 1) the sheet's thickness per glued
+    interface (Boggian, Andreolli & Tomasi 2019, Front. Built Environ. 5:58), which
+    caps the nominal shear at ``tor_over_fv`` (a crossing's torsional strength over
+    f_v) x a (n - 1) / (3 n t): 0.83 x the crossing's strength for 2 plies of 2 x 10 mm
+    sticks, below half f_v once the crossings are weaker than ~5 MPa. (1, 1) for a
+    sheet that is not 0/90."""
     fam = {round(((float(a) % 180) + 180) % 180 / 90.0) % 2 for a in angles}
     near = all(min(abs(float(a) % 90), 90 - abs(float(a) % 90)) < 10 for a in angles)
     if len(fam) < 2 or not near:
         return 1.0, 1.0
     F = (0.5345 * t_over_a ** -0.7947 if len(angles) <= 3
          else 0.4253 * t_over_a ** -0.7941)
-    return 1.0 / (1.0 + 6.0 * F * t_over_a**2), 0.5
+    n = len(angles)
+    tor = tor_over_fv * (n - 1) / (3.0 * n * t_over_a) if n > 1 else math.inf
+    return 1.0 / (1.0 + 6.0 * F * t_over_a**2), min(0.5, tor)
 
 
-def lap_size_factor(area_mm2: float, ref_mm2: float = 200.0, m: float = 6.0) -> float:
+def lap_size_factor(area_mm2: float, ref_mm2: float = 200.0, m: float = 10.0,
+                    cap_mm2: float = 3000.0) -> float:
     """The average strength of a hand-made glued lap of ``area_mm2`` over that of the
     coupon tau_g is measured on (``ref_mm2``, the 20 x 10 mm lap): a Weibull size effect
-    of modulus ``m``, (A / A_ref)^(-1/m), for a lap larger than the coupon (more defects,
-    starved spots, uneven clamping over a larger area; Tannert, Vallee & Hehl 2012, Wood
-    Sci. Technol. 46:503, for bonded timber laps; Debertolis et al. 2025, J. Build. Eng.
-    113:114046: hand-clamped gussets bonded over 54-89 % of their area and held an
-    effective 1-3 MPa against 5.1 MPa on 2500 mm^2 coupons; CSA O86 sizes glulam shear by
-    volume^-0.18). The fracture part of the size effect (shear lag along a long lap) is in
-    the glue law itself."""
+    of modulus ``m``, (A / A_ref)^(-1/m), for a lap larger than the coupon (more starved
+    spots and uneven clamping over a larger area: bonded timber laps follow a Weibull
+    size effect, Tannert, Vallee & Hehl 2012, Wood Sci. Technol. 46:503), no further than
+    ``cap_mm2``: pressed glued crossings of 1600 to 29,000 mm^2 showed none (Flaig &
+    Blass 2013, CIB-W18 46-12-1), so the law is not carried past the laps it is meant
+    for. The fracture part of the size effect (shear lag along a long lap) is in the glue
+    law itself, so m is the statistical part only: ~10 (6-20)."""
     if area_mm2 <= ref_mm2 or m <= 0:
         return 1.0
-    return float((area_mm2 / ref_mm2) ** (-1.0 / m))
+    return float((min(area_mm2, max(cap_mm2, ref_mm2)) / ref_mm2) ** (-1.0 / m))
 
 
 def gap_strength(gap: float, fill: float = 0.15) -> float:
@@ -747,7 +757,7 @@ def butt_path_capacity(n: int, s: float, Ls: float, P_ply: float, tau_w: float) 
 
 def _laminated_member(name: str, sh, lam, L: float, mat: Material, o: dict,
                       questions: list, f_rolling: float = 2.0,
-                      bond: float = 6.0) -> tuple[float, float]:
+                      bond: float = 6.0, butt_eff: float = 1.0) -> tuple[float, float]:
     """Tension-strength factor and shear strength of a member laminated from sticks.
 
     A ply longer than one stick has butt joints; its load goes round each joint through
@@ -755,7 +765,10 @@ def _laminated_member(name: str, sh, lam, L: float, mat: Material, o: dict,
     the plies (:func:`butt_path_capacity`): straight through the joints that line up
     (every other ply in a brick pattern), or zigzagging from joint to joint and shearing
     the glue lines between them at the laminate's interlaminar strength (the pressed bond
-    lines and the plies next to them, as where a member splits). Bending shear between
+    lines and the plies next to them, as where a member splits), times ``butt_eff``: in
+    plies as thin as a stick the glue line cracks from a butt joint's tips well before
+    the member fails and the fracture runs into the plies, below the statics (Jung &
+    Murphy 1983; wood.butt_tension_efficiency). Bending shear between
     plies runs in the same glue lines: :func:`interlaminar_strength` (the bond line,
     pressed while it cured, ``bond``; the plies along and across their grain,
     ``f_rolling``)."""
@@ -773,6 +786,8 @@ def _laminated_member(name: str, sh, lam, L: float, mat: Material, o: dict,
     P_ply = lam.f_t * sh.Wp * sh.T / n
     P = butt_path_capacity(n, s, Ls, P_ply, fv * w)
     kt = min(1.0, P / (n * P_ply))
+    if kt < 1.0:
+        kt *= butt_eff
     g = _group(name)
     if o.get("butt_stagger_mm") is None and not any(
             q["id"] == f"butt_joints:{g}" for q in questions):
@@ -793,8 +808,9 @@ def _butt_question(g: str, name: str, L: float, Ls: float, s: float, kt: float,
                     "that line up across the plies (a brick pattern lines up every other "
                     "ply) or lie close together cut more of it. And how do the ply ends "
                     "meet: cut square and butted tight (sanded), or as cut, or rounded "
-                    "stick ends? A gap that does not close before the member crushes "
-                    "(more than ~0.15 mm) leaves the joint out in compression too.",
+                    "stick ends? A gap that does not close before the member is damaged "
+                    "(more than ~0.5 mm; rounded stick ends leave ~2 mm) leaves the joint "
+                    "out in compression too.",
         "assumed": f"brick pattern: each ply's joints {s:.1f} mm (half a stick) from its "
                    "neighbours', so every other ply is cut at the same section; the gap "
                    "at the butted ends seeded from 0 to scatter.bearing_gap_mm",
@@ -806,14 +822,16 @@ def _butt_question(g: str, name: str, L: float, Ls: float, s: float, kt: float,
 
 def plate_butt_factor(name: str, sh, mat: Material, o: dict, questions: list,
                       ext_along: float, ext_across: float, angles: list[float],
-                      f_v: float, f_rolling: float, bond: float) -> float:
+                      f_v: float, f_rolling: float, bond: float,
+                      butt_eff: float = 1.0) -> float:
     """Fibre-tension factor of a plate laid from sticks: the plies of a direction in
     which the plate is longer than one stick have butt joints, staggered row to row and
     ply to ply by ``butt_stagger_mm`` (a brick pattern by default). The rows and plies of
     that direction form a chain of stick strands; :func:`butt_path_capacity` gives their
     weakest path, the glue between strands shearing at the laminate's interlaminar
     strength (rolling shear through a cross ply). The lower factor of the two directions
-    applies to every ply (the shell keeps one fibre strength per element)."""
+    applies to every ply (the shell keeps one fibre strength per element), times
+    ``butt_eff`` (as for a laminated member: :func:`_laminated_member`)."""
     Ls, wst = mat.stick.length_mm, mat.stick.width_mm
     if o.get("butt_stagger_mm") == 0 or sh.layup.kind != "laminate":
         return 1.0
@@ -831,7 +849,7 @@ def plate_butt_factor(name: str, sh, mat: Material, o: dict, questions: list,
         P_ply = mat.f_t_MPa.value * wst * sh.T / len(angles)
         k = butt_path_capacity(n, s, Ls, P_strand, fv * wst / P_ply) / n
         if k < kt:
-            kt, longest = k, L
+            kt, longest = k * butt_eff, L
     g = _group(name)
     if kt < 1.0 and o.get("butt_stagger_mm") is None and not any(
             q["id"] == f"butt_joints:{g}" for q in questions):
@@ -909,28 +927,38 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         return lognormal(cov, float(r.standard_normal()))
 
     butt_gap_max = float(sp.values.get("scatter.bearing_gap_mm", 0.0))
-    butt_fill = float(sp.values.get("glue.gap_fill_mm", 0.15))
+    butt_bear = (float(sp.values.get("wood.butt_bearing_efficiency", 0.95)),
+                 float(sp.values.get("wood.butt_bear_gap_mm", 0.5)),
+                 float(sp.values.get("wood.butt_open_gap_mm", 1.0)))
 
     def butt_compression(name: str, kt: float, o: dict) -> float:
         """Compression-strength factor of a laminated member or plate with butt joints:
-        a joint bears only if its gap closes before the member crushes (two ply ends
-        close by ~2 e / lambda, 0.05-0.14 mm with the glue's shear stiffness), or glue
-        fills it (glue.gap_fill_mm); otherwise the ply's force goes round it through the
-        glue lines as in tension, and the member keeps its butt-joint tension factor in
-        compression too (the literature review of round 18; Berard et al. 2011: gaps of
-        1 mm in LVL never closed). The gap: ``butt_gap_mm`` (the designer's: 0 if the
-        ends are sanded tight), else seeded per member from 0 to scatter.bearing_gap_mm
-        (hand-cut, or a stick's rounded end); the perfect bridge's ends are tight."""
+        a joint whose gap closes before the member is damaged bears, and the member keeps
+        wood.butt_bearing_efficiency (0.95) of its strength; a gap that does not close
+        leaves the ply's force to go round the joint through the glue lines as in
+        tension, and the member keeps its butt-joint tension factor ``kt``. In 2 mm
+        veneer laminates gaps of 0.25 and 0.5 mm close early after first yield and 1 mm
+        gaps never do (Berard et al. 2011, J Wood Sci 57:107); tight butt joints keep
+        0.94-0.96 of a jointless laminate's compression strength (Dansoh et al. 2003, J
+        Wood Sci 49:405). Between wood.butt_bear_gap_mm (0.5) and wood.butt_open_gap_mm
+        (1.0) the factor falls linearly. The gap: ``butt_gap_mm`` (the designer's: 0 if
+        the ends are sanded tight, ~2 for rounded stick ends), else seeded per member from
+        0 to scatter.bearing_gap_mm (hand-cut); the perfect bridge's ends are tight."""
         if kt >= 1.0:
             return 1.0
+        eff, g0, g1 = butt_bear
         if o.get("butt_gap_mm") is not None:
             g = float(o["butt_gap_mm"])
         else:
             r = rng_for(f"buttgap:{name}")
             if r is None:
-                return 1.0
+                return max(eff, kt)
             g = amp * float(r.uniform(0.0, butt_gap_max))
-        return 1.0 if g <= butt_fill else kt
+        if g <= g0:
+            return max(eff, kt)
+        if g >= g1:
+            return kt
+        return max(kt, eff + (kt - eff) * (g - g0) / (g1 - g0))
 
     # ---------------------------------------------------------------- body analysis
     shapes: list[Shape] = []
@@ -1097,7 +1125,12 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     snap_modes: set = set()
     G_f = sp["wood.G_f_N_per_mm"]
     il_strength = {"f_rolling": sp.values.get("wood.f_rolling_MPa", 2.0),
-                   "bond": sp.values.get("glue.interlaminar_MPa", 6.0)}
+                   "bond": sp.values.get("glue.interlaminar_MPa", 6.0),
+                   "butt_eff": sp.values.get("wood.butt_tension_efficiency", 1.0)}
+    # a glued crossing of two sticks in torsion: its bond line, or the plies rolling
+    # across their grain, ~2.4 x their rolling-shear strength (Flaig & Blass 2013:
+    # torsion 3.5-4.7 MPa against rolling shear 1.43-1.51 on CLT crossings)
+    crossing_tor = min(il_strength["bond"], 2.4 * il_strength["f_rolling"])
 
     def _frame_body(bi, b, sh, info, o, ssc, Ef, Sf, mass_t):
         """A plate of narrow arms as a frame: each arm a chain of fibre beams along its
@@ -1448,7 +1481,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             ply_s = ply
             if sp.values.get("glue.plate_edges_glued", 0.0) < 0.5:
                 gk, sk = cross_ply_sheet_shear(sh.layup.angles,
-                                               mat.stick.thickness_mm / mat.stick.width_mm)
+                                               mat.stick.thickness_mm / mat.stick.width_mm,
+                                               crossing_tor / max(ply.f_v, 1e-9))
                 if gk < 1.0:
                     ply_s = dataclasses.replace(ply, G_LT=ply.G_LT * gk, f_v=ply.f_v * sk)
                     sheets_unglued.append(b.name)
@@ -1488,7 +1522,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             kt_pl = plate_butt_factor(
                 b.name, sh, mat, o, questions, float(np.ptp(pc @ g2)),
                 float(np.ptp(pc @ np.array([-g2[1], g2[0]]))), list(sh.layup.angles),
-                mat.f_v_MPa.value, il_strength["f_rolling"], il_strength["bond"])
+                mat.f_v_MPa.value, il_strength["f_rolling"], il_strength["bond"],
+                il_strength["butt_eff"])
             kc_pl = butt_compression(b.name, kt_pl, o)
             for t3 in tri:
                 xy3 = P2[t3]
@@ -1631,10 +1666,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     # much the peak exceeds the average depends on how many nodes the glue points hang
     # on: with one node per side the glue shears uniformly (1.0); as soon as a side's
     # stretching is resolved the shear-lag peak appears. Fitted to the lap coupon with
-    # its glue on 1, 2, 3, 5 and 9 nodes per side (1.01, 1.06, 1.13, 1.11, 1.10 with the
-    # round-18 glue values; tests/test_sim.py checks it), so a joint's strength does not
+    # its glue on 1, 2, 3, 5 and 9 nodes per side (1.00, 1.045, 1.10, 1.08, 1.075 with
+    # the round-20 glue law; tests/test_sim.py checks it), so a joint's strength does not
     # jump with the mesh
-    peak_over_avg = sp.values.get("glue.tau_peak_over_avg", 1.10)
+    peak_over_avg = sp.values.get("glue.tau_peak_over_avg", 1.075)
 
     def peak_factor(n_nodes: int) -> float:
         return 1.0 + (peak_over_avg - 1.0) * (1.0 - math.exp(-2.2 * (n_nodes - 1)))
@@ -1797,12 +1832,27 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                       len({bld.att_node[b] for b in att_b}))
         tau_p = mat.glue.tau_g_MPa.value * peak_factor(n_nodes) * lap_size_factor(
             float(area), sp.values.get("glue.size_ref_mm2", 200.0),
-            sp.values.get("glue.weibull_m", 6.0))
+            sp.values.get("glue.weibull_m", 10.0), sp.values.get("glue.size_cap_mm2", 3000.0))
+        ks_line = sp_glue["K_s_N_per_mm3"]
+        patches[pid].strength_MPa = tau_p / peak_factor(n_nodes)
+        # two plates glued face to face (a deck's plies drawn as separate bodies): a
+        # lamination, pressed flat over its whole face, as the glue lines inside one
+        # laminated body are, so it is as strong and stiff as they are (the same bond
+        # line drawn as one body or two gives the same bridge), with no size effect
+        lamination = (not solid and shapes[ia].kind == "shell" and shapes[ib].kind == "shell"
+                      and abs(float(na @ shapes[ia].n)) > 0.99
+                      and abs(float(na @ shapes[ib].n)) > 0.99)  # as ``stacked``
+        if lamination:
+            tau_p = sp.values.get("glue.interlaminar_MPa", 4.0) * peak_factor(n_nodes)
+            ks_line = sp.values.get("glue.lamination_K_s_N_per_mm3", ks_line)
+            patches[pid].strength_MPa = tau_p / peak_factor(n_nodes)
+            patches[pid].lamination = True
         if solid:
             # the wood's shear on the section, averaged as a code check does (EN 1995
             # 6.1.7 and 6.5.2: 1.5 V / A <= f_v at a notched end), and its fracture
             # energies: in shear along the grain, across the fibres where they cross it
             tau_p = mat.f_v_MPa.value / 1.5 * peak_factor(n_nodes)
+            patches[pid].strength_MPa = mat.f_v_MPa.value / 1.5
             cross = min(cross_share(ia, cen, na), cross_share(ib, cen, na))
             g1 = sp["wood.G_f90_N_per_mm"] + cross * (sp["wood.G_f_N_per_mm"]
                                                       - sp["wood.G_f90_N_per_mm"])
@@ -1816,7 +1866,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             springs["area"].append(float(wa))
             springs["n0"].append(na)
             springs["Kn"].append(sp_glue["K_n_N_per_mm3"])
-            springs["Ks"].append(sp_glue["K_s_N_per_mm3"] * k_cov)
+            springs["Ks"].append(ks_line * k_cov)
             gq = max(gf * fl, 1e-3)  # glue_factor 0: handled as "already broken" (d0 = 1)
             springs["tau"].append(tau_p * gq)
             if solid:
@@ -1863,7 +1913,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
 
     if sheets_unglued:
         groups = sorted({_group(n) for n in sheets_unglued})
-        gk_, _ = cross_ply_sheet_shear([0, 90], mat.stick.thickness_mm / mat.stick.width_mm)
+        gk_, sk_ = cross_ply_sheet_shear([0, 90], mat.stick.thickness_mm / mat.stick.width_mm,
+                                         crossing_tor / max(mat.f_v_MPa.value, 1e-9))
         questions.append({
             "id": "plate_edges", "body": sheets_unglued[0], "topic": "material",
             "severity": "check",
@@ -1872,7 +1923,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                                                               else "")
                         + ". With the edges unglued a sheet carries in-plane shear through "
                           "the glued crossings of its plies, like cross-laminated timber: "
-                          f"x{gk_:.2f} of its shear stiffness and half its shear strength.",
+                          f"x{gk_:.2f} of its shear stiffness and x{sk_:.2f} of its shear "
+                          "strength for 2 plies (the glued crossings twist).",
             "assumed": "edges not glued (glue spread on the faces only)",
             "answer_with": {"params": {"glue.plate_edges_glued":
                                        "<1 if every stick is glued to its neighbours, 0 if "
@@ -2211,6 +2263,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         bridge_mass_kg=float(sum(i.mass_kg for i in infos if i.kind != "ignore")),
         params={"crush_softening": sp["wood.crush_softening"],
                 "glue_creep_factor": sp.values.get("glue.creep_factor", 0.0),
+                "glue_prepeak_onset": sp.values.get("glue.prepeak_onset", 1.0),
+                "glue_peak_slip_ratio": sp.values.get("glue.peak_slip_ratio", 1.0),
                 "glue_creep_time_s": sp.values.get("glue.creep_time_s", 600.0),
                 "fc_proportional": sp.values.get("wood.fc_proportional", 1.0),
                 "friction_platform": sp["contact.friction_platform"],

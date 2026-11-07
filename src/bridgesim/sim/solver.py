@@ -453,6 +453,30 @@ def glue_creep(m: Model, st: State) -> tuple[float, float]:
     return phi / (1.0 + phi), math.exp(-(1.0 + phi) * max(st.creep_dt, 0.0) / tr)
 
 
+def glue_shape(m: Model) -> tuple[float, float]:
+    """The glue law's pre-peak shape: (onset, peak slip ratio), glue.prepeak_onset and
+    glue.peak_slip_ratio; (1, 1) is the bilinear law."""
+    return (float(m.params.get("glue_prepeak_onset", 1.0)),
+            float(m.params.get("glue_peak_slip_ratio", 1.0)))
+
+
+def trilinear_damage(dmx, dm0, keff, Gc, ga: float, gp: float) -> np.ndarray:
+    """The glue law of kernels._trilinear_damage, over arrays: the damage at the largest
+    separation ``dmx`` reached (elastic to ga x the strength, bending over to the
+    strength at gp dm0, linear softening to nothing where the work done is Gc)."""
+    dmx, dm0 = np.asarray(dmx, float), np.asarray(dm0, float)
+    e, q = ga * dm0, gp * dm0
+    lf = np.maximum(gp + 2.0 * Gc / (keff * dm0 * dm0) - ga * ga - (ga + 1.0) * (gp - ga),
+                    1.05 * gp)
+    dmf = lf * dm0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        T = np.where(dmx <= q, dm0 * (ga + (1.0 - ga) * (dmx - e) / np.maximum(q - e, 1e-30)),
+                     dm0 * (dmf - dmx) / np.maximum(dmf - q, 1e-30))
+        d = np.where(dmx <= e, 0.0, np.where(dmx >= dmf, 1.0,
+                                             1.0 - T / np.maximum(dmx, 1e-30)))
+    return np.clip(d, 0.0, 1.0)
+
+
 def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
                 update: bool = True, beta: float = 0.0, dt: float = 1.0) -> None:
     if len(m.c_a) == 0:
@@ -502,9 +526,8 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     B = Gs / np.maximum(Gs + Gn, 1e-30)
     Gc = m.c_GIc + (m.c_GIIc - m.c_GIc) * B**2
     Keff = np.where(dm > 1e-12, (Gn + Gs) / np.maximum(dm**2, 1e-30), Ks)
-    dmf = np.maximum(2 * Gc / (Keff * np.maximum(dm0, 1e-12)), 1.05 * dm0)
     dmax = np.maximum(st.c_dmax, dm)
-    d = np.clip(dmf * (dmax - dm0) / (np.maximum(dmax, 1e-12) * (dmf - dm0)), 0, 1)
+    d = trilinear_damage(dmax, np.maximum(dm0, 1e-12), Keff, Gc, *glue_shape(m))
     d = np.where(m.c_breakable, np.maximum(st.c_d, d), 0.0)
     if update:
         st.c_dmax = np.where(m.c_breakable, dmax, 0.0)
@@ -867,7 +890,8 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
                       m.c_Ks, m.c_sig, m.c_tau, m.c_GIc, m.c_GIIc, m.c_mu, m.c_breakable,
                       st.c_dmax, st.c_d, st.c_slip, F, Mo, update,
                       s.beta if update else 0.0, s.dt, st.c_prev, st.c_alive, st.c_crush,
-                      _glue_fc90(m), *_glue_crush(m), st.c_creep, *glue_creep(m, st))
+                      _glue_fc90(m), *_glue_crush(m), st.c_creep, *glue_creep(m, st),
+                      *glue_shape(m))
     if len(m.k_a):
         K.cable_kernel(x, R, m.a_node, m.a_r0, m.k_a, m.k_b, m.k_L0, m.k_EA, m.k_Fb,
                        st.k_alive, F, Mo, update)

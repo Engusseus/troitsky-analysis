@@ -135,7 +135,8 @@ def test_lap_shear_reproduces_tau_g():
     # defaults: the factor has to be recomputed whenever they change
     kw = {"Kn": SP["glue.K_n_N_per_mm3"], "Ks": SP["glue.K_s_N_per_mm3"],
           "GIc": SP["glue.G_Ic_N_per_mm"], "GIIc": SP["glue.G_IIc_N_per_mm"],
-          "E": SP["wood.E_placeholder_MPa"]}
+          "E": SP["wood.E_placeholder_MPa"], "onset": SP["glue.prepeak_onset"],
+          "peak_slip": SP["glue.peak_slip_ratio"]}
 
     def tau_avg(tp, **k):
         peel = min(SP["glue.peel_to_shear"] * tp, SP["wood.f_t90_MPa"]) / tp
@@ -2664,9 +2665,11 @@ def test_butt_joints_cut_the_plies_whose_joints_line_up():
 
 def test_laminated_members_and_stick_plates_lose_tension_strength_at_butt_joints():
     """A 13-ply member longer than a stick, brick pattern by default, keeps 6/13 of its
-    tension strength (the glue between plies at the laminate's interlaminar strength far
-    stronger than a ply over half a stick); a deck plate longer and wider than a stick
-    keeps about half (its strands of sticks, rows and plies, in a brick pattern); with
+    tension strength by statics (the glue between plies at the laminate's interlaminar
+    strength far stronger than a ply over half a stick), times
+    wood.butt_tension_efficiency (0.8: in stick-thin plies the glue cracks from the
+    joints' tips, Jung & Murphy 1983); a deck plate longer and wider than a stick keeps
+    about 0.8 x half (its strands of sticks, rows and plies, in a brick pattern); with
     butt_stagger_mm 0 (no joints) both keep all of it."""
     from bridgesim.sim.idealize import Overrides, build_model
 
@@ -2675,14 +2678,17 @@ def test_laminated_members_and_stick_plates_lose_tension_strength_at_butt_joints
     m = build_model(bodies, MAT, SP, Overrides(), seed=None)
     info = {b.name: b for b in m.bodies}
     ft = MAT.f_t_MPa.value
-    assert info["Chord (13-ply UD)"].f_t_eff_MPa == pytest.approx(6 / 13 * ft, rel=0.02)
+    eff = SP["wood.butt_tension_efficiency"]
+    assert eff == pytest.approx(0.8)
+    assert info["Chord (13-ply UD)"].f_t_eff_MPa == pytest.approx(6 / 13 * eff * ft,
+                                                                  rel=0.02)
     deck = info["Deck (2-ply 0-90)"]
     ov = Overrides.from_dict({"bodies": {"*": {"butt_stagger_mm": 0}}})
     m0 = build_model(bodies, MAT, SP, ov, seed=None)
     info0 = {b.name: b for b in m0.bodies}
     assert info0["Chord (13-ply UD)"].f_t_eff_MPa == pytest.approx(ft, rel=0.02)
     ratio = deck.f_t_eff_MPa / info0["Deck (2-ply 0-90)"].f_t_eff_MPa
-    assert 0.4 < ratio < 0.55
+    assert 0.4 * eff < ratio < 0.55 * eff
     qs = {q["id"]: q for q in m.questions}
     assert "butt_joints" in qs and "Deck" in qs["butt_joints"]["question"]
 
@@ -2974,33 +2980,44 @@ def test_a_solid_joint_breaks_at_the_wood_strength():
 
 
 def test_butt_joints_with_a_gap_are_out_in_compression_too():
-    """A butt joint between two plies bears only if its gap closes before the member
-    crushes (~0.1 mm) or glue fills it: a 13-ply member with its ply ends 0.3 mm apart
-    keeps its butt-joint tension factor in compression too (the ply's force goes round
-    the joint through the glue lines); sanded tight (0) it keeps its full crushing
-    strength, as the perfect bridge does."""
+    """A butt joint whose gap closes before the member is damaged bears: up to 0.5 mm
+    (Berard et al. 2011: 0.25 and 0.5 mm gaps closed early after first yield in 2 mm
+    veneer laminates) the member keeps 0.95 of its crushing strength (Dansoh et al.
+    2003), sanded tight (0) or not, as the perfect bridge does; from 1 mm (rounded stick
+    ends: ~2) the gap never closes and the member keeps its butt-joint tension factor in
+    compression too (the ply's force goes round the joint through the glue lines);
+    linear between."""
     from bridgesim.sim.idealize import Overrides, build_model
 
     bodies = simple_beam_bridge() + [box("Chord (13-ply UD)", (-300, 200, -13),
                                          (300, 210, 13))]
     fc = MAT.f_c_MPa.value
-    for gap, seed, factor in ((0.3, 1, 6 / 13), (0.0, 1, 1.0), (None, None, 1.0)):
+    kt = 6 / 13 * SP["wood.butt_tension_efficiency"]
+    eff = SP["wood.butt_bearing_efficiency"]
+    for gap, seed, factor in ((0.3, 1, eff), (0.0, 1, eff), (None, None, eff),
+                              (0.75, 1, (eff + kt) / 2), (2.0, 1, kt)):
         o = {"butt_gap_mm": gap} if gap is not None else {}
         m = build_model(bodies, MAT, SP, Overrides.from_dict({"bodies": {"Chord*": o}}),
                         seed=seed)
         info = {b.name: b for b in m.bodies}["Chord (13-ply UD)"]
         assert info.f_c_eff_MPa == pytest.approx(factor * fc, rel=0.02), gap
-        assert info.f_t_eff_MPa == pytest.approx(6 / 13 * MAT.f_t_MPa.value, rel=0.02)
+        assert info.f_t_eff_MPa == pytest.approx(kt * MAT.f_t_MPa.value, rel=0.02)
 
 
 def test_large_hand_made_laps_are_weaker_on_average():
     """A Weibull size effect on a glued lap's average strength: the coupon's area holds
-    tau_g, a gusset lap 6.6x as large about 0.73 of it at m = 6; a smaller lap is not
-    stronger than the coupon; the simulated coupon still reproduces tau_g."""
+    tau_g, a gusset lap 6.6x as large about 0.83 of it at m = 10; a smaller lap is not
+    stronger than the coupon, and the law is not carried past glue.size_cap_mm2 (3000:
+    pressed crossings of 1600-29,000 mm^2 showed no size effect, Flaig & Blass 2013);
+    the simulated coupon still reproduces tau_g."""
     from bridgesim.sim.idealize import lap_size_factor
 
+    assert SP["glue.weibull_m"] == 10.0 and SP["glue.size_cap_mm2"] == 3000.0
     assert lap_size_factor(200.0) == 1.0 and lap_size_factor(50.0) == 1.0
-    assert lap_size_factor(1320.0) == pytest.approx(6.6 ** (-1 / 6), rel=1e-9)
+    assert lap_size_factor(1320.0) == pytest.approx(6.6 ** (-1 / 10), rel=1e-9)
+    assert lap_size_factor(1320.0, m=6.0) == pytest.approx(6.6 ** (-1 / 6), rel=1e-9)
+    assert lap_size_factor(71370.0) == lap_size_factor(3000.0) == pytest.approx(
+        15.0 ** (-1 / 10), rel=1e-9)
     assert lap_size_factor(1320.0, m=0.0) == 1.0
     from bridgesim.sim import study
 
@@ -3058,13 +3075,21 @@ def test_stick_sheets_with_unglued_edges_are_softer_and_weaker_in_shear():
     """A 0/90 sheet of sticks glued only face to face carries in-plane shear through the
     glued crossings of its plies, like cross-laminated timber with unglued narrow faces:
     ~0.68 of its shear stiffness for 2 x 10 mm sticks and half its shear strength
-    (Bogensperger 2010); asked as plate_edges; glued edges (glue.plate_edges_glued 1)
-    keep the solid ply's."""
+    (Bogensperger 2010), or less where the glued crossings fail in torsion first;
+    asked as plate_edges; glued edges (glue.plate_edges_glued 1) keep the solid ply's."""
     from bridgesim.sim.idealize import Overrides, build_model, cross_ply_sheet_shear
 
-    gk, sk = cross_ply_sheet_shear([0, 90])
-    assert 0.6 < gk < 0.75 and sk == 0.5
+    assert cross_ply_sheet_shear([0, 90])[1] == 0.5
     assert cross_ply_sheet_shear([0, 0, 0]) == (1.0, 1.0)
+    # the glued crossings twist (Boggian et al. 2019): tau_T = 3 tau t* / a, t* = 4 mm
+    # for 2 plies of 2 x 10 mm sticks, so the sheet's shear is capped at 0.83 x the
+    # crossing's torsional strength (its bond line, 4 MPa, or 2.4 x rolling shear)
+    tor = min(SP["glue.interlaminar_MPa"], 2.4 * SP["wood.f_rolling_MPa"])
+    gk, sk = cross_ply_sheet_shear([0, 90], 0.2, tor / MAT.f_v_MPa.value)
+    assert 0.6 < gk < 0.75
+    assert sk * MAT.f_v_MPa.value == pytest.approx(tor * 10 / 12, rel=1e-9)
+    assert sk < 0.5  # below half f_v: 3.3 MPa against 4
+    assert cross_ply_sheet_shear([0, 90, 0], 0.2, tor / MAT.f_v_MPa.value)[1] == 0.5
     m0 = build_model(simple_beam_bridge(), MAT, SP, Overrides(), seed=None)
     m1 = build_model(simple_beam_bridge(), MAT, SP.updated({"glue.plate_edges_glued": 1}),
                      Overrides(), seed=None)
@@ -3075,3 +3100,83 @@ def test_stick_sheets_with_unglued_edges_are_softer_and_weaker_in_shear():
     assert np.allclose(lim0, sk * MAT.f_v_MPa.value / (gk * MAT.G_MPa.value), rtol=1e-6)
     assert any(q["id"] == "plate_edges" for q in m0.questions)
     assert not any(q["id"] == "plate_edges" for q in m1.questions)
+
+
+def test_plates_glued_face_to_face_are_laminations():
+    """Two plates glued face to face (a deck's plies drawn as separate bodies) are
+    glued as the plies inside one laminated body: at glue.interlaminar_MPa, with no size
+    effect, and as stiff as a pressed line (glue.lamination_K_s_N_per_mm3); a lap between
+    a member and a plate keeps tau_g times the size factor, carried no further than
+    glue.size_cap_mm2. inspect reports each joint's capacity at that strength."""
+    from bridgesim.sim.idealize import Overrides, build_model, lap_size_factor
+
+    h = 150.0
+    bodies = simple_beam_bridge() + [box("Deck Top (2-ply 0-90)", (-550, h + 23.1, -75),
+                                         (550, h + 27.2, 75))]
+    m = build_model(bodies, MAT, SP, Overrides(), seed=None)
+    names = [b.name for b in m.bodies]
+    lam = [p for p in m.patches if {names[p.body_a], names[p.body_b]}
+           == {"Deck (2-ply 0-90)", "Deck Top (2-ply 0-90)"}]
+    laps = [p for p in m.patches if "Stringer" in names[p.body_a] + names[p.body_b]
+            and "Deck (2-ply" in names[p.body_a] + names[p.body_b]]
+    assert len(lam) == 1 and lam[0].lamination
+    assert lam[0].strength_MPa == pytest.approx(SP["glue.interlaminar_MPa"])
+    ks = m.c_Ks[np.array(lam[0].springs)]
+    assert np.allclose(ks, SP["glue.lamination_K_s_N_per_mm3"])
+    assert laps and not any(p.lamination for p in laps)
+    for p in laps:
+        assert p.area_mm2 > SP["glue.size_cap_mm2"]
+        assert p.strength_MPa == pytest.approx(MAT.glue.tau_g_MPa.value * lap_size_factor(
+            p.area_mm2, SP["glue.size_ref_mm2"], SP["glue.weibull_m"],
+            SP["glue.size_cap_mm2"]))
+        assert np.allclose(m.c_Ks[np.array(p.springs)], SP["glue.K_s_N_per_mm3"])
+    from bridgesim.sim.study import _joint_reports
+
+    rep = {(j.a, j.b): j for j in _joint_reports(m, MAT)}
+    j = next(v for k, v in rep.items() if set(k) == {"Deck (2-ply 0-90)",
+                                                      "Deck Top (2-ply 0-90)"})
+    assert j.lamination and j.shear_capacity_N == pytest.approx(
+        j.area_mm2 * SP["glue.interlaminar_MPa"], rel=1e-3)
+
+
+def test_the_glue_law_bends_before_its_peak():
+    """A PVA line bends over before its peak (Serrano 2000: from 60-70 % of it, peaking
+    at 0.05-0.07 mm): the trilinear law is straight to glue.prepeak_onset of the
+    strength, peaks at glue.peak_slip_ratio x the straight line's slip, and does the same
+    work G_c as the bilinear law (onset 1, ratio 1), which it reproduces exactly; the
+    kernel and its NumPy mirror agree; the simulated lap's load-slip curve bends before
+    its peak, the bilinear lap's barely."""
+    from bridgesim.sim import lab
+    from bridgesim.sim.kernels import _trilinear_damage
+    from bridgesim.sim.solver import trilinear_damage
+
+    a, p = SP["glue.prepeak_onset"], SP["glue.peak_slip_ratio"]
+    assert (a, p) == (0.65, 1.5)
+    dm0, k, G = 2.2 / 60.0, 60.0, 1.2
+    x = np.linspace(0.0, 1.2, 4001)
+    for aa, pp in ((a, p), (1.0, 1.0)):
+        d = np.array([_trilinear_damage(v, dm0, k, G, aa, pp) for v in x])
+        assert np.allclose(d, trilinear_damage(x, np.full_like(x, dm0), k, G, aa, pp))
+        T = (1 - d) * k * x
+        assert T.max() == pytest.approx(k * dm0, rel=2e-3)
+        assert x[T.argmax()] == pytest.approx(pp * dm0, rel=0.01)
+        assert np.trapezoid(T, x) == pytest.approx(G, rel=0.01)
+        assert d[x <= aa * dm0].max() == 0.0
+    dmf = 2 * G / (k * dm0)
+    old = np.clip(dmf * (x - dm0) / (np.maximum(x, 1e-12) * (dmf - dm0)), 0, 1)
+    assert np.allclose(old, [_trilinear_damage(v, dm0, k, G, 1.0, 1.0) for v in x])
+
+    kw = {"Kn": SP["glue.K_n_N_per_mm3"], "Ks": SP["glue.K_s_N_per_mm3"],
+          "GIc": SP["glue.G_Ic_N_per_mm"], "GIIc": SP["glue.G_IIc_N_per_mm"],
+          "E": SP["wood.E_placeholder_MPa"]}
+
+    def bend(r):
+        """Secant to the peak over the 10-40 % secant: 1 for a straight line."""
+        i = int(np.argmax(r.force))
+        F, u = r.force[: i + 1], r.disp[: i + 1]
+        u10, u40 = np.interp([0.1 * F[-1], 0.4 * F[-1]], F, u)
+        return (F[-1] / u[-1]) / (0.3 * F[-1] / (u40 - u10))
+
+    tri = lab.lap_shear(2.2, 0.66, **kw, onset=a, peak_slip=p)
+    bil = lab.lap_shear(2.2, 0.66, **kw)
+    assert bend(tri) < bend(bil) - 0.03

@@ -74,19 +74,30 @@ thickness) form strands with joints staggered row to row and ply to ply by
 `butt_stagger_mm` (brick by default), the path between them shearing at the laminate's
 interlaminar strength (rolling shear through a cross ply); the lower factor of the two
 directions scales the fibre tension strength of every ply of the plate (a shell keeps
-one fibre strength per element): about half for a deck in a brick pattern. Shear across
+one fibre strength per element): about half for a deck in a brick pattern. The statics
+is then taken at `wood.butt_tension_efficiency` (0.8, since round 20): in plies as thin
+as a stick the glue line cracks from a joint's tips at 24-73 % of the ultimate load and
+the fracture runs into the plies, so net-section estimates that hold for 1/4 in veneers
+fail for 1/10 in ones (Jung & Murphy 1983, Wood Fiber Sci. 15(2):116); one of three
+laminations cut kept 0.53 of the tension strength against 0.67 of its section (Dansoh,
+Koizumi & Hirai 2003, J Wood Sci 49:405): a 13-ply member in a brick pattern keeps
+0.8 x 6/13 = 37 % of its solid tension strength. Shear across
 the thickness through which the plies are stacked runs along the glue lines, so there the
 shear strength is min(f_v, the bond line); shear in the other direction crosses the plies
-and is resisted by the wood (f_v). A butt joint bears in compression only
-if its gap closes before the member crushes (two ply ends close by ~2 e / lambda, 0.05-0.14
-mm with the glue's shear stiffness, lambda ~13-19 mm) or glue fills it
-(`glue.gap_fill_mm`): otherwise the ply's force goes round it through the glue lines as
-in tension, and the member keeps its butt-joint factor in compression too (`butt_gap_mm`
-the designer's gap, 0 when the ends are sanded tight; else seeded per member from 0 to
-`scatter.bearing_gap_mm`, a hand cut or a stick's rounded end; round 18's literature
-review, Berard et al. 2011: 1 mm gaps in LVL never closed;
+and is resisted by the wood (f_v). A butt joint bears in compression when its gap
+closes before the member is damaged: in 10-ply laminates of 2 mm veneer, gaps of 0.25
+and 0.5 mm closed early after first yield and 1 mm gaps never did (Berard et al. 2011,
+J Wood Sci 57:107), and tight butt joints kept 0.94-0.96 of a jointless laminate's
+compression strength (Dansoh et al. 2003). So up to `wood.butt_bear_gap_mm` (0.5) the
+member keeps `wood.butt_bearing_efficiency` (0.95) of its crushing strength; from
+`wood.butt_open_gap_mm` (1.0) the ply's force goes round the joint through the glue
+lines as in tension and the member keeps its butt-joint tension factor in compression
+too; linear between (`butt_gap_mm` the designer's gap, 0 when the ends are sanded
+tight, ~2 for rounded stick ends; else seeded per member from 0 to
+`scatter.bearing_gap_mm`, 0.3 mm, so a hand-cut member nearly always bears;
 `test_butt_joints_with_a_gap_are_out_in_compression_too`). Until round 18 butt joints
-were assumed tight in compression.
+were assumed tight in compression; round 19 let them bear only up to 0.15 mm (a misread
+of Berard et al., which the round-19 literature review corrected).
 
 ## 3. Joints
 
@@ -113,7 +124,16 @@ were assumed tight in compression.
   tongue and groove on a block, 9x too soft at quick before).
 * Glue law: penalty stiffness K_n, K_s (glue line + adjacent wood), quadratic initiation
   (sigma/sigma_max)^2 + (tau/tau_max)^2 = 1, linear softening with mixed-mode fracture
-  energy (Benzeggagh-Kenane, G_Ic, G_IIc). tau_max is tau_g of the material file times
+  energy (Benzeggagh-Kenane, G_Ic, G_IIc). Since round 20 the law bends before its peak
+  (trilinear): straight to `glue.prepeak_onset` (0.65) of the strength, then bending over
+  to the strength at `glue.peak_slip_ratio` (1.5) x the slip a straight line would reach
+  it at (~0.055 mm for a hand-made lap), then softening linearly; the work done to
+  separation is still G_c. A PVA bond line is a thermoplastic that yields before it
+  parts: a pressed PVAc line's load-slip curve bends from 60-70 % of its peak and peaks
+  at 0.05-0.07 mm (Serrano 2000, Lund TVSM-1012), so a joint near its strength slips more
+  and passes load to its neighbours, and a bridge that fails at its joints bends over
+  before its peak (`test_the_glue_law_bends_before_its_peak`). A glue line counts as
+  failing (`glue_damage`, the joint's share let go) only past its peak. tau_max is tau_g of the material file times
   the peak/average ratio of the simulated 20 mm lap test (`bridgesim lab`), so a joint
   reproduces the measured tau_g (checked in the tests). Peel strength = the lower of
   0.66 tau_max (a pressed PVAc bond line: 6.29 / 9.46 MPa, Serrano 2000) and the wood's
@@ -176,12 +196,25 @@ were assumed tight in compression.
   0 by 11 %.)
 * **Size effect.** A hand-made lap larger than the coupon tau_g is measured on (200 mm^2,
   the 20 x 10 mm lap) holds less on average: (A / 200)^(-1/m), a Weibull size effect of
-  modulus `glue.weibull_m` (6; range 4-10, drawn by montecarlo), 0.73 for Bridge_v10's
-  1320 mm^2 gusset laps (more defects, starved spots and uneven clamping over a larger
-  area: Tannert, Vallee & Hehl 2012; hand-clamped gussets bonded over 54-89 % of their
-  area, Debertolis et al. 2025; CSA O86's volume^-0.18 for glulam shear). The fracture
-  part of the size effect, shear lag along a long lap, is in the glue law itself
-  (generalised Volkersen, §3.9 of the validation README).
+  modulus `glue.weibull_m` (10 since round 20; range 6-20, drawn by montecarlo), 0.83
+  for Bridge_v10's 1320 mm^2 gusset laps (more starved spots and uneven clamping over a
+  larger area: Tannert, Vallee & Hehl 2012), carried no further than
+  `glue.size_cap_mm2` (3000 mm^2: pressed glued crossings of CLT showed no size effect
+  from 1600 to 29,000 mm^2, Flaig & Blass 2013). The fracture part of the size effect,
+  shear lag along a long lap, is in the glue law itself (generalised Volkersen, §3.9 of
+  the validation README), so m is the statistical part only. (Round 19 used m 6 and
+  cited Debertolis et al. 2025 for gussets holding "1-3 MPa": those were their design
+  inputs, not measurements; coupons cut from the gussets held 5.1 MPa, CoV 0.27.)
+* **Laminations.** Two plates glued face to face (a deck's plies drawn as separate
+  bodies, a gusset flat on a plate) are glued as the plies inside one laminated body:
+  at `glue.interlaminar_MPa` (4 MPa) with no size effect and a pressed line's shear
+  stiffness (`glue.lamination_K_s_N_per_mm3`, 200 N/mm^3: a pressed PVAc line ~150
+  secant, 300-400 initially, Serrano 2000, in series with two 2 mm sticks in shear), so
+  the same bond line drawn as one body or two gives the same bridge. Round 19 gave
+  Bridge_v10's 71,370 mm^2 deck plies 0.375 x tau_g = 0.75 MPa as hand-made laps, a
+  fifth of the same line inside one body (the literature review).
+  `test_plates_glued_face_to_face_are_laminations`; inspect marks them `lamination`, and
+  each joint's `shear_capacity_N` is its area times the strength its face is given.
 * **One piece drawn as two bodies** (a tenon and its beam, a seat laminated with its
   chord): the glue override `solid` gives the face between them the wood's own strength
   instead of a glue line's (round 18 used 10x glue, which made a tenon's root
@@ -192,9 +225,10 @@ were assumed tight in compression.
 * **Shear lag and the mesh.** The glue points of a joint hang on the nearest nodes of
   each part (rigid arms), so how much shear lag a joint shows depends on how many nodes
   that is. The lap coupon with its glue hung on 1, 2, 3, 5 and 9 nodes per side needs a
-  peak/average ratio of 1.01, 1.06, 1.13, 1.11 and 1.10 to give tau_g with the round-18
-  glue values (`glue.tau_peak_over_avg` 1.10); the model uses 1 + 0.10 (1 - exp(-2.2 (n -
-  1))) with n the larger node count of the two sides (within 3 % of each), so a joint's
+  peak/average ratio of 1.00, 1.045, 1.10, 1.08 and 1.075 to give tau_g with the round-20
+  glue law (`glue.tau_peak_over_avg` 1.075; 1.10 with the bilinear law, whose sharper
+  peak concentrates the shear at a lap's ends); the model uses 1 + 0.075 (1 - exp(-2.2
+  (n - 1))) with n the larger node count of the two sides (within 3 % of each), so a joint's
   capacity (tau_g times its area) does not jump when the mesh changes. The ratio depends
   on the glue's toughness and peel strength: round 17 changed them and kept 1.155, which
   left every joint ~5 % stronger than tau_g (the adversarial review); the test now uses
@@ -285,7 +319,7 @@ independent maximum-strain criterion per mode: fibre tension softens to zero wit
 fracture energy G_f (8 N/mm); fibre compression crushes to a plateau at 70 % of f_c;
 across-grain tension (sticks parting edge to edge, f_t90 = 1.5 MPa) softens with G_f90
 (0.45 N/mm); across-grain compression yields at f_c90; in-plane shear softens with G_v
-(1.3 N/mm). Cracks close: a broken ply still carries compression. A 0/90 sheet of sticks with unglued edges (`glue.plate_edges_glued` 0, asked as `plate_edges`) carries in-plane shear through the glued crossings of its plies, like cross-laminated timber with unglued narrow faces: ~0.68 of the shear stiffness and half the shear strength (Bogensperger, Moosbrugger & Silly 2010). The softening strain of
+(1.3 N/mm). Cracks close: a broken ply still carries compression. A 0/90 sheet of sticks with unglued edges (`glue.plate_edges_glued` 0, asked as `plate_edges`) carries in-plane shear through the glued crossings of its plies, like cross-laminated timber with unglued narrow faces: ~0.68 of the shear stiffness and half the shear strength (Bogensperger, Moosbrugger & Silly 2010), or less where the glued crossings fail first in torsion: tau_T = 3 tau t* / a with t* = n t / (n - 1) per glued interface (Boggian, Andreolli & Tomasi 2019), which caps a 2-ply sheet of 2 x 10 mm sticks at 0.83 x the crossing's torsional strength, min(the bond line 4 MPa, 2.4 x rolling shear: Flaig & Blass 2013 measured torsion 3.5-4.7 MPa against rolling shear 1.4-1.5 on CLT crossings), 3.3 MPa against half of f_v, 4 (round 20). The softening strain of
 each element is set from its size (crack band, Bažant & Oh 1983), so the energy a crack
 dissipates does not depend on the mesh: a plate strip pulled apart dissipates
 G_f x width x thickness within 2 % with 5, 2.5 and 1.25 mm elements
@@ -637,11 +671,13 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
 * Debris (pieces with nothing left holding them) falls under gravity and lands on the
   platform, but does not hit the bridge or the plate.
 * Creep of the wood, humidity, and the time the bridge waits loaded (the glue's creep is
-  modelled, section 3, in physical test time); gaps in butt joints (assumed tight in
-  compression) and joints that slip before their glue lets go. The simulated curve
-  shows the toe from seating, then is near-linear to ~90 % of the peak (on Bridge_v6 the
-  secant stiffness falls ~15 % from the 10-50 % to the 50-90 % range of the peak); a
-  real one may bend over more. Stick coupons loaded at the test's own pace (failure in
+  modelled, section 3, in physical test time). The simulated curve shows the toe from
+  seating, then is near-linear to ~65 % of the peak and bends over as joints near their
+  strength yield (the glue law's pre-peak bend, round 20); its secant to the peak over
+  the 10-40 % secant (`compare`'s stiffness, as EN 12512) was 0.91 on Bridge_v10 with
+  round 18's bilinear law, inside the 0.84-0.92 of glued timber trusses tested to
+  failure (Debertolis et al. 2025, 7 m span, "mostly linear elastic until failure, which
+  occurred in a brittle manner"). Stick coupons loaded at the test's own pace (failure in
   about the same minutes as the crush test; EN 408 asks 300 +- 120 s) carry the wood's
   creep of that duration in the E that `calibrate` fits, so a calibrated model includes
   it to first order; what is left out is how creep grows with the stress near the peak.

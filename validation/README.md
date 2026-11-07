@@ -603,3 +603,54 @@ parts -0.75, solution verification -0.5, an idealised curve -0.5) and what chang
   keeps its random draw when an edit moves it; the coarse-mesh flag looks at the members
   that fail; calibrate fits tau_g through the measured glue law and takes a toughness only
   from a record with a softening branch.
+
+Evidence on round 19's model (Bridge_v10, the team report's overrides with the tenons and
+heel seats `solid`, joints 40 mm apart): at 100 mm/s, quick / standard / fine read
+1944 / 1850 / 1880 kgf on seed 0 and 2009 / 1839 / 1892 on seed 1; standard and fine
+failed at the same joint (a diagonal's foot on the stub at node M, with its two gusset
+laps competing), fine +1.6 % and +2.9 % above standard; quick 5-9 % high, failing at a
+competing node-M lap on seed 0. The size effect had moved the failure from node A (the
+End Post on its knee, round 18) to node M. An 8-run Monte Carlo drew the glue's strength
+below its placeholder in every run (seeds 1-8, a 1-in-256 chance): its placeholder draws
+are now a Latin hypercube over the runs (each value once in each of n equal-probability
+strata of its prior). Its rerun and the rate check were stopped for round 20, whose
+literature changes move every number again.
+
+### 3.12 Round 20: the literature review's corrections
+
+The literature review of round 19 checked round 19's numbers against primary sources
+and found four of them wrong in the direction of a weaker bridge, and the glue law's
+shape missing:
+
+* **Butt joints bear in compression up to 0.5 mm.** Berard et al. (2011, J Wood Sci
+  57:107), the source round 19 cited for "1 mm gaps never closed", found 0.25 and 0.5 mm
+  gaps in 2 mm veneer laminates closing early after first yield; tight butt joints keep
+  0.94-0.96 of the compression strength (Dansoh et al. 2003). Members keep 0.95 up to 0.5
+  mm, their tension factor from 1 mm, linear between (`wood.butt_*`): hand-cut gaps
+  (0-0.3 mm) now nearly always bear; rounded stick ends (~2 mm) do not.
+* **Butt joints in tension** carry 0.8 of the statics (`wood.butt_tension_efficiency`):
+  in stick-thin plies the glue cracks from the joints' tips and the fracture runs into
+  the plies (Jung & Murphy 1983; Dansoh et al. 2003: 0.53 against 0.67 of the section).
+* **The lap size effect is milder and bounded**: m 10 (6-20) instead of 6, carried no
+  further than 3000 mm^2 (Flaig & Blass 2013: none on pressed crossings of 1600-29,000
+  mm^2); Debertolis et al. 2025's "1-3 MPa" were design inputs, not measurements
+  (coupons cut from their gussets held 5.1 MPa, CoV 0.27). **Plates glued face to face**
+  (Bridge_v10's deck plies, 71,370 mm^2) are laminations, at the interlaminar strength (4
+  MPa) and a pressed line's stiffness, not hand-made laps at 0.75 MPa.
+* **2-ply stick sheets** whose edges are not glued also fail by torsion of the glued
+  crossings (Boggian et al. 2019): 0.83 x the crossing's strength, 3.3 MPa against half of
+  f_v, 4.
+* **The glue law bends before its peak** (trilinear: straight to 0.65 of the strength,
+  peak at 1.5 x the straight line's slip, the same G_c): a pressed PVAc line bends from
+  60-70 % of its peak and peaks at 0.05-0.07 mm (Serrano 2000). The lap coupon now needs
+  a peak/average ratio of 1.075 (1.10 bilinear).
+* **Stiffness** in `compare` is the 10-40 % secant (EN 12512, as Debertolis et al. report
+  glued trusses), on the straight part of the glue law.
+* **Plausibility.** Troitsky results with a mass: BCIT 2025, 7.2 kg, 1587 kgf
+  (efficiency ~220; second place 1111 kgf); McMaster 2025, ~6.35 kg, > 272 kgf; the
+  2026 record, U of T, 4889 kgf (mass not published, predicted 4000 by the team). Glued
+  timber trusses tested to failure were "mostly linear elastic until failure, which
+  occurred in a brittle manner", their secant at the peak 0.84-0.92 of the 10-40 %
+  secant (Debertolis et al. 2025). Nothing published gives a hand-made PVA lap on craft
+  sticks a strength (tau_g stays a 2.0 MPa placeholder, drawn 50 %), nor a popsicle-stick
+  truss a load-deflection record.
