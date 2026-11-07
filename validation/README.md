@@ -654,3 +654,14 @@ shape missing:
   secant (Debertolis et al. 2025). Nothing published gives a hand-made PVA lap on craft
   sticks a strength (tau_g stays a 2.0 MPa placeholder, drawn 50 %), nor a popsicle-stick
   truss a load-deflection record.
+
+Evidence on round 20's model (Bridge_v10 with the same overrides; runs in the
+developer's `r20_runs/bridge_v10/`): at 100 mm/s, quick / standard / fine read
+2162 / 2061 / 2093 kgf on seed 0 and 2232 / 2000 / 2069 on seed 1, standard and fine at
+the same joint (a knee-diagonal's foot on the stub at node M, the two gusset laps on
+that diagonal competing), fine +1.5 % and +3.4 % above standard, quick 5-12 % high;
+standard +11 % and +9 % above round 19 (the milder size effect, laminations and butt
+joints bearing). The curve stays straight to its peak (secant from 50 to 90 % of F_u over
+the 10-40 % secant 1.00-1.02): the failure is one brittle joint at node M, and no other
+joint reaches the glue law's bend (0.65 of its strength) before it. The 50 mm/s run, the
+Monte Carlo and the light truss follow.
