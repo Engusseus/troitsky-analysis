@@ -24,6 +24,7 @@ import math
 import os
 import re
 import shlex
+import zlib
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -2003,7 +2004,8 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
     ``processes`` crushes at a time (default: one per two CPU cores), splitting the
     cores between them. ``sample_placeholders``: each run also draws the material values
     that are still placeholders (those of ``sensitivity``) around their placeholder
-    (lognormal, ``PLACEHOLDER_PRIORS``), so the spread includes what they leave unknown.
+    (lognormal, ``PLACEHOLDER_PRIORS``, a Latin hypercube over the n runs), so the spread
+    includes what they leave unknown.
     ``total_p05_kgf`` / ``total_p95_kgf`` widen the runs' spread by the mesh error and the
     model-form error (``uncertainty.mesh_cov``, ``uncertainty.model_cov``)."""
     import concurrent.futures as cf
@@ -2020,7 +2022,7 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
                                             units, up, span)
     assumed = _assumed(mat_, sp_)
     drawn = placeholders(mat_, sp_) if sample_placeholders else {}
-    args = [(str(cad), draw_placeholders(ov_raw, drawn, s) if drawn else overrides,
+    args = [(str(cad), draw_placeholders(ov_raw, drawn, s, n) if drawn else overrides,
              material, sim_params, ruleset, s, options, fidelity,
              str(Path(out_dir) / f"seed_{s}") if out_dir else None, units, up, span)
             for s in range(1, n + 1)]
@@ -2083,7 +2085,8 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
                     "scatter, plate placement and the placeholder material values "
                     f"({', '.join(sorted(drawn))}), each drawn per run around its "
                     "placeholder (lognormal, with the spread of the literature or "
-                    "craft-stick range of each: 20-50 %). total_p05_kgf / total_p95_kgf "
+                    "craft-stick range of each: 20-50 %; a Latin hypercube, so each "
+                    "value covers its range evenly over the runs). total_p05_kgf / total_p95_kgf "
                     "add the mesh error and the model-form error (uncertainty.*), which "
                     "only a validation test can narrow." + small)
     else:
@@ -2136,11 +2139,27 @@ def placeholders(mat: Material, sp: SimParams) -> dict[str, float]:
     return out
 
 
-def draw_placeholders(overrides: dict | None, drawn: dict[str, float], seed: int) -> dict:
+def _lhs_normal(key: str, seed: int, n: int) -> float:
+    """Run ``seed`` (1..n) of a Latin hypercube over n runs: the standard normal's n
+    equal-probability strata, one per run, in an order fixed for the key and n, at a
+    seeded point within the stratum. Over the n runs every value covers its prior
+    evenly. With plain draws, seeds 1-8 all drew the glue's strength below its
+    placeholder (a 1-in-256 chance), which pulls the runs' median down."""
+    from statistics import NormalDist
+
+    h = zlib.crc32(key.encode())
+    order = np.random.default_rng([n, h, 7919]).permutation(n)
+    u = float(np.random.default_rng([seed, n, h, 104729]).uniform(0.02, 0.98))
+    return NormalDist().inv_cdf((int(order[seed - 1]) + u) / n)
+
+
+def draw_placeholders(overrides: dict | None, drawn: dict[str, float], seed: int,
+                      n: int | None = None) -> dict:
     """The overrides of one montecarlo run with each placeholder value drawn around its
     placeholder (lognormal, median the placeholder, sigma from ``PLACEHOLDER_PRIORS``,
     the literature or craft-stick range of that value), the same
-    for the same seed; the user's own overrides are kept."""
+    for the same seed; the user's own overrides are kept. With ``n`` (the number of
+    runs, seed 1..n) the draws are a Latin hypercube over the runs (``_lhs_normal``)."""
     rng = np.random.default_rng([seed, 104729])
     doc = json.loads(json.dumps(overrides or {}))
     prm = dict(doc.get("params") or {})
@@ -2148,7 +2167,10 @@ def draw_placeholders(overrides: dict | None, drawn: dict[str, float], seed: int
     # correlation the per-body scatter uses, scatter.E_strength_corr): one draw for E,
     # the strengths partly from it
     keys = sorted(drawn)
-    z = {k: float(rng.normal()) for k in keys}
+    if n is not None and n > 1 and 1 <= seed <= n:
+        z = {k: _lhs_normal(k, seed, n) for k in keys}
+    else:
+        z = {k: float(rng.normal()) for k in keys}
     zE = z.get("material.E_MPa", 0.0)
     for k in keys:
         if k in WOOD_STRENGTHS and "material.E_MPa" in z:

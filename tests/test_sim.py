@@ -1456,6 +1456,33 @@ def test_montecarlo_can_sample_the_placeholders():
     assert "material.E_MPa" not in placeholders(measured, SP)
 
 
+def test_montecarlo_placeholder_draws_are_a_latin_hypercube():
+    """With the number of runs given, each placeholder's draws over the runs fall one in
+    each of n equal-probability strata of its prior (so 8 runs cannot all draw the glue
+    weak), the same for the same seed and n; the wood's strengths still follow E."""
+    from statistics import NormalDist
+
+    from bridgesim.sim.study import PLACEHOLDER_PRIORS, draw_placeholders, placeholders
+
+    ph = placeholders(MAT, SP)
+    n = 8
+    runs = [draw_placeholders({}, ph, s, n)["params"] for s in range(1, n + 1)]
+    assert runs[0] == draw_placeholders({}, ph, 1, n)["params"]
+    nd = NormalDist()
+    for key in ("material.glue.tau_g_MPa", "material.E_MPa", "glue.weibull_m"):
+        z = [math.log(r[key] / ph[key]) / PLACEHOLDER_PRIORS[key] for r in runs]
+        strata = sorted(int(nd.cdf(v) * n) for v in z)
+        assert strata == list(range(n)), key
+        assert sum(r[key] < ph[key] for r in runs) == n // 2
+    # f_t is drawn with E (r 0.7): not stratified itself, but still correlated with it
+    lE = np.array([math.log(r["material.E_MPa"] / ph["material.E_MPa"]) for r in runs])
+    lft = np.array([math.log(r["material.f_t_MPa"] / ph["material.f_t_MPa"])
+                    for r in runs])
+    assert np.corrcoef(lE, lft)[0, 1] > 0.3
+    # without n (or a seed outside 1..n): the plain draw, as before
+    assert draw_placeholders({}, ph, 9, n) == draw_placeholders({}, ph, 9)
+
+
 def _x_plate(name: str, half: float, arm: float, y0: float, y1: float):
     """An X of two arms ``arm`` mm wide, 2 x ``half`` mm across, as one flat body."""
     from bridgesim.cad.synthetic import prism
