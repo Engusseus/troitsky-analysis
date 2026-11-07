@@ -49,13 +49,16 @@ gets both factors), ready for its `ab ... --overrides-b DIR/whatif.yaml` command
 | `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, f_t/f_c and tau_g so the *simulated* coupons reproduce the measured ones (`lab --data` then shows ~0 % error); f_t, f_c, f_c90, the end-grain factor, the glue's shear stiffness and toughness and the interlaminar shear strength (short-beam shear) from the direct coupon tests; with 3+ specimens of a kind also the scatter (`my_material.overrides.yaml`, `params:`). A folder without any test results is an input error (exit 2) | ~1 min |
 | `bridgesim ab A.SLDPRT B.SLDPRT [-n 3] [--overrides-a a.yaml] [--overrides-b b.yaml] [--fidelity standard] --json` | Is B better than A? Both crushed with the same seeds: change of F_u and efficiency with a 90 % interval, `significant`, `verdict`, what governed each run (`runs_a/b[].governing`, the most frequent in `governing_a/b`) and `failure_moved`: the seeds where B failed somewhere else than A (strengthening one part often moves the failure to the next). B may be A with other overrides: a what-if (`section_scale`, `glue_factor`) before changing the CAD | 2n x crush / processes |
 | `bridgesim diagnose BRIDGE.SLDPRT [-o overrides.yaml] [-n 2] [--fidelity quick] [--candidates 3] [--out DIR] --json` | What really limits the bridge, measured: crushes it with seeds 1..n, strengthens each part that broke near the peak in turn (glue x1.5 for a joint, section x1.25 for a member or plate, on every copy) on the same seeds, and ranks them by the paired rise of F_u (`candidates`, `limiting`, `verdict`; `governing_after`: where the failure moves). The `governing` label of one crush names the first part in a cascade; diagnose says which one the load depends on, or that no single change helps (then strengthen them together). `DIR/whatif.yaml`: the what-if to confirm with `ab` | (1 + candidates) x n x crush / processes |
-| `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity standard] [--processes 4] [--sample-placeholders] [--out DIR] --json` | Spread of F_u over imperfections and material scatter (`min_kgf`, `max_kgf`, p05/p50/p95: below 20 runs read min and max); `recommended_prediction_kgf` for the Load Prediction Form (the 1/F-weighted median, which minimises the §12.7 error). `note` says what the spread leaves out: the placeholder material values, unless `--sample-placeholders` (MCP `sample_placeholders`) draws them per run (lognormal, 20 %; `sampled_placeholders`) so the range includes them | n x crush / processes |
+| `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity standard] [--processes 4] [--sample-placeholders] [--out DIR] --json` | Spread of F_u over imperfections and material scatter (`min_kgf`, `max_kgf`, p05/p50/p95: below 20 runs read min and max); `recommended_prediction_kgf` for the Load Prediction Form (the 1/F-weighted median, which minimises the §12.7 error). `note` says what the spread leaves out: the placeholder material values, unless `--sample-placeholders` (MCP `sample_placeholders`) draws them per run (lognormal, each with its own prior, 20-50 %; `sampled_placeholders`) so the range includes them. `total_p05_kgf`/`total_p95_kgf`: that spread times the mesh error and the model-form error (`uncertainty.mesh_cov` 5 %, `uncertainty.model_cov` 15 %), the range to give before any physical test | n x crush / processes |
 | `bridgesim schema inspect\|inspect_brief\|crush\|crush_brief\|screen\|reality_gap\|lab\|montecarlo\|design_comparison\|diagnosis\|sensitivity\|bridge_calibration\|question\|job_status` | JSON Schema of each report (the `_brief` forms are what `--brief` and the MCP tools return by default; every MCP tool but `get_schema` publishes its schema as its output schema) | instant |
 | `bridgesim mcp` | The same as MCP tools (`uv sync --extra mcp`) | - |
 
 Fidelity: `quick` (coarse mesh, jack 200 mm/s, ~3 min for a 100-body bridge on 4 cores)
 to screen design changes, `standard` (100 mm/s, ~5-10 min) for the answer, `fine` (finest
-mesh, 50 mm/s, ~30-40 min) to check that the answer has converged. Mesh convergence on
+mesh, 50 mm/s, ~30-40 min) to check that the answer has converged. These speeds are for a
+stiff bridge (its lowest mode under the plate rings with a period up to 10 ms; Bridge_v6
+~8 ms): a softer or lighter one is crushed slower in proportion, at most 4x, so it stays
+quasi-static (`quality.speed_mm_s`, `quality.fundamental_period_ms`). Mesh convergence on
 Bridge_v6 (`validation/README.md` §3.4, five seeds at 100 mm/s; a seed is the same
 imperfect bridge at every fidelity): fine is +4.6 % above standard on average (-1.1 % to
 +11 % seed by seed), so read F_u at standard with ~5 % mesh uncertainty; the load curves
@@ -183,6 +186,8 @@ meanwhile, and `answer_with`: how to answer, as an overrides fragment (`bodies`,
 * laminated members longer than one stick (`butt_joints`, one question for all of
   them): how far apart the butt joints of neighbouring plies are (it sets each member's
   tension strength);
+* a loading plate that does not fit where it goes (`plate_fit`, important: parts closer
+  together than the plate is wide; meanwhile they are taken as clear of it);
 * a rigid block directly under the loading plate (`rigid_under_plate:`), and the compact
   parts in the load path modelled as rigid blocks (`rigid_blocks`);
 * glued joints that are mostly end grain, a member's end glued flat (`end_grain_joints`);
@@ -251,14 +256,15 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
 ## What the crush report means
 
 * `Fu_kgf`: predicted ultimate load (§12.5): the peak jack force before the bridge is
-  judged failed (the load falling 30 % below its peak, 50 mm deflection, or contact with
-  the platform); 0 if it collapses under its own weight (`failure_mode: instability`).
+  judged failed (the load falling 30 % below its peak for at least one period of the
+  bridge's ringing, 50 mm deflection, or contact with the platform); 0 if it collapses under its own weight (`failure_mode: instability`).
   The load (curve, F_u, each event's load) is the jack force smoothed without lag
   (ASSUMPTIONS-SIM.md: the load reading).
 * `governing`: the break that started the fall of the load, i.e. the first break from
   where the load last stood within 5 % of F_u (breaks before it were survived: the load
   came back). `competing`: the other parts that broke within 10 % of F_u before the
-  failure call. When it is not empty the failure could start at one of them on another
+  failure call. A joint whose glue can carry under 2 % of F_u neither governs nor
+  competes (its break is a symptom). When it is not empty the failure could start at one of them on another
   seed or mesh, so run `diagnose` before redesigning around the `governing` part.
 * `failure_sequence` (text) and `failures` (structured: `kind`, `parts`, `load_kgf`,
   `jack_travel_mm`, `where_mm`, `fraction_separated`): what broke, in order, up to the

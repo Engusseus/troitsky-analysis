@@ -185,7 +185,11 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
         h = m.plate_half
         pts = m.X[m.a_node[m.q_att]] + m.a_r0[m.q_att]
         loc = pts - Xp  # plate frame = global at the start
-        under = (np.abs(loc[:, 0]) <= h[0] + 1e-6) & (np.abs(loc[:, 2]) <= h[2] + 1e-6)
+        # the deck points under the plate's footprint, at or below its underside: parts
+        # above it (top struts, the top chords' bracing) are what the plate slides in
+        # under, not what it rests on (the crush's plate is a box, touched from below)
+        under = ((np.abs(loc[:, 0]) <= h[0] + 1e-6) & (np.abs(loc[:, 2]) <= h[2] + 1e-6)
+                 & (loc[:, 1] <= -h[1] + tie_tol_mm))
         if under.any():
             top = pts[under, 1].max()
             q_on = np.where(under & (pts[:, 1] >= top - tie_tol_mm))[0]

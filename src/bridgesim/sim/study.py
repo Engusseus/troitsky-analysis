@@ -1889,10 +1889,7 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
     s_tot = math.hypot(sp_.values.get("uncertainty.mesh_cov", 0.0),
                        sp_.values.get("uncertainty.model_cov", 0.0))
     if s_tot > 0:
-        g = np.random.default_rng(271828).normal(0.0, s_tot, (len(F), 400))
-        tot = (np.asarray(F)[:, None] * np.exp(g - 0.5 * s_tot**2)).ravel()
-        rep.total_p05_kgf = round(float(np.percentile(tot, 5)), 1)
-        rep.total_p95_kgf = round(float(np.percentile(tot, 95)), 1)
+        rep.total_p05_kgf, rep.total_p95_kgf = total_range(F, s_tot)
     rep.assumed_parameters = assumed
     rep.sampled_placeholders = sorted(drawn)
     small = (f" With {n} runs the 5 % and 95 % points are interpolated between the "
@@ -2156,6 +2153,15 @@ def summarize_pairs(ra: list[dict], rb: list[dict], name_a: str, name_b: str,
 
 #: spread of a placeholder material value drawn by montecarlo --sample-placeholders
 #: (lognormal sigma): textbook values for birch sticks and PVA glue differ by about this
+def total_range(F, s_tot: float) -> tuple[float, float]:
+    """The 5 % and 95 % points of F_u with the mesh and model-form error: each run's
+    F_u times a lognormal error of sigma ``s_tot`` (mean 1, independent of the runs),
+    sampled with a fixed stream so the same runs give the same range."""
+    g = np.random.default_rng(271828).normal(0.0, s_tot, (len(F), 400))
+    tot = (np.asarray(F, float)[:, None] * np.exp(g - 0.5 * s_tot**2)).ravel()
+    return (round(float(np.percentile(tot, 5)), 1), round(float(np.percentile(tot, 95)), 1))
+
+
 PLACEHOLDER_COV = 0.3  # for a placeholder without its own prior below
 # how far each placeholder may be from the truth for a team's own sticks and glue
 # (lognormal sigma around the placeholder, ~ the half-width of the literature or

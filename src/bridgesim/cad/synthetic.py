@@ -79,31 +79,34 @@ def layered_truss(span: float = 1000.0, height: float = 140.0, panels: int = 4
     verticals and diagonals in the layer inside it, glued face to face where they cross;
     floor beams across the bottom chords at the verticals carry a deck under the
     loading plate, and struts across the top chords brace them. Support blocks under the
-    chords' ends stand on the platform. A slender, soft bridge, unlike Bridge_v6."""
+    chords' ends stand on the platform. A slender, soft bridge, unlike Bridge_v6. The
+    trusses stand 104 mm apart, so the 90 mm loading plate fits between them."""
     out: list[CadBody] = []
+    w = 52.0  # half the clear width between the trusses (the deck's)
     x0, x1 = -span / 2 - 40, span / 2 + 40  # the chords' ends over the support blocks
     y0 = 60.0  # top of the support blocks
     yt = y0 + height  # top of the top chords
     xs = np.linspace(-span / 2 + 100, span / 2 - 100, panels + 1)  # verticals
-    out.append(box("Support L (block)", (x0, 0, -70), (x0 + 60, y0, 70)))
-    out.append(box("Support R (block)", (x1 - 60, 0, -70), (x1, y0, 70)))
+    out.append(box("Support L (block)", (x0, 0, -w - 28), (x0 + 60, y0, w + 28)))
+    out.append(box("Support R (block)", (x1 - 60, 0, -w - 28), (x1, y0, w + 28)))
     for side, s in (("Near", 1.0), ("Far", -1.0)):
         # three layers per truss, out from the middle: verticals, chords, diagonals,
         # each web glued face to face to the chords where it crosses them
-        zv = sorted((43 * s, 49 * s))
-        zo = sorted((49 * s, 55 * s))
-        zd = sorted((55 * s, 61 * s))
+        zv = sorted((w * s, (w + 6) * s))
+        zo = sorted(((w + 6) * s, (w + 12) * s))
+        zd = sorted(((w + 12) * s, (w + 18) * s))
         out.append(box(f"Bottom Chord (3-ply UD) - {side}", (x0, y0, zo[0]),
-                       (x1, y0 + 10, zo[1])))
-        out.append(box(f"Top Chord (3-ply UD) - {side}", (xs[0] - 5, yt - 10, zo[0]),
+                       (x1, y0 + 20, zo[1])))
+        out.append(box(f"Top Chord (3-ply UD) - {side}", (xs[0] - 5, yt - 20, zo[0]),
                        (xs[-1] + 5, yt, zo[1])))
         for k, xv in enumerate(xs):
             out.append(box(f"Vertical {k} (3-ply UD) - {side}", (xv - 5, y0, zv[0]),
                            (xv + 5, yt, zv[1])))
-        ends = [((x0 + 30, y0 + 5), (xs[0], yt - 5)), ((x1 - 30, y0 + 5), (xs[-1], yt - 5))]
+        ends = [((x0 + 30, y0 + 10), (xs[0], yt - 10)),
+                ((x1 - 30, y0 + 10), (xs[-1], yt - 10))]
         mid = len(xs) // 2
-        inner = [((xs[k], yt - 5), (xs[k + 1], y0 + 5)) for k in range(mid)] + \
-            [((xs[k + 1], yt - 5), (xs[k], y0 + 5)) for k in range(mid, len(xs) - 1)]
+        inner = [((xs[k], yt - 10), (xs[k + 1], y0 + 10)) for k in range(mid)] + \
+            [((xs[k + 1], yt - 10), (xs[k], y0 + 10)) for k in range(mid, len(xs) - 1)]
         for k, (p, q) in enumerate(ends + inner):
             p, q = np.asarray(p, float), np.asarray(q, float)
             d = (q - p) / np.linalg.norm(q - p) * 12.0  # stop short of the next web
@@ -111,15 +114,15 @@ def layered_truss(span: float = 1000.0, height: float = 140.0, panels: int = 4
             out.append(upright(f"Diagonal {k} (3-ply UD) - {side}",
                                _strip(a, q - d, 10.0), zd[0], zd[1]))
     for k, xv in enumerate(xs):  # between the webs, glued to the verticals' inner faces
-        out.append(box(f"Floor Beam {k} (3-ply UD)", (xv - 5, y0 + 10, -43),
-                       (xv + 5, y0 + 16, 43)))
+        out.append(box(f"Floor Beam {k} (3-ply UD)", (xv - 5, y0 + 20, -w),
+                       (xv + 5, y0 + 26, w)))
     mid = len(xs) // 2
-    out.append(box("Deck (2-ply 0-90)", (xs[mid - 1] - 5, y0 + 16, -43),
-                   (xs[mid + 1] + 5, y0 + 20, 43)))
+    out.append(box("Deck (2-ply 0-90)", (xs[mid - 1] - 5, y0 + 26, -w),
+                   (xs[mid + 1] + 5, y0 + 30, w)))
     mid = len(xs) // 2
     for k in (0, mid, len(xs) - 1):
-        out.append(box(f"Top Strut {k} (3-ply UD)", (xs[k] - 5, yt, -55),
-                       (xs[k] + 5, yt + 6, 55)))
+        out.append(box(f"Top Strut {k} (3-ply UD)", (xs[k] - 5, yt, -w - 12),
+                       (xs[k] + 5, yt + 6, w + 12)))
     return out
 
 

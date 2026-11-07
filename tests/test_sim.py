@@ -390,8 +390,11 @@ def synthetic_crush(tmp_path_factory):
 
     d = tmp_path_factory.mktemp("crush")
     write_stl(simple_beam_bridge(), d / "bridge.stl")
+    # the reporting pipeline at a fixed jack speed (the bridge's own period would slow
+    # this soft bridge 4x: test_the_jack_slows_for_a_bridge_that_rings_slowly)
     rep, res = study.crush(d / "bridge.stl", seed=0, out_dir=d / "out",
-                           options=CrushOptions(speed_mm_s=150, max_travel_mm=30))
+                           options=CrushOptions(speed_mm_s=150, max_travel_mm=30,
+                                                auto_speed=False))
     return d, rep, res
 
 
@@ -1405,7 +1408,12 @@ def test_failure_location_counts_the_first_failure_fully(synthetic_crush, tmp_pa
 def test_montecarlo_can_sample_the_placeholders():
     """--sample-placeholders draws each placeholder value per run (the same for the same
     seed), keeping the user's overrides; measured values are not drawn."""
-    from bridgesim.sim.study import PLACEHOLDER_COV, draw_placeholders, placeholders
+    from bridgesim.sim.study import (
+        PLACEHOLDER_COV,
+        PLACEHOLDER_PRIORS,
+        draw_placeholders,
+        placeholders,
+    )
 
     ph = placeholders(MAT, SP)
     assert "material.glue.tau_g_MPa" in ph and "material.E_MPa" in ph
@@ -1414,10 +1422,15 @@ def test_montecarlo_can_sample_the_placeholders():
     assert a == b and a != draw_placeholders(user, ph, 2)
     assert a["params"]["floss.strands"] == 6 and a["bodies"] == user["bodies"]
     assert set(a["params"]) == set(ph) | {"floss.strands"}
-    logs = [math.log(draw_placeholders({}, ph, s)["params"]["material.E_MPa"]
-                     / ph["material.E_MPa"]) for s in range(200)]
-    assert abs(np.mean(logs)) < 0.05 and np.std(logs) == pytest.approx(PLACEHOLDER_COV,
-                                                                      rel=0.15)
+    # each placeholder is drawn with its own prior (the literature or craft-stick
+    # range): the glue far wider than the sticks' modulus; others with PLACEHOLDER_COV
+    for key in ("material.E_MPa", "material.glue.tau_g_MPa"):
+        logs = [math.log(draw_placeholders({}, ph, s)["params"][key] / ph[key])
+                for s in range(300)]
+        assert abs(np.mean(logs)) < 0.06
+        assert np.std(logs) == pytest.approx(PLACEHOLDER_PRIORS[key], rel=0.15)
+    assert PLACEHOLDER_PRIORS["material.glue.tau_g_MPa"] > PLACEHOLDER_PRIORS[
+        "material.E_MPa"] and 0 < PLACEHOLDER_COV < 1
     measured = MAT.model_copy(update={"E_MPa": MAT.E_MPa.model_copy(
         update={"source": "measured"})})
     assert "material.E_MPa" not in placeholders(measured, SP)
@@ -2180,3 +2193,122 @@ def test_a_frame_leg_bears_on_its_sticks_end_grain():
         fm[grain] = float(np.asarray(m.params["fmax_p"])[sup].sum())
     ply = Ply.from_material(MAT, SP)
     assert fm["long"] / fm["span"] == pytest.approx(ply.f_c / ply.f_c90, rel=0.02)
+
+
+def test_the_jack_slows_for_a_bridge_that_rings_slowly(tmp_path):
+    """The simulated jack moves no further per period of the bridge's lowest mode than
+    for a stiff bridge: a bridge ringing with a period above PERIOD_REF_S gets a jack
+    slower in proportion (at most MAX_SLOWDOWN times). The period is that of the plate
+    plus half the bridge's mass on the bridge's linear stiffness under the plate."""
+    from bridgesim.sim import screen as scr
+    from bridgesim.sim import study
+    from bridgesim.sim.crush import MAX_SLOWDOWN, PERIOD_REF_S, fundamental_period, jack_speed
+
+    assert jack_speed(100.0, 0.5 * PERIOD_REF_S) == 100.0
+    assert jack_speed(100.0, 2 * PERIOD_REF_S) == pytest.approx(50.0)
+    assert jack_speed(100.0, 100 * PERIOD_REF_S) == pytest.approx(100.0 / MAX_SLOWDOWN)
+    cad = tmp_path / "bridge.stl"
+    write_stl(simple_beam_bridge(), cad)
+    _, bodies, ov, _, mat, sp, _ = study._inputs(cad, None, None, None, None, None, "y",
+                                                 "x")
+    m = study._build(bodies, mat, sp, ov, 0, 1.6, False)
+    k = 1000.0 / scr.solve(m, 1000.0)["plate_dy"]  # N/mm
+    m_eff = (sp["crusher.plate_mass_kg"] + 0.5 * m.bridge_mass_kg) / 1000.0  # t
+    T1 = fundamental_period(m)
+    assert T1 == pytest.approx(2 * math.pi * math.sqrt(m_eff / k), rel=0.02)
+    assert 0.02 < T1 < 0.5  # two stringers over a metre: tens of ms, a slow jack
+
+
+def test_the_plate_rests_on_the_deck_not_on_what_spans_above_it(tmp_path):
+    """The loading plate slides in under the top bracing and bears on the deck: a strut
+    across the top, over the plate's footprint, carries none of the plate's load, and
+    the plate set off-centre (a seeded hand placement) still sits on the deck instead of
+    tipping about the strut's line."""
+    from bridgesim.sim import study
+
+    base = simple_beam_bridge()
+    zmax = max(float(b.mesh.vertices[:, 2].max()) for b in base)
+    ytop = max(float(b.mesh.vertices[:, 1].max()) for b in base)
+    strut = box("Top Strut", (-5, ytop + 60, -zmax), (5, ytop + 66, zmax))
+    k = {}
+    for name, bodies in (("open", base), ("strut", base + [strut])):
+        cad = tmp_path / f"{name}.stl"
+        write_stl(bodies, cad)
+        for off in (0.0, 3.0):
+            ov = {"params": {"scatter.placement_mm": off}}
+            k[name, off] = study.screen(cad, overrides=ov).stiffness_kgf_per_mm
+    assert k["strut", 0.0] == pytest.approx(k["open", 0.0], rel=0.02)
+    assert k["strut", 3.0] == pytest.approx(k["open", 3.0], rel=0.02)
+    assert k["strut", 3.0] == pytest.approx(k["strut", 0.0], rel=0.1)
+
+
+def test_a_negligible_joint_neither_governs_nor_competes():
+    """A glued joint that can carry under MINOR_SHARE of F_u (a toothpick's end glued to
+    a chord) breaking near the peak is a symptom of the bridge deforming: the break of
+    the part that carries the load governs."""
+    from bridgesim.sim.crush import KGF, MINOR_SHARE, Event, attribute, major_breaks
+
+    peak = 1000 * KGF
+    seq = [Event(0.100, 10.0, 990 * KGF, "joint_failure", "Toothpick | Chord", "",
+                 None, None, 0.5 * MINOR_SHARE * peak),
+           Event(0.101, 10.1, 985 * KGF, "joint_failure", "End Post | Gusset", "",
+                 None, None, 0.4 * peak),
+           Event(0.300, 30.0, 200 * KGF, "joint_failure", "Late | Joint", "", None, None,
+                 0.4 * peak)]
+    kept = major_breaks(seq, t_call=0.2, peak=peak)
+    assert [e.what for e in kept] == ["End Post | Gusset"]
+    gov, comp = attribute(kept, t_c=0.0995, peak=peak, peak_travel=10.0, speed_mm_s=100.0)
+    assert gov.what == "End Post | Gusset" and not any("Toothpick" in c for c in comp)
+
+
+def test_the_total_range_adds_mesh_and_model_error():
+    """montecarlo's total range widens the runs' spread by the mesh and model-form
+    error (lognormal, mean 1): for runs all at one load it is that load times
+    exp(+-1.645 sigma), and it is the same for the same runs."""
+    from bridgesim.sim.study import total_range
+
+    s = math.hypot(SP["uncertainty.mesh_cov"], SP["uncertainty.model_cov"])
+    lo, hi = total_range([1000.0] * 10, s)
+    assert lo == pytest.approx(1000 * math.exp(-1.645 * s - 0.5 * s**2), rel=0.03)
+    assert hi == pytest.approx(1000 * math.exp(1.645 * s - 0.5 * s**2), rel=0.03)
+    assert total_range([900.0, 1000.0, 1100.0], s) == total_range([900.0, 1000.0,
+                                                                    1100.0], s)
+    wide = total_range([800.0, 1000.0, 1200.0], s)
+    assert wide[0] < lo and wide[1] > hi
+
+
+def test_named_stl_solids_keep_their_names(tmp_path):
+    """An ASCII STL with one named solid per body reads back as those bodies, with their
+    names, even where two of them touch (a binary STL merges touching bodies)."""
+    from bridgesim.cad.synthetic import layered_truss
+
+    bodies = layered_truss()
+    write_stl(bodies, tmp_path / "truss.stl", names=True)
+    back = load_cad(tmp_path / "truss.stl")
+    assert sorted(b.name for b in back) == sorted(b.name for b in bodies)
+    assert all(b.mesh.volume > 0 for b in back)
+
+
+
+def test_a_plate_that_does_not_fit_is_asked_about_not_exploded(tmp_path):
+    """Two kerbs on the deck 86 mm apart, too tall for the plate to sit on, leave no
+    room for the 90 mm plate between them: inspect asks (important, `plate_fit`, naming
+    them), and the model takes them as clear of the plate (no plate contact point starts
+    inside it) instead of throwing them off."""
+    from bridgesim.sim import study
+
+    deck_top = 150 + 23.1
+    kerbs = [box(f"Kerb {s}", (-60, deck_top, z0), (60, deck_top + 70, z0 + 6))
+             for s, z0 in (("Near", 43.0), ("Far", -49.0))]
+    cad = tmp_path / "kerbs.stl"
+    write_stl(simple_beam_bridge() + kerbs, cad, names=True)
+    rep = study.inspect(cad)
+    q = next(q for q in rep.questions if q.id == "plate_fit")
+    assert q.severity == "important" and "Kerb Near" in q.question and "Kerb Far" in q.question
+    _, bodies, ov, _, mat, sp, _ = study._inputs(cad, None, None, None, None, None, "y", "x")
+    m = study._build(bodies, mat, sp, ov, None, 1.6, False)
+    loc = m.X[m.a_node[m.q_att]] + m.a_r0[m.q_att] - m.X[m.plate_node]
+    assert not (np.abs(loc) < m.plate_half - 0.05).all(axis=1).any()
+    write_stl(simple_beam_bridge(), tmp_path / "open.stl")
+    assert not [q for q in study.inspect(tmp_path / "open.stl").questions
+                if q.id == "plate_fit"]

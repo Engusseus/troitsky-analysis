@@ -368,6 +368,17 @@ def fundamental_period(m: Model) -> float:
     return 2 * math.pi * math.sqrt(m_eff / max(k, 1e-12))
 
 
+def jack_speed(speed_mm_s: float, period_s: float) -> float:
+    """The simulated jack speed for a bridge of fundamental period ``period_s``: the
+    fidelity's speed for a stiff bridge (period up to PERIOD_REF_S), slower in proportion
+    to the period for a softer or lighter one, at most MAX_SLOWDOWN times (run time; a
+    bridge still too fast for that is caught by the quasi-static check,
+    quality.kinetic_to_work_max)."""
+    if period_s <= PERIOD_REF_S:
+        return speed_mm_s
+    return speed_mm_s * max(PERIOD_REF_S / period_s, 1.0 / MAX_SLOWDOWN)
+
+
 def dt_target_for(scale: float) -> float:
     """The time step aimed at for an element size (x standard): smaller elements need a
     smaller step, or too much mass would be added to reach it."""
@@ -477,6 +488,14 @@ BREAKS = ("joint_failure", "joint_cracking", "member_fracture", "member_shear",
           "plate_crack", "floss_break", "member_crushing", "member_erosion")
 
 
+def major_breaks(events: list[Event], t_call: float, peak: float) -> list[Event]:
+    """The events up to the failure call, without the breaks of parts that carry a
+    negligible share of the load (a glued joint whose glue can take under MINOR_SHARE of
+    F_u): such a break is a symptom of the bridge deforming, not the cause of its
+    failure, so it neither governs nor competes."""
+    return [e for e in events if e.t <= t_call and e.capacity_N >= MINOR_SHARE * peak]
+
+
 def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
               speed_mm_s: float) -> tuple[Event | None, list[str]]:
     """The governing failure and the competing ones, from the events up to the failure
@@ -533,11 +552,8 @@ def run_crush(m: Model, opt: CrushOptions | None = None) -> CrushResult:
 
     T1 = fundamental_period(m)
     m.params["period_s"] = T1
-    if opt.auto_speed and T1 > PERIOD_REF_S:
-        # at most MAX_SLOWDOWN times slower (run time); a bridge still too fast for that
-        # is caught by the quasi-static check (quality.kinetic_to_work_max)
-        opt = dataclasses.replace(opt, speed_mm_s=opt.speed_mm_s * max(
-            PERIOD_REF_S / T1, 1.0 / MAX_SLOWDOWN))
+    if opt.auto_speed:
+        opt = dataclasses.replace(opt, speed_mm_s=jack_speed(opt.speed_mm_s, T1))
     X0, m0, r0 = m.X.copy(), m.mass.copy(), m.rot_inertia.copy()
     att0 = (m.a_node.copy(), m.a_r0.copy())
     notes = []
@@ -1031,6 +1047,15 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     if unstable:
         fail_at, fail_mode, Fu_at_fail = 0.0, "instability", 0.0
         fail_detail = criteria["instability"]["detail"]
+    if fail_at is None and drop_start is not None and not unstable and curve["t"]:
+        # the jack's travel ran out while the load was still down (it had not yet stayed
+        # there for a period): the load did not come back, so that was the failure
+        fail_at, fail_mode, Fu_at_fail = drop_start[1], "collapse", peak
+        fail_detail = f"load fell from {peak / KGF:.1f} kgf"
+        i_fail = len(curve["t"]) - 1
+        at = next((i for i, e in enumerate(events) if e.t > drop_start[0]), len(events))
+        events.insert(at, Event(drop_start[0], drop_start[1], 0.0, "criterion", "collapse",
+                                fail_detail))
     if fail_at is None:
         fail_mode = "none"
         fail_detail = (f"no failure within {opt.max_travel_mm:g} mm of jack travel")
@@ -1068,7 +1093,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     t_call = float(curve["t"][i_fail]) if (i_fail is not None and curve["t"]) else np.inf
     # a break of a part that carries a negligible share of the load (a small glued joint,
     # under MINOR_SHARE of F_u) is a symptom, not the cause: it neither governs nor competes
-    before = [e for e in events if e.t <= t_call and e.capacity_N >= MINOR_SHARE * peak]
+    before = major_breaks(events, t_call, peak)
     first_major, competing = attribute(before, t_c, peak, peak_travel, opt.speed_mm_s)
     # no part broke before the call: the joint whose glue let go during the fall (it is
     # the cause even before 30 % of it has let go; one that lets go after the call is

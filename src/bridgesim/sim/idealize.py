@@ -1656,6 +1656,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     region_lo = np.array([mid_x - PL / 2 - 20, plate_bottom - 40, deck_z - PW / 2 - 20])
     region_hi = np.array([mid_x + PL / 2 + 20, plate_bottom + PT + 150, deck_z + PW / 2 + 20])
     q_fmax = []
+    q_body: list[int] = []
     for bi in active:
         if shapes[bi].kind == "cable":
             continue
@@ -1678,12 +1679,31 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         for p, a in zip(np.vstack(pts), np.concatenate(areas), strict=True):
             q_att.append(attach(bi, p))
             q_fmax.append(bearing(bi, p) * a)
+            q_body.append(bi)
 
     plate_mass = sp["crusher.plate_mass_kg"] * TONNE_PER_KG
     pc = np.array([mid_x, plate_bottom + PT / 2 + 0.02, deck_z])
     plate_node = bld.node(pc, -1)
     bld.mass[plate_node] = plate_mass
     bld.rot[plate_node] = plate_mass * (PL**2 + PW**2) / 12
+    # the plate has to fit where it goes. A part it would start inside (trusses closer
+    # together than the plate is wide, a strut lower than its top) is a design problem
+    # for which the rules ban the crush test (§8.9, §8.2.3.1); simulated, such a part is
+    # taken as clear of the plate (as if the plate were trimmed to fit) instead of being
+    # thrown off by a contact that starts deep inside it
+    half = np.array([PL / 2, PT / 2, PW / 2])
+    q_in, misfit_mm, misfit_bodies = [], 0.0, set()
+    for i, a in enumerate(q_att):
+        gap = half - np.abs(np.asarray(bld.X[bld.att_node[a]]) + bld.att_r0[a] - pc)
+        if (gap > 0.05).all():
+            q_in.append(i)
+            misfit_mm = max(misfit_mm, float(gap.min()))
+            misfit_bodies.add(bodies[q_body[i]].name)
+    if q_in:
+        out_ = set(q_in)
+        q_att = [a for i, a in enumerate(q_att) if i not in out_]
+        q_fmax = [f for i, f in enumerate(q_fmax) if i not in out_]
+        q_body = [b for i, b in enumerate(q_body) if i not in out_]
     jr = sp["crusher.jack_diameter_mm"] / 2
     fw = sp["crusher.frame_clear_width_mm"]
 
@@ -1753,6 +1773,20 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 "seed": seed},
         questions=_merge_butt_questions(questions), notes=notes)
     model.notes += ov.problems([b.name for b in bodies])
+    if misfit_bodies:
+        names = sorted(misfit_bodies)
+        model.questions.insert(0, {
+            "id": "plate_fit", "body": names[0], "topic": "rules", "severity": "important",
+            "question": f"The loading plate ({PL:g} x {PW:g} x {PT:g} mm, §12.5) does not "
+                        f"fit where it goes at mid-span: it would start up to "
+                        f"{misfit_mm:.1f} mm inside " + ", ".join(names[:8])
+                        + (" ..." if len(names) > 8 else "") + ". The rules ban the "
+                        "crushing test for a bridge the plate does not fit (§8.9 clear "
+                        "opening, §8.2.3.1 deck width): widen the deck or move those parts.",
+            "assumed": "those parts are clear of the plate (as if it were trimmed to fit)",
+            "answer_with": {"cad": "make the clear width between the parts at mid-span "
+                                   f"more than {PW:g} mm and the clear height above the "
+                                   "deck more than the plate and the jack need"}})
     # a rigid (unbreakable) piece directly under the loading plate takes the load without
     # any crushing: say so
     glued_to: dict[int, set] = {}

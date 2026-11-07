@@ -294,7 +294,10 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
 * **F_u** = peak jack force up to the moment the bridge is judged failed: the load falling
   30 % below its peak (collapse: a fracture the judges see and the load cell shows, even
   if the bridge then picks up some load again; §12.5 takes the load "at the moment of
-  failure"), mid-span deflection > 50 mm, or contact of a
+  failure; the fall has to last one period of the bridge's lowest mode, so the dip of
+  a bridge ringing after a break is not taken for its failure, and the failure is dated
+  from the start of the fall; if the jack's travel ends while the load is still down,
+  that was the failure), mid-span deflection > 50 mm, or contact of a
   part with the platform other than the original supports (§12.5) or with the press
   uprights (debris flying off a broken part does not count). A glued joint letting
   go inside the bridge is also a §12.5 failure ("shear, including joint failure"), but
@@ -313,7 +316,10 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   happened up to the failure call counts: what breaks after it is the collapse. When
   nothing broke, the joint whose glue let go during the fall (at least 20 % of its area
   between the load leaving its peak and the call) governs, although it has not reached
-  the 30 % of `joint_cracking` yet; else "buckling or sway". A member **crushing** (a
+  the 30 % of `joint_cracking` yet; else "buckling or sway". A joint whose glue can carry
+  under 2 % of F_u (a small end-grain joint, a toothpick's end) neither governs nor
+  competes: its break is a symptom of the bridge deforming, not the cause of the fall
+  (on a light Pratt truss the review crushed, such a joint was named governing). A member **crushing** (a
   fibre folding in compression past f_c, beyond its onset strain) is an event too: a
   laminated beam that fails in bending by crushing on its compression face is named so,
   and its what-if is a bigger section, not more glue. `competing` lists the other parts
@@ -367,9 +373,20 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   a bifurcation round-off decides; `--amplitude 0.1` keeps the seed's asymmetry at a
   tenth of its imperfections for a mesh study.
 * **Uncertainty** (`montecarlo -n 20 --sample-placeholders`, standard): with the build
-  scatter and the nine placeholder material values drawn per run, Bridge_v6's F_u is
-  1720 / 2095 / 2317 kgf at p05 / p50 / p95 (-18 % / +11 %); `sensitivity` ranks the
-  lap joints' glue strength and toughness and the sticks' shear strength first.
+  scatter and the nine placeholder material values drawn per run, Bridge_v6's F_u was
+  1720 / 2095 / 2317 kgf at p05 / p50 / p95 (-18 % / +11 %; round 14, every value drawn
+  at 20 %); `sensitivity` ranks the lap joints' glue strength and toughness and the
+  sticks' shear strength first. Since round 15 each placeholder is drawn with its own
+  prior, about the half-width of the literature or craft-stick range at 90 %: the stick
+  modulus and f_c 20 %, f_t, f_v 30 %, f_c90 35 %, the lap joints' glue strength, the
+  wood's fracture energy and the end-grain factor 40 %, the glue's shear toughness 50 %
+  (hand-made PVA laps on birch sticks: 1-6 MPa). The values F_u is most sensitive to are
+  the least known, so the range is wider than round 14's. `montecarlo` also gives a
+  **total range** (`total_p05_kgf`, `total_p95_kgf`): the runs' F_u each times a
+  lognormal mesh error (`uncertainty.mesh_cov`, 5 %, the fine-vs-standard study) and a
+  model-form error (`uncertainty.model_cov`, 15 %, what the equations leave out for a
+  real bridge, until a physical test measures it): the range to give a team before any
+  test, the runs' range being what the model knows it does not know.
 * **Crack onset is local.** A plate left as a shell cracks where its strain first
   reaches the strength in one element; the crack band makes the energy of the crack
   independent of the mesh, not its onset at a sharp stress raiser (the end of a glued
@@ -382,7 +399,15 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   `validation/README.md` §3.4).
 * Time is compressed: the simulated jack moves at ~100 mm/s instead of the real
   mm/min. The material laws have no rate effect, so this changes nothing as long as the
-  run stays quasi-static; the replay converts back to real test time.
+  run stays quasi-static; the replay converts back to real test time. **The jack speed
+  follows the bridge**: the speed of each fidelity (200 / 100 / 50 mm/s) is for a bridge
+  whose lowest mode under the plate (the plate's mass plus half the bridge's on the
+  bridge's linear stiffness under the plate, as `screen` computes it) has a period of
+  at most 10 ms (Bridge_v6: ~8 ms). A softer or lighter bridge rings more slowly and
+  would be outrun by a jack moving as far per period, so its jack is slowed in
+  proportion to its period, at most 4x (run time; `quality.speed_mm_s`,
+  `quality.fundamental_period_ms`). A bridge still too fast for that is caught by the
+  quasi-static check (`kinetic_to_work_max`) and `--rate-check` measures what is left.
 * **Verified** (the equations are solved right) in `tests/test_sim.py`: cantilever
   (0.04 % vs PL^3/3EI), large-deflection elastica (Bisshopp-Drucker, < 1 %), Euler
   buckling of a stick, a deep beam with shear deformation (Timoshenko, < 1 % on 4 or 16
