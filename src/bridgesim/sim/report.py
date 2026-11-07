@@ -204,7 +204,14 @@ class Quality(BaseModel):
     trustworthy: bool = Field(True, description="False if any of `reasons` applies: then "
                                                 "treat F_u with suspicion")
     reasons: list[str] = []
-    speed_mm_s: float = 0.0
+    speed_mm_s: float = Field(0.0, description=(
+        "The simulated jack speed: the fidelity's (quick 200, standard 100, fine 50 mm/s) "
+        "for a bridge whose lowest mode under the plate rings in up to 10 ms, slower in "
+        "proportion for a softer or lighter one (fundamental_period_ms)"))
+    fundamental_period_ms: float = Field(0.0, description=(
+        "Period of the bridge's lowest mode under the loading plate (the plate's mass and "
+        "half the bridge's on its linear stiffness). A load drop must last this long to "
+        "count as the moment of failure"))
     holds: int = Field(0, description="Times the jack was slowed to 2 % while something "
                                       "was breaking, until it stopped (quasi-static failure)")
     hold_time_s: float = 0.0
@@ -335,6 +342,11 @@ class MonteCarloReport(BaseModel):
                           "for judges who stop at the collapse (the usual practice)")
     untrustworthy_runs: int = Field(0, description="Runs whose quality.trustworthy is "
                                                    "false")
+    total_p05_kgf: float | None = Field(None, description=(
+        "The 5 % point of F_u including the mesh error and the model-form error "
+        "(uncertainty.mesh_cov, uncertainty.model_cov in materials/simulation.yaml) on top "
+        "of the runs' spread: the range to quote until a validation test narrows it"))
+    total_p95_kgf: float | None = Field(None, description="The 95 % point of the same")
     min_kgf: float | None = Field(None, description="Lowest F_u of the runs")
     max_kgf: float | None = Field(None, description="Highest F_u of the runs (with fewer "
                                                     "than 20 runs, read these rather than "

@@ -1140,6 +1140,8 @@ def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = N
                    settle_sag_mm=round(res.settle_sag_mm, 3), notes=res.notes,
                    trustworthy=not reasons, reasons=reasons,
                    speed_mm_s=getattr(res, "speed_mm_s", 0.0), rate_check=rc,
+                   fundamental_period_ms=round(1000 * float(
+                       res.model.params.get("period_s", 0.0)), 2),
                    holds=getattr(res, "holds", 0),
                    hold_time_s=round(getattr(res, "hold_time_s", 0.0), 4))
 
@@ -1828,7 +1830,9 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
     ``processes`` crushes at a time (default: one per two CPU cores), splitting the
     cores between them. ``sample_placeholders``: each run also draws the material values
     that are still placeholders (those of ``sensitivity``) around their placeholder
-    (lognormal, ``PLACEHOLDER_COV``), so the spread includes what they leave unknown."""
+    (lognormal, ``PLACEHOLDER_PRIORS``), so the spread includes what they leave unknown.
+    ``total_p05_kgf`` / ``total_p95_kgf`` widen the runs' spread by the mesh error and the
+    model-form error (``uncertainty.mesh_cov``, ``uncertainty.model_cov``)."""
     import concurrent.futures as cf
     import os
 
@@ -1880,6 +1884,15 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
     rep.p50_strict_kgf = round(float(np.percentile(Fs, 50)), 2)
     rep.recommended_prediction_strict_kgf = round(best_prediction(Fs), 1)
     rep.min_kgf, rep.max_kgf = round(F[0], 2), round(F[-1], 2)
+    # the total range: each run's F_u times the mesh and model-form error (lognormal,
+    # independent of the runs), sampled with a fixed stream
+    s_tot = math.hypot(sp_.values.get("uncertainty.mesh_cov", 0.0),
+                       sp_.values.get("uncertainty.model_cov", 0.0))
+    if s_tot > 0:
+        g = np.random.default_rng(271828).normal(0.0, s_tot, (len(F), 400))
+        tot = (np.asarray(F)[:, None] * np.exp(g - 0.5 * s_tot**2)).ravel()
+        rep.total_p05_kgf = round(float(np.percentile(tot, 5)), 1)
+        rep.total_p95_kgf = round(float(np.percentile(tot, 95)), 1)
     rep.assumed_parameters = assumed
     rep.sampled_placeholders = sorted(drawn)
     small = (f" With {n} runs the 5 % and 95 % points are interpolated between the "
@@ -1889,8 +1902,10 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
         rep.note = ("The spread covers member bow, stick-to-stick and joint-to-joint "
                     "scatter, plate placement and the placeholder material values "
                     f"({', '.join(sorted(drawn))}), each drawn per run around its "
-                    f"placeholder (lognormal, {PLACEHOLDER_COV:.0%}): an honest range "
-                    "until they are measured." + small)
+                    "placeholder (lognormal, with the spread of the literature or "
+                    "craft-stick range of each: 20-50 %). total_p05_kgf / total_p95_kgf "
+                    "add the mesh error and the model-form error (uncertainty.*), which "
+                    "only a validation test can narrow." + small)
     else:
         rep.note = ("The spread covers member bow, stick-to-stick and joint-to-joint "
                     "scatter and plate placement. It does not cover the material values "
@@ -1932,13 +1947,14 @@ def placeholders(mat: Material, sp: SimParams) -> dict[str, float]:
 
 def draw_placeholders(overrides: dict | None, drawn: dict[str, float], seed: int) -> dict:
     """The overrides of one montecarlo run with each placeholder value drawn around its
-    placeholder (lognormal, median the placeholder, sigma ``PLACEHOLDER_COV``), the same
+    placeholder (lognormal, median the placeholder, sigma from ``PLACEHOLDER_PRIORS``,
+    the literature or craft-stick range of that value), the same
     for the same seed; the user's own overrides are kept."""
     rng = np.random.default_rng([seed, 104729])
     doc = json.loads(json.dumps(overrides or {}))
     prm = dict(doc.get("params") or {})
     for k, v in drawn.items():
-        x = v * float(np.exp(rng.normal(0.0, PLACEHOLDER_COV)))
+        x = v * float(np.exp(rng.normal(0.0, PLACEHOLDER_PRIORS.get(k, PLACEHOLDER_COV))))
         if k == "glue.end_grain_factor":
             x = min(x, 1.0)  # end grain never glues better than side grain
         prm[k] = round(x, 6)
@@ -2140,7 +2156,17 @@ def summarize_pairs(ra: list[dict], rb: list[dict], name_a: str, name_b: str,
 
 #: spread of a placeholder material value drawn by montecarlo --sample-placeholders
 #: (lognormal sigma): textbook values for birch sticks and PVA glue differ by about this
-PLACEHOLDER_COV = 0.2
+PLACEHOLDER_COV = 0.3  # for a placeholder without its own prior below
+# how far each placeholder may be from the truth for a team's own sticks and glue
+# (lognormal sigma around the placeholder, ~ the half-width of the literature or
+# craft-stick range at 90 %): hand-made PVA laps on birch sticks 1-6 MPa, glue
+# toughness 0.2-2 N/mm, craft-stick E 6-12 GPa, f_t 30-80 MPa, f_v 4-10 MPa ...
+PLACEHOLDER_PRIORS = {
+    "material.E_MPa": 0.20, "material.f_t_MPa": 0.30, "material.f_c_MPa": 0.20,
+    "material.f_v_MPa": 0.30, "material.glue.tau_g_MPa": 0.40,
+    "glue.G_IIc_N_per_mm": 0.50, "wood.f_c90_MPa": 0.35, "wood.G_f_N_per_mm": 0.40,
+    "glue.end_grain_factor": 0.40,
+}
 
 SENSITIVITY = {  # key: (meaning, how to measure)
     "material.E_MPa": ("stiffness of a stick along the grain",

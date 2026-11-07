@@ -99,10 +99,50 @@ def _read_stl(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return P[first], inv.reshape(-1, 3)
 
 
+def _named_solids(path: Path) -> list[tuple[str, np.ndarray]]:
+    """The named solids of an ASCII STL that has several (``solid <name>`` ...
+    ``endsolid``): one body each, with its name. Empty for anything else."""
+    data = path.read_bytes()
+    if data[:5].lower() != b"solid" or b"facet" not in data[:1024]:
+        return []
+    out, name, pts = [], None, []
+    for line in data.decode("ascii", "ignore").splitlines():
+        s = line.strip().split(maxsplit=1)
+        if not s:
+            continue
+        if s[0] == "solid":
+            name, pts = (s[1].strip() if len(s) > 1 else ""), []
+        elif s[0] == "vertex":
+            pts.append([float(v) for v in s[1].split()[:3]])
+        elif s[0] == "endsolid" and name is not None:
+            out.append((name, np.array(pts, float)))
+            name = None
+    return out if len(out) > 1 and all(n for n, _ in out) else []
+
+
+def _body_from_triangles(name: str, P: np.ndarray, k: int, named: bool) -> CadBody:
+    key = np.round(P / 1e-3).astype(np.int64)
+    _, first, inv = np.unique(key, axis=0, return_index=True, return_inverse=True)
+    Vb, Tb = P[first], inv.reshape(-1, 3)
+    vol, cen, inertia = mass_properties(Vb, Tb)
+    if vol < 0:
+        Tb = Tb[:, [0, 2, 1]]
+        vol, cen, inertia = mass_properties(Vb, Tb)
+    mesh = Mesh(Vb, Tb, np.zeros(len(Tb), int), vol, cen, inertia)
+    return CadBody(name, mesh, _planar_faces(Vb, Tb), k, named_in_cad=named)
+
+
 def bodies_from_stl(path: Path, units_mm: float = 1.0) -> list[CadBody]:
     """Split an STL into bodies (connected triangle sets). Faces are rebuilt as planar
     groups of coplanar triangles so contacts can be found like in a SolidWorks part.
-    Export from SolidWorks with 'Save all bodies to one file', units mm."""
+    Export from SolidWorks with 'Save all bodies to one file', units mm. An ASCII STL
+    with one named ``solid`` per body keeps the names (and touching bodies apart)."""
+    solids = _named_solids(path)
+    if solids:
+        out = [_body_from_triangles(n, P * units_mm, k, True)
+               for k, (n, P) in enumerate(solids)]
+        out.sort(key=lambda c: -c.mesh.volume)
+        return out
     V, T = _read_stl(path)
     V = V * units_mm
     # connected components through shared vertices

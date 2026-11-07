@@ -81,6 +81,7 @@ class Event:
     detail: str = ""
     where: tuple[float, float, float] | None = None
     fraction: float | None = None  # share of a glued joint's area that has let go
+    capacity_N: float = math.inf  # what the part can carry (a joint: its glue's strength)
 
     def as_dict(self) -> dict:
         return {"t_s": round(float(self.t), 5),
@@ -338,11 +339,33 @@ def choose_dt(m: Model, s: S.Settings, max_added: float = 0.05,
     return best
 
 
-FIDELITY = {  # mesh scale, simulated jack speed (mm/s)
+FIDELITY = {  # mesh scale, simulated jack speed (mm/s) for a stiff bridge (see below)
     "quick": (1.6, 200.0),     # screening design changes (rank designs at one fidelity)
-    "standard": (0.75, 100.0),  # within ~3 % of x0.5 on Bridge_v6 (x1 was 4-11 % high)
+    "standard": (0.75, 100.0),  # Bridge_v6: fine is +4.6 % above it (5 seeds)
     "fine": (0.5, 50.0),       # convergence check
 }
+# the speeds above are for a bridge whose lowest mode under the plate (plate on bridge)
+# has a period of at most PERIOD_REF_S; a softer or lighter one gets a slower jack, in
+# proportion, so that the jack moves no further per period of the bridge's ringing
+PERIOD_REF_S = 0.010
+MAX_SLOWDOWN = 4.0
+
+
+def fundamental_period(m: Model) -> float:
+    """The period (s) of the bridge's lowest mode under the loading plate: the plate's
+    mass plus half the bridge's (the generalised mass of a first bending mode) on the
+    bridge's linear stiffness under the plate (screen.solve), the plate bouncing on the
+    bridge. Bridge_v6: ~8 ms; a light truss of a few hundred grams: tens of ms."""
+    from bridgesim.sim import screen as scr
+
+    try:
+        sol = scr.solve(m, 1000.0)
+        k = 1000.0 / max(float(sol["plate_dy"]), 1e-12)  # N/mm
+    except Exception:  # noqa: BLE001 - no linear solution (a mechanism): no limit from it
+        return 0.0
+    m_plate = float(m.mass[m.plate_node]) if m.plate_node >= 0 else 0.0  # t
+    m_eff = m_plate + 0.5 * m.bridge_mass_kg / 1000.0  # t (N s^2 / mm)
+    return 2 * math.pi * math.sqrt(m_eff / max(k, 1e-12))
 
 
 def dt_target_for(scale: float) -> float:
@@ -386,6 +409,9 @@ class CrushOptions:
     hold_ke_settle: float = 2.0
     hold_force_tol: float = 0.01
     progress: object = None  # callable(fraction, message)
+    # slow the jack for a bridge that rings slowly (fundamental_period above
+    # PERIOD_REF_S), and hold a load drop for one such period before calling it failure
+    auto_speed: bool = True
 
 
 class _Unstable(RuntimeError):
@@ -446,6 +472,7 @@ def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
     return out
 
 
+MINOR_SHARE = 0.02  # a joint that can carry less than this share of F_u never governs
 BREAKS = ("joint_failure", "joint_cracking", "member_fracture", "member_shear",
           "plate_crack", "floss_break", "member_crushing", "member_erosion")
 
@@ -502,6 +529,15 @@ def run_crush(m: Model, opt: CrushOptions | None = None) -> CrushResult:
     (a node faster than 1 km/s or a non-finite value), the run restarts with a smaller
     time step, so a result is never produced from an unstable integration."""
     opt = opt or CrushOptions()
+    import dataclasses
+
+    T1 = fundamental_period(m)
+    m.params["period_s"] = T1
+    if opt.auto_speed and T1 > PERIOD_REF_S:
+        # at most MAX_SLOWDOWN times slower (run time); a bridge still too fast for that
+        # is caught by the quasi-static check (quality.kinetic_to_work_max)
+        opt = dataclasses.replace(opt, speed_mm_s=opt.speed_mm_s * max(
+            PERIOD_REF_S / T1, 1.0 / MAX_SLOWDOWN))
     X0, m0, r0 = m.X.copy(), m.mass.copy(), m.rot_inertia.copy()
     att0 = (m.a_node.copy(), m.a_r0.copy())
     notes = []
@@ -728,6 +764,10 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     prev_patch_started = np.zeros(n_patch, bool)
     prev_patch_cracked = np.zeros(n_patch, bool)
     # glued area of each joint, to tell a joint that has cracked from one that has let go
+    # what each joint can carry (its glue's shear strength over its area): a joint worth
+    # a few % of the load is not what makes the bridge fail, whatever breaks first
+    patch_cap = np.bincount(patch_of, weights=m.c_area * m.c_tau, minlength=n_patch) \
+        if len(patch_of) else np.zeros(n_patch)
     patch_area = np.bincount(patch_of, weights=m.c_area, minlength=n_patch) \
         if len(patch_of) else np.zeros(n_patch)
     peak = 0.0
@@ -765,6 +805,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     bedding_mm = float(m.params.get("seating_mm", 0.3)) + \
         (float(lift.max()) if lift.size else 0.0) + 0.2
     test_rate = max(float(m.params.get("test_rate_mm_per_min", 10.0)), 1e-6) / 60.0  # mm/s
+    drop_start = None  # (time, travel) the load first fell 30 % below its peak
+    hold_period = float(m.params.get("period_s", 0.0)) if opt.auto_speed else 0.0
     while not unstable:
         tl = st.t - t_load0
         target = opt.hold_speed_frac if st.t < hold_until else 1.0
@@ -827,9 +869,11 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             if force > peak and fail_at is None:  # F_u: the peak before the failure call
                 peak, peak_travel, peak_defl = force, travel, defl
             # ---- events
-            def ev(kind, what, detail="", where=None, _tr=travel, _f=force, fraction=None):
+            def ev(kind, what, detail="", where=None, _tr=travel, _f=force, fraction=None,
+                   capacity=math.inf):
                 events.append(Event(st.t, _tr, _f, kind, what, detail,
-                                    None if where is None else tuple(where), fraction))
+                                    None if where is None else tuple(where), fraction,
+                                    capacity))
 
             def mid(nodes):  # current position of a group of nodes
                 return st.x[np.asarray(nodes)].mean(0)
@@ -879,12 +923,13 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                 pa = m.patches[pid]
                 ev("joint_cracking", f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
                    f"{pfrac[pid]:.0%} of the glued joint has let go ({pa.area_mm2:.0f} mm^2)",
-                   pa.centroid, fraction=float(pfrac[pid]))
+                   pa.centroid, fraction=float(pfrac[pid]), capacity=float(patch_cap[pid]))
             for pid in np.where(broken & ~prev_patch_broken)[0]:
                 pa = m.patches[pid]
                 ev("joint_failure", f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
                    f"glued joint separated ({pfrac[pid]:.0%} of its {pa.area_mm2:.0f} mm^2 "
-                   "let go)", pa.centroid, fraction=float(pfrac[pid]))
+                   "let go)", pa.centroid, fraction=float(pfrac[pid]),
+                   capacity=float(patch_cap[pid]))
             prev_b, prev_bs, prev_s = st.b_fractured.copy(), st.b_shear.copy(), st.s_dmg > 0.5
             prev_a = st.b_alive.copy()
             prev_k = st.k_alive.copy()
@@ -942,10 +987,17 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                 # not while the bridge beds in (seating on its supports, rocking onto the
                 # corner that stood off the platform): a dip of the load there is no
                 # moment of failure
-                dropped = peak > 50 and force < opt.drop_ratio * peak and \
+                below = peak > 50 and force < opt.drop_ratio * peak and \
                     travel > peak_travel and travel > bedding_mm
+                # the drop has to last one period of the bridge's ringing (a dynamic dip
+                # is not the moment of failure); failure is then dated from its start
+                if below and drop_start is None:
+                    drop_start = (st.t, travel)
+                elif not below:
+                    drop_start = None
+                dropped = below and st.t - drop_start[0] >= hold_period
                 if dropped:
-                    fail_at, fail_mode = travel, "collapse"
+                    fail_at, fail_mode = drop_start[1], "collapse"
                     fail_detail = (f"load fell from {peak / KGF:.1f} to {force / KGF:.1f} "
                                    "kgf")
                     Fu_at_fail = peak
@@ -1014,7 +1066,9 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     # what happened up to the failure call (the online reading lags the fall of the
     # load, so what broke before the call caused it; what breaks after is the collapse)
     t_call = float(curve["t"][i_fail]) if (i_fail is not None and curve["t"]) else np.inf
-    before = [e for e in events if e.t <= t_call]
+    # a break of a part that carries a negligible share of the load (a small glued joint,
+    # under MINOR_SHARE of F_u) is a symptom, not the cause: it neither governs nor competes
+    before = [e for e in events if e.t <= t_call and e.capacity_N >= MINOR_SHARE * peak]
     first_major, competing = attribute(before, t_c, peak, peak_travel, opt.speed_mm_s)
     # no part broke before the call: the joint whose glue let go during the fall (it is
     # the cause even before 30 % of it has let go; one that lets go after the call is
@@ -1026,6 +1080,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         i0 = max(0, int(np.searchsorted(tt, t_c - lag)))
         i1 = min(len(glue_hist) - 1, int(np.searchsorted(tt, t_call + lag)))
         lost = (glue_hist[i1] - glue_hist[i0]) / np.maximum(patch_area, 1e-12)
+        lost = np.where(patch_cap >= MINOR_SHARE * peak, lost, 0.0)
         k = int(np.argmax(lost)) if len(lost) else -1
         if k >= 0 and lost[k] >= 0.2:
             pa = m.patches[k]

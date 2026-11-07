@@ -96,6 +96,7 @@ PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("floss.strands", 1.0, 100.0, True),
     ("contact.seating_mm", 0.0, 10.0, True),
     ("scatter.*_cov", 0.0, 1.0, True),
+    ("uncertainty.*_cov", 0.0, 1.0, True),
     ("scatter.bow_L_over", 20.0, 1e6, True),
     ("scatter.placement_mm", 0.0, 50.0, True),
     ("scatter.support_level_mm", 0.0, 20.0, True),

@@ -682,11 +682,13 @@ class Settings:
 
 def split_averaging(m: Model):
     """The averaging of the split check (cached on the model): each beam element's
-    shear stress over strength is averaged, by length, over the elements of the same body
-    whose centres lie within half a section depth (the larger of its width and its
-    thickness) of its own, so that a split starts where the shear acts over a member's
-    depth, not where one element resolves a peak next to a glued joint (a local onset
-    would come earlier the finer the mesh). Returns a sparse averaging matrix."""
+    shear stress over strength is averaged over a window of one section depth (the larger
+    of its width and its thickness) centred on it, each element of the same body weighted
+    by the length of it inside the window, so that a split starts where the shear acts
+    over a member's depth, not where one element resolves a peak next to a glued joint
+    (a local onset would come earlier the finer the mesh). The window is the same on
+    every mesh whose elements are no longer than a section depth; a longer element
+    averages over itself. Returns a sparse averaging matrix."""
     W = getattr(m, "_split_W", None)
     if W is not None and W.shape[0] == len(m.b_i):
         return W
@@ -701,12 +703,16 @@ def split_averaging(m: Model):
         depth = float(max(sec)) if sec and max(sec) > 0 else \
             2.0 * float(np.abs(np.r_[m.b_fy[idx].ravel(), m.b_fz[idx].ravel()]).max())
         d = np.linalg.norm(c[idx, None, :] - c[None, idx, :], axis=2)
+        r = 0.5 * depth
+        half = 0.5 * m.b_L0[idx]
         for a, e in enumerate(idx):
-            near = idx[d[a] <= max(0.5 * depth, 0.5 * m.b_L0[e])]
-            w = m.b_L0[near] / m.b_L0[near].sum()
+            # the length of each element inside [-r, r] around this one's centre
+            ov = np.clip(np.minimum(d[a] + half, r) - np.maximum(d[a] - half, -r), 0.0, None)
+            ov[a] = max(ov[a], 1e-9)
+            near = np.where(ov > 0)[0]
             rows += [e] * len(near)
-            cols += list(near)
-            vals += list(w)
+            cols += list(idx[near])
+            vals += list(ov[near] / ov[near].sum())
     W = csr_matrix((vals, (rows, cols)), shape=(nb, nb))
     m._split_W = W
     return W
