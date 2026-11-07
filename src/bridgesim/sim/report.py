@@ -206,8 +206,10 @@ class Quality(BaseModel):
     reasons: list[str] = []
     speed_mm_s: float = Field(0.0, description=(
         "The simulated jack speed: the fidelity's (quick 200, standard 100, fine 50 mm/s) "
-        "for a bridge whose lowest mode under the plate rings in up to 10 ms, slower in "
-        "proportion for a softer or lighter one (fundamental_period_ms)"))
+        "for a bridge whose lowest mode under the plate rings in up to 10 ms; for a softer "
+        "or lighter one (fundamental_period_ms), the speed at the start, slower in "
+        "proportion to its period (at most 16x), rising back toward the fidelity's once "
+        "the jack travel passes 6 mm x period / 10 ms"))
     fundamental_period_ms: float = Field(0.0, description=(
         "Period of the bridge's lowest mode under the loading plate (the plate's mass and "
         "half the bridge's on its linear stiffness). A load drop must last this long to "

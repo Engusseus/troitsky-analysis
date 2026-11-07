@@ -57,8 +57,9 @@ Fidelity: `quick` (coarse mesh, jack 200 mm/s, ~3 min for a 100-body bridge on 4
 to screen design changes, `standard` (100 mm/s, ~5-10 min) for the answer, `fine` (finest
 mesh, 50 mm/s, ~30-40 min) to check that the answer has converged. These speeds are for a
 stiff bridge (its lowest mode under the plate rings with a period up to 10 ms; Bridge_v6
-~8 ms): a softer or lighter one is crushed slower in proportion, at most 4x, so it stays
-quasi-static (`quality.speed_mm_s`, `quality.fundamental_period_ms`). Mesh convergence on
+~8 ms): a softer or lighter one is crushed slower in proportion, at most 16x, speeding
+up again once its deflection is large, so it stays quasi-static (`quality.speed_mm_s`,
+`quality.fundamental_period_ms`). Mesh convergence on
 Bridge_v6 (`validation/README.md` §3.4, five seeds at 100 mm/s; a seed is the same
 imperfect bridge at every fidelity): fine is +4.6 % above standard on average (-1.1 % to
 +11 % seed by seed), so read F_u at standard with ~5 % mesh uncertainty; the load curves

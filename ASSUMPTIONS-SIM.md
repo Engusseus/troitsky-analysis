@@ -347,7 +347,10 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   restarted with half the step.
 * Damping: mass-proportional (alpha = 25 1/s; ~5 % of critical for the bridge's first
   modes), material damping beta = 0.1 dt (only for the highest, numerical frequencies)
-  and contact damping. The kinetic energy of the bridge (falling debris excluded) is
+  and contact damping. The loading plate is damped relative to the jack's motion, not
+  to the platform: damping its steady descent would add alpha x 4.2 kg x the jack speed
+  to the load (0.5 kgf at 50 mm/s, nothing for Bridge_v6, a tenth of a light truss's
+  strength). The kinetic energy of the bridge (falling debris excluded) is
   reported against the work done by the jack while the load rises to 95 % of its peak
   (`kinetic_to_work_max`): below 0.1 the loading is quasi-static. The collapse after the
   peak is dynamic, as in the real test: once the bridge is judged failed (F_u is known)
@@ -403,11 +406,22 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   follows the bridge**: the speed of each fidelity (200 / 100 / 50 mm/s) is for a bridge
   whose lowest mode under the plate (the plate's mass plus half the bridge's on the
   bridge's linear stiffness under the plate, as `screen` computes it) has a period of
-  at most 10 ms (Bridge_v6: ~8 ms). A softer or lighter bridge rings more slowly and
-  would be outrun by a jack moving as far per period, so its jack is slowed in
-  proportion to its period, at most 4x (run time; `quality.speed_mm_s`,
-  `quality.fundamental_period_ms`). A bridge still too fast for that is caught by the
+  at most 10 ms (Bridge_v6: ~8 ms) that fails after a few mm of jack travel (Bridge_v6:
+  ~6). How far a crush is from quasi-static is set by how far the jack moves in one
+  period of the bridge's ringing against the travel reached (the lag of the bridge
+  behind the jack, relative): a softer or lighter bridge is crushed slower in
+  proportion to its period, and its jack speeds up again in proportion to the travel
+  once that passes 6 mm (a soft bridge that fails at large deflection needs no slow
+  jack there), at most 16x slower (`quality.speed_mm_s` at the start,
+  `quality.fundamental_period_ms`). A bridge still too fast is caught by the
   quasi-static check (`kinetic_to_work_max`) and `--rate-check` measures what is left.
+  Such a bridge is also started over two of its periods and sped up again after a hold
+  over one (a stiff one over 20 ms and 2 ms): a change of speed made faster than the
+  period kicks the plate and sets the bridge ringing by about the speed x period / 2 pi
+  (two stringers over a metre, period 0.17 s: 4 mm at 150 mm/s, and the load line
+  started at 5.5 kgf instead of zero, a bridge that carries ~9), and a linear ramp over
+  whole periods leaves no ringing.
+  `test_a_soft_bridge_is_loaded_without_a_kick`.
 * **Verified** (the equations are solved right) in `tests/test_sim.py`: cantilever
   (0.04 % vs PL^3/3EI), large-deflection elastica (Bisshopp-Drucker, < 1 %), Euler
   buckling of a stick, a deep beam with shear deformation (Timoshenko, < 1 % on 4 or 16

@@ -345,10 +345,15 @@ FIDELITY = {  # mesh scale, simulated jack speed (mm/s) for a stiff bridge (see 
     "fine": (0.5, 50.0),       # convergence check
 }
 # the speeds above are for a bridge whose lowest mode under the plate (plate on bridge)
-# has a period of at most PERIOD_REF_S; a softer or lighter one gets a slower jack, in
-# proportion, so that the jack moves no further per period of the bridge's ringing
+# has a period of at most PERIOD_REF_S and that fails after a few mm of jack travel
+# (Bridge_v6: ~8 ms, ~6 mm). What sets how far from quasi-static a crush is, is how far
+# the jack moves in one period against the travel the bridge has reached: a softer or
+# lighter bridge gets a slower jack, in proportion to its period, until its travel
+# passes TRAVEL_REF_MM by as much (a soft bridge failing at large deflection needs
+# less), at most MAX_SLOWDOWN times slower
 PERIOD_REF_S = 0.010
-MAX_SLOWDOWN = 4.0
+TRAVEL_REF_MM = 6.0
+MAX_SLOWDOWN = 16.0
 
 
 def fundamental_period(m: Model) -> float:
@@ -368,15 +373,18 @@ def fundamental_period(m: Model) -> float:
     return 2 * math.pi * math.sqrt(m_eff / max(k, 1e-12))
 
 
-def jack_speed(speed_mm_s: float, period_s: float) -> float:
-    """The simulated jack speed for a bridge of fundamental period ``period_s``: the
-    fidelity's speed for a stiff bridge (period up to PERIOD_REF_S), slower in proportion
-    to the period for a softer or lighter one, at most MAX_SLOWDOWN times (run time; a
-    bridge still too fast for that is caught by the quasi-static check,
-    quality.kinetic_to_work_max)."""
+def jack_speed(speed_mm_s: float, period_s: float, travel_mm: float = 0.0) -> float:
+    """The simulated jack speed for a bridge of fundamental period ``period_s`` at
+    ``travel_mm`` of jack travel: the fidelity's speed for a stiff bridge (period up to
+    PERIOD_REF_S); for a softer or lighter one, slower in proportion to its period, so
+    that the jack moves no further per period, against the travel reached (from
+    TRAVEL_REF_MM on), than for a stiff bridge: the speed rises with the travel back up
+    to the fidelity's. At most MAX_SLOWDOWN times slower (a bridge still too fast for
+    that is caught by the quasi-static check, quality.kinetic_to_work_max)."""
     if period_s <= PERIOD_REF_S:
         return speed_mm_s
-    return speed_mm_s * max(PERIOD_REF_S / period_s, 1.0 / MAX_SLOWDOWN)
+    f = PERIOD_REF_S / period_s * max(1.0, travel_mm / TRAVEL_REF_MM)
+    return speed_mm_s * min(1.0, max(f, 1.0 / MAX_SLOWDOWN))
 
 
 def dt_target_for(scale: float) -> float:
@@ -387,7 +395,8 @@ def dt_target_for(scale: float) -> float:
 
 @dataclass
 class CrushOptions:
-    speed_mm_s: float = 40.0  # simulated jack speed
+    speed_mm_s: float = 40.0  # simulated jack speed (at the start, see auto_speed)
+    max_speed_mm_s: float = 0.0  # set by run_crush: what a soft bridge's jack rises to
     settle_s: float = 0.03  # gravity ramp
     settle_max_s: float = 0.4
     max_travel_mm: float = 70.0
@@ -555,7 +564,7 @@ def run_crush(m: Model, opt: CrushOptions | None = None) -> CrushResult:
     if opt.auto_speed:
         # a slower jack needs as many more steps for the same travel
         v = jack_speed(opt.speed_mm_s, T1)
-        opt = dataclasses.replace(opt, speed_mm_s=v,
+        opt = dataclasses.replace(opt, speed_mm_s=v, max_speed_mm_s=opt.speed_mm_s,
                                   max_steps=int(opt.max_steps * opt.speed_mm_s / v))
     X0, m0, r0 = m.X.copy(), m.mass.copy(), m.rot_inertia.copy()
     att0 = (m.a_node.copy(), m.a_r0.copy())
@@ -685,6 +694,12 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         nonlocal steps
         mark_debris()
         info = S.internal_and_contact(m, st, s, F, Mo)
+        if P >= 0 and st.jack_v != 0.0:
+            # the plate is damped relative to the jack's own motion: its mass damping
+            # would otherwise resist the steady push at the jack's speed and add a
+            # fictitious alpha x plate mass x speed to the load (0.5 kgf for the 4.2 kg
+            # plate at 50 mm/s: a tenth of a light truss's strength)
+            F[P, 1] -= mass[P] * alpha * st.jack_v
         if s.use_numba and S.K.HAVE_NUMBA:
             S.K.integrate(st.x, st.v, st.w, st.R, F, Mo, mass, phys_mass,
                           rot, -s.gravity * grav, alpha, dt, st.loose, m.table_y + 1.0)
@@ -799,7 +814,16 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     i_fail: int | None = None  # curve sample at which the bridge was judged failed
     est_steps = int((opt.max_travel_mm / opt.speed_mm_s) / dt)
     frame_every = max(1, int(opt.frame_mm / opt.speed_mm_s / dt))
-    ramp = 0.02  # s, the jack starts smoothly
+    # the jack starts smoothly, and speeds up again after a hold smoothly: a change of
+    # speed made faster than the bridge's period kicks the plate and sets the bridge
+    # ringing (amplitude ~ speed / 2 pi x period, the load swinging by its stiffness
+    # times that). A linear ramp over a whole number of periods leaves no ringing, so a
+    # bridge that rings slowly (period above PERIOD_REF_S) is started over two periods
+    # and sped up over one; a stiff one over 20 ms and hold_ramp_s
+    T1 = float(m.params.get("period_s", 0.0)) if opt.auto_speed else 0.0
+    rings_slowly = T1 > PERIOD_REF_S
+    ramp = 2 * T1 if rings_slowly else 0.02  # s
+    up_ramp = max(opt.hold_ramp_s, T1) if rings_slowly else opt.hold_ramp_s
     t_load0 = st.t
     max_ke_ratio = 0.0
     work = 0.0
@@ -830,12 +854,14 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     while not unstable:
         tl = st.t - t_load0
         target = opt.hold_speed_frac if st.t < hold_until else 1.0
-        step_thr = dt / opt.hold_ramp_s
-        throttle = min(throttle + step_thr, target) if throttle < target else \
-            max(throttle - step_thr, target)
+        throttle = min(throttle + dt / up_ramp, target) if throttle < target else \
+            max(throttle - dt / opt.hold_ramp_s, target)
         if throttle < 0.999:
             hold_time += dt
-        v = opt.speed_mm_s * min(1.0, tl / ramp) * throttle
+        v_b = opt.speed_mm_s  # the jack's speed, before the start and the holds
+        if rings_slowly:  # its jack speeds up as the travel grows (jack_speed)
+            v_b = jack_speed(opt.max_speed_mm_s, T1, jack0 - st.jack_y)
+        v = v_b * min(1.0, tl / ramp) * throttle
         st.jack_y -= v * dt
         st.jack_v = -v
         # the physical test time of this step (glue creep): the jack's travel at the
@@ -849,7 +875,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         last_force = raw
         # the load cell reading: low-pass filtered over ~0.3 mm of jack travel, so a
         # stress wave ringing through the bridge is not taken for its strength
-        a_f = min(1.0, dt * opt.speed_mm_s / LOAD_CELL_MM)  # 0.3 mm at full speed
+        a_f = min(1.0, dt * v_b / LOAD_CELL_MM)  # 0.3 mm at full speed
         force_f += a_f * (raw - force_f)
         force = force_f
         raw_sum += raw

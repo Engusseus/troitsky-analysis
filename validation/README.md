@@ -250,3 +250,47 @@ kgf) and the first joint separates (724 kgf). It does not give F_u: those first 
 let go long before the peak, as the load finds other paths, which only the crush follows
 (`test_linear_screen_matches_beam_theory` checks its stiffness and fibre limits against
 beam theory within 3 %).
+
+### 3.6 Soft and light bridges: the jack speed (round 15)
+
+Bridge_v6 is stiff and heavy: its lowest mode under the 4.2 kg plate rings in ~8 ms and
+it fails after ~6 mm of jack travel, so a jack at 100 mm/s moves 0.8 mm per period and
+the crush is quasi-static (rate check -1.1 %). A light truss or a soft beam rings ten to
+twenty times slower, and the same jack outran it. Three synthetic bridges
+(`bridgesim.cad.synthetic`), crushed with the round-15 jack:
+
+* **A light Pratt truss** (`layered_truss()`: two trusses of 3-ply members, chords,
+  verticals and diagonals in three glued layers, 1 m span, 104 mm apart so the plate fits
+  between them; period under the plate 74 ms). Quick fidelity, seed 0, `--rate-check`,
+  as each round-15 change came in:
+
+  | jack | F_u at speed / half speed (kgf) | change | extrapolated to rest |
+  |---|---|---|---|
+  | slowed in proportion to the period, at most 4x (50 / 25 mm/s) | 12.98 / 12.17 | +6.6 % | 11.36 |
+  | + the plate damped relative to the jack, not to the platform | 12.45 / 11.90 | +4.5 % | 11.36 |
+  | + started over two periods, sped up after a hold over one | 12.50 / 11.88 | +5.3 % | 11.25 |
+  | + at most 16x, speeding up with the travel (27 / 13.5 mm/s) | 11.93 / 11.53 | +3.5 % | 11.13 |
+
+  The jack-at-rest estimate holds at 11.1-11.4 kgf throughout while the run at speed
+  comes down to it; the last run passes the 5 % rate criterion (56 s on 2 cores). It
+  fails where such a truss does: the end-grain glue of the top struts on the verticals
+  lets go at 3.9 mm of travel, and the far truss, no longer braced, rolls over.
+  (Before the truss was made to fit the plate it stood 86 mm apart: the plate started
+  inside its verticals and threw them off; such a design now gets an important
+  `plate_fit` question. Its diagonals had been cut 12 mm short at both ends and held by
+  ~2 mm of glue: F_u 5.4 kgf, the inspect `weak_joints` question naming them.)
+* **Two stringers over a metre with a deck** (`simple_beam_bridge()`, period 165 ms).
+  At a fixed 150 mm/s it "collapsed" at 5.7 kgf with kinetic / external work 0.12 (not
+  quasi-static); the jack slowed for its period carries 8.8 kgf at 30 mm of travel and
+  has not failed. Started at full speed, the plate's kick set it ringing by ~4 mm: its
+  load against deflection started at 5.5 kgf (14 kgf at 600 mm/s) instead of zero; now
+  at 0.1-0.3 kgf, the slope the same at 37.5 and 150 mm/s within 1.5 %
+  (`test_a_soft_bridge_is_loaded_without_a_kick`).
+* **A laminated beam on two piers** (period 79 ms; `test_simply_supported_beam_matches_
+  beam_theory`): it bends to the 50 mm limit at 142 kgf without breaking, and is
+  quasi-static at 100 mm/s (kinetic / work 0.0006). Slowed 4x for its period alone,
+  its 60 mm of travel took 2.4 s of simulated time, more than the 400 000-step budget:
+  the run stopped at 30 mm and reported no failure (fixed: the budget follows the
+  slow-down, and a run that reaches it says so). With the jack speeding up past 6 mm x
+  79 / 10 of travel, the test runs in 77 s instead of 110 s.
+

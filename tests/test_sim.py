@@ -2202,11 +2202,22 @@ def test_the_jack_slows_for_a_bridge_that_rings_slowly(tmp_path):
     plus half the bridge's mass on the bridge's linear stiffness under the plate."""
     from bridgesim.sim import screen as scr
     from bridgesim.sim import study
-    from bridgesim.sim.crush import MAX_SLOWDOWN, PERIOD_REF_S, fundamental_period, jack_speed
+    from bridgesim.sim.crush import (
+        MAX_SLOWDOWN,
+        PERIOD_REF_S,
+        TRAVEL_REF_MM,
+        fundamental_period,
+        jack_speed,
+    )
 
     assert jack_speed(100.0, 0.5 * PERIOD_REF_S) == 100.0
+    assert jack_speed(100.0, 0.5 * PERIOD_REF_S, 0.1) == 100.0
     assert jack_speed(100.0, 2 * PERIOD_REF_S) == pytest.approx(50.0)
     assert jack_speed(100.0, 100 * PERIOD_REF_S) == pytest.approx(100.0 / MAX_SLOWDOWN)
+    # past TRAVEL_REF_MM the jack speeds up with the travel: as far per period against
+    # the travel reached, back up to the fidelity's speed
+    assert jack_speed(100.0, 2 * PERIOD_REF_S, 1.5 * TRAVEL_REF_MM) == pytest.approx(75.0)
+    assert jack_speed(100.0, 2 * PERIOD_REF_S, 5 * TRAVEL_REF_MM) == 100.0
     cad = tmp_path / "bridge.stl"
     write_stl(simple_beam_bridge(), cad)
     _, bodies, ov, _, mat, sp, _ = study._inputs(cad, None, None, None, None, None, "y",
@@ -2312,3 +2323,27 @@ def test_a_plate_that_does_not_fit_is_asked_about_not_exploded(tmp_path):
     write_stl(simple_beam_bridge(), tmp_path / "open.stl")
     assert not [q for q in study.inspect(tmp_path / "open.stl").questions
                 if q.id == "plate_fit"]
+
+
+def test_a_soft_bridge_is_loaded_without_a_kick(tmp_path):
+    """A bridge ringing slowly under the 4.2 kg plate (two stringers over a metre: a
+    period of ~0.17 s) is started and sped up over whole periods, and the plate is
+    damped only relative to the jack: its load against the deck's deflection is a
+    straight line through zero at the bridge's stiffness. (A 20 ms start kicked the
+    plate: at a fixed 600 mm/s the line started at 14 kgf, more than the bridge
+    carries.)"""
+    from bridgesim.sim import study
+    from bridgesim.sim.crush import CrushOptions
+
+    pytest.importorskip("numba")
+    write_stl(simple_beam_bridge(), tmp_path / "b.stl")
+    k = study.screen(tmp_path / "b.stl").stiffness_kgf_per_mm
+    rep, _ = study.crush(tmp_path / "b.stl", seed=None, replay=False,
+                         options=CrushOptions(speed_mm_s=600, max_travel_mm=5))
+    T1 = rep.quality.fundamental_period_ms / 1000
+    assert rep.quality.speed_mm_s == pytest.approx(600 * 0.010 / T1, rel=0.01)
+    L, D = np.array(rep.curve.load_kgf), np.array(rep.curve.deflection_mm)
+    sel = (D > 1.0) & (D < 4.0)
+    slope, icpt = np.polyfit(D[sel], L[sel], 1)
+    assert 0.75 * k < slope < 1.05 * k  # the screen holds the supports fully
+    assert abs(icpt) < 0.1 * slope * 4.0
