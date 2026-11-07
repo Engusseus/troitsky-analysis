@@ -44,7 +44,7 @@ gets both factors), ready for its `ab ... --overrides-b DIR/whatif.yaml` command
 | `bridgesim screen BRIDGE.SLDPRT [-o overrides.yaml] [--load 100] [--top 25] --json` | Linear pre-screen, no simulation (on the standard crush's mesh): the bridge's stiffness under the plate (`stiffness_kgf_per_mm`), its lowest natural frequencies on its supports with the plate on it (`modes`: what a tap test of the built bridge measures, with the parts that move most in each; the supports hold by friction, an end sliding when the thrust there is more than friction holds) and every joint (glue and `bearing`), member (tension, compression, shear, Euler buckling over its length) and plate (per ply and mode) with its `utilisation` at `--load` and the plate load at which it reaches its limit if the bridge stayed linear (`limits`, most loaded first; `first_limit_kgf`: where damage starts, often far below F_u, since the load then finds other paths, which only crush follows). For the stiffness, the most loaded parts, and how a what-if moves them in seconds; judge F_u and design changes with crush and `ab` | seconds |
 | `bridgesim compare DIR/crush.json my_test.csv --json` | Reality gap vs a physical crush test. Given `montecarlo.json` instead of `crush.json`: where the test falls in the predicted range | seconds |
 | `bridgesim calibrate-bridge BRIDGE.SLDPRT my_test.csv [-o overrides.yaml] [--fidelity standard] [--seeds 3] [--out fitted.overrides.yaml] --json` | After a physical crush test of this bridge: a global stiffness and a global strength factor fitted so the simulated crush reproduces it (up to 4 steps; each crushes seeds 1..`--seeds` and fits their median, so the factors do not absorb one seed's imperfections; `steps[].Fu_kgf_runs`); writes your overrides plus the fitted `params`. The test is then used up for validation | 2-4 x seeds x crush / processes |
-| `bridgesim sensitivity BRIDGE.SLDPRT [--rel 0.2] [--fidelity quick] [--seeds 1] [--param KEY]... --json` | Which material values move F_u most: each one lowered and raised by `rel`; `measure_first` lists the tests that would narrow the prediction most. `--param` (repeat it) chooses the values, any key of `materials/simulation.yaml` or `material.<key>` (default: the 11 that usually matter most); `--seeds 3` averages over seeds | (1 + 2 x params) x seeds x crush / processes |
+| `bridgesim sensitivity BRIDGE.SLDPRT [--rel 0.2] [--fidelity quick] [--seeds 1] [--param KEY]... --json` | Which material values move F_u most: each one lowered and raised by `rel`; `measure_first` lists the tests that would narrow the prediction most. `--param` (repeat it) chooses the values, any key of `materials/simulation.yaml` or `material.<key>` (default: the 12 that usually matter most); `--seeds 3` averages over seeds | (1 + 2 x params) x seeds x crush / processes |
 | `bridgesim lab [--data validation/physical] --json` | Simulated coupon tests (stick bending, lap joint, stick column) and their gap to the team's coupon data | ~1 min |
 | `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, f_t/f_c and tau_g so the *simulated* coupons reproduce the measured ones (`lab --data` then shows ~0 % error); f_t, f_c, f_c90, the end-grain factor, the glue's shear stiffness and toughness and the interlaminar shear strength (short-beam shear) from the direct coupon tests; with 3+ specimens of a kind also the scatter (`my_material.overrides.yaml`, `params:`). A folder without any test results is an input error (exit 2) | ~1 min |
 | `bridgesim ab A.SLDPRT B.SLDPRT [-n 3] [--overrides-a a.yaml] [--overrides-b b.yaml] [--fidelity standard] --json` | Is B better than A? Both crushed with the same seeds: change of F_u and efficiency with a 90 % interval, `significant`, `verdict`, what governed each run (`runs_a/b[].governing`, the most frequent in `governing_a/b`) and `failure_moved`: the seeds where B failed somewhere else than A (strengthening one part often moves the failure to the next). B may be A with other overrides: a what-if (`section_scale`, `glue_factor`) before changing the CAD | 2n x crush / processes |
@@ -62,14 +62,14 @@ up again once its deflection is large, so it stays quasi-static (`quality.speed_
 `quality.fundamental_period_ms`). Mesh convergence on
 Bridge_v6 (`validation/README.md` §3.4, five seeds at 100 mm/s; a seed is the same
 imperfect bridge at every fidelity): fine is +4.6 % above standard on average (-1.1 % to
-+11 % seed by seed), so read F_u at standard with ~5 % mesh uncertainty, either way; on
-Bridge_v10 (`validation/README.md` §3.8-3.10) the round-16 model's three meshes failed at
-the same joint with the same stiffness (their spread was mostly the jack speed, which each
-fidelity changes with the mesh); with round 18's model, at one jack speed (100 mm/s),
-quick / standard / fine give 2506 / 2483 / 2479 kgf at the same joint, and standard at
-50 mm/s 2445 (-1.6 %). With round 17's model quick had been 4.9 % low and failed at
-another node: when failure sites compete, confirm a quick `diagnose` or `sensitivity` at
-standard. The spread
++11 % seed by seed); on Bridge_v10 at one jack speed (100 mm/s), round 20's model:
+quick / standard / fine 2162 / 2061 / 2093 kgf on seed 0 and 2232 / 2000 / 2069 on
+seed 1, standard and fine at the same joint (`validation/README.md` §3.12), standard at
+50 mm/s 2035 (-1.3 %). The meshes are not monotone: standard reads lowest, ~2 % below
+fine on average over 10 seed pairs (`montecarlo` takes that bias out of its prediction,
+`uncertainty.mesh_bias_*`) with ~5 % scatter, and quick 1-12 % above standard, sometimes
+failing at another joint: when failure sites compete, confirm a quick `diagnose` or
+`sensitivity` at standard. The spread
 *between* seeds is ~20 %: several failure sites (the hub core, the End Post joints, the
 cross-beam's joints to the deck stringers) compete within a few %, and which goes first
 changes with the mesh and the seed (`competing` lists them; `montecarlo` counts them in
@@ -233,6 +233,7 @@ bodies:                     # by exact body name or glob pattern
   "Spacer*": {glue_factor: 0}                   # touching but NOT glued
   "Top Chord*": {strength_factor: 0.9, grain: span}
   "Hub Cover*": {grain: arm}                    # a +-45 frame's plies laid along each arm
+  "Heel Seat*": {grain: y}                      # a block's fibres along y: it bears on end grain
   "Deck Stringer*": {butt_stagger_mm: 30}       # joints of neighbouring plies 30 mm apart
   "Bottom Chord*": {butt_stagger_mm: 0}         # plies without butt joints (long strips)
   "Top Chord*": {butt_gap_mm: 0}                # ply ends sanded tight: joints bear
@@ -340,6 +341,11 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
 
 ## Quantifying how close to reality the model is
 
+Before any test of your own: `validation/published_tests.py` rebuilds three published
+craft-stick truss tests and crushes them blind (`validation/README.md` §3.14: the model
+read 0.66, 0.18 and 1.18 of their failure loads, conservative on small glued joints and
+on glues other than white glue).
+
 0. Decide what to measure: `bridgesim sensitivity` ranks the placeholder values by how
    much they move F_u for *this* design (`measure_first`).
 1. Coupon level: fill the templates in `validation/physical/` for the tests you made
@@ -360,8 +366,10 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
 2. Bridge level: crush a prototype (or a sub-assembly), log load against mid-span
    deflection (`midspan_deflection_mm`) or the jack stroke (`jack_travel_mm`) in
    `crush_test_template.csv` (the whole record; mark the row of the failure with
-   `event = failure` and the part that broke first in `notes`, with its side: "top chord,
-   far side, left"). The peak load and the broken part alone are enough (that is what the
+   `event = failure` and the part that broke first in `part`: its body name as `inspect`
+   lists it, a glob, or `A | B` for a joint, e.g. `Knee-Diagonal R Far* | Stub Far*`; or
+   in words in `notes`, with its side: "top chord, far side, left"). The peak load and
+   the broken part alone are enough (that is what the
    competition gives you). Then `bridgesim compare results/crush.json my_test.csv --json`:
    errors on ultimate load, stiffness (secant 10-40 % of the peak, as EN 12512), deflection at peak,
    curve shape and failure location (side included), a 0-100 score (0 when off by 1.5x
@@ -372,7 +380,9 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
    criteria at each level).
 3. Close the gap: `bridgesim calibrate-bridge BRIDGE.SLDPRT my_test.csv` fits a global
    stiffness and a global strength factor to that test and writes the overrides to use
-   from then on. A strength factor far from 1 means the governing mechanism is off:
+   from then on (the fitted values listed under `measured:`, so `montecarlo` no longer
+   redraws them, and `uncertainty.model_cov` 0.15: a calibrated model's error, build to
+   build). A strength factor far from 1 means the governing mechanism is off:
    compare `first_failure` with the broken part and measure that material. A test used to
    calibrate no longer validates: check the fitted model on the next test.
 

@@ -644,10 +644,13 @@ def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
     from ``t_c``, where the raw force (averaged over a centred period of the ringing)
     last stood within 5 % of F_u (``peak``); a break before it was survived (the load
     came back). A quarter of the load-cell time constant of slack before ``t_c``. Among
-    breaks at the same moment a clean break comes before a joint that only cracked, and
-    a member split within 2 ms of a member fracture is put down to the fracture (its
-    stress wave). Without a break from ``t_c``: the last survived break within 10 % of
-    F_u; else one within 3 mm of jack travel of the peak. Competing: the other breaks
+    breaks at the same moment a clean break comes before a joint that only cracked, the
+    one that could carry the most comes first (a diagonal's foot and its two gusset laps
+    letting go together: the load falls because the laps go, and strengthening the foot
+    alone changes nothing, the adversarial review of round 20), and a member split
+    within 2 ms of a member fracture is put down to the fracture (its stress wave).
+    Without a break from ``t_c``: the last survived break within 10 % of F_u; else one
+    within 3 mm of jack travel of the peak. Competing: the other breaks
     within 10 % of F_u that were survived, or that came at the same moment as the
     governing one (not the cascade after it), as '<kind>: <part>'."""
     tol = 0.25 * LOAD_CELL_MM / max(speed_mm_s, 1e-9)
@@ -660,7 +663,8 @@ def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
     survived = [e for e in before if e.kind in BREAKS and e.t < t_c - tol
                 and e.force_N >= 0.9 * peak]
     if falling:
-        first = clean([e for e in falling if e.t <= falling[0].t + 2 * tol])[0]
+        same = clean([e for e in falling if e.t <= falling[0].t + 2 * tol])
+        first = max(same, key=lambda e: e.capacity_N)  # the first of the strongest
     elif survived:
         first = clean(survived)[-1]
     else:

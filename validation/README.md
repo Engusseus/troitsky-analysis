@@ -661,10 +661,18 @@ developer's `r20_runs/bridge_v10/`): at 100 mm/s, quick / standard / fine read
 the same joint (a knee-diagonal's foot on the stub at node M, the two gusset laps on
 that diagonal competing), fine +1.5 % and +3.4 % above standard, quick 5-12 % high;
 standard +11 % and +9 % above round 19 (the milder size effect, laminations and butt
-joints bearing). The curve stays straight to its peak (secant from 50 to 90 % of F_u over
-the 10-40 % secant 1.00-1.02): the failure is one brittle joint at node M, and no other
-joint reaches the glue law's bend (0.65 of its strength) before it. The 50 mm/s run, the
-Monte Carlo and the light truss follow.
+joints bearing); standard seed 0 at 50 mm/s 2035 kgf (-1.3 %, the same joint; at rest,
+extrapolated, ~2026). The curve bends little before its peak: its secant at the peak is
+0.98-1.00 of the 10-40 % secant against the jack's travel and 0.94-0.98 against the
+deflection, stiffer than glued timber trusses tested to failure (0.84-0.92, Debertolis et
+al. 2025), though 70-100 glue lines pass their own peak locally (the ends of laps) before
+F_u, from ~4 % of it (the ambitious and adversarial reviews): their share of the
+bridge's compliance is small. At node M F_u is a redistribution: the diagonal's
+end-grain foot on the stub reaches its glue limit in the linear screen at ~450 kgf and
+sheds its load into the diagonal's two gusset laps, which go at ~2050 kgf. The Monte
+Carlo (8 standard runs, the placeholders a Latin hypercube): 1023-2866 kgf, median 1851,
+recommended prediction 1386 kgf [1123-1710], total range 816-3321 (node M's foot
+governing 4 of 8, its gusset lap 1, a plate_M crack 1, a diagonal 1, node A 1).
 
 ### 3.13 Round 21: the glue's time to failure, hand-made laminations, moisture
 
@@ -695,3 +703,106 @@ From the literature review of round 20:
   its compression diagonal buckled at stick joints on its outer faces (Silva et al. 2026,
   Rev. Ensino Eng. 45:389), which the model's butt joints do not do (they scale strength,
   not the bending stiffness at the joint).
+
+From the adversarial review of round 20:
+
+* **The governing joint among those that break together** is the one that could carry
+  the most: on Bridge_v10 the diagonal's end-grain foot on the stub (475 mm^2, under 600
+  N of glue) and its two gusset laps let go in the same instant, and the foot was named;
+  strengthening it moved F_u +1 %, the laps +8.7 % (quick seed 0). The strengthen what-if
+  covers every joint of the governing part that broke with it.
+* **The prediction's errors are median-centred** (as the placeholder draws): mean-centred,
+  a model-form sigma of 0.3 had put the recommended prediction 4.5 % lower for a
+  convention. **The mesh's bias** is taken out of it (fine reads +2.3 % above standard
+  over 10 seed pairs, quick 1-12 % above standard: `uncertainty.mesh_bias_*`), leaving the
+  5 % scatter; the meshes are not monotone (no Richardson estimate), and the docs no longer
+  quote round 18's agreement.
+* **montecarlo draws the joint-to-joint glue scatter** (`scatter.glue_cov` 0.30, drawn
+  0.17-0.53: workmanship, not the weakest-link scatter of the size effect; 0.12 instead
+  of 0.30 raised quick F_u 6-16 %), and `sensitivity` tests it and the glue lines'
+  stiffness by default.
+* **A joint on a laminate's ply face** is capped at what the laminate passes to its other
+  plies (its interlaminar strength x n / (n - 1)): the shells do not delaminate by
+  themselves, and a run had drawn a gusset lap at 5.1 MPa on a gusset of 2.5 MPa rolling
+  shear. **A lamination** covers at least half the smaller plate: Bridge_v10's deck
+  tongues (3240 mm^2, slid in on build day) are laps (4943 N), not laminations (12,960 N).
+* **calibrate-bridge** lists the fitted values as measured and sets the model-form error
+  to 15 % (it left every value a placeholder at 30 %, so a fit narrowed nothing).
+* **compare** matches the part that broke by its body name (a `part` column: a name, a
+  glob or `A | B`) or by words without a node's letter or 'foot', 'centre', 'node'
+  ('diagonal foot at the centre node, far side, right' scored 0 against the right joint);
+  a mismatch no longer advises lowering the glue.
+* Mirrored plates list their plies from the same side (facing away from the CAD origin,
+  not as round-off picks between their two equal faces: ±0.4 % on Bridge_v10); a plate's
+  butt-joint factor takes the weaker direction after its efficiency; the confirm step
+  quotes the current mesh numbers.
+
+From the realism review of round 20 (5/10: validation -2.5, placeholders -0.75, compact
+parts -0.5, an idealised curve -0.5, the governing label -0.25, light bridges -0.25,
+stale docs -0.25):
+
+* **Members' elements at most 2x their depth** at standard (in proportion at the other
+  fidelities; members 20 mm deep and more unchanged). The light truss (6 mm members, 12 mm
+  elements) read 46.2 kgf at standard against 35.8 at fine (8 mm), failing elsewhere: not
+  converged at standard, so such members are flagged below 1.5 depths per element (fine
+  passes); read a light bridge at fine.
+* **Butt joints cost stiffness**: shear lag round each joint, ~0.88 of E for 13 plies.
+* **A block can be given its grain** (`grain: x | y | z`, a direction, or one per layer):
+  Bridge_v10's heel seats bear on end grain in 6 of their 13 layers, as the team's report
+  lays them (its overrides in `r21_runs`).
+* **An end-grain glue line pulled apart** holds 0.1 x the wood's tension strength along
+  the grain (~4 MPa; USDA: up to 25 % with special techniques), capped by the other side
+  pulled across its face (f_t90 on a chord's side): it held 0.7 MPa (the side-grain peel x
+  the end-grain factor), which the published test C below showed far too weak (a
+  vertical's end-grain foot carried 2.6 MPa before it broke). `calibrate` takes the factor
+  from sticks glued end to end and pulled.
+
+Evidence on round 21's model (Bridge_v10, the team report's overrides plus its heel
+seats' layers, `r21_runs/bridge_v10/`): at 100 mm/s quick / standard / fine read 2300 /
+2276 / 2271 kgf on seed 0 and 2281 / 2165 / 2235 on seed 1 (fine -0.2 % and +3.2 %
+against standard, all trustworthy), failing at node M's gusset (plate_M cracking) or the
+diagonal's laps on it, where the adversarial review found the load depends; the real test
+would reach the peak ~24 s in (the glue ~9 % stronger than in 60 s coupons). Standard
+seed 0: 2061 kgf in round 20, +10 %.
+
+### 3.14 Validation against published tests (round 21)
+
+No team has crushed a bridge for this repository yet, but three craft-stick trusses were
+built, loaded to failure and published with their geometry, stick, glue, load and
+failure. `validation/published_tests.py` rebuilds them as bridgesim models from the
+papers' drawings and photos (each value tagged stated, drawing, photo or assumed in its
+docstrings), loads them as they were loaded (a rigid hanger on the loaded node, pinned to
+it, pushed by the plate; the ends on support blocks, bearing only), with the papers'
+stick sizes and the pine values they quote, everything else the shipped placeholders
+(white glue at 2.0 MPa, birch): **blind predictions**. Fine mesh (the members are 6-9 mm
+deep), seed 0:
+
+| Test | Glue | Test F_u | Predicted | Ratio | Failure: test / model |
+| --- | --- | --- | --- | --- | --- |
+| C, Moraes et al. 2019: Howe, 6 x 80 mm, 3-ply members, test machine | wood glue | 50 kgf (curve) | 32.9 kgf | 0.66 | bottom chord and a vertical's foot / the bottom chord's joints to a vertical and a diagonal (the same place) |
+| A, Lamberti et al. 2025: Warren, 6 x 100 mm, 3-ply, dead weights | cyanoacrylate | 140-160 kgf | 28.3 kgf | 0.18 | a top-chord panel and a compression diagonal after a lateral drift / the diagonals' laps on the bottom chord at the centre |
+| B, Silva et al. 2026: Warren, 4 x 260 mm, 5-8 ply, putty nodes | wood glue, epoxy putty | 72.4 kgf | 85.6 kgf | 1.18 | a compression diagonal buckling where its outer plies were butted / a diagonal's putty joint |
+
+What they say:
+
+* **The model is conservative on small glued joints.** Each fails in the model at joints
+  of 36-90 mm^2: the laps of A needed ~5.5 MPa at the test's load (cyanoacrylate, not the
+  white glue the placeholder stands for), C's vertical foot 2.6 MPa (white glue, end
+  grain). With white glue (C) the prediction is 0.66 of the test at the right place; the
+  round-20 model read 27.3 kgf there (0.55), its end-grain foot at 0.7 MPa. tau_g (2.0 MPa,
+  drawn 50 %) is at the low end of what these tests imply for small hand-made joints; one
+  test of one glue is not a calibration, and the model keeps the placeholder.
+* **B's agreement is partly built in**: the putty wraps each diagonal's end, which the
+  rebuild stands for by gluing the end face at x5 (its four sides); the test's diagonal
+  buckled where its outer plies were butted at mid-length, which the model's butt joints
+  (a factor on strength and stiffness over the whole member, not a joint at a place)
+  cannot do.
+* **Stiffness**: C's machine record (0.094 kN/mm, crosshead travel: the fixtures and the
+  bridge's seating included, its zero 0.2 kN in) is 2.5x softer than the model's
+  deflection under the load (24 kgf/mm at quick): not comparable without the machine's
+  own compliance.
+* Over the three, the geometric mean ratio is 0.52 and the scatter a factor of ~2.6 (log
+  sd 0.96): far wider than the 30 % model-form error, driven by the glue each team used,
+  which the model can only take as a placeholder. These are single specimens of other
+  teams' trusses with geometry partly read from photos (confidence medium to low); a
+  team's own coupon tests and crush test remain the validation that counts.

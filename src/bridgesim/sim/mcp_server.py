@@ -453,7 +453,7 @@ def build_server():
         """Which material values move F_u most? Starts, in the background, crushes with
         each placeholder value lowered and raised by rel; the report (job_status) ranks
         them and lists what to measure first. params: the values to vary (keys of
-        materials/simulation.yaml or material.<key>; default the 11 that usually matter
+        materials/simulation.yaml or material.<key>; default the 12 that usually matter
         most); seeds > 1 averages over that many seeds."""
         cad_path = _infile(cad_path, "CAD file")
         out = _outpath(out_dir)

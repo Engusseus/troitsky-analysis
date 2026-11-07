@@ -92,6 +92,7 @@ PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("glue.peel_to_shear", 0.0, 5.0, False),
     ("glue.points_per_side", 1.0, 4.0, True),
     ("glue.end_grain_factor", 0.0, 1.0, True),
+    ("glue.end_grain_tension_factor", 0.0, 1.0, True),
     ("glue.tau_peak_over_avg", 1.0, 2.0, True),
     ("glue.prepeak_onset", 0.0, 1.0, False),
     ("*.rate_exponent", 0.0, 1.0, True),
@@ -102,6 +103,7 @@ PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("contact.seating_mm", 0.0, 10.0, True),
     ("scatter.*_cov", 0.0, 1.0, True),
     ("uncertainty.*_cov", 0.0, 1.0, True),
+    ("uncertainty.mesh_bias_*", -0.5, 0.5, True),
     ("scatter.bow_L_over", 20.0, 1e6, True),
     ("scatter.placement_mm", 0.0, 50.0, True),
     ("scatter.support_level_mm", 0.0, 20.0, True),
@@ -205,6 +207,7 @@ class Layup:
     source: str = "default"  # "name", "override" or "default"
     text: str = ""
     orientation_assumed: bool = False  # "10-ply" without UD / 0-90 / +-45
+    grain_vecs: list | None = None  # a block's fibres, one unit vector per layer (grain:)
     plies_assumed: bool = False  # no ply count given: plies of a stick's thickness
 
     def with_plies(self, n: int) -> None:

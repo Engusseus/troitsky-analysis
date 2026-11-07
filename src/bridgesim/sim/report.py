@@ -363,6 +363,10 @@ class MonteCarloReport(BaseModel):
                     "E = |F_u - F_p| / F_u, over the runs times the mesh and model-form "
                     "error (uncertainty.*), which pulls it below the runs' own value "
                     "(recommended_prediction_runs_kgf)")
+    mesh_bias: float = Field(0.0, description=(
+        "The mesh's bias at this fidelity, taken out of the prediction and the total "
+        "range (uncertainty.mesh_bias_*: standard reads ~2 % below fine, quick ~4 % "
+        "above); the runs are listed as they came"))
     recommended_prediction_runs_kgf: float | None = Field(
         None, description="The same over the runs alone (no mesh or model-form error)")
     recommended_interval_kgf: list[float] = Field([], description=(
