@@ -455,22 +455,86 @@ def _node_diag(m: Model, st: S.State, n: int) -> str:
 LOAD_CELL_MM = 0.3  # time constant of the online load-cell filter, in jack travel
 
 
+def _local_linear(x: np.ndarray, y: np.ndarray, wx: np.ndarray, W: float) -> np.ndarray:
+    """Hann-weighted local linear fit of y(x) over a window W wide centred on each sample
+    (``wx``: the weight each sample carries, e.g. the travel it covers). At an end of
+    the data the window is one-sided and the line fitted there extrapolates the trend
+    to the end, so a load still rising (or falling) at an end is neither pinned to its
+    last raw, ringing sample nor biased by a one-sided average."""
+    # the window keeps its width near an end (shifted inside the data), so an end is
+    # read from as many ring periods as the middle
+    c = np.clip(x, x[0] + W / 2, x[-1] - W / 2) if x[-1] - x[0] > W else \
+        np.full_like(x, 0.5 * (x[0] + x[-1]))
+    lo = np.searchsorted(x, c - W / 2)
+    hi = np.searchsorted(x, c + W / 2, side="right")
+    out = np.empty_like(y)
+    for i in range(len(x)):
+        a, b = lo[i], hi[i]
+        dx = x[a:b] - x[i]
+        k = 0.5 * (1 + np.cos(2 * np.pi * (x[a:b] - c[i]) / W)) * wx[a:b]
+        s0 = float(k.sum())
+        if s0 <= 1e-300:
+            out[i] = y[i]
+            continue
+        m = float(k @ dx) / s0
+        v = float(k @ (dx - m) ** 2) / s0
+        ym = float(k @ y[a:b]) / s0
+        if v <= 1e-12 * W * W:  # all the weight at one x: the mean
+            out[i] = ym
+            continue
+        beta = float(k @ ((dx - m) * (y[a:b] - ym))) / s0 / v
+        out[i] = ym - beta * m
+    return out
+
+
 def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
-                  travel: np.ndarray | None = None, breaks=()) -> np.ndarray:
+                  travel: np.ndarray | None = None, breaks=(), hold=None,
+                  period_s: float = 0.0, _start: bool = True) -> np.ndarray:
     """The load reported for a crush: the raw jack force smoothed by a centred Hann
     window 0.9 mm of jack travel wide (three online load-cell time constants at full
     speed), along the jack travel: the load against travel, as a test record plots it.
     Centred, so it has no lag (the rising branch, the stiffness and F_u are where they
-    are), while it removes the stress waves ringing through the bridge. Along the
-    travel, a hold (the jack nearly still while something breaks) is one point of the
-    curve, weighted by the little travel it covers. ``breaks``: the times something
+    are), while it removes the stress waves ringing through the bridge. The fit is
+    local linear (:func:`_local_linear`), so near an end it follows the trend instead
+    of pinning the curve to the raw sample there. ``breaks``: the times something
     broke (a hold started): the window never reaches across one, each stretch between
-    breaks is smoothed on its own with odd reflection at its ends, so a load that rises
-    to a break and falls there reads its peak where it was (a window across the drop
-    read a bridge 6 % low, and its breaks after the peak at a quarter less load).
-    Without ``travel``: along time at full speed."""
+    breaks is smoothed on its own, so a load that rises to a break and falls there reads
+    its peak where it was (a window across the drop read a bridge 6 % low). ``hold``
+    (one flag per sample: the jack held still while something breaks) and ``period_s``
+    (the bridge's lowest period): within a hold the travel stands still and the load
+    falls in time, so there the load is the one at the break plus the raw force's
+    change since, over the period before each moment (:func:`_backward_mean`, which
+    cancels the ringing): an event in a hold reads the load at its moment (half a
+    period late), the break that starts a fall the load it broke at. The
+    record's start (the jack at rest, the load 0, no ringing yet) is kept as it is, by
+    odd reflection there. Without ``travel``: along time at full speed."""
     raw = np.asarray(raw, float)
     t = np.asarray(t, float)
+    if hold is not None and period_s > 0:
+        out = reported_load(t, raw, speed_mm_s, travel, breaks)
+        held = np.asarray(hold, float) > 0.5
+        # from each break through the jack's slowing and the hold that follows, the
+        # travel stands (nearly) still while the load changes in time: there the load
+        # is the one at the break (the travel reading's end before it) plus the raw
+        # force's change since, over the period before each moment (which cancels the
+        # ringing; a break reads the load it broke at)
+        ref = out.copy()
+        region = np.zeros(len(t), bool)
+        for c in sorted({int(np.searchsorted(t, b)) for b in breaks if t[0] < b <= t[-1]}):
+            if not 0 < c < len(t):
+                continue
+            k = c
+            while k < len(t) and not held[k] and t[k] - t[c] < 5 * period_s:
+                k += 1
+            if k >= len(t) or not held[k]:
+                continue
+            while k < len(t) and held[k]:
+                k += 1
+            region[c:k] = True
+            ref[c:k] = out[c - 1]
+        if region.any():
+            out[region] = (ref + _backward_mean(t, raw - ref, period_s))[region]
+        return out
     cuts = sorted({int(np.searchsorted(t, b)) for b in breaks if t[0] < b <= t[-1]})
     cuts = [c for c in cuts if 0 < c < len(raw)]
     if cuts:
@@ -478,7 +542,7 @@ def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
         trv = None if travel is None else np.asarray(travel, float)
         for a, b in zip([0] + cuts, cuts + [len(raw)], strict=True):
             out[a:b] = reported_load(t[a:b], raw[a:b], speed_mm_s,
-                                     None if trv is None else trv[a:b])
+                                     None if trv is None else trv[a:b], _start=a == 0)
         return out
     if len(raw) < 3:
         return raw.copy()
@@ -488,25 +552,32 @@ def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
     W = 3 * LOAD_CELL_MM / max(speed_mm_s, 1e-9)
     du = np.gradient(u)
     du = np.maximum(du, 1e-6 * (float(np.median(du[du > 0])) if (du > 0).any() else 1.0))
-    # odd reflection at both ends: a load rising from the start (or to a break, or still
-    # changing at the end) is not biased by a one-sided window there
-    m0 = int(np.searchsorted(u, u[0] + W / 2))
-    m1 = len(u) - int(np.searchsorted(u, u[-1] - W / 2))
-    m0, m1 = max(1, min(m0, len(u) - 1)), max(1, min(m1, len(u) - 1))
-    U = np.r_[2 * u[0] - u[m0:0:-1], u, 2 * u[-1] - u[-2:-m1 - 2:-1]]
-    F = np.r_[2 * raw[0] - raw[m0:0:-1], raw, 2 * raw[-1] - raw[-2:-m1 - 2:-1]]
-    D = np.r_[du[m0:0:-1], du, du[-2:-m1 - 2:-1]]
-    lo = np.searchsorted(U, u - W / 2)
-    hi = np.searchsorted(U, u + W / 2, side="right")
-    out = np.empty_like(raw)
-    for i in range(len(u)):
-        a, b = lo[i], hi[i]
-        k = 0.5 * (1 + np.cos(2 * np.pi * (U[a:b] - u[i]) / W)) * D[a:b]
-        out[i] = float(k @ F[a:b]) / max(float(k.sum()), 1e-300)
+    if _start:  # odd reflection before the start: the record starts from rest
+        m0 = max(1, min(int(np.searchsorted(u, u[0] + W / 2)), len(u) - 1))
+        U = np.r_[2 * u[0] - u[m0:0:-1], u]
+        F = np.r_[2 * raw[0] - raw[m0:0:-1], raw]
+        D = np.r_[du[m0:0:-1], du]
+        out = _local_linear(U, F, D, W)[m0:]
+    else:
+        out = _local_linear(u, raw, du, W)
     return out
 
 
+def _backward_mean(t: np.ndarray, raw: np.ndarray, period_s: float) -> np.ndarray:
+    """The load at each moment from the raw force over the period before it: its mean
+    over [t - T, t] (one period of the ringing, which that cancels). Looking back only,
+    so a break that starts a fall reads the load it broke at, not an average with what
+    came after it; a load falling in time reads half a period late."""
+    w = np.gradient(t)
+    cw = np.r_[0.0, np.cumsum(w)]
+    cf = np.r_[0.0, np.cumsum(w * raw)]
+    lo = np.searchsorted(t, t - period_s)
+    hi = np.arange(1, len(t) + 1)
+    return (cf[hi] - cf[lo]) / np.maximum(cw[hi] - cw[lo], 1e-300)
+
+
 MINOR_SHARE = 0.02  # a joint that can carry less than this share of F_u never governs
+CRUSH_EVENT_MM = 0.1  # a face's wood crushed this deep on average: bearing_crushing
 BREAKS = ("joint_failure", "joint_cracking", "member_fracture", "member_shear",
           "plate_crack", "floss_break", "member_crushing", "member_erosion")
 
@@ -811,19 +882,26 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     prev_patch_broken = np.zeros(n_patch, bool)
     prev_patch_started = np.zeros(n_patch, bool)
     prev_patch_cracked = np.zeros(n_patch, bool)
+    # glue points never glued (glue 0: a cut end left dry; the part of a face a fit-up
+    # gap holds off): they start "let go", bear and slide with friction, and count
+    # neither as glued area nor as glue that has failed
+    wet = _wet(m)
     # glued area of each joint, to tell a joint that has cracked from one that has let go
     # what each joint can carry (its glue's shear strength over its area): a joint worth
     # a few % of the load is not what makes the bridge fail, whatever breaks first
-    patch_cap = np.bincount(patch_of, weights=m.c_area * m.c_tau, minlength=n_patch) \
+    patch_cap = np.bincount(patch_of, weights=m.c_area * m.c_tau * wet,
+                            minlength=n_patch) if len(patch_of) else np.zeros(n_patch)
+    patch_area = np.bincount(patch_of, weights=m.c_area * wet, minlength=n_patch) \
         if len(patch_of) else np.zeros(n_patch)
-    patch_area = np.bincount(patch_of, weights=m.c_area, minlength=n_patch) \
+    face_area = np.bincount(patch_of, weights=m.c_area, minlength=n_patch) \
         if len(patch_of) else np.zeros(n_patch)
-    # faces that touch but were never glued (glue 0: a cut end left dry) start "let go":
-    # no event, no joint failure (they bear and slide with friction)
-    d0 = np.asarray(m.params.get("c_d0", np.zeros(len(patch_of))), float)
-    glued_patch = (np.bincount(patch_of, weights=(d0 < 1.0) * m.c_area, minlength=n_patch)
-                   > 0) if len(patch_of) and len(d0) == len(patch_of) else \
-        np.ones(n_patch, bool)
+    # what each face can bear (the wood's crushing strength there over its area)
+    c_fc = np.asarray(m.params.get("glue_fc", np.zeros(len(patch_of))), float)
+    patch_bear = np.bincount(patch_of, weights=m.c_area * c_fc, minlength=n_patch) \
+        if len(patch_of) and len(c_fc) == len(patch_of) else np.zeros(n_patch)
+    prev_patch_crushed = np.zeros(n_patch, bool)
+    # faces with no glue at all: no glue event, no joint failure
+    glued_patch = patch_area > 0 if len(patch_of) else np.ones(n_patch, bool)
     peak = 0.0
     peak_travel = 0.0
     peak_defl = 0.0
@@ -927,12 +1005,12 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             pdmg = np.zeros(n_patch)
             pfrac = np.zeros(n_patch)
             if len(patch_of):
-                np.maximum.at(pdmg, patch_of, st.c_d)
-                pfrac = np.bincount(patch_of, weights=m.c_area * (st.c_d >= 0.999),
+                np.maximum.at(pdmg, patch_of, st.c_d * wet)
+                pfrac = np.bincount(patch_of, weights=m.c_area * wet * (st.c_d >= 0.999),
                                     minlength=n_patch) / np.maximum(patch_area, 1e-12)
             curve["glue_broken"].append(int(((pfrac >= JOINT_FAILED) & glued_patch).sum()))
             # each joint's glued area let go so far (damage-weighted), for what governs
-            glue_hist.append((np.bincount(patch_of, weights=m.c_area * st.c_d,
+            glue_hist.append((np.bincount(patch_of, weights=m.c_area * wet * st.c_d,
                                           minlength=n_patch) if len(patch_of)
                               else np.zeros(n_patch)).astype(np.float32))
             curve["members_broken"].append(int((st.b_fractured | st.b_shear
@@ -982,6 +1060,20 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                        "member crushing in compression (its fibres fold past f_c)",
                        mid([m.b_i[e], m.b_j[e]]))
                 prev_c = prev_c | crushed
+            # the wood under a face pressed together crushing (glue line or a dry bearing
+            # face alike): the first non-linearity of a node that bears, often long
+            # before its glue lets go
+            if len(patch_of):
+                pcrush = np.bincount(patch_of, weights=m.c_area * np.maximum(-st.c_crush, 0),
+                                     minlength=n_patch) / np.maximum(face_area, 1e-12)
+                for pid in np.where((pcrush >= CRUSH_EVENT_MM) & ~prev_patch_crushed)[0]:
+                    pa = m.patches[pid]
+                    ev("bearing_crushing",
+                       f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
+                       f"the wood under the face has crushed {pcrush[pid]:.2f} mm on "
+                       f"average ({pa.area_mm2:.0f} mm^2): it bears more than its grain "
+                       "takes", pa.centroid, capacity=float(patch_bear[pid]))
+                prev_patch_crushed |= pcrush >= CRUSH_EVENT_MM
             started = (pdmg > 0.0) & glued_patch
             cracked = (pfrac >= JOINT_CRACKED) & glued_patch
             broken = (pfrac >= JOINT_FAILED) & glued_patch
@@ -1129,7 +1221,9 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     if curve["t"] and not unstable:
         tt = np.asarray(curve["t"])
         fz = reported_load(tt, np.asarray(curve["force_raw"]), opt.speed_mm_s,
-                           np.asarray(curve["travel"]), breaks=hold_starts)
+                           np.asarray(curve["travel"]), breaks=hold_starts,
+                           hold=curve.get("hold"),
+                           period_s=float(m.params.get("period_s", 0.0)))
         curve["force_online"] = curve["force"]
         curve["force"] = [float(f) for f in fz]
         # each event's load: the reading at the last sample at or before it (not an
@@ -1226,6 +1320,15 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     return res
 
 
+def _wet(m: Model) -> np.ndarray:
+    """1.0 for each glue point glued at the start, 0.0 for one that never was (a face
+    left dry, or held off by a fit-up gap: ``c_d0`` = 1)."""
+    d0 = m.params.get("c_d0")
+    if d0 is None or len(d0) != len(m.c_a):
+        return np.ones(len(m.c_a))
+    return (np.asarray(d0, float) < 1.0).astype(float)
+
+
 def _frame(m: Model, st: S.State, travel: float, force: float, defl: float) -> Frame:
     bstate = np.zeros(len(m.b_i), np.uint8)
     bstate[st.b_fractured] = 1
@@ -1234,9 +1337,11 @@ def _frame(m: Model, st: S.State, travel: float, force: float, defl: float) -> F
     sstate[st.s_gone] = 2
     pd = np.zeros(len(m.patches))
     if len(m.c_patch):  # share of each joint's glued area that has let go
-        area = np.bincount(m.c_patch, weights=m.c_area, minlength=len(m.patches))
-        pd = np.bincount(m.c_patch, weights=m.c_area * (st.c_d >= 0.999),
+        wet = _wet(m)
+        area = np.bincount(m.c_patch, weights=m.c_area * wet, minlength=len(m.patches))
+        pd = np.bincount(m.c_patch, weights=m.c_area * wet * (st.c_d >= 0.999),
                          minlength=len(m.patches)) / np.maximum(area, 1e-12)
+        pd[area <= 0] = 1.0  # a dry face
     return Frame(st.t, travel, force, defl, st.x.astype(np.float32),
                  _quat(st.R).astype(np.float32), bstate, sstate, pd.astype(np.float32),
                  st.k_alive.copy())

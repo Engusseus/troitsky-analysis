@@ -17,11 +17,12 @@ wood:
   E_T_MPa: {value: 500, source: assumed,
             note: "Modulus across the grain of one stick. Birch: about E_L/20."}
   nu_LT: {value: 0.35, source: assumed, note: "Major Poisson ratio of one ply."}
-  f_t90_MPa: {value: 1.0, source: assumed,
-              note: "Tension across the grain of a ply. Sticks laid side by side are barely joined edge to edge, so this is low."}
-  f_c90_MPa: {value: 5.0, source: assumed, note: "Crushing across the grain."}
-  f_rolling_MPa: {value: 2.0, source: assumed,
-                  note: "Rolling shear: shear across the grain of a ply, which limits the glue line between crossed plies (0-90, +-45) in a laminated member or plate. Softwood about 1-1.5 MPa (EN 16351), birch plywood about 2."}
+  f_t90_MPa: {value: 1.5, source: assumed,
+              note: "Tension across the grain of a stick or a ply (sticks glued edge to edge part at about the same). 2 mm birch veneer: 2.0 MPa (CoV 13 %), 1 mm 1.1, 3 mm 1.4 (Kruger et al. 2025, doi:10.5281/zenodo.17201843); lathe checks on one face of a rotary-cut stick lower it. It also caps the peel strength of a glue line (glue.peel_to_shear)."}
+  f_c90_MPa: {value: 6.0, source: assumed,
+              note: "Crushing across the grain, where a member's end bears on another's side, a tenon on its sill, a glue line pressed together. 2 mm birch veneer: 6.9 MPa at about 2 % strain (Kruger et al. 2025); clear birch 4.1-7.4 MPa (USDA Wood Handbook 2010, table 5-3). Measure: press a stack of sticks flat (crush_across_template.csv), the load at 1-2 % deformation."}
+  f_rolling_MPa: {value: 3.0, source: assumed,
+                  note: "Rolling shear: shear across the grain of a ply, which limits the glue line between crossed plies (0-90, +-45) in a laminated member or plate, and the path round a butt joint through a cross ply. Silver birch about 3.5 MPa, CoV 0.25 (Collins & Fink 2025, doi:10.52202/080513-0265); birch plywood 1.8-2.8 MPa characteristic (UPM WISA DoP UPM022CPR), means ~1.4x that; softwood 1-1.5 (EN 16351)."}
   G_f_N_per_mm: {value: 3.0, source: assumed,
                  note: "Fracture energy of a stick breaking in tension along the grain (sets how suddenly it snaps)."}
   G_f90_N_per_mm: {value: 0.3, source: assumed,
@@ -49,14 +50,18 @@ glue:
                  note: "Retardation time of the glue line's creep (s): how fast the creep slip approaches its final value."}
   interlaminar_MPa: {value: 6.0, source: assumed,
                      note: "Shear strength of the glue line between the plies of a laminated member or plate (pressed while it cured, long and continuous), as opposed to tau_g, the average over a hand-made lap joint between parts (stress peaks at its ends, partial coverage). A pressed PVAc bond line is stronger than the wood next to it: EN 204 asks >= 10 MPa of a D1 PVAc adhesive in the EN 205 lap-shear test on beech, so the line fails in the wood, at about f_v (6 MPa here, the stick's own placeholder). A member's plies split at the lower of this and what each ply takes at its grain angle (f_v along the grain, wood.f_rolling_MPa across). Measure it with short-beam shear tests of a 3-5 ply laminate (validation/physical/short_beam_shear_template.csv)."}
-  peel_to_shear: {value: 0.5, source: assumed,
-                  note: "Peel strength / shear strength of a white-glue joint (peel is weaker)."}
-  G_Ic_N_per_mm: {value: 0.25, source: assumed, note: "Fracture energy, opening (peel)."}
-  G_IIc_N_per_mm: {value: 0.6, source: assumed, note: "Fracture energy, sliding (shear)."}
+  peel_to_shear: {value: 0.66, source: assumed,
+                  note: "Peel strength / shear strength of a white-glue line: 0.66 for a pressed PVAc bond line (6.29 / 9.46 MPa, Serrano 2000, Lund, Paper II). On sticks the wood next to the glue parts first: a glue line's peel strength is the lower of this times its shear strength and the wood's tension across the face (wood.f_t90_MPa, along the grain for end grain), so a stronger glue does not make a lap stronger in peel than its sticks."}
+  G_Ic_N_per_mm: {value: 0.25, source: assumed,
+                  note: "Fracture energy, opening (peel). On 2 mm sticks the crack runs in the wood along the grain: K_Ic 0.25-0.52 MPa m^0.5 (USDA Wood Handbook 2010, table 5-10), i.e. 0.1-0.4 N/mm."}
+  G_IIc_N_per_mm: {value: 1.2, source: assumed,
+                   note: "Fracture energy, sliding (shear). A pressed PVAc bond line: 2.08 N/mm with its pre-peak plastic work (Serrano 2000, Lund); wood along the grain in mode II about 1 N/mm (K_IIc ~2 MPa m^0.5, USDA Wood Handbook table 5-10). It sets how much of tau_g x area a long lap carries (generalised Volkersen: a 110 mm lap ~0.65 of it at 0.6 N/mm, ~0.77 at 2). From the load-slip record of a lap test (lap_slip_template.csv)."}
   end_grain_factor: {value: 0.5, source: assumed,
-                     note: "Strength of a glue line on end grain (a member's end, a plate's edge) / on side grain. End grain soaks up the glue; 0.3-0.6 without sizing. Glue two sticks end to end and pull them apart to measure it."}
+                     note: "Strength of a glue line on end grain (a member's end, a plate's edge) / on side grain. End grain soaks up the glue and starves the line: 0.2-0.6 without sizing (USDA Wood Handbook 2021 ch. 10: end-grain butt joints reach about a quarter of the wood's tension strength 'even with special techniques'); a first coat of glue to size the end grain helps. Glue two sticks end to end and pull them apart, or glue a stick's end flat on another's face and shear it (end_grain_template.csv)."}
   friction: {value: 0.4, source: assumed,
              note: "Wood-on-wood friction once a glue line has broken (pieces still bear and rub)."}
+  gap_fill_mm: {value: 0.15, source: assumed,
+                note: "Widest gap a white (PVA) glue line still bridges with strength. PVA is not a gap filler: it shrinks as its water leaves, and a glue line much thicker than about a tenth of a millimetre is weak. Where a fit-up gap (scatter.bearing_gap_mm) is wider than this, the face is taken as dry there. Glue sticks with shims of known thickness between them and pull them apart."}
   tau_peak_over_avg: {value: 1.155, source: assumed,
                       note: "Peak cohesive strength / average lap-joint strength tau_g, for a joint whose glue points hang on several nodes per side. 1.155 makes the simulated 20 x 10 mm single-lap test (bridgesim lab) reproduce tau_g; with the glue on one node per side the factor falls smoothly to 1 (uniform shear). Recompute it if you change the glue stiffness or fracture energies."}
 
@@ -104,6 +109,8 @@ scatter:
               note: "Scale on every seeded imperfection and scatter (bows, lean, support level, plate placement, material and glue scatter, all at once): 1 = the values above; 0.1 = a nearly perfect bridge whose asymmetry is still set by the seed, not by round-off (for an imperfection-sensitivity or mesh study, validation/convergence_study.py --amplitude)."}
   lean_rad: {value: 0.005, source: assumed,
              note: "How far the built bridge leans out of its plane (sway): each seed leans it by up to this angle, either way, the height times the angle at every point (EN 1995-1-1 5.4.4: 0.005 rad). Measure how far the top of your built bridge stands off the vertical."}
+  bearing_gap_mm: {value: 0.3, source: assumed,
+                   note: "Fit-up of a member's end cut to bear or be glued on another part (an end post on a knee, a tenon on its sill: the joints inspect lists as end grain). A hand-cut end is not square: it touches at one edge and stands off by up to this much at the other, each face by its own amount (seeded, 0 to this value) in its own direction. Where the gap is wider than glue.gap_fill_mm the glue does not bridge it and the face is dry there: it bears only once the gap has closed, the touching edge crushing first. A 1 degree error over a 20 mm deep end is 0.35 mm. Hold the cut ends on their seats and slide feeler gauges (or paper of known thickness) into the gap; 0 if each end is sanded to fit."}
   support_level_mm: {value: 0.5, source: assumed,
                      note: "How far the four support corners of the built bridge are out of one plane: each is lifted by up to this much (seeded), so the bridge rocks on three corners until the load beds it down. Stand the bridge on a flat table and measure the gap under the corner that rocks."}
 
@@ -111,4 +118,4 @@ uncertainty:
   mesh_cov: {value: 0.05, source: assumed,
              note: "Discretisation error of F_u at the standard mesh (as a CoV): Bridge_v6, fine vs standard over five seeds, +4.6 % on average (validation/README.md §3.4). Added to the montecarlo range (total_p05_kgf, total_p95_kgf)."}
   model_cov: {value: 0.25, source: assumed,
-              note: "Model-form error of F_u (as a CoV): what the equations leave out or get wrong for a real bridge, not the material values. Unknown until a physical crush test is compared (bridgesim compare). Until then set from how far F_u moves with modelling choices not settled by tests: on Bridge_v10 a small glued patch as a hinge or as a patch that turns (+27 to +42 %), its centre gussets as one beam or as plates (+17 %), its floor beam under the jack rigid or deformable (-9 %), release to release on the same file (1360 to 2154 kgf). Replace it with the scatter of compare's F_u errors once you have tests."}
+              note: "Model-form error of F_u (as a CoV): what the equations leave out or get wrong for a real bridge, not the material values. Unknown until a physical crush test is compared (bridgesim compare). Until then set from how far F_u moves with modelling choices not settled by tests: on Bridge_v10 a small glued patch as a hinge or as a patch that turns (+27 to +42 %), its centre gussets as one beam or as plates (+17 %), its floor beam under the jack rigid or deformable (-9 %), release to release on the same file (1360 to 2154 kgf, as idealisation errors were found and fixed). For scale, the JCSS Probabilistic Model Code (part 3.9) gives 10-15 % for mature resistance models of connections that tests have calibrated: not less than that before any test. It also enters the recommended prediction (montecarlo). Replace it with the scatter of compare's F_u errors once you have tests."}

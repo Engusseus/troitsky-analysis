@@ -422,3 +422,71 @@ the diagonal feet at node M on 2, a gusset or centre-plate crack on 2 (one of th
 flagged: the crack starts in elements larger than the crack band). The range is still
 set mostly by the unmeasured glue: lap-joint tests would narrow it most.
 
+
+### 3.9 Round 17: fit-up, bearing, butt joints by statics, literature values
+
+Four reviews of round 16 (realism, adversarial, ambitious, literature) led to these
+changes; each has a test in `tests/test_sim.py`:
+
+* **Fit-up gaps.** Each end-grain face (a member's end bearing or glued on another part)
+  stands off its seat by a seeded gap, 0 at the edge that touches up to 0-0.3 mm at the
+  other (`scatter.bearing_gap_mm`), dry where it is wider than PVA bridges (0.15 mm,
+  `glue.gap_fill_mm`). With the round-16 materials it lowered Bridge_v10 quick seed 0
+  from 2210 to 1971 kgf (-11 %); with the round-17 model, over seeds 1-3 (`ab -n 3
+  --fidelity quick`, gaps against none), F_u changes by +0.1 % (90 % interval -1.5 % to
+  +1.7 %) but the failure moved on all three seeds: the gaps decide where Bridge_v10
+  gives way more than how much it carries. (The realism review's probe, every knee face
+  dry with a uniform 0.3 mm, gave -22 %: a cut end out of square touches at one edge and
+  bears from the start, with ~15 % of its face dry on average.)
+* **Bearing crushing is reported** (`bearing_crushing`, a face crushed 0.1 mm deep on
+  average) and the screen gives each face's peak bearing utilisation: on Bridge_v10 the
+  End Post's faces on the knees are the first to reach the wood's crushing strength
+  (~1900 kgf if the bridge stayed linear), then the floor beams on the pier legs.
+* **Butt joints by statics.** A brick pattern repeats every stick, so every other ply is
+  cut at the same section: a 13-ply member keeps 6/13 (46 %) of its tension strength,
+  not the 12/13 the round-16 formula gave (the adversarial review's finding: on one of
+  round 16's Monte Carlo draws -39 %). The weakest path through the plies is found
+  exactly (`butt_path_capacity`), and the glue between plies shears at the laminate's
+  interlaminar strength, as where members split. Stick plates longer than a stick get
+  the same reduction of their fibre tension strength (a deck about half).
+* **Literature values** (the research review): the across-grain values from 2 mm birch
+  veneer data (f_t90 1.5, f_c90 6, f_v 8, rolling shear 3 MPa), the glue's shear
+  toughness 1.2 N/mm (pressed PVAc 2.1, wood in mode II ~1), peel 0.66 x shear capped
+  at the wood's tension across the face, the end-grain factor at most 1, wider priors
+  (the stick modulus 35 %: clamped tests on craft sticks 5-7 GPa, veneer 14.6; the lap
+  joints' glue 50 %). f_t and f_c are unchanged: the veneer's failure strains at the
+  craft sticks' measured E give 40 and 24 MPa.
+* **Elements past the crack band** have their strength lowered so they dissipate G_f
+  (they kept it and dissipated up to 3.5x G_f; with f_v 8 MPa the shear crack band is
+  ~14 mm, smaller than most standard elements).
+* **The load reading**: a local linear fit (the reading at a break was pinned to the
+  raw, ringing sample) and, from each break through its hold, the load at the break
+  plus the raw force's change since, over the period before (each event in a hold reads
+  its own moment). The rate check extrapolates along the square of the speed.
+* **Montecarlo**: untrustworthy runs left out of the range and the prediction, the
+  recommended prediction over the runs times the model-form error with a bootstrap
+  interval, a rigid block under the plate named in the note; the kinetic-energy limit
+  of a quasi-static run is 5 % (Abaqus/Explicit's guideline).
+* Verification against closed-form fracture mechanics: simulated laps of 60 and 110 mm
+  carry the share of tau x area generalised Volkersen theory gives, within 12 %
+  (0.68 / 0.70 against 0.64 / 0.77 at 110 mm for G_IIc 0.6 / 1.2 N/mm).
+
+What each change did to Bridge_v10 (quick seed 0, the round-17 model with one change
+backed out at a time; one seed, so a change smaller than the ~20 % between seeds is
+only indicative):
+
+| round-17 model | F_u (kgf) | governs |
+|---|---|---|
+| all changes | 2383 | a crack in the centre plate plate_M (in elements past the crack band: flagged) |
+| without fit-up gaps | 2290 (-3.9 %) | the floor beam's joint to a pier leg |
+| G_IIc 0.6 (round 16) | 2185 (-8.3 %) | End Post to its gusset at node A |
+| f_c90 5 (round 16) | 2335 (-2.0 %) | End Post to its gusset at node A |
+| peel 0.5 x shear, f_t90 1 (round 16) | 2254 (-5.4 %) | the floor beam's joint to a pier leg |
+| f_v 6, rolling shear 2 (round 16) | 2383 (0 %) | the same plate crack |
+| no butt joints | 2538 (+6.5 %) | End Post to its gusset at node A |
+
+The round-16 model gave 2210 kgf here: the literature values of the glue (toughness,
+peel) raise F_u by about as much as butt joints by statics lower it. At standard seed 0
+the round-17 model gives 2457 kgf (round 16: 2156), trustworthy, governed by node A
+again (End Post R Far to its inner gusset), with the plate_M cracks and the diagonal
+feet at node M competing within 10 %.

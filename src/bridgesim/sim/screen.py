@@ -34,7 +34,7 @@ KGF = 9.80665
 @dataclass
 class Limit:
     part: str  # a body, or 'A | B' for a glued joint
-    mode: str  # "glue", "tension", "compression", "shear", "buckling", "plate ..."
+    mode: str  # "glue", "bearing", "tension", "compression", "shear", "buckling", "plate ..."
     utilisation: float  # at the reference load
     load_kgf: float  # plate load at which it reaches its limit (linear)
     where_mm: tuple[float, float, float]
@@ -285,17 +285,29 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
         fT = np.zeros((len(m.patches), 3))
         capN = np.zeros(len(m.patches))
         capT = np.zeros(len(m.patches))
+        # bearing: the wood under a face pressed together (glued or dry) starting to
+        # crush where its pressure first reaches what the grain there takes (Hankinson,
+        # glue_fc): the peak over the face's glue points, as a face pressed off-centre
+        # crushes at its edge first
+        uB = np.zeros(len(m.patches))
+        fc = np.asarray(m.params.get("glue_fc", np.zeros(len(m.c_a))), float)
+        if len(fc) != len(m.c_a):
+            fc = np.zeros(len(m.c_a))
         unglued = _unglued(m)
         for i in range(len(m.c_a)):
-            if not m.c_breakable[i] or unglued[i]:
+            if not m.c_breakable[i]:
                 continue
             ua, ub = (u[m.a_node[a], :3] + np.cross(u[m.a_node[a], 3:], m.a_r0[a])
                       for a in (int(m.c_a[i]), int(m.c_b[i])))
             d = ub - ua
             nrm = m.c_n0[i] / max(np.linalg.norm(m.c_n0[i]), 1e-12)
             dn = float(d @ nrm)
-            dt = d - dn * nrm
             p = int(m.c_patch[i])
+            if fc[i] > 0:
+                uB[p] = max(uB[p], m.c_Kn[i] * max(-dn, 0.0) / fc[i])
+            if unglued[i]:
+                continue
+            dt = d - dn * nrm
             fN[p] += m.c_area[i] * m.c_Kn[i] * dn
             fT[p] += m.c_area[i] * m.c_Ks[i] * dt
             capN[p] += m.c_area[i] * m.c_sig[i] / peak_over_avg
@@ -307,6 +319,10 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
                             float(np.linalg.norm(fT[p])) / capT[p])
             add(f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}", "glue", ut,
                 pa.centroid)
+        for p, pa in enumerate(m.patches):
+            if uB[p] > 0:
+                add(f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}", "bearing",
+                    uB[p], pa.centroid)
     # members: fibre stresses, shear, buckling over the member's length
     if len(m.b_i):
         A = m.b_fA.sum(1)

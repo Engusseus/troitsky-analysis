@@ -49,7 +49,7 @@ gets both factors), ready for its `ab ... --overrides-b DIR/whatif.yaml` command
 | `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, f_t/f_c and tau_g so the *simulated* coupons reproduce the measured ones (`lab --data` then shows ~0 % error); f_t, f_c, f_c90, the end-grain factor, the glue's shear stiffness and toughness and the interlaminar shear strength (short-beam shear) from the direct coupon tests; with 3+ specimens of a kind also the scatter (`my_material.overrides.yaml`, `params:`). A folder without any test results is an input error (exit 2) | ~1 min |
 | `bridgesim ab A.SLDPRT B.SLDPRT [-n 3] [--overrides-a a.yaml] [--overrides-b b.yaml] [--fidelity standard] --json` | Is B better than A? Both crushed with the same seeds: change of F_u and efficiency with a 90 % interval, `significant`, `verdict`, what governed each run (`runs_a/b[].governing`, the most frequent in `governing_a/b`) and `failure_moved`: the seeds where B failed somewhere else than A (strengthening one part often moves the failure to the next). B may be A with other overrides: a what-if (`section_scale`, `glue_factor`) before changing the CAD | 2n x crush / processes |
 | `bridgesim diagnose BRIDGE.SLDPRT [-o overrides.yaml] [-n 2] [--fidelity quick] [--candidates 3] [--out DIR] --json` | What really limits the bridge, measured: crushes it with seeds 1..n, strengthens each part that broke near the peak in turn (glue x1.5 for a joint, section x1.25 for a member or plate, on every copy) on the same seeds, and ranks them by the paired rise of F_u (`candidates`, `limiting`, `verdict`; `governing_after`: where the failure moves). The `governing` label of one crush names the first part in a cascade; diagnose says which one the load depends on, or that no single change helps (then strengthen them together). `DIR/whatif.yaml`: the what-if to confirm with `ab` | (1 + candidates) x n x crush / processes |
-| `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity standard] [--processes 4] [--sample-placeholders] [--out DIR] --json` | Spread of F_u over imperfections and material scatter (`min_kgf`, `max_kgf`, p05/p50/p95: below 20 runs read min and max); `recommended_prediction_kgf` for the Load Prediction Form (the 1/F-weighted median, which minimises the §12.7 error). `note` says what the spread leaves out: the placeholder material values, unless `--sample-placeholders` (MCP `sample_placeholders`) draws them per run (lognormal, each with its own prior, 20-50 %; `sampled_placeholders`) so the range includes them. `total_p05_kgf`/`total_p95_kgf`: that spread times the mesh error and the model-form error (`uncertainty.mesh_cov` 5 %, `uncertainty.model_cov` 25 %: how far F_u moved with modelling choices tests have not settled), the range to give before any physical test | n x crush / processes |
+| `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity standard] [--processes 4] [--sample-placeholders] [--out DIR] --json` | Spread of F_u over imperfections and material scatter (`min_kgf`, `max_kgf`, p05/p50/p95: below 20 runs read min and max); `recommended_prediction_kgf` for the Load Prediction Form (the 1/F-weighted median, which minimises the §12.7 error, over the runs times the mesh and model-form error, which pulls it below the runs' own `recommended_prediction_runs_kgf`), with `recommended_interval_kgf` (how far other runs could move it: wide with few runs, run more); untrustworthy runs are listed apart (`Fu_untrustworthy_kgf`) and left out. `note` says what the spread leaves out: the placeholder material values, unless `--sample-placeholders` (MCP `sample_placeholders`) draws them per run (lognormal, each with its own prior, 20-50 %; `sampled_placeholders`) so the range includes them. `total_p05_kgf`/`total_p95_kgf`: that spread times the mesh error and the model-form error (`uncertainty.mesh_cov` 5 %, `uncertainty.model_cov` 25 %: how far F_u moved with modelling choices tests have not settled), the range to give before any physical test | n x crush / processes |
 | `bridgesim schema inspect\|inspect_brief\|crush\|crush_brief\|screen\|reality_gap\|lab\|montecarlo\|design_comparison\|diagnosis\|sensitivity\|bridge_calibration\|question\|job_status` | JSON Schema of each report (the `_brief` forms are what `--brief` and the MCP tools return by default; every MCP tool but `get_schema` publishes its schema as its output schema) | instant |
 | `bridgesim mcp` | The same as MCP tools (`uv sync --extra mcp`) | - |
 
@@ -63,8 +63,10 @@ up again once its deflection is large, so it stays quasi-static (`quality.speed_
 Bridge_v6 (`validation/README.md` §3.4, five seeds at 100 mm/s; a seed is the same
 imperfect bridge at every fidelity): fine is +4.6 % above standard on average (-1.1 % to
 +11 % seed by seed), so read F_u at standard with ~5 % mesh uncertainty, either way; on
-Bridge_v10 (round 16, `validation/README.md` §3.8) standard is 1.3 % above fine and quick
-3.9 %, all three failing at the same joint with the same stiffness. The spread
+Bridge_v10 (round 16, `validation/README.md` §3.8) the three meshes failed at the same
+joint with the same stiffness, and at one jack speed they agree within 1 % (quick and
+standard at 100 mm/s within 0.13 %, standard and fine at 50 mm/s 0.8 %): the 3.9 % by
+which quick at its own 200 mm/s stood above fine was the jack speed, not the mesh. The spread
 *between* seeds is ~20 %: several failure sites (the hub core, the End Post joints, the
 cross-beam's joints to the deck stringers) compete within a few %, and which goes first
 changes with the mesh and the seed (`competing` lists them; `montecarlo` counts them in
@@ -190,14 +192,19 @@ meanwhile, and `answer_with`: how to answer, as an overrides fragment (`bodies`,
 * members whose glued area is much weaker than the member in tension (`weak_joints`, one
   question for all of them) - a missing gusset? (`screen` shows which joints are really
   loaded: a member in compression needs far less);
-* laminated members longer than one stick (`butt_joints`, one question for all of
-  them): how far apart the butt joints of neighbouring plies are (it sets each member's
-  tension strength);
+* laminated members and stick plates longer than one stick (`butt_joints`, one question
+  for all of them): how far apart the butt joints of neighbouring plies are (it sets each
+  member's tension strength: in the default brick pattern every other ply is cut at the
+  same section, so a 13-ply member keeps 46 % of its tension strength, a deck about
+  half);
 * a loading plate that does not fit where it goes (`plate_fit`, important: parts closer
   together than the plate is wide; meanwhile they are taken as clear of it);
 * a rigid block directly under the loading plate (`rigid_under_plate:`), and the compact
   parts in the load path modelled as rigid blocks (`rigid_blocks`);
-* glued joints that are mostly end grain, a member's end glued flat (`end_grain_joints`);
+* glued joints that are mostly end grain, a member's end glued flat (`end_grain_joints`):
+  whether they are reinforced, and how well the cut ends fit (`scatter.bearing_gap_mm`: a
+  cut end out of square stands off its seat at one edge, dry where the gap is wider than
+  the glue bridges, until it closes);
 * a `kind` set in the overrides that does not fit the body's shape (`kind:`);
 * a failing rule (`rule:<section>`), the mass with an assumed density
   (`material:density`), placeholder material values (`material:measure`).
@@ -278,7 +285,11 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
   collapse. The entries near the peak are the reason the bridge failed: strengthen
   *that*. A joint is `joint_cracking` when 30 % of its glued area has let go and
   `joint_failure` (separated) at 90 %; `member_crushing` that a member's fibres fold in
-  compression past f_c (it bends on, more softly); `member_shear` means the member split along its
+  compression past f_c (it bends on, more softly); `bearing_crushing` that the wood under
+  a face pressed together (a member's end bearing on a knee, a tenon on its sill) has
+  crushed 0.1 mm deep: it bears more than its grain takes, and more glue there changes
+  nothing (a `strengthen` step then says so and offers no glue what-if for that face: a
+  bigger bearing face, or the grain along the force); `member_shear` means the member split along its
   glue lines or grain (it keeps carrying axial load). Which part goes first can change
   with the mesh when two parts are close to failing together: check with
   `--fidelity fine` before redesigning around one part, and use `ab` to confirm.
@@ -293,19 +304,21 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
 * `criteria`: when each §12.5 criterion (deflection, contact, joint/shear, instability)
   was first met.
 * `quality.rate_check` (with `--rate-check`): F_u at half the jack speed, the change,
-  and `Fu_extrapolated_kgf` (2 F(v/2) - F(v): F_u for a jack at rest, like the real
-  test's mm/min).
+  and `Fu_extrapolated_kgf` ((4 F(v/2) - F(v)) / 3: F_u for a jack at rest, like the
+  real test's mm/min, along the square of the speed: the inertia it adds grows with the
+  kinetic energy).
 * `quality.trustworthy`: `false` when the loading was not quasi-static
-  (`kinetic_to_work_max` > 0.1: kinetic energy of the bridge over the jack's work while
+  (`kinetic_to_work_max` > 0.05: kinetic energy of the bridge over the jack's work while
   the load rises to 95 % of its peak), F_u moved more than 5 % at half speed
   (`quality.rate_check`, with `--rate-check`), more than 5 % mass was added, the bridge
   did not fail within the jack travel, or the run had to restart; `quality.reasons` says
   which. Re-run with `--rate-check` or a finer `--fidelity` before relying on an
   untrustworthy F_u.
 * `assumed_parameters`: values still not measured. With placeholders the absolute load
-  is uncertain: on Bridge_v6, `montecarlo -n 20 --sample-placeholders` (build scatter and
-  the placeholder values drawn per run) gives -18 % / +11 % around the median (p05 /
-  p95), while design comparisons (A vs B, same seeds) are much more reliable.
+  is uncertain by tens of %: on Bridge_v10 (round 16) 8 build-scatter runs spread -24 % /
+  +55 % around their median, and the total range (with the model-form error) -40 % / +94
+  %; `montecarlo --sample-placeholders` adds the placeholder values drawn per run. Design
+  comparisons (A vs B, same seeds) are much more reliable.
 * `rules`: the 2027 dimensional rules measured on the solids (penalties, bans).
 * `warnings`: overrides without effect, CAD faces that had to be closed over, etc.
 
@@ -362,8 +375,10 @@ until measured, and the model is verified (the equations are solved right) but n
 validated against a physical crush test, so give F_u with its uncertainty and lean on
 design comparisons; glue lines cover the whole touching area, joint to joint they vary in
 strength and in stiffness alike, and they creep (in physical test time), unless a
-`glue_factor` says otherwise; butt joints in laminated members are assumed in a brick
-pattern unless `butt_stagger_mm` says otherwise; members are shear-flexible fibre beams
+`glue_factor` says otherwise, and each cut end bearing on another part stands off its
+seat at one edge by a seeded fit-up gap (`scatter.bearing_gap_mm`); butt joints in
+laminated members and stick plates are assumed in a brick pattern unless
+`butt_stagger_mm` says otherwise; members are shear-flexible fibre beams
 (no splitting along the grain except through shear), tapered ones with their real
 profile (a part at least twice as long as its section is a member); compact blocks are
 rigid; plates crack ply by ply; plates made of narrow arms are frames of members (thick
@@ -372,5 +387,6 @@ corners are up to 0.5 mm out of level and the bridge leans out of its plane by u
 0.005 rad (`contact.seating_mm`, `scatter.support_level_mm`, `scatter.lean_rad`: measure
 them on the built bridge); parts that come into contact during the test push on each other without
 friction; time is compressed (the jack moves ~mm/s instead of mm/min; the glue's creep
-runs on the physical test time, the jack's travel at the real rate, and `--rate-check`
-shows the simulated speed does not matter).
+runs on the physical test time, the jack's travel at the real rate; F_u falls a few %
+as the simulated jack slows, -2.4 % from quick's 200 to 100 mm/s on Bridge_v10 and
+-0.5 % from 100 to 50: `--rate-check` measures it and extrapolates to a jack at rest).

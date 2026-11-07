@@ -18,9 +18,14 @@ E_MPa:
   value: 10000
   source: assumed
   note: >-
-    Longitudinal modulus. Measure with 3-point bending, E = F L^3 / (48 delta I). The one
-    published measurement on craft sticks (cantilever tests, Emergent Scientist 1, 3
-    (2017)) gives 7.1 +- 0.2 GPa; clear birch is 11 GPa (USDA Wood Handbook).
+    Longitudinal modulus. Measure with 3-point bending, E = F L^3 / (48 delta I). The
+    published measurements on craft sticks come from clamped tests, which read low if the
+    clamp gives: 7.1 +- 0.2 GPa (cantilever, Emergent Scientist 1, 3 (2017)) and 5.0 GPa
+    (Sautel et al., Am. J. Phys. 85, 783 (2017)); 2 mm rotary-cut birch veneer in tension
+    is 14.6 GPa (CoV 9 %; Kruger et al. 2025, doi:10.5281/zenodo.17201843) and clear birch
+    11-15 GPa (USDA Wood Handbook 2010, table 5-3). The crush uses
+    wood.E_placeholder_MPa (7.1 GPa) until you measure it: this is the value that matters
+    most for the bridge's stiffness.
 G_MPa:
   value: 625
   source: assumed
@@ -33,23 +38,33 @@ f_t_MPa:
   value: 40
   source: assumed
   note: >-
-    Tensile strength parallel to grain. Below the bending strength on purpose: in clear
-    wood tension exceeds the modulus of rupture, but a whole stick in tension is limited
-    by its weakest cross-section (slope of grain, knots, the cut across growth rings),
-    which bending stresses only at one face; graded timber has f_t,0 = 0.6 f_m (EN 338).
-    Reduce further for splices.
+    Tensile strength parallel to grain. 2 mm birch veneer breaks at 81 MPa (CoV 14 %)
+    and 0.57 % strain with E = 14.6 GPa (Kruger et al. 2025,
+    doi:10.5281/zenodo.17201843): at the craft sticks' measured E of 7.1 GPa the same
+    failure strain is 40 MPa, the value here. Strength follows stiffness (r = 0.64-0.69
+    between ln E and ln f_t in that data; scatter.E_strength_corr), so if your sticks
+    measure ~14 GPa expect ~80 MPa. Butt joints in a laminated member are a separate
+    reduction (butt_stagger_mm).
 f_c_MPa:
   value: 30
   source: assumed
-  note: Compressive (crushing) strength parallel to grain.
+  note: >-
+    Compressive (crushing) strength parallel to grain. 2 mm birch veneer: 60 MPa (CoV 9 %)
+    with E 17.7 GPa in compression (Kruger et al. 2025); clear birch 39-59 MPa at 12 %
+    moisture (USDA Wood Handbook 2010, table 5-3). At the craft sticks' E of 7.1 GPa the
+    veneer's crushing strain gives 24 MPa; 30 MPa here. Short glued stacks in compression
+    (stick_compression_template.csv) measure it.
 f_b_MPa:
   value: 50
   source: assumed
   note: Bending strength (modulus of rupture).
 f_v_MPa:
-  value: 6
+  value: 8
   source: assumed
-  note: Shear strength parallel to grain (member shear check, tau = 1.5 V / A).
+  note: >-
+    Shear strength parallel to grain (member shear check, tau = 1.5 V / A). 2 mm birch
+    veneer in in-plane shear: 9.2 MPa (CoV 10 %, Kruger et al. 2025); clear birch
+    8.3-15 MPa (USDA Wood Handbook 2010, table 5-3). Shear follows density more than E.
 density_kg_m3:
   value: 650
   source: assumed
@@ -58,7 +73,17 @@ glue:
   tau_g_MPa:
     value: 2.0
     source: assumed
-    note: Average shear strength of a white-glue lap joint. Test single-lap joints.
+    note: >-
+      Average shear strength of a hand-made white-glue lap joint between sticks, the
+      value that moves the predicted load most. Nothing is published for craft sticks:
+      a pressed PVAc bond line holds 9-14 MPa (EN 205 laps; Serrano 2000, Lund), the
+      stick's surface fails in shear at ~9 MPa, peel at the lap ends at ~1.5 MPa, all
+      scaled by how much of the face the glue covers, so hand-made laps plausibly hold
+      2-6 MPa; 2 MPa here, the low end. Joints a few hours old (glued on build day) have
+      ~0.6-0.85 of their cured strength (PVAc laps reach EN 204's 10 MPa 75-165 min after
+      bonding, Bomba et al., BioResources 9(1) 2014): give them glue_factor 0.7. Test 10
+      single laps 20 x 10 mm glued and clamped as on the bridge, loaded to fail in about
+      a minute (a bucket filled with sand).
   mass_fraction:
     value: 0.10
     source: assumed
