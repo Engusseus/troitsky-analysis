@@ -1203,7 +1203,7 @@ def _first_joint(res: CrushResult) -> float | None:
 
 
 KE_LIMIT = 0.05  # kinetic energy / jack work while the load rises: quasi-static below
-LIGHT_MEMBER_MM = 15.0  # members shallower than this on average: quick is too coarse
+LIGHT_MESH_RATIO = 3.0  # elements longer than this x the median member depth: too coarse
 
 
 def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = None
@@ -1225,16 +1225,16 @@ def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = N
         reasons.append("the bridge did not fail within the jack travel")
     if res.notes:
         reasons.append("the run was restarted with a smaller time step")
-    # the quick mesh on a light bridge: its 48 mm elements are several member depths
-    # long and its small glued joints hang on one or two nodes; on a light truss quick
-    # was 49 % below standard and failed elsewhere (validation/README.md 3.6, round 17)
+    # a mesh too coarse for a light bridge: elements several member depths long, small
+    # glued joints on one or two nodes; on a light truss (members 6 mm deep) quick read
+    # 17.9, standard 34.5 and fine 44.6 kgf (validation/README.md 3.10)
     scale = float(res.model.params.get("mesh_scale", 1.0))
     depths = [min(b.section_mm) for b in res.model.bodies
               if b.kind == "bar" and b.section_mm and min(b.section_mm) > 0]
-    if scale > 1.2 and depths and float(np.median(depths)) < LIGHT_MEMBER_MM:
-        reasons.append(f"the quick mesh on a light bridge (members {np.median(depths):.0f} "
-                       f"mm deep on average, elements ~{30 * scale:.0f} mm): quick is not "
-                       "converged for such a bridge; use --fidelity standard")
+    if depths and 30.0 * scale > LIGHT_MESH_RATIO * float(np.median(depths)):
+        reasons.append(f"the mesh is too coarse for a light bridge (elements ~{30 * scale:.0f}"
+                       f" mm, members {np.median(depths):.0f} mm deep on average): F_u is not "
+                       "converged; use a finer --fidelity (fine)")
     # a plate cracking where its elements are larger than the crack band its fracture
     # energy allows, in the mode they cracked in: when such a crack starts depends on the
     # mesh (their strength is lowered to dissipate G_f)

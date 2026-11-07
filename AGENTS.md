@@ -65,18 +65,20 @@ imperfect bridge at every fidelity): fine is +4.6 % above standard on average (-
 +11 % seed by seed), so read F_u at standard with ~5 % mesh uncertainty, either way; on
 Bridge_v10 (`validation/README.md` §3.8-3.10) the round-16 model's three meshes failed at
 the same joint with the same stiffness (their spread was mostly the jack speed, which each
-fidelity changes with the mesh); with round 17's model, at one jack speed (100 mm/s),
-quick is 4.9 % below standard and fails at another node (a floor beam's joint to a pier
-leg, against the End Post's gusset at node A). So rank designs at standard when the
-failure sites compete, and confirm a quick `diagnose` or `sensitivity` at standard. The spread
+fidelity changes with the mesh); with round 18's model, at one jack speed (100 mm/s),
+quick / standard / fine give 2506 / 2483 / 2479 kgf at the same joint, and standard at
+50 mm/s 2445 (-1.6 %). With round 17's model quick had been 4.9 % low and failed at
+another node: when failure sites compete, confirm a quick `diagnose` or `sensitivity` at
+standard. The spread
 *between* seeds is ~20 %: several failure sites (the hub core, the End Post joints, the
 cross-beam's joints to the deck stringers) compete within a few %, and which goes first
 changes with the mesh and the seed (`competing` lists them; `montecarlo` counts them in
 `governing_parts`). So rank designs with one fidelity and the same seeds (`ab`, n >= 3),
 give F_u as the `montecarlo` range, and never compare F_u across fidelities. A small,
-light bridge (members ~10 mm, glued joints of a few tens of mm^2) converges less well:
-on a light truss standard was 14 % below fine and quick failed elsewhere
-(`validation/README.md` §3.6): use standard or fine for it, not quick. `ab`, `montecarlo`, `sensitivity` and `calibrate-bridge`
+light bridge (members ~6-10 mm, glued joints of a few tens of mm^2) converges less well:
+on a light truss (round 18) quick read 17.9, standard 34.5 and fine 44.6 kgf
+(`validation/README.md` §3.10): use fine for it (a crush whose elements are more than 3x
+the members' median depth is flagged untrustworthy). `ab`, `montecarlo`, `sensitivity` and `calibrate-bridge`
 stop each crush 2 mm of jack travel after the bridge is judged failed (F_u and the
 failures are known by then; no replay), which saves about a third of the time.
 
@@ -314,9 +316,10 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
   the load rises to 95 % of its peak), F_u moved more than 5 % at half speed
   (`quality.rate_check`, with `--rate-check`), more than 5 % mass was added, the bridge
   did not fail within the jack travel, the run had to restart, the failure starts as a
-  crack in plate elements past the crack band of the mode they cracked in, or `quick` was
-  run on a light bridge (members under 15 mm deep on average: quick read a light truss 49
-  % low); `quality.reasons` says which. Re-run with `--rate-check` or a finer `--fidelity` before relying on an
+  crack in plate elements past the crack band of the mode they cracked in, or the mesh is
+  too coarse for a light bridge (elements more than 3x its members' median depth: on a
+  light truss of 6 mm members quick read 17.9, standard 34.5 and fine 44.6 kgf);
+  `quality.reasons` says which. Re-run with `--rate-check` or a finer `--fidelity` before relying on an
   untrustworthy F_u.
 * `assumed_parameters`: values still not measured. With placeholders the absolute load
   is uncertain by tens of %: on Bridge_v10 (round 16) 8 build-scatter runs spread -24 % /

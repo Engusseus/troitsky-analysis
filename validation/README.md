@@ -536,3 +536,33 @@ and what changed:
 
 The round-17 Monte Carlo, stopped after 3 of 8 runs when its model was superseded: 2737,
 1553, 1452 kgf.
+
+Bridge_v10 with the round-18 model (the team's butt-joint stagger, 40 mm; the same file
+and other settings as §3.7):
+
+* **Standard seed 0**: F_u 2483 kgf (round 17: 2457), trustworthy, at node A: the End
+  Post R Far's glue to its outer gusset, the inner one competing; the End Post's face on
+  the knee starts crushing just before (2473 kgf). Deflection at F_u 2.4 mm, the screen's
+  stiffness 1134 kgf/mm (the sticks at 11 GPa), its lowest tap-test mode 47.8 Hz.
+* **The mesh at one jack speed** (seed 0, 100 mm/s, `convergence_study.py --overrides
+  --speed 100`): quick 2506, standard 2483, fine 2479 kgf, all three at the same joint
+  with the same competitor, the deflection at F_u 2.4-2.5 mm: standard is 0.2 % above fine
+  and quick 1.1 %. (With round 17's model quick had been 4.9 % low and failed elsewhere.)
+* **The rate check** (standard, seed 0): 2445 kgf at 50 mm/s against 2483 at 100 (-1.6 %),
+  the same joint; extrapolated to a jack at rest along the square of the speed, 2432 kgf.
+  Read F_u at standard with ~2 % for the jack's speed and ~1 % for the mesh.
+* **Montecarlo** (`-n 8 --fidelity standard --sample-placeholders`, now 16 values drawn):
+  F_u 1226 to 3299 kgf, median 1954, every run trustworthy; with the mesh and the model-form
+  error (30 %) 939 to 3997 kgf (p05 / p95). The Load Prediction Form value is 1545 kgf
+  (with the model-form error; 1871 over the runs alone), and other runs could move it
+  between 1294 and 1908 kgf (bootstrap): eight runs do not pin it. Where it starts: the
+  diagonal feet at node M (Stub) on 2 runs, node A's gussets on 2, the knee diagonals'
+  glue to the centre plates on 2, a node block splitting on 1, a centre plate cracking on
+  1. Six failure sites within one design: which goes first depends on the glue and the
+  build, which only tests settle.
+* **The light truss** (`layered_truss()`, members 6 mm deep, seed 0) with the round-18
+  model: quick 17.9 kgf (a deck joint; flagged: the mesh too coarse for it), standard 34.5
+  (a floor beam splitting in shear), fine 44.6 kgf (the other floor beam splitting): fine
+  is 29 % above standard (round 15: 14.0 / 34.3 / 39.8). Not converged at standard: since
+  round 18 a crush whose elements are more than 3x its members' median depth is flagged
+  (quick and standard here, not fine; Bridge_v10's members are 20 mm deep, so not there).

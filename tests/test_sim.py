@@ -2843,19 +2843,19 @@ def _stub_result(m, governing=""):
 
 
 def test_quick_is_flagged_on_a_light_bridge():
-    """On a light bridge (members ~10 mm deep) the quick mesh's elements are several
-    member depths long and its small joints hang on one or two nodes: quick read a light
-    truss 49 % low and failed elsewhere, so a quick crush of such a bridge is not
-    trustworthy; standard is, and so is quick on a bridge of deep members."""
+    """On a light bridge (members 6 mm deep) a mesh whose elements are more than three
+    member depths long is not converged (the light truss: quick 17.9, standard 34.5, fine
+    44.6 kgf): quick and standard crushes of it are not trustworthy, fine is, and so is
+    quick on a bridge of deep members."""
     from bridgesim.cad.synthetic import layered_truss
     from bridgesim.sim import study
     from bridgesim.sim.idealize import Overrides, build_model
 
-    light = build_model(layered_truss(), MAT, SP, Overrides(), seed=None, mesh_scale=1.6)
-    q = study._quality(_stub_result(light), MAT, SP)
-    assert not q.trustworthy and any("light bridge" in r for r in q.reasons)
-    std = build_model(layered_truss(), MAT, SP, Overrides(), seed=None, mesh_scale=0.75)
-    assert study._quality(_stub_result(std), MAT, SP).trustworthy
+    for scale, ok in ((1.6, False), (0.75, False), (0.5, True)):
+        m = build_model(layered_truss(), MAT, SP, Overrides(), seed=None, mesh_scale=scale)
+        q = study._quality(_stub_result(m), MAT, SP)
+        assert q.trustworthy == ok, scale
+        assert ok or any("light bridge" in r for r in q.reasons)
     deep = [box("Pier L (block)", (-550, 0, -40), (-500, 150, 40)),
             box("Pier R (block)", (500, 0, -40), (550, 150, 40)),
             box("Beam (13-ply UD)", (-550, 150, -13), (550, 180, 13))]
@@ -2881,10 +2881,10 @@ def test_a_crack_is_flagged_only_past_the_crack_band_of_its_own_mode():
     mode[np.where(sel)[0][:5]] = 2
     m.params["s_crack_mode"] = mode
     q = study._quality(_stub_result(m, "plate crack: Deck (2-ply 0-90)"), MAT, SP)
-    assert not q.trustworthy and any("shear" in r for r in q.reasons)
+    assert not q.trustworthy and any("crack band" in r and "shear" in r for r in q.reasons)
     mode[np.where(sel)[0][:5]] = 0  # it cracked in fibre tension
     q = study._quality(_stub_result(m, "plate crack: Deck (2-ply 0-90)"), MAT, SP)
-    assert q.trustworthy
+    assert not any("crack band" in r for r in q.reasons)
 
 
 def test_screen_gives_the_tap_test_frequencies(tmp_path):
