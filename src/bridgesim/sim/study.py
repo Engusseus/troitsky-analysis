@@ -477,6 +477,23 @@ def _build(bodies, mat, sp, ov, seed, mesh_scale, strict):
                          "or units are wrong: " + "; ".join(problems)
                          + f" (error: {type(exc).__name__})") from None
     model.notes = problems + model.notes
+    unread = next((b.file_unread for b in bodies if b.file_unread), ())
+    if unread:
+        count, names = unread[0], list(unread[1:])
+        model.notes.insert(0, f"{count} bodies named in the CAD file could not be read and "
+                              f"are not in the model; not matched: {', '.join(names)}")
+        model.questions.insert(0, {
+            "id": "cad_unread", "topic": "geometry", "severity": "important",
+            "body": names[0] if names else "",
+            "question": f"{count} bodies the CAD file names could not be read, so they "
+                        "are missing from the model (a body read without its name is "
+                        "listed as a '(mirror copy)'). Names not matched to a body read: "
+                        + ", ".join(names) + ". Do they carry load?",
+            "assumed": "the bodies read are the whole bridge",
+            "answer_with": {"cad": "save the part again (or export it as Parasolid "
+                                   ".x_b, or as STL with all bodies in one file) and "
+                                   "check that inspect counts every body; acknowledge "
+                                   "cad_unread if the missing ones carry no load"}})
     for p in problems:
         model.questions.insert(0, {
             "id": "geometry:orientation", "topic": "geometry", "severity": "important",

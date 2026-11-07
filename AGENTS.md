@@ -171,6 +171,8 @@ meanwhile, and `answer_with`: how to answer, as an overrides fragment (`bodies`,
 * a part that touches nothing, or a floss end tied to nothing (`floating:`, `loose:`,
   `floss_end:`);
 * two solids that overlap in the CAD (`overlap:`) - usually a modelling error;
+* bodies the CAD file names that could not be read at all (`cad_unread`, important:
+  they are missing from the model);
 * faces read only approximately (`cad_approximated:<body>`, important when they are a
   twentieth of the body's surface): a spline, cone or freeform surface flattened, or a
   face that could not be decoded closed over;

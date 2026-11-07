@@ -804,6 +804,12 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         if len(patch_of) else np.zeros(n_patch)
     patch_area = np.bincount(patch_of, weights=m.c_area, minlength=n_patch) \
         if len(patch_of) else np.zeros(n_patch)
+    # faces that touch but were never glued (glue 0: a cut end left dry) start "let go":
+    # no event, no joint failure (they bear and slide with friction)
+    d0 = np.asarray(m.params.get("c_d0", np.zeros(len(patch_of))), float)
+    glued_patch = (np.bincount(patch_of, weights=(d0 < 1.0) * m.c_area, minlength=n_patch)
+                   > 0) if len(patch_of) and len(d0) == len(patch_of) else \
+        np.ones(n_patch, bool)
     peak = 0.0
     peak_travel = 0.0
     peak_defl = 0.0
@@ -824,6 +830,10 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     rings_slowly = T1 > PERIOD_REF_S
     ramp = 2 * T1 if rings_slowly else 0.02  # s
     up_ramp = max(opt.hold_ramp_s, T1) if rings_slowly else opt.hold_ramp_s
+    # a hold waits for the bridge to settle after a break: at least half a period with
+    # nothing breaking, at most four periods (a stiff bridge: hold_settle_s, hold_max_s)
+    hold_settle = max(opt.hold_settle_s, 0.5 * T1) if rings_slowly else opt.hold_settle_s
+    hold_max = max(opt.hold_max_s, 4 * T1) if rings_slowly else opt.hold_max_s
     t_load0 = st.t
     max_ke_ratio = 0.0
     work = 0.0
@@ -905,7 +915,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                 np.maximum.at(pdmg, patch_of, st.c_d)
                 pfrac = np.bincount(patch_of, weights=m.c_area * (st.c_d >= 0.999),
                                     minlength=n_patch) / np.maximum(patch_area, 1e-12)
-            curve["glue_broken"].append(int((pfrac >= JOINT_FAILED).sum()))
+            curve["glue_broken"].append(int(((pfrac >= JOINT_FAILED) & glued_patch).sum()))
             # each joint's glued area let go so far (damage-weighted), for what governs
             glue_hist.append((np.bincount(patch_of, weights=m.c_area * st.c_d,
                                           minlength=n_patch) if len(patch_of)
@@ -957,9 +967,9 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                        "member crushing in compression (its fibres fold past f_c)",
                        mid([m.b_i[e], m.b_j[e]]))
                 prev_c = prev_c | crushed
-            started = pdmg > 0.0
-            cracked = pfrac >= JOINT_CRACKED
-            broken = pfrac >= JOINT_FAILED
+            started = (pdmg > 0.0) & glued_patch
+            cracked = (pfrac >= JOINT_CRACKED) & glued_patch
+            broken = (pfrac >= JOINT_FAILED) & glued_patch
             for pid in np.where(started & ~prev_patch_started)[0]:
                 pa = m.patches[pid]
                 ev("glue_damage", f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
@@ -987,21 +997,21 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                     if st.t >= hold_until:
                         holds += 1
                         hold_start = st.t
-                    hold_until = min(st.t + opt.hold_settle_s, hold_start + opt.hold_max_s)
+                    hold_until = min(st.t + hold_settle, hold_start + hold_max)
                 n_seen = len(events)
             # ... and until the bridge has settled: no hold ends while it still rings
             recent.append((st.t, force))  # the online reading (the raw force rings)
-            while recent and recent[0][0] < st.t - 0.5 * opt.hold_settle_s:
+            while recent and recent[0][0] < st.t - 0.5 * hold_settle:
                 recent.pop(0)
             if throttle >= 0.999 and st.t >= hold_until and tl > ramp:
                 ke_q = kin if ke_q <= 0 else 0.95 * ke_q + 0.05 * kin
             if opt.hold_on_failure and fail_at is None and hold_until > 0 and \
-                    hold_until - 0.0005 <= st.t < hold_start + opt.hold_max_s:
+                    hold_until - 0.0005 <= st.t < hold_start + hold_max:
                 fr = [f for _, f in recent]
                 ringing = kin > opt.hold_ke_settle * max(ke_q, 1e-9) or \
                     max(fr) - min(fr) > opt.hold_force_tol * max(abs(force), 1.0)
                 if ringing:
-                    hold_until = min(st.t + 0.001, hold_start + opt.hold_max_s)
+                    hold_until = min(st.t + 0.001, hold_start + hold_max)
             # ---- §12.5 criteria
             if criteria["deflection"] is None and defl > opt.deflection_limit_mm:
                 criteria["deflection"] = {"t_s": st.t, "travel_mm": travel, "load_N": force}

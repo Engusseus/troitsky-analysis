@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from bridgesim.cad.mesh import Mesh, mass_properties, tessellate
-from bridgesim.cad.parasolid import Body, Face, read_bodies
+from bridgesim.cad.parasolid import Body, Face, _body_name, _names, read_bodies
 from bridgesim.cad.sldprt import read_part
 
 SUPPORTED = (".sldprt", ".x_b", ".stl")
@@ -27,6 +27,8 @@ class CadBody:
     faces: list[Face]
     index: int
     named_in_cad: bool = True
+    # bodies the file names that could not be read (the same on every body of a file)
+    file_unread: tuple[str, ...] = ()
 
 
 def _mirror_names(bodies: list[CadBody]) -> None:
@@ -68,12 +70,21 @@ def _unique_names(bodies: list[CadBody]) -> None:
 
 def bodies_from_parasolid(stream: bytes) -> list[CadBody]:
     raw: list[Body] = read_bodies(stream)
+    # a body the file names but whose faces could not be put together is left out:
+    # say which (its name may instead be one a read body lost: a mirror copy)
+    named = {k: _body_name(v) for k, v in _names(stream).items()}
+    unread: tuple[str, ...] = ()
+    if len(named) > len(raw):
+        got = {b.index for b in raw}
+        unread = tuple(sorted(n for k, n in named.items() if k not in got and n))
     out = []
     for b in raw:
         m = tessellate(b)
         if m.volume <= 0:
             raise ValueError(f"body {b.name or b.index} has no volume (inside-out or open)")
-        out.append(CadBody(b.name, m, b.faces, b.index, named_in_cad=bool(b.name)))
+        out.append(CadBody(b.name, m, b.faces, b.index, named_in_cad=bool(b.name),
+                           file_unread=unread and (f"{len(named) - len(raw)} of "
+                                                   f"{len(named)}",) + unread))
     out.sort(key=lambda c: (-c.mesh.volume, c.name))
     _mirror_names(out)
     _unique_names(out)

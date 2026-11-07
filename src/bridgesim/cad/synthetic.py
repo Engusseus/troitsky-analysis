@@ -75,10 +75,10 @@ def _strip(p, q, w):
 def layered_truss(span: float = 1000.0, height: float = 140.0, panels: int = 4
                   ) -> list[CadBody]:
     """A light Pratt truss bridge (~0.4 kg of sticks), as teams build them from sticks:
-    in each of the two trusses (near and far) the chords lie in an outer layer and the
-    verticals and diagonals in the layer inside it, glued face to face where they cross;
-    floor beams across the bottom chords at the verticals carry a deck under the
-    loading plate, and struts across the top chords brace them. Support blocks under the
+    in each of the two trusses (near and far) the verticals, the chords and the
+    diagonals lie in three layers, out from the middle, glued face to face where they
+    cross; floor beams resting across the bottom chords (mid-panel) carry a deck under
+    the loading plate, and struts across the top chords brace them. Support blocks under the
     chords' ends stand on the platform. A slender, soft bridge, unlike Bridge_v6. The
     trusses stand 104 mm apart, so the 90 mm loading plate fits between them."""
     out: list[CadBody] = []
@@ -115,12 +115,16 @@ def layered_truss(span: float = 1000.0, height: float = 140.0, panels: int = 4
             dx = np.array([np.sign(q[0] - p[0]) * 10.0, 0.0])
             out.append(upright(f"Diagonal {k} (3-ply UD) - {side}",
                                _strip(p + dx, q - dx, 10.0), zd[0], zd[1]))
-    for k, xv in enumerate(xs):  # between the webs, glued to the verticals' inner faces
-        out.append(box(f"Floor Beam {k} (3-ply UD)", (xv - 5, y0 + 20, -w),
-                       (xv + 5, y0 + 26, w)))
-    mid = len(xs) // 2
-    out.append(box("Deck (2-ply 0-90)", (xs[mid - 1] - 5, y0 + 26, -w),
-                   (xs[mid + 1] + 5, y0 + 30, w)))
+    # floor beams across the two bottom chords, resting on them (glued, bearing) at the
+    # middle of each panel, clear of the verticals; the deck on the two middle ones,
+    # between the verticals, under the loading plate
+    xf = 0.5 * (xs[:-1] + xs[1:])
+    for k, xm in enumerate(xf):
+        out.append(box(f"Floor Beam {k} (3-ply UD)", (xm - 5, y0 + 20, -w - 12),
+                       (xm + 5, y0 + 26, w + 12)))
+    mid = len(xf) // 2
+    out.append(box("Deck (2-ply 0-90)", (xf[mid - 1] - 10, y0 + 26, -w),
+                   (xf[mid] + 10, y0 + 30, w)))
     mid = len(xs) // 2
     for k in (0, mid, len(xs) - 1):
         out.append(box(f"Top Strut {k} (3-ply UD)", (xs[k] - 5, yt, -w - 12),

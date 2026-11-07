@@ -90,6 +90,7 @@ PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("wood.fc_proportional", 0.2, 1.0, True),
     ("wood.densification_strain", 0.0, 0.95, False),
     ("glue.peel_to_shear", 0.0, 5.0, False),
+    ("glue.points_per_side", 1.0, 4.0, True),
     ("glue.end_grain_factor", 0.0, 2.0, True),
     ("glue.tau_peak_over_avg", 1.0, 2.0, True),
     ("*friction*", 0.0, 2.0, True),

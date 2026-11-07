@@ -122,6 +122,15 @@ def _beam_K(m: Model) -> np.ndarray:
     return K
 
 
+def _unglued(m: Model) -> np.ndarray:
+    """The glue points of faces that touch but are not glued (glue_factor 0: the crush
+    starts them broken, bearing and sliding with friction only)."""
+    d0 = m.params.get("c_d0")
+    if d0 is None or len(d0) != len(m.c_a):
+        return np.zeros(len(m.c_a), bool)
+    return np.asarray(d0) >= 1.0
+
+
 def _block(Rm: np.ndarray, k: int) -> np.ndarray:
     """Block-diagonal matrix of k copies of the 3 x 3 rotation Rm (global -> local)."""
     T = np.zeros((3 * k, 3 * k))
@@ -149,7 +158,10 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
         T = _block(m.s_E0[e].T, 6)
         dofs = np.concatenate([6 * nd + np.arange(6) for nd in m.s_nodes[e]])
         asm.add(dofs, T.T @ m.s_K[e] @ T)
+    unglued = _unglued(m)
     for i in range(len(m.c_a)):
+        if unglued[i]:  # touching, not glued: bears in compression only (below)
+            continue
         nrm = m.c_n0[i] / max(np.linalg.norm(m.c_n0[i]), 1e-12)
         P = np.outer(nrm, nrm)
         k3 = m.c_area[i] * (m.c_Kn[i] * P + m.c_Ks[i] * (np.eye(3) - P))
@@ -178,6 +190,17 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
         dofs = 6 * nd + np.arange(6)
         # opening = the point rising off the platform
         contacts.append((dofs, T.T @ (k_contact * np.eye(3)) @ T, T[1].copy(), 1.0))
+    # faces that touch but are not glued (glue_factor 0: a cut end, a part only resting
+    # on another) bear across their faces, and open freely
+    for i in np.where(unglued)[0]:
+        na, Ta = _att_T(m, int(m.c_a[i]))
+        nb, Tb = _att_T(m, int(m.c_b[i]))
+        if na == nb:
+            continue
+        nrm = m.c_n0[i] / max(np.linalg.norm(m.c_n0[i]), 1e-12)
+        B = nrm @ np.hstack([-Ta, Tb])  # opening: B . u > 0
+        dofs = np.r_[6 * na + np.arange(6), 6 * nb + np.arange(6)]
+        contacts.append((dofs, m.c_area[i] * m.c_Kn[i] * np.outer(B, B), B, 1.0))
     P_ = m.plate_node
     q_on = []
     if P_ >= 0 and len(m.q_att):
@@ -262,8 +285,9 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
         fT = np.zeros((len(m.patches), 3))
         capN = np.zeros(len(m.patches))
         capT = np.zeros(len(m.patches))
+        unglued = _unglued(m)
         for i in range(len(m.c_a)):
-            if not m.c_breakable[i]:
+            if not m.c_breakable[i] or unglued[i]:
                 continue
             ua, ub = (u[m.a_node[a], :3] + np.cross(u[m.a_node[a], 3:], m.a_r0[a])
                       for a in (int(m.c_a[i]), int(m.c_b[i])))

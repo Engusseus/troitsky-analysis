@@ -249,7 +249,12 @@ straps to the hub spreader (597-634 kgf), where the crush's glue starts to fail 
 kgf) and the first joint separates (724 kgf). It does not give F_u: those first joints
 let go long before the peak, as the load finds other paths, which only the crush follows
 (`test_linear_screen_matches_beam_theory` checks its stiffness and fibre limits against
-beam theory within 3 %).
+beam theory within 3 %). Since round 15 the screen takes faces that touch but are not
+glued (glue 0: a cut end left dry) as bearing in compression only, as the crush does;
+before, it listed them as glue limits at ~1 kgf, and a team's design report had to
+footnote it (`test_screen_takes_unglued_faces_as_bearing_only`). And the plate rests on
+the deck points at or below its underside: it took the highest points under its
+footprint, and on a truss with a strut over the deck balanced on that strut's line.
 
 ### 3.6 Soft and light bridges: the jack speed (round 15)
 
@@ -275,6 +280,16 @@ twenty times slower, and the same jack outran it. Three synthetic bridges
   comes down to it; the last run passes the 5 % rate criterion (56 s on 2 cores). It
   fails where such a truss does: the end-grain glue of the top struts on the verticals
   lets go at 3.9 mm of travel, and the far truss, no longer braced, rolls over.
+  **Glued joints that are not hinges.** Up to here every glued patch smaller than an
+  element was one spring: the webs were pinned to the chords and the top struts to the
+  verticals, and quick and standard differed by 39 % (11.93 and 8.56 kgf). With at least
+  two points across each side of a patch (it then resists turning, as a glued joint
+  does) the period under the plate is 47 ms instead of 74, and seed 0 gives F_u 14.51 /
+  12.27 / 13.30 kgf at quick / standard / fine (quick +9 %, standard -8 % against fine,
+  the spread Bridge_v6's seeds showed between meshes). The collapse now starts in the
+  floor system, as the inspect `weak_joints` question warned: the end-grain joints of
+  the middle floor beam and the deck's edge to the middle verticals (12 kgf each by
+  inspect) let go together (`competing` names the other three), at every mesh.
   (Before the truss was made to fit the plate it stood 86 mm apart: the plate started
   inside its verticals and threw them off; such a design now gets an important
   `plate_fit` question. Its diagonals had been cut 12 mm short at both ends and held by

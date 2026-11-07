@@ -41,6 +41,8 @@ glue:
   K_n_N_per_mm3: {value: 150, source: assumed,
                   note: "Peel (normal) stiffness of a glue line plus the wood next to it, per mm^2 of glued area."}
   K_s_N_per_mm3: {value: 60, source: assumed, note: "Shear stiffness of the glue line per mm^2 (short-term: the first seconds of a lap's load-slip record)."}
+  points_per_side: {value: 2, source: numerical,
+                    note: "Glue points at least across each side (3 mm or more) of a glued patch between two members: 2 lets a patch resist turning about any axis in its plane, as a glued joint does; 1 puts a patch smaller than an element at one point, a hinge (the model until round 15)."}
   creep_factor: {value: 1.0, source: assumed,
                  note: "Creep of a PVA glue line in shear: under a steady load its slip grows toward (1 + this) x the elastic slip (a Kelvin element in series with K_s), with the retardation time creep_time_s, in physical test time (the jack's travel at crusher.test_rate_mm_per_min). PVA is a thermoplastic and creeps; over the ~1 min a crush test takes it adds a few % to the joints' slip. Measure it with a lap joint held at a constant load (its slip over a few minutes); 0 = no creep."}
   creep_time_s: {value: 600, source: assumed,

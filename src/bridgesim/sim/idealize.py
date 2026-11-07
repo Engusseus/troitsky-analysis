@@ -1309,7 +1309,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             # at least two points across each side: a glued patch resists turning
             # about any axis in its plane (its glue is pulled at one edge and pressed
             # at the other), which one point, or one row, would make a hinge
-            pts2 = _sample_polygon(inter, sp_, max_pts=400, min_per_side=2)
+            pts2 = _sample_polygon(inter, sp_, max_pts=400, min_per_side=int(
+                sp.values.get("glue.points_per_side", 2)))
             pts3 = oa + np.outer(pts2[:, 0], e1) + np.outer(pts2[:, 1], e2)
             wts = np.full(len(pts3), inter.area / len(pts3))
         # where the joint is, from the CAD overlap alone (not from the mesh): the key of

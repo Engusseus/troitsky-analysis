@@ -2351,3 +2351,39 @@ def test_a_soft_bridge_is_loaded_without_a_kick(tmp_path):
     slope, icpt = np.polyfit(D[sel], L[sel], 1)
     assert 0.75 * k < slope < 1.05 * k  # the screen holds the supports fully
     assert abs(icpt) < 0.1 * slope * 4.0
+
+
+def test_screen_takes_unglued_faces_as_bearing_only(tmp_path):
+    """Faces that touch but are not glued (glue 0: a cut end left dry) bear in
+    compression only, as in the crush: the screen does not list them as glue limits at
+    ~0 kgf, and a block resting dry on the deck adds no stiffness in tension."""
+    from bridgesim.sim import study
+
+    deck_top = 150 + 23.1
+    cad = tmp_path / "b.stl"
+    write_stl(simple_beam_bridge() + [box("Weight", (300, deck_top, -20),
+                                          (340, deck_top + 20, 20))], cad, names=True)
+    glued = study.screen(cad)
+    dry = study.screen(cad, overrides={"glue": {"Deck* | Weight*": 0}})
+    assert any("Weight" in lm.part for lm in glued.limits)
+    assert not any("Weight" in lm.part for lm in dry.limits)
+    assert dry.stiffness_kgf_per_mm == pytest.approx(glued.stiffness_kgf_per_mm, rel=0.05)
+
+
+def test_dry_faces_are_no_joint_failures(tmp_path):
+    """A part resting dry on another (glue 0) was never glued: the crush logs no joint
+    separating there at 0 kgf, and the first joint failure is not put at zero load."""
+    from bridgesim.sim import study
+    from bridgesim.sim.crush import CrushOptions
+
+    deck_top = 150 + 23.1
+    cad = tmp_path / "b.stl"
+    write_stl(simple_beam_bridge() + [box("Weight", (300, deck_top, -20),
+                                          (340, deck_top + 20, 20))], cad, names=True)
+    rep, res = study.crush(cad, overrides={"glue": {"Deck* | Weight*": 0}}, seed=None,
+                           replay=False, options=CrushOptions(speed_mm_s=150,
+                                                              max_travel_mm=1.0,
+                                                              auto_speed=False))
+    assert not any("Weight" in e.what for e in res.events)
+    assert rep.curve.joints_broken[0] == 0
+    assert rep.Fu_first_joint_failure_kgf is None or rep.Fu_first_joint_failure_kgf > 0
