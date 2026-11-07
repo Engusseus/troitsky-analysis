@@ -487,9 +487,43 @@ def _local_linear(x: np.ndarray, y: np.ndarray, wx: np.ndarray, W: float) -> np.
     return out
 
 
+def centred_mean(t: np.ndarray, raw: np.ndarray, width_s: float) -> np.ndarray:
+    """The raw force averaged over a window ``width_s`` wide centred on each sample
+    (one period of the ringing cancels it)."""
+    w = np.gradient(t)
+    cw = np.r_[0.0, np.cumsum(w)]
+    cf = np.r_[0.0, np.cumsum(w * raw)]
+    lo = np.searchsorted(t, t - width_s / 2)
+    hi = np.searchsorted(t, t + width_s / 2, side="right")
+    return (cf[hi] - cf[lo]) / np.maximum(cw[hi] - cw[lo], 1e-300)
+
+
 def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
                   travel: np.ndarray | None = None, breaks=(), hold=None,
-                  period_s: float = 0.0, _start: bool = True) -> np.ndarray:
+                  period_s: float = 0.0) -> np.ndarray:
+    """The load reported for a crush (:func:`_reported`), kept within the envelope of
+    the raw jack force over a centred period of the ringing (or the smoothing window):
+    a reading never stands above the highest force the jack applied around that moment,
+    nor below the lowest, so the fit's extrapolation at a break cannot invent a peak
+    (a force that rounds over just before a break read 4-7 % high) and a fit after a
+    break cannot read the collapse before it happens."""
+    raw = np.asarray(raw, float)
+    t = np.asarray(t, float)
+    out = _reported(t, raw, speed_mm_s, travel, breaks, hold, period_s)
+    if len(raw) < 3:
+        return out
+    h = 0.5 * (period_s if period_s > 0 else 3 * LOAD_CELL_MM / max(speed_mm_s, 1e-9))
+    lo = np.searchsorted(t, t - h)
+    hi = np.searchsorted(t, t + h, side="right")
+    for i in range(len(t)):
+        seg = raw[lo[i]:hi[i]]
+        out[i] = min(max(out[i], float(seg.min())), float(seg.max()))
+    return out
+
+
+def _reported(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
+              travel: np.ndarray | None = None, breaks=(), hold=None,
+              period_s: float = 0.0, _start: bool = True) -> np.ndarray:
     """The load reported for a crush: the raw jack force smoothed by a centred Hann
     window 0.9 mm of jack travel wide (three online load-cell time constants at full
     speed), along the jack travel: the load against travel, as a test record plots it.
@@ -511,7 +545,7 @@ def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
     raw = np.asarray(raw, float)
     t = np.asarray(t, float)
     if hold is not None and period_s > 0:
-        out = reported_load(t, raw, speed_mm_s, travel, breaks)
+        out = _reported(t, raw, speed_mm_s, travel, breaks)
         held = np.asarray(hold, float) > 0.5
         # from each break through the jack's slowing and the hold that follows, the
         # travel stands (nearly) still while the load changes in time: there the load
@@ -541,8 +575,8 @@ def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
         out = np.empty_like(raw)
         trv = None if travel is None else np.asarray(travel, float)
         for a, b in zip([0] + cuts, cuts + [len(raw)], strict=True):
-            out[a:b] = reported_load(t[a:b], raw[a:b], speed_mm_s,
-                                     None if trv is None else trv[a:b], _start=a == 0)
+            out[a:b] = _reported(t[a:b], raw[a:b], speed_mm_s,
+                                 None if trv is None else trv[a:b], _start=a == 0)
         return out
     if len(raw) < 3:
         return raw.copy()
@@ -594,9 +628,9 @@ def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
               speed_mm_s: float) -> tuple[Event | None, list[str]]:
     """The governing failure and the competing ones, from the events up to the failure
     call. Governing: the break that started the fall of the load, i.e. the first break
-    from ``t_c``, where the reported load last stood within 5 % of F_u (``peak``); a
-    break before it was survived (the load came back). A quarter of the load-cell time
-    constant of slack before ``t_c``: the centred smoothing leads a sudden drop. Among
+    from ``t_c``, where the raw force (averaged over a centred period of the ringing)
+    last stood within 5 % of F_u (``peak``); a break before it was survived (the load
+    came back). A quarter of the load-cell time constant of slack before ``t_c``. Among
     breaks at the same moment a clean break comes before a joint that only cracked, and
     a member split within 2 ms of a member fracture is put down to the fracture (its
     stress wave). Without a break from ``t_c``: the last survived break within 10 % of
@@ -900,6 +934,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     patch_bear = np.bincount(patch_of, weights=m.c_area * c_fc, minlength=n_patch) \
         if len(patch_of) and len(c_fc) == len(patch_of) else np.zeros(n_patch)
     prev_patch_crushed = np.zeros(n_patch, bool)
+    crack_mode = np.full(len(m.s_nodes), -1, np.int64)  # the mode each element cracked in
+    m.params["s_crack_mode"] = crack_mode
     # faces with no glue at all: no glue event, no joint failure
     glued_patch = patch_area > 0 if len(patch_of) else np.ones(n_patch, bool)
     peak = 0.0
@@ -1045,6 +1081,14 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                    mid([m.b_i[e], m.b_j[e]]))
             sd = (st.s_dmg > 0.5) & ~prev_s
             if sd.any():
+                # the mode each element cracked in: the furthest along its softening
+                # (fibre tension, across the grain, shear), for the crack-band check
+                ec = np.where(sd)[0]
+                h = st.s_hist[ec]
+                prog = np.stack([h[:, :, 0].max(1) / m.s_rf[ec, 0],
+                                 h[:, :, 2].max(1) / m.s_rf[ec, 1],
+                                 h[:, :, 4].max(1) / m.s_rf[ec, 2]], 1)
+                crack_mode[ec] = prog.argmax(1)
                 for bid in np.unique(m.s_body[sd]):
                     els = np.where(sd & (m.s_body == bid))[0]
                     ev("plate_crack", m.bodies[bid].name,
@@ -1242,8 +1286,15 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         peak, peak_travel = float(fz[i_pk]), float(curve["travel"][i_pk])
         peak_defl = float(curve["deflection"][i_pk])
         Fu_at_fail = peak
-        high = np.where(fz[i_pk:n_ok] >= 0.95 * peak)[0]
-        t_c = float(tt[i_pk + high[-1]]) if i_fail is not None else np.inf
+        # where the load last stood within 5 % of F_u: on the raw force averaged over a
+        # centred period of the ringing, which follows a fall without the lag of a
+        # reading that looks back (in a hold) or the lead of a window across it
+        fcz = centred_mean(tt, np.asarray(curve["force_raw"]),
+                           float(m.params.get("period_s", 0.0))
+                           or 3 * LOAD_CELL_MM / max(opt.speed_mm_s, 1e-9))
+        high = np.where(fcz[i_pk:n_ok] >= 0.95 * peak)[0]
+        t_c = (float(tt[i_pk + high[-1]]) if len(high) else float(tt[i_pk])) \
+            if i_fail is not None else np.inf
         if fail_mode == "collapse":
             fail_detail = (f"load fell more than {1 - opt.drop_ratio:.0%} below its peak of "
                            f"{peak / KGF:.1f} kgf")

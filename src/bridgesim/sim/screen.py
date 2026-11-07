@@ -143,7 +143,6 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
           tie_tol_mm: float = 1.0) -> dict:
     """Assemble and solve. Returns the nodal displacements (n, 6), the plate's
     displacement, and the pieces needed to evaluate utilisations."""
-    from scipy.sparse.linalg import spsolve
 
     n = m.n_nodes
     asm = _Assembler(n)
@@ -177,19 +176,27 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
             asm.spring(m, int(m.k_a[i]), int(m.k_b[i]),
                        m.k_EA[i] / max(m.k_L0[i], 1e-9) * np.outer(t, t))
     # contacts, compression only (solved again without the ones that would pull, until
-    # none does): the points resting on the platform, held in every direction (friction
-    # sticks under a linear load) while they press on it, and the loading plate, a rigid
+    # none does): the points resting on the platform, held in every direction while they
+    # press on it (friction sticks), unless the bridge's thrust at one end is more than
+    # friction holds (contact.friction_platform x the reaction there): that end slides
+    # along the span (pinned at one end, a roller at the other; held everywhere a truss
+    # read as an arch, 42 % too stiff on a light truss); and the loading plate, a rigid
     # body bearing on the deck points under it, which tilts freely on the jack's
     # hemisphere (the jack holds it across and against turning)
     contacts: list[tuple[np.ndarray, np.ndarray, np.ndarray, float]] = []
     sup = np.where(m.p_support)[0] if len(m.p_support) else np.zeros(0, int)
+    sup_T = []
     for i in sup:
         att = int(m.p_att[i])
         nd = int(m.a_node[att])
         _, T = _att_T(m, att)
         dofs = 6 * nd + np.arange(6)
+        sup_T.append(T)
         # opening = the point rising off the platform
         contacts.append((dofs, T.T @ (k_contact * np.eye(3)) @ T, T[1].copy(), 1.0))
+    sup_x = np.array([float((m.X[m.a_node[m.p_att[i]]] + m.a_r0[m.p_att[i]])[0])
+                      for i in sup]) if len(sup) else np.zeros(0)
+    mu = float(m.params.get("friction_platform", 0.35))
     # faces that touch but are not glued (glue_factor 0: a cut end, a part only resting
     # on another) bear across their faces, and open freely
     for i in np.where(unglued)[0]:
@@ -231,7 +238,7 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
     K0 = asm.matrix()
     diag = K0.diagonal()
     scale = float(np.mean(np.abs(diag[diag != 0]))) if np.any(diag) else 1.0
-    from scipy.sparse import coo_matrix, diags
+    from scipy.sparse import diags
 
     K0 = K0 + diags(np.full(6 * n, 1e-9 * scale))  # loose debris, unused rotations
     f = np.zeros(6 * n)
@@ -239,6 +246,43 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
         f[6 * P_ + 1] = -load_N
     active = np.ones(len(contacts), bool)
     u = np.zeros(6 * n)
+    slide = np.zeros(len(sup), bool)  # supports free to slide along the span
+    for _pass in range(3):
+        for k_s in range(len(sup)):
+            kx = 0.0 if slide[k_s] else k_contact
+            T = sup_T[k_s]
+            contacts[k_s] = (contacts[k_s][0], T.T @ np.diag([kx, k_contact, k_contact]) @ T,
+                             contacts[k_s][2], 1.0)
+        u, active, K = _solve_contacts(K0, f, contacts, active)
+        if not len(sup):
+            break
+        # the reactions at the supports that bear, by end of the bridge
+        uu = np.array([sup_T[k_s] @ u[contacts[k_s][0]] for k_s in range(len(sup))])
+        V = np.where(active[:len(sup)], -k_contact * uu[:, 1], 0.0)
+        H = np.where(active[:len(sup)] & ~slide, -k_contact * uu[:, 0], 0.0)
+        mid = 0.5 * (sup_x.min() + sup_x.max())
+        ratio = {}
+        for end, sel in (("lo", sup_x < mid), ("hi", sup_x >= mid)):
+            if sel.any() and not slide[sel].all():
+                ratio[end] = abs(H[sel].sum()) / max(V[sel].sum(), 1e-9)
+        over = {e: r for e, r in ratio.items() if r > mu}
+        if not over or len(ratio) < 2:
+            break
+        end = max(over, key=over.get)  # that end slides; the other keeps the bridge
+        slide |= (sup_x >= mid) if end == "hi" else (sup_x < mid)
+    u = u.reshape(n, 6)
+    return {"u": u, "beamT": beamT, "Kb": Kb, "q_on": q_on, "K": K,
+            "n_contact": int(active.sum()), "sliding_supports": int(slide.sum()),
+            "plate_dy": float(-u[P_, 1]) if P_ >= 0 else 0.0}
+
+
+def _solve_contacts(K0, f, contacts, active):
+    """Solve with the compression-only contacts (an active set, at most 8 passes)."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.linalg import spsolve
+
+    u = np.zeros(len(f))
+    K = K0
     for _ in range(8):
         rows, cols, vals = [], [], []
         for (dofs, Kc, _B, _s), on in zip(contacts, active, strict=True):
@@ -259,14 +303,52 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
         if np.array_equal(new, active):
             break
         active = new
-    u = u.reshape(n, 6)
-    return {"u": u, "beamT": beamT, "Kb": Kb, "q_on": q_on,
-            "n_contact": int(active.sum()),
-            "plate_dy": float(-u[P_, 1]) if P_ >= 0 else 0.0}
+    return u, active, K
+
+
+def modes(m: Model, sol: dict, k: int = 6) -> list[dict]:
+    """The lowest natural frequencies of the bridge standing on its supports with the
+    loading plate on its deck (the stiffness of :func:`solve`, its contacts as they bear
+    under the load; the model's lumped masses, the plate's included), and for each mode
+    the parts that move most (their share of its kinetic energy): what a tap test of the
+    built bridge measures (a phone's accelerometer or microphone), so its stick and glue
+    stiffness and its support can be checked before the crush."""
+    from scipy.sparse import diags
+    from scipy.sparse.linalg import eigsh
+
+    n = m.n_nodes
+    mv = np.zeros(6 * n)
+    mv[0::6] = mv[1::6] = mv[2::6] = np.maximum(m.mass, 1e-12)
+    rot = np.maximum(np.asarray(m.rot_inertia, float), 1e-12)
+    mv[3::6] = mv[4::6] = mv[5::6] = rot
+    K = sol["K"].tocsc()
+    try:
+        vals, vecs = eigsh(K, k=min(k + 6, 6 * n - 2), M=diags(mv), sigma=0.0, which="LM")
+    except Exception:  # noqa: BLE001 - a singular or tiny model: no modes
+        return []
+    out = []
+    names = [b.name for b in m.bodies]
+    for lam, v in sorted(zip(vals, vecs.T, strict=True), key=lambda t: t[0]):
+        f = float(np.sqrt(max(lam, 0.0)) / (2 * np.pi))
+        u = v.reshape(n, 6)[:, :3]
+        ke = mv[0::6] * (u**2).sum(1)
+        if f < 1.0 or ke.sum() <= 0:  # a loose part or a rigid-body motion
+            continue
+        share: dict[str, float] = {}
+        for i in np.argsort(ke)[::-1][:200]:
+            b = int(m.node_body[i]) if i < len(m.node_body) else -1
+            nm = names[b] if 0 <= b < len(names) else "loading plate"
+            share[nm] = share.get(nm, 0.0) + float(ke[i] / ke.sum())
+        top = sorted(share.items(), key=lambda kv: -kv[1])[:3]
+        out.append({"frequency_hz": round(f, 1),
+                    "moves": [f"{nm} ({sh:.0%})" for nm, sh in top]})
+        if len(out) >= k:
+            break
+    return out
 
 
 def utilisations(m: Model, sol: dict, load_N: float, ply=None,
-                 peak_over_avg: float = 1.155) -> list[Limit]:
+                 peak_over_avg: float = 1.10) -> list[Limit]:
     """Every joint's, member's and plate's utilisation at ``load_N``."""
     from bridgesim.sim import shell as shellmod
 

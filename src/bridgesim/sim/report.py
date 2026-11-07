@@ -533,6 +533,13 @@ class ScreenReport(BaseModel):
     limits: list[ScreenLimit] = Field(description="Most utilised first (up to 25)")
     n_limits: int
     mass_kg: float
+    modes: list[dict] = Field([], description=(
+        "The lowest natural frequencies of the bridge on its supports with the loading "
+        "plate on its deck (frequency_hz) and the parts that move most in each: what a "
+        "tap test of the built bridge measures (a phone's accelerometer app on a node, a "
+        "light tap). Measured frequencies against these check the sticks' and the glue's "
+        "stiffness and the supports before the crush: the stick modulus moves every "
+        "mode, the glue stiffness the sway modes most, the supports the lowest"))
     wall_s: float
     note: str = ""
     warnings: list[str] = []

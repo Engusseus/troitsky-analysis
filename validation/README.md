@@ -490,3 +490,49 @@ peel) raise F_u by about as much as butt joints by statics lower it. At standard
 the round-17 model gives 2457 kgf (round 16: 2156), trustworthy, governed by node A
 again (End Post R Far to its inner gusset), with the plate_M cracks and the diagonal
 feet at node M competing within 10 %.
+
+### 3.10 Round 18: the reading, the attribution, the stick modulus
+
+Four reviews of round 17 (realism 5/10). What they found, measured on the round-17 model,
+and what changed:
+
+* **The mesh at one jack speed.** Bridge_v10 seed 0 at 100 mm/s: quick 2337 kgf (a floor
+  beam's joint to a pier leg governs, the plate_M cracks compete), standard 2457 kgf (the
+  End Post's gusset at node A): quick is 4.9 % low and fails elsewhere. The round-16
+  agreement of the three meshes (2210 / 2154 / 2127 kgf) was at 200 / 100 / 50 mm/s, the
+  jack speed changing with the mesh. AGENTS.md said they agreed within 1 % at one speed;
+  that came from round 16's model and is withdrawn.
+* **The trust flag on plate cracks** looked at every mode: with f_v 8 MPa nearly every
+  plate element was past the shear crack band, so every plate crack was flagged, also
+  plate_M's, which is not a shear crack (halving G_v or lowering f_v left F_u exactly as
+  it was). The §3.9 table's "flagged" for the round-17 model, and 5 of the 6 quick runs
+  of the fit-up A/B, were flagged for that reason. Each crack now records its mode, and
+  only a crack in elements past the band of that mode is flagged.
+* **The reading** could stand above the force the jack applied (a Monte Carlo run 1553
+  against a raw maximum of 1495 kgf; a light truss +6.6 %) and, in a hold, half a period
+  late, which made a joint on the other truss "govern" standard seed 0 after the centre
+  plate and node M's diagonal feet had started the fall. The reading is now kept within
+  the raw force's envelope, and the governing break is found on the raw force.
+* **tau_peak_over_avg** was not recomputed when round 17 changed the glue's toughness
+  and peel: every joint was ~5 % stronger than tau_g (`bridgesim lab`: 2.10 MPa against
+  2.0). It is 1.10 now, and its test uses the simulation's own glue values.
+* **The stick modulus** (the literature review): the 7.1 GPa the crush used came from a
+  stick weighted at a table edge, and the 5.0 GPa cited beside it from sticks soaked in
+  water; dry craft sticks measured by vibration are 11.6-14.8 GPa. The crush uses 11 GPa,
+  and the Monte Carlo draws E around it (it drew around the material file's 10 GPa while
+  every crush used 7.1). With it, the fracture energies (fibre tension 3 -> 8, across the
+  grain 0.3 -> 0.45, in-plane shear 1.0 -> 1.3 N/mm), the bond line between plies (6 -> 4
+  MPa: craft-stick laminates glued with Elmer's split at 3.7 MPa), a strength taper for
+  glue in a fit-up gap (dry only from ~1 mm, not from 0.15) and the model-form error (25
+  -> 30 %: the model moved 14-30 % per release).
+* **Smaller**: the screen's supports slide where the thrust is more than friction holds
+  (a light truss read as an arch, 4 % stiffer); quick is flagged on a light bridge
+  (members under 15 mm deep: the light truss read 49 % low); `ab`'s verdict says when its
+  runs are untrustworthy; the Monte Carlo draws the values that set where a bridge fails
+  (f_t90, the bond line, G_v, peel, the fit-up gap); the screen gives the bridge's tap-test
+  frequencies (Bridge_v10: 47.8, 54.9, 76.5 Hz ...; a beam on knife edges within 5 % of
+  Rayleigh's); Bridge_v10's butt joints follow the team's report (designed for 75 % of the
+  tension strength: 40 mm between the joints of neighbouring plies, 73 % by statics).
+
+The round-17 Monte Carlo, stopped after 3 of 8 runs when its model was superseded: 2737,
+1553, 1452 kgf.

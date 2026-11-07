@@ -131,12 +131,22 @@ def test_lap_shear_reproduces_tau_g():
     so a joint's strength does not jump when the mesh changes."""
     import math
 
+    # the simulation's own glue and stick values (the crush's), not the coupon's
+    # defaults: the factor has to be recomputed whenever they change
+    kw = {"Kn": SP["glue.K_n_N_per_mm3"], "Ks": SP["glue.K_s_N_per_mm3"],
+          "GIc": SP["glue.G_Ic_N_per_mm"], "GIIc": SP["glue.G_IIc_N_per_mm"],
+          "E": SP["wood.E_placeholder_MPa"]}
+
+    def tau_avg(tp, **k):
+        peel = min(SP["glue.peel_to_shear"] * tp, SP["wood.f_t90_MPa"]) / tp
+        return lab.lap_shear(tp, peel, **kw, **k).peak / 200
+
     P = SP["glue.tau_peak_over_avg"]
-    assert lab.lap_shear(2.0 * P).peak / 200 == pytest.approx(2.0, rel=0.02)
+    assert tau_avg(2.0 * P) == pytest.approx(2.0, rel=0.02)
     for n_ov, one, nodes in ((2, True, 1), (1, False, 2), (2, False, 3), (4, False, 5)):
         f = 1.0 + (P - 1.0) * (1.0 - math.exp(-2.2 * (nodes - 1)))
-        r = lab.lap_shear(2.0 * f, n_ov=n_ov, one_node=one)
-        assert r.peak / 200 == pytest.approx(2.0, rel=0.05), nodes
+        assert tau_avg(2.0 * f, n_ov=n_ov, one_node=one) == pytest.approx(2.0, rel=0.05), \
+            nodes
 
 
 def test_energy_is_conserved_without_damping():
@@ -2549,46 +2559,55 @@ def test_end_grain_glue_changes_smoothly_with_the_cut():
 
 def test_cut_ends_stand_off_their_seats_by_a_seeded_gap(tmp_path):
     """A member's end glued on another part is not cut square: with a seed its face
-    stands off by 0 at the edge that touches up to a seeded gap (at most
-    scatter.bearing_gap_mm) at the other, dry where the gap is wider than
-    glue.gap_fill_mm, its two sides held apart by the gap until it closes. The perfect
-    bridge (no seed) has none, and side-grain laps are cut flat."""
+    stands off its seat by 0 at the edge that touches up to a seeded gap (at most
+    scatter.bearing_gap_mm) at the other. The glue filling the gap is weaker the wider it
+    is (gap_strength: full up to glue.gap_fill_mm, none from ~1 mm), and where it is too
+    wide the face is dry, its two sides held apart by the gap until it closes. The
+    perfect bridge (no seed) has none, and side-grain laps are cut flat."""
     from bridgesim.sim import solver as S
     from bridgesim.sim import study
+    from bridgesim.sim.idealize import gap_strength
 
+    assert gap_strength(0.1) == 1.0 and gap_strength(0.25) == pytest.approx(0.9)
+    assert gap_strength(0.5) == pytest.approx(0.6) and gap_strength(1.0) == 0.0
     deck_top = 150 + 23.1
     cad = tmp_path / "b.stl"
     write_stl(simple_beam_bridge() + [box("Post (4-ply UD)", (300, deck_top, -4),
                                           (310, deck_top + 60, 4))], cad, names=True)
     _, bodies, ov, _, mat, sp, _ = study._inputs(cad, None, None, None, None, None, "y",
                                                  "x")
-    sp = sp.updated({"scatter.bearing_gap_mm": 1.0, "glue.gap_fill_mm": 0.15})
+    sp = sp.updated({"scatter.bearing_gap_mm": 3.0, "glue.gap_fill_mm": 0.15,
+                     "scatter.glue_cov": 0.0, "scatter.glue_bridge_cov": 0.0})
 
-    def gaps(seed):
+    def build(seed):
         m = study._build(bodies, mat, sp, ov, seed, 1.0, False)
         st = S.initial_state(m, 0.0)
         pa, _ = S._attach_pos(m, st, m.c_a)
         pb, _ = S._attach_pos(m, st, m.c_b)
         dn = ((pb - pa) * m.c_n0).sum(1)
-        d0 = np.asarray(m.params["c_d0"])
         post = np.zeros(len(dn), bool)
         for pa_ in m.patches:
             if "Post" in m.bodies[pa_.body_a].name + m.bodies[pa_.body_b].name:
                 post[np.asarray(pa_.springs, int)] = True
-        return dn, d0, post
+        return dn, np.asarray(m.params["c_d0"]), post, np.asarray(m.c_tau)
 
-    dn, d0, post = gaps(None)
+    dn, d0, post, tau0 = build(None)
     assert post.any() and np.abs(dn).max() < 1e-6 and not d0.any()
-    n_dry = 0
+    n_dry = n_weak = 0
     for seed in range(6):
-        dn, d0, post = gaps(seed)
+        dn, d0, post, tau = build(seed)
         assert np.abs(dn[~post]).max() < 1e-6 and not d0[~post].any()  # laps: flat
+        assert np.allclose(tau[~post], tau0[~post])
         dry = d0 >= 1
-        assert (dn[dry] > 0.15 - 1e-9).all() and (dn[post] <= 1.0 + 1e-9).all()
-        assert np.abs(dn[post & ~dry]).max() < 1e-6  # glued where the glue bridges
-        assert not dry.all() or not post.any()  # one edge always touches
+        assert (dn[dry] > 1.0 - 1e-9).all() and (dn[post] <= 3.0 + 1e-9).all()
+        wet = post & ~dry
+        assert not wet.any() or np.abs(dn[wet]).max() < 1e-6  # the glue fills the gap
+        ratio = tau[wet] / tau0[wet]
+        assert ((ratio > 0) & (ratio <= 1 + 1e-9)).all()
         n_dry += int(dry.any())
-    assert n_dry >= 3  # most seeds draw a gap past the glue's reach (uniform 0-1 mm)
+        n_weak += int((ratio < 0.99).any())
+    assert n_dry >= 2 and n_weak >= 3
+
 
 
 def test_butt_joints_cut_the_plies_whose_joints_line_up():
@@ -2666,7 +2685,9 @@ def test_the_load_at_a_break_and_in_a_hold_is_smoothed_not_raw():
     # moment (a fall read half a period late)
     since = np.where(t < tb, 0.0, true - peak)
     late = np.array([peak + since[(t > ti - T) & (t <= ti)].mean() for ti in t[inh]])
-    assert np.abs(rep[inh] - late).max() < 0.01 * peak
+    # (kept within the raw force's envelope over half a period either side, which a
+    # reading half a period late can touch: within the ring's amplitude, 3 %)
+    assert np.abs(rep[inh] - late).max() < 0.035 * peak
     assert rep[inh[0]] == pytest.approx(peak, rel=0.01)  # the break: the load it broke at
     flat = reported_load(t, raw, v, x, breaks=[tb])  # along the travel only
     assert np.abs(flat[inh] - true[inh]).max() > 0.1 * peak
@@ -2697,7 +2718,7 @@ def test_the_prediction_carries_the_model_error_and_its_own_interval():
 
 def test_elements_past_the_crack_band_dissipate_the_fracture_energy():
     """An element larger than the crack band a mode allows (fibre tension: 2 E G_f /
-    f_t^2, ~27 mm): its strength in that mode is lowered until its steepest softening
+    f_t^2): its strength in that mode is lowered until its steepest softening
     dissipates G_f per unit crack area (Bazant & Oh), 1/2 E e0^2 l_c rf = G_f; a small
     element keeps its strength. Until round 16 the large one kept its strength and
     dissipated G_f x 1.05 / rf_raw (~1.6x here)."""
@@ -2706,7 +2727,8 @@ def test_elements_past_the_crack_band_dissipate_the_fracture_energy():
 
     ply = Ply.from_material(MAT, SP)
     G = (SP["wood.G_f_N_per_mm"], SP["wood.G_f90_N_per_mm"], SP["wood.G_v_N_per_mm"])
-    for size, reduced in ((5.0, False), (45.0, True)):
+    h_max = 2 * ply.E_L * G[0] / ply.f_t**2  # the fibre-tension crack band
+    for size, reduced in ((0.1 * h_max, False), (1.6 * h_max, True)):
         xy = np.array([[0.0, 0.0], [size, 0.0], [0.0, size]]) - [size / 3, size / 3]
         ed = shellmod.element_data(xy, [0.0], 2.0, ply, 1.0, 1.0, G, ply.E_L * 2.0)
         e0, rf = ed["lim"][0], ed["rf"][0]
@@ -2731,11 +2753,11 @@ V10_OVERRIDES = {  # as the team's design report (Rev N, section 10.1) models it
 def test_bridge_v10_regression():
     """A team's real design (Rev N, 69 bodies; set BRIDGESIM_TEST_V10 to its file): what
     the model is made of, and the screen's stiffness and first limits, against the values
-    of round 17 (validation/README.md section 3.9): 227 glued joints, 7.9 kg, ~820 kgf/mm
-    under the plate (838 / 819 / 836 / 833 on four meshes in round 16), the End Post to
-    knee joints the first glue limits at ~330 kgf, and their faces the first to bear past
-    the wood's crushing strength (~1900 kgf if linear); end-grain and butt-joint
-    questions asked."""
+    of round 18 (validation/README.md section 3.10): 227 glued joints, 7.9 kg, ~1130
+    kgf/mm under the plate with sticks of 11 GPa (~820 at 7.1 GPa in rounds 16-17), the
+    End Post to knee joints the first glue limits at ~430 kgf, and their faces the first
+    to bear past the wood's crushing strength (~2000 kgf if linear); end-grain and
+    butt-joint questions asked; its lowest tap-test frequency ~48 Hz."""
     from bridgesim.sim import study
 
     rep = study.inspect(V10, overrides_data=V10_OVERRIDES)
@@ -2744,13 +2766,14 @@ def test_bridge_v10_regression():
     ids = {q.id for q in rep.questions}
     assert {"end_grain_joints", "butt_joints"} <= ids
     sc = study.screen(V10, overrides_data=V10_OVERRIDES, load_kgf=1000.0, n_limits=400)
-    assert 760 < sc.stiffness_kgf_per_mm < 880
+    assert 1050 < sc.stiffness_kgf_per_mm < 1220
     glue = [lm for lm in sc.limits if lm.mode == "glue"]
     assert "End Post" in glue[0].part and "Knee-Diagonal" in glue[0].part
-    assert 250 < glue[0].load_kgf < 420
+    assert 350 < glue[0].load_kgf < 500
     bear = [lm for lm in sc.limits if lm.mode == "bearing"]
     assert "End Post" in bear[0].part and "Knee-Diagonal" in bear[0].part
-    assert 1500 < bear[0].load_kgf < 2400
+    assert 1700 < bear[0].load_kgf < 2400
+    assert 40 < sc.modes[0]["frequency_hz"] < 56
 
 
 def test_long_laps_lose_strength_by_shear_lag_as_generalised_volkersen():
@@ -2775,3 +2798,114 @@ def test_long_laps_lose_strength_by_shear_lag_as_generalised_volkersen():
             if L > 20:
                 assert ratio[L] == pytest.approx(volk, rel=0.12), (G, L)
         assert ratio[110.0] < 0.8 * ratio[20.0]
+
+
+def test_the_reading_stays_within_the_force_the_jack_applied():
+    """A force that rounds over in the last 0.3 mm before a break (the bridge softening
+    as it fails) read 4-5 % high from the straight line fitted to the end of the
+    stretch; a break that the load survives, followed 8 ms later by the collapse within
+    the same stretch, read the collapse back at the break, while the raw force still
+    rose. The reading is kept within the raw force's envelope over a centred ring period:
+    the peak within the ring of the true one, never a load the jack did not apply."""
+    from bridgesim.sim.crush import reported_load
+
+    v, T = 100.0, 1 / 150.0
+    t = np.arange(0, 0.07, 3e-5)
+    x = v * t
+    tb = 0.040
+    xb = v * tb
+    # rises at 500 N/mm, rounding over in the last 0.3 mm to a flat top, then falls
+    true = np.where(x < xb - 0.3, 500.0 * x,
+                    500.0 * (xb - 0.3) + 500.0 * 0.3 * (1 - ((xb - x) / 0.3 - 1) ** 2) / 2
+                    * np.where(x < xb, 1.0, 0.0))
+    true = np.where(x >= xb, 0.5 * 500.0 * (xb - 0.15), true)
+    raw = true + 5.0 * np.sin(2 * np.pi * t / T)
+    rep = reported_load(t, raw, v, x, breaks=[tb], period_s=T)
+    pre = t < tb
+    assert rep[pre].max() <= raw[pre].max() + 1e-9
+    assert rep[pre].max() == pytest.approx(true[pre].max(), rel=0.01)
+    # a survived break at tb, the collapse 8 ms later in the same stretch
+    tc = tb + 0.008
+    true2 = np.where(t < tc, 500.0 * x, 500.0 * x * np.clip(1 - (t - tc) / 0.002, 0, 1))
+    raw2 = true2 + 5.0 * np.sin(2 * np.pi * t / T)
+    rep2 = reported_load(t, raw2, v, x, breaks=[tb], period_s=T)
+    rising = (t >= tb) & (t < tc - T)
+    assert (rep2[rising] >= true2[rising] - 0.01 * true2[rising]).all()
+
+
+def _stub_result(m, governing=""):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(kinetic_ratio_max=0.0, added_mass_frac=0.0, failure_mode="collapse",
+                           notes=[], governing=governing, model=m, dt=1e-6, steps=1,
+                           wall_s=1.0, settle_sag_mm=0.0, speed_mm_s=100.0, holds=0,
+                           hold_time_s=0.0)
+
+
+def test_quick_is_flagged_on_a_light_bridge():
+    """On a light bridge (members ~10 mm deep) the quick mesh's elements are several
+    member depths long and its small joints hang on one or two nodes: quick read a light
+    truss 49 % low and failed elsewhere, so a quick crush of such a bridge is not
+    trustworthy; standard is, and so is quick on a bridge of deep members."""
+    from bridgesim.cad.synthetic import layered_truss
+    from bridgesim.sim import study
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    light = build_model(layered_truss(), MAT, SP, Overrides(), seed=None, mesh_scale=1.6)
+    q = study._quality(_stub_result(light), MAT, SP)
+    assert not q.trustworthy and any("light bridge" in r for r in q.reasons)
+    std = build_model(layered_truss(), MAT, SP, Overrides(), seed=None, mesh_scale=0.75)
+    assert study._quality(_stub_result(std), MAT, SP).trustworthy
+    deep = [box("Pier L (block)", (-550, 0, -40), (-500, 150, 40)),
+            box("Pier R (block)", (500, 0, -40), (550, 150, 40)),
+            box("Beam (13-ply UD)", (-550, 150, -13), (550, 180, 13))]
+    m = build_model(deep, MAT, SP, Overrides(), seed=None, mesh_scale=1.6)
+    assert study._quality(_stub_result(m), MAT, SP).trustworthy
+
+
+def test_a_crack_is_flagged_only_past_the_crack_band_of_its_own_mode():
+    """A plate whose elements are past the crack band in shear only: a crack that formed
+    in shear there starts where the mesh decides (flagged); one that formed in fibre
+    tension, whose crack band the elements are within, is not."""
+    from bridgesim.sim import study
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    m = build_model(simple_beam_bridge(), MAT, SP, Overrides(), seed=None)
+    deck = [b.name for b in m.bodies].index("Deck (2-ply 0-90)")
+    sel = m.s_body == deck
+    snap3 = np.zeros((len(m.s_body), 3), bool)
+    snap3[sel, 2] = True  # past the crack band in shear only
+    m.params["s_snap3"] = snap3
+    m.params["s_snap"] = snap3.any(1)
+    mode = np.full(len(m.s_body), -1)
+    mode[np.where(sel)[0][:5]] = 2
+    m.params["s_crack_mode"] = mode
+    q = study._quality(_stub_result(m, "plate crack: Deck (2-ply 0-90)"), MAT, SP)
+    assert not q.trustworthy and any("shear" in r for r in q.reasons)
+    mode[np.where(sel)[0][:5]] = 0  # it cracked in fibre tension
+    q = study._quality(_stub_result(m, "plate crack: Deck (2-ply 0-90)"), MAT, SP)
+    assert q.trustworthy
+
+
+def test_screen_gives_the_tap_test_frequencies(tmp_path):
+    """The screen's natural frequencies (what a tap test of the built bridge measures):
+    a square laminated beam on knife edges with the 4.2 kg loading plate on it rings
+    in vertical bending, the plate moving most, at sqrt(k / (M_plate + 0.49 m_beam)) / 2 pi
+    with k the screen's own stiffness under the plate (Rayleigh, the beam's mass at
+    mid-span), within 5 % (below it, the beam rolls on its 2 mm knife edges)."""
+    from bridgesim.sim import study
+
+    cad = tmp_path / "beam.stl"
+    write_stl([box("Pier L", (-546, 0, -40), (-544, 150, 40)),
+               box("Pier R", (544, 0, -40), (546, 150, 40)),
+               box("Beam", (-550, 150, -15), (550, 180, 15))], cad, names=True)
+    ov = {"bodies": {"Beam": {"layup": "15-ply UD", "butt_stagger_mm": 0},
+                     "Pier*": {"kind": "block"}}}
+    rep = study.screen(cad, overrides=ov)
+    k = rep.stiffness_kgf_per_mm * 9.80665  # N/mm
+    m_beam = MAT.density_kg_m3.value * 1100 * 30 * 30 * 1e-12  # t
+    m_plate = SP["crusher.plate_mass_kg"] * 1e-3
+    f = math.sqrt(k / (m_plate + 0.49 * m_beam)) / (2 * math.pi)
+    plate = [m for m in rep.modes if m["moves"][0].startswith("loading plate")]
+    assert plate and plate[0]["frequency_hz"] == pytest.approx(f, rel=0.05)
+    assert all(m["frequency_hz"] > 0 for m in rep.modes)

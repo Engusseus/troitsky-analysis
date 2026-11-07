@@ -26,7 +26,7 @@ relevant parts in your Design Validation (§10). Units: mm, N, MPa, s.
 | slender but tapered extrusion (a wedge, a lip or filler cut along a diagonal: 40-75 % of its bounding box) | **tapered bar**: as above, each element with the width and centre offset of the profile at its position (same volume as the solid) | still a member; a rigid block would make the load path too stiff |
 | thin extrusion (width >= 3 x thickness) | **shell**: CST membrane + DKT bending triangles on the mid-surface, meshed from the real outline (holes > element size kept), integrated ply by ply (layered) | gussets, webs, decks, diaphragms |
 | plate made of narrow arms (an L-shaped leg, an X, a curved rib, a strut-like plate): arms narrower than 1.6 standard shell elements, or 3 when they are slender (centre lines >= 4x their width, and 90 % of their length no wider than 3 elements: a 140 mm gusset with 60 mm tails is a plate, not a strut; it was a single beam until round 16), arms covering >= 80 % of the plate and carrying what is glued to it (a part glued off the arms, a wing of a hub plate, gets an arm of its own out to it, if that runs inside the plate) | **frame**: fibre beams along the centre lines of its arms (the medial axis of its outline, `sim/skeleton.py`), each with the arm's local width and the plate's thickness, plies stacked through the thickness: a UD frame's sticks along each arm (it is built arm by arm), a cross-ply or angle-ply frame a sheet cut to shape whose plies keep the plate's long axis in every arm (an arm at 45 degrees to a +-45 plate is 0/90; asked as `frame_plies:`, `grain: arm` if they were laid along each arm; `test_frame_plies_follow_the_sheet_or_the_arm`), or the span; butt joints per arm as for bars, arms sharing nodes where they meet, glue on rigid arms to the nearest node | a strip of constant-strain triangles one or two elements wide is 2-4x too stiff in in-plane bending, and a 20 mm thick plate is no thin plate; a beam is exact there (`test_frame_plate_bends_like_a_beam`, a strip 40 mm deep on knife edges, ~2.5 elements across: beam theory within 3 %, the same strip as shells 20 % too stiff; the 70 % reported until round 15 was mostly the strip's ends glued to 10 mm piers, which fix them partly, for frames as for shells since round 15). The `frame_plates` question lists them; a plate whose glued parts cannot be reached that way stays a shell and the `narrow_plates` question asks about it |
-| compact piece (less than 2x longer than its section, not thin), a body named a block, short toothpick | **rigid body** with its real mass and the mean of its principal moments of inertia (one value for all axes: the loading is quasi-static, kinetic energy below 1 % of the jack's work, so a block's rotational inertia only enters the time step) | much stiffer than the members; a question lists those in the load path |
+| compact piece (less than 2x longer than its section, not thin), a body named a block, short toothpick | **rigid body** with its real mass and the mean of its principal moments of inertia (one value for all axes: the loading is quasi-static, kinetic energy below 5 % of the jack's work (on Bridge_v10 under 1 %), so a block's rotational inertia only enters the time step) | much stiffer than the members; a question lists those in the load path |
 | floss (by name) | **cable**: tension only, snaps at its breaking load | §8.4.5 |
 
 Laminates come from the body name (`10-ply UD`, `2-ply 0-90`, `4-ply +-45`, `block`,
@@ -154,21 +154,28 @@ bear).
 * **Fit-up of bearing faces.** A member's end cut to bear or be glued on another part is
   not square: each end-grain face touches at one edge and stands off its seat by a seeded
   gap (0 to `scatter.bearing_gap_mm`, 0.3 mm: a 1 degree error over a 20 mm deep end is
-  0.35 mm) at the other, in a random direction across it. Where the gap is wider than PVA
-  bridges (`glue.gap_fill_mm`, 0.15 mm: PVA shrinks as it dries and is no gap filler),
-  that part of the face is dry: its glue points start broken and their two sides are held
-  apart by the gap, so it bears only once the gap has closed and the touching edge has
-  crushed. Dry glue points count neither as glued area nor as glue that failed. The
-  perfect bridge (`--seed -1`) has none (`test_cut_ends_stand_off_their_seats_by_a_seeded_
-  gap`). On Bridge_v10 quick seed 0 this alone lowered F_u from 2210 to 1971 kgf (-11 %);
-  the realism review's probe, every knee face dry with 0.3 mm, gave -22 %.
+  0.35 mm) at the other edge of its outline, in a random direction across it. The glue
+  that fills the gap is weaker the wider it is (`gap_strength`): full strength up to
+  `glue.gap_fill_mm` (0.15 mm, the strongest bond lines are 0.08-0.15 mm), 0.9 at 0.25 mm,
+  0.6 at 0.5 mm and nothing from 1 mm (shimmed block-shear tests, Kurt 2006: -10 % at
+  0.25, -39 % at 0.48 mm; a 0.4 mm PVAc line carried 1.38 MPa for 70 days, USDA FPL
+  RP-400). Where it is too wide the face is dry: its glue points start broken and their
+  two sides are held apart by the gap, so it bears only once the gap has closed. Dry glue
+  points count neither as glued area nor as glue that failed. The perfect bridge
+  (`--seed -1`) has none (`test_cut_ends_stand_off_their_seats_by_a_seeded_gap`). (Round
+  17 took a face as dry wherever the gap passed 0.15 mm, which the literature review found
+  too severe for PVAc; with the round-16 materials that had lowered Bridge_v10 quick seed
+  0 by 11 %.)
 * **Shear lag and the mesh.** The glue points of a joint hang on the nearest nodes of
   each part (rigid arms), so how much shear lag a joint shows depends on how many nodes
-  that is. The lap coupon with its glue hung on 1, 2, 3, 4, 5 and 9 nodes per side needs a
-  peak/average ratio of 1.01, 1.11, 1.20, 1.15, 1.16 and 1.15 to give tau_g; the model
-  uses 1 + 0.155 (1 - exp(-2.2 (n - 1))) with n the larger node count of the two sides
-  (within 4 % of each), so a joint's capacity (tau_g times its area) does not jump
-  when the mesh changes.
+  that is. The lap coupon with its glue hung on 1, 2, 3, 5 and 9 nodes per side needs a
+  peak/average ratio of 1.01, 1.06, 1.13, 1.11 and 1.10 to give tau_g with the round-18
+  glue values (`glue.tau_peak_over_avg` 1.10); the model uses 1 + 0.10 (1 - exp(-2.2 (n -
+  1))) with n the larger node count of the two sides (within 3 % of each), so a joint's
+  capacity (tau_g times its area) does not jump when the mesh changes. The ratio depends
+  on the glue's toughness and peel strength: round 17 changed them and kept 1.155, which
+  left every joint ~5 % stronger than tau_g (the adversarial review); the test now uses
+  the simulation's own glue values.
 * A joint is reported **cracking** when 30 % of its glued area has let go and
   **separated** (`joint_failure`) at 90 % (area-weighted over its glue points); the
   first separation sets `Fu_first_joint_failure_kgf`.
@@ -181,21 +188,23 @@ Wood along the grain: E, f_t, f_c, f_v from `materials/popsicle_birch.yaml`. For
 the USDA *Wood Handbook* (FPL-GTR-190, Table 5-3a, clear wood at 12 % moisture) gives
 paper birch E = 11.0 GPa, modulus of rupture 85 MPa, compression parallel to grain 39 MPa,
 shear 8.3 MPa (yellow birch: 13.9 GPa, 114, 56, 13 MPa). Craft sticks are thin, cut across
-growth rings and have defects, so the placeholders (10 GPa; f_b 50, f_c 30 MPa) are
-lower; f_v is 8 MPa (round 17: 2 mm birch veneer 9.2 MPa in shear, Krüger et al. 2025,
-doi:10.5281/zenodo.17201843). The across-grain values follow the same veneer data and the
-Wood Handbook: f_t90 1.5 MPa (veneer 1.1-2.0), f_c90 6 MPa (veneer 6.9, clear birch
-4.1-7.4), rolling shear 3 MPa (silver birch ~3.5, Collins & Fink 2025). f_t and f_c stay
-at 40 and 30 MPa: the veneer breaks at 0.57 % strain in tension and crushes at 0.34 %,
-which at the craft sticks' measured E of 7.1 GPa is 40 and 24 MPa (strength follows
-stiffness, r = 0.64-0.69 in that data); if your sticks measure ~14 GPa, expect ~80 and ~60
-MPa. The one published measurement on craft sticks we found gives
-E = 7.1 +- 0.2 GPa (cantilever tests, *Emergent Scientist* 1, 3 (2017), "the popsicle
-stick cobra"), 29 % below the material file's 10 GPa, which the linear analysis keeps.
-The crush uses 7.1 GPa (and G = E/16) while the material's E is a placeholder
-(`wood.E_placeholder_MPa`; a measured E from `calibrate` or `material.E_MPa` in the
-overrides replaces it): stiffness, buckling and deflections scale with it, so measure
-your own sticks. f_t (40 MPa) is below f_b on purpose: a stick
+growth rings and have defects: one craft stick broke at 0.52 of a solid birch strip of
+its size in 3-point bending (Karplus 1996, ASEE, "Craft Stick Beams"), so the strengths
+are about half of clear birch: f_b 50, f_t 40, f_c 30 MPa. The across-grain values
+follow 2 mm birch veneer data (Krüger et al. 2025, doi:10.5281/zenodo.17201843) and the
+Wood Handbook: f_v 8 MPa (veneer 9.2), f_t90 1.5 MPa (veneer 1.1-2.0), f_c90 6 MPa
+(veneer 6.9, clear birch 4.1-7.4), rolling shear 3 MPa (silver birch ~3.5, Collins & Fink
+2025). The stick modulus is about as high as clear birch's: dry craft sticks are 11-15 GPa
+(the wave speed of 2.2 mm birch sticks measured by vibration, 4600 m/s, Sautel et al.,
+Am. J. Phys. 85, 783 (2017), Table I: E = rho c0^2 = 11.6-14.8 GPa at 550-700 kg/m^3;
+2 mm veneer 14.6 GPa). The crush uses 11 GPa, the low end, and G = E/16, while the
+material's E is a placeholder (`wood.E_placeholder_MPa`; the material file's 10 GPa is the
+linear analysis's; a measured E from `calibrate` or `material.E_MPa` in the overrides
+replaces it). Until round 17 the crush used 7.1 GPa, from a stick weighted at a table edge
+(*Emergent Scientist* 1, 3 (2017)), which reads low because the edge lets the stick turn,
+and cited Sautel's 5.0 GPa, which was for sticks soaked in water for three weeks (the
+literature review of round 17). Stiffness, buckling and deflections scale with E, so
+measure your own sticks: a free tap test (simulation.yaml) or 3-point bending. your own sticks. f_t (40 MPa) is below f_b on purpose: a stick
 in tension fails at its weakest cross-section (slope of grain, defects), which bending
 loads only at one face, so graded timber has f_t,0 = 0.6 f_m (EN 338), while clear wood
 has the opposite. `bridgesim sensitivity` shows how much each
@@ -225,7 +234,7 @@ lap joint between parts (tau_g, an average over the lap): they split at the lowe
 bond line's strength (`glue.interlaminar_MPa`, 6 MPa: PVA bond lines in pressed wood
 laminates fail in the wood next to them) and what the weakest ply takes there, the
 interlaminar shear running along its grain (f_v) and across it (rolling shear,
-`wood.f_rolling_MPa`, 2 MPa) in proportion to its angle: f_v for a UD stack, the
+`wood.f_rolling_MPa`, 3 MPa) in proportion to its angle: f_v for a UD stack, the
 rolling shear for a ply across the member (0-90), in between for +-45. A short-beam
 shear test of a laminate measures it (`short_beam_shear_template.csv`, `calibrate`).
 (Until round 12 it was the hand-made lap joint's average strength, 1.155 tau_g = 2.3
@@ -251,7 +260,7 @@ stiffness), the strain is turned into the grain axes and each failure mode has i
 damage, in the spirit of LS-DYNA's MAT_054 or Abaqus' Hashin damage but with an
 independent maximum-strain criterion per mode: fibre tension softens to zero with
 fracture energy G_f (3 N/mm); fibre compression crushes to a plateau at 70 % of f_c;
-across-grain tension (sticks parting edge to edge, f_t90 = 1 MPa) softens with G_f90
+across-grain tension (sticks parting edge to edge, f_t90 = 1.5 MPa) softens with G_f90
 (0.3 N/mm); across-grain compression yields at f_c90; in-plane shear softens with G_v
 (1 N/mm). Cracks close: a broken ply still carries compression. The softening strain of
 each element is set from its size (crack band, Bažant & Oh 1983), so the energy a crack
@@ -268,7 +277,12 @@ cracks at a lower stress where a fine one resolves the stress peak. Until round 
 elements kept their strength and dissipated up to 3.5x G_f (on Bridge_v10 at standard,
 5515 elements in shear), a coarse plate tougher than a fine one. They are counted in the
 warnings, and a crush whose failure starts as a crack in such a plate is flagged
-untrustworthy: its onset depends on the mesh. An element is removed only when every ply is torn wide open
+untrustworthy when the cracked elements are past the crack band of the mode they cracked
+in (each crack records it: fibre tension, across the grain or shear): then its onset
+depends on the mesh. With f_v 8 MPa nearly every standard element is past the shear
+crack band, so until round 17 any plate crack was flagged, also one in fibre tension
+that the mesh resolves (`test_a_crack_is_flagged_only_past_the_crack_band_of_its_own_
+mode`). An element is removed only when every ply is torn wide open
 (twice the strain at which it carries nothing) or when it is distorted beyond 0.5 rad.
 
 **Scatter** (seeded, `--seed`; `--seed -1` for a perfect bridge): per body, E (CoV 12 %)
@@ -360,7 +374,15 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   hold** the travel stands still while the load falls in time as parts let go, so there
   it is smoothed along time, over two periods of the bridge's lowest mode: each event
   in a hold reads the load at its moment (along the travel, every event of a hold read
-  the hold's start; `test_the_load_at_a_break_and_in_a_hold_is_smoothed_not_raw`). The curve, F_u, the
+  the hold's start; `test_the_load_at_a_break_and_in_a_hold_is_smoothed_not_raw`).
+  Last, **the reading is kept within the raw force's envelope** over a centred period of
+  the ringing: it never stands above the highest force the jack applied around that
+  moment, nor below the lowest. A force that rounds over just before a break read 4-7 %
+  high from the straight line fitted to the end of its stretch (the round-17 realism
+  review: a Monte Carlo run of Bridge_v10 at 1553 kgf against a raw maximum of 1495, a
+  light truss +6.6 %), and a fit after a survived break read the collapse that came
+  later back at the break (`test_the_reading_stays_within_the_force_the_jack_applied`).
+  The curve, F_u, the
   deflection at F_u and the load of every event (the last reading at or before it) are
   the reported one; `curve.csv` and the report's curve also give the raw force
   (`load_raw_kgf`). (Until round 10
@@ -393,9 +415,12 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   (`Fu_first_joint_failure_kgf`). Every joint failure and member split is logged with
   the load at which it happened.
 * **What governed** (`governing`): the break that started the fall of the load to the
-  failure call, i.e. the first break from the moment the reported load last stood within
-  5 % of F_u (a quarter of the online filter's time constant earlier, since the centred
-  smoothing leads a sudden drop). A part that broke before that was survived: the load
+  failure call, i.e. the first break from the moment the raw jack force, averaged over a
+  centred period of the bridge's ringing, last stood within 5 % of F_u (a quarter of the
+  online filter's time constant earlier). In round 17 that moment came from the reported
+  load, which within a hold reads half a period late: on Bridge_v10 standard seed 0 the
+  crack of the centre plate and the diagonal feet at node M, which started the fall, were
+  taken as survived and a joint on the other truss was named (the realism review). A part that broke before that was survived: the load
   came back, as it did on Bridge_v6 seed 1 after a deck-stringer joint let go at the peak
   (5 % drop), before the End Post joints went at 96 % of the peak and the load fell 40 %.
   A member split in the same 2 ms as a member fracture is put down to the fracture; a
@@ -478,17 +503,23 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   1720 / 2095 / 2317 kgf at p05 / p50 / p95 (-18 % / +11 %; round 14, every value drawn
   at 20 %); `sensitivity` ranks the lap joints' glue strength and toughness and the
   sticks' shear strength first. Each placeholder is drawn with its own prior, about the
-  half-width of the literature or craft-stick range at 90 % (round 17, after the
-  research review): the stick modulus 35 % (clamped tests on craft sticks 5-7 GPa, 2 mm
-  birch veneer 14.6), f_t 30 %, f_c, f_v, f_c90 25 %, the wood's fracture energy 40 %,
-  the glue's shear toughness and the end-grain factor 45 %, the lap joints' glue strength
-  50 % (hand-made PVA laps on birch sticks: nothing published, bounded at 2-6 MPa by the
-  bond line's, the stick surface's and the peel strengths). The values F_u is most
+  half-width of the literature or craft-stick range at 90 %: the stick modulus 30 % (dry
+  craft sticks 11-15 GPa by vibration; until round 18 the draws were centred on the
+  material file's 10 GPa while each crush used 7.1, now on the crush's own 11), f_t 30 %,
+  f_c, f_v, f_c90, f_t90, rolling shear and peel 25 %, the pressed bond line 30 %, the
+  glue's shear toughness, the plies' shear fracture energy and the end-grain factor
+  45 %, the across-grain fracture energy 35 %, the wood's fracture energy 40 %, the
+  fit-up gap 50 %, the lap joints' glue strength 50 % (hand-made PVA laps on craft
+  sticks: nothing published, bounded at 2-6 MPa by the bond line's, the stick surface's
+  and the peel strengths). Since round 18 the draws include the values that set where a
+  bridge fails (f_t90, the bond line, G_v, peel, the fit-up gap: the adversarial review
+  found f_v draws inert in members, whose glue lines split first). The values F_u is most
   sensitive to are the least known. `montecarlo` also gives a **total range**
   (`total_p05_kgf`, `total_p95_kgf`): the runs' F_u each times a lognormal mesh error
   (`uncertainty.mesh_cov`, 5 %, the fine-vs-standard study) and a model-form error
-  (`uncertainty.model_cov`, 25 %, what the equations leave out for a real bridge, until
-  a physical test measures it; JCSS Probabilistic Model Code part 3.9 gives 10-15 % for
+  (`uncertainty.model_cov`, 30 % since round 18: Bridge_v10's F_u moved 14-30 % per
+  release over rounds 15-17; what the equations leave out for a real bridge, until a
+  physical test measures it; JCSS Probabilistic Model Code part 3.9 gives 10-15 % for
   mature, tested connection models, so not less before tests): the range to give a team
   before any test, the runs' range being what the model knows it does not know. The
   **recommended prediction** (the 1/F-weighted median, which minimises the expected

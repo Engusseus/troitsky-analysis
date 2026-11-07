@@ -663,6 +663,20 @@ def interlaminar_strength(angles, f_v: float, f_rolling: float, bond: float) -> 
     return min(bond, worst)
 
 
+def gap_strength(gap: float, fill: float = 0.15) -> float:
+    """Strength of a white-glue line filling a gap ``gap`` mm wide, as a share of a thin
+    one: full up to ``fill`` (glue.gap_fill_mm), then falling as the thick line shrinks
+    and voids, 0.9 at fill + 0.1 mm, 0.6 at fill + 0.35 and nothing from fill + 0.85
+    (with fill 0.15: 0.25, 0.5 and 1.0 mm; shimmed block-shear tests, Kurt 2006, Wood Res.
+    51(1):59, -10 % at 0.25 and -39 % at 0.48 mm; a 0.4 mm PVAc line carried 1.38 MPa for
+    70 days, River & Gillespie 1981, USDA FPL RP-400; with PVAc a loose mortise and tenon
+    lost little, Tankut 2007)."""
+    x = gap - fill
+    if x <= 0:
+        return 1.0
+    return float(np.interp(x, [0.0, 0.1, 0.35, 0.85], [1.0, 0.9, 0.6, 0.0]))
+
+
 def butt_path_capacity(n: int, s: float, Ls: float, P_ply: float, tau_w: float) -> float:
     """Tension capacity of ``n`` plies (or stick rows) of sticks ``Ls`` long whose butt
     joints are staggered by ``s`` from one ply to the next (ply i's joints at i s, every
@@ -1002,6 +1016,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     shells: dict[str, list] = {k: [] for k in ("nodes", "E0", "P", "t", "el", "body")}
     n_snap = 0
     snap_el: list[bool] = []  # per shell element: larger than its crack band
+    snap3: list[np.ndarray] = []  # ... per mode: fibre tension, across the grain, shear
     snap_excess = 1.0  # the lowest strength factor an oversized element got
     snap_modes: set = set()
     G_f = sp["wood.G_f_N_per_mm"]
@@ -1415,6 +1430,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                     snap_excess = min(snap_excess, ed["excess"])
                     snap_modes.update(ed["snap_modes"])
                 snap_el.append(bool(ed["snapback"]))
+                snap3.append(np.asarray(ed["snap3"], bool))
                 shells["nodes"].append(ids[t3])
                 shells["E0"].append(E0)
                 shells["P"].append(Ploc)
@@ -1475,6 +1491,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
 
     patch_pts3: list[tuple[int, int, np.ndarray, np.ndarray, float, np.ndarray,
                            np.ndarray]] = []
+    face_of: dict[int, np.ndarray] = {}  # each patch's outline (for fit-up gaps)
     for ia, ib, inter, oa, e1, e2, na in raw_patches:
         if shapes[ia].kind in ("ignore", "cable") or shapes[ib].kind in ("ignore", "cable"):
             continue
@@ -1511,6 +1528,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         # its random glue strength, so a seed draws the same bridge at every fidelity
         cc = inter.centroid
         cad_c = oa + cc.x * e1 + cc.y * e2
+        if inter.area > 0 and inter.convex_hull.geom_type == "Polygon":
+            hull = np.asarray(inter.convex_hull.exterior.coords)
+            face_of[len(patch_pts3)] = oa + np.outer(hull[:, 0], e1) + np.outer(hull[:, 1],
+                                                                              e2)
         patch_pts3.append((ia, ib, pts3, na, inter.area, cad_c, wts))
 
     # ---------------------------------------------------------------- glue springs
@@ -1523,7 +1544,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     # stretching is resolved the shear-lag peak appears. Fitted to the lap coupon with
     # its glue on 1, 2, 3, 4, 5 and 9 nodes per side (1.01, 1.11, 1.20, 1.15, 1.16, 1.15;
     # tests/test_sim.py checks it), so a joint's strength does not jump with the mesh
-    peak_over_avg = sp.values.get("glue.tau_peak_over_avg", 1.155)
+    peak_over_avg = sp.values.get("glue.tau_peak_over_avg", 1.10)
 
     def peak_factor(n_nodes: int) -> float:
         return 1.0 + (peak_over_avg - 1.0) * (1.0 - math.exp(-2.2 * (n_nodes - 1)))
@@ -1589,7 +1610,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     patches: list[Patch] = []
     # the workmanship of the whole build: one factor on every joint of the bridge
     gf_bridge = scatter(sp.values.get("scatter.glue_bridge_cov", 0.0), "glue:bridge")
-    for ia, ib, pts3, na, area, cad_c, wts in patch_pts3:
+    for k_patch, (ia, ib, pts3, na, area, cad_c, wts) in enumerate(patch_pts3):
         key = "|".join(sorted((bodies[ia].name, bodies[ib].name)))
         gf = gf_bridge * scatter(sp["scatter.glue_cov"],
                                  f"glue:{key}:{np.round(cad_c).astype(int).tolist()}")
@@ -1626,9 +1647,9 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             end_grain_joints.append((bodies[ia].name, bodies[ib].name, float(area)))
         # fit-up: a member's end cut to bear on another part is not square. It touches
         # at one edge and stands off by up to scatter.bearing_gap_mm at the other
-        # (seeded per face, in a random direction across it); where the gap is wider
-        # than the glue bridges (glue.gap_fill_mm), the face is dry and bears only once
-        # the gap has closed, the touching edge crushing first
+        # (seeded per face, in a random direction across it); the glue filling the gap
+        # is weaker the wider it is (gap_strength), and where it is too wide to bridge
+        # the face is dry and bears only once the gap has closed
         gaps = np.zeros(len(pts3))
         if e_end > 0.5 and gap_max > 0 and len(pts3) > 1:
             names2 = "|".join(sorted((bodies[ia].name, bodies[ib].name)))
@@ -1640,17 +1661,23 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 phi = float(rg.uniform(0.0, 2 * math.pi))
                 u = math.cos(phi) * t1 + math.sin(phi) * np.cross(na, t1)
                 tt = (pts3 - cen) @ u
-                if np.ptp(tt) > 1e-9:
-                    gaps = g * (tt - tt.min()) / np.ptp(tt)
+                # 0 at the face's edge that touches, g at the opposite edge (its outline,
+                # not its outermost glue points, which stand inside it)
+                tf = (face_of.get(k_patch, pts3) - cen) @ u
+                if np.ptp(tf) > 1e-9:
+                    gaps = g * np.clip((tt - tf.min()) / np.ptp(tf), 0.0, 1.0)
                     n_gapped += 1
-        dry = gaps > gap_fill
+        # a PVA line that fills a gap is weaker the thicker it is (gap_strength): full
+        # strength up to gap_fill, none (dry) from about a millimetre
+        fill = np.array([gap_strength(gi, gap_fill) for gi in gaps])
+        dry = fill <= 0.0
         att_a = [attach(ia, p) for p in pts3]
         att_b = [attach(ib, p + gi * na) if d_ else attach(ib, p)
                  for p, gi, d_ in zip(pts3, gaps, dry, strict=True)]
         n_nodes = max(len({bld.att_node[a] for a in att_a}),
                       len({bld.att_node[b] for b in att_b}))
         tau_p = mat.glue.tau_g_MPa.value * peak_factor(n_nodes)
-        for wa, a_, b_, d_ in zip(wts, att_a, att_b, dry, strict=True):
+        for wa, a_, b_, d_, fl in zip(wts, att_a, att_b, dry, fill, strict=True):
             # glue_factor 0: not glued; past the glue's reach across a fit-up gap: dry
             springs["d0"].append(1.0 if gf <= 0 or d_ else 0.0)
             springs["a"].append(a_)
@@ -1659,7 +1686,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             springs["n0"].append(na)
             springs["Kn"].append(sp_glue["K_n_N_per_mm3"])
             springs["Ks"].append(sp_glue["K_s_N_per_mm3"] * k_cov)
-            gq = max(gf, 1e-3)  # glue_factor 0 is handled as "already broken" (d0 = 1)
+            gq = max(gf * fl, 1e-3)  # glue_factor 0: handled as "already broken" (d0 = 1)
             springs["tau"].append(tau_p * gq)
             springs["sig"].append(min(tau_p * sp_glue["peel_to_shear"], f_peel) * gq)
             springs["GIc"].append(sp_glue["G_Ic_N_per_mm"] * gq)
@@ -2154,7 +2181,9 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             "answer_with": {"cad": "split the part into one body per member (SolidWorks: "
                                    "Split or separate extrusions), then inspect again",
                             "acknowledge": ["narrow_plates"]}})
+    model.params["mesh_scale"] = float(mesh_scale)
     model.params["s_snap"] = np.array(snap_el, bool)
+    model.params["s_snap3"] = np.array(snap3, bool).reshape(-1, 3)
     if n_snap:
         model.notes.append(
             f"{n_snap} shell element(s) are larger than the crack band their fracture energy "

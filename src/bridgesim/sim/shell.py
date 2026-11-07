@@ -214,6 +214,7 @@ def element_data(xy: np.ndarray, angles: list[float], t: float, ply, Ef: float, 
             "kd": drill_stiffness(E_t_drill, area), "lay": lay,
             "Q": np.array([Q[0, 0], Q[1, 1], Q[0, 1], Q[2, 2]]), "lim": lim, "rf": rf,
             "lc": lc, "snapback": bool((rf_raw < 1.05).any()),
+            "snap3": (rf_raw < 1.05),
             "excess": float(np.min(red)),
             "snap_modes": [k for k, r in zip(("fibre tension", "across the grain", "shear"),
                                              rf_raw, strict=True) if r < 1.05]}
