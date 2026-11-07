@@ -406,5 +406,19 @@ moved from node M (round 15: the diagonal feet) to node A, where the end post's 
 the gussets lets go: with the gussets as plates, node M carries its load through them,
 as a review found by setting them to shells by hand (2065 kgf, node A, with the old
 reading). F_u is higher than round 15's 1769 / 1895 kgf by the reading (+6 %), the
-gussets and the deck; the seeds differ by 17 %.
+gussets and the deck; the seeds differ by 17 %. With the round's last changes (end
+grain by the angle of the cut, copies, draws) standard gives 2156 and 2529 kgf on seeds
+0 and 1, at the same joints.
+
+The spread with the round-16 model and its last changes (end grain by the angle of the
+cut, the wood's strengths drawn with its modulus, G with E; `montecarlo -n 8 --fidelity
+standard --sample-placeholders`): F_u 1323 to 2674 kgf, median 1730; with the mesh and
+the model-form error (now 25 %), 1043 to 3359 kgf (p05 / p95); the Load Prediction Form
+value 1699 kgf, and the strict reading the same (the first joint now goes at the peak in
+every run: in round 15 the strict prediction was 1075 kgf, read on the falling branch).
+Where it starts, by part and its copies (`governing_parts`, copies now grouped by the
+words naming their side): the End Post's joints to the node A gussets on 4 of 8 runs,
+the diagonal feet at node M on 2, a gusset or centre-plate crack on 2 (one of them
+flagged: the crack starts in elements larger than the crack band). The range is still
+set mostly by the unmeasured glue: lap-joint tests would narrow it most.
 
