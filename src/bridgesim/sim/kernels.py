@@ -610,7 +610,7 @@ def _trilinear_damage(dmx, dm0, keff, Gc, ga, gp):
 @njit(cache=True, fastmath=True, error_model="numpy")
 def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GIIc, mu,
                 breakable, dmax, dd, slip, F, Mo, update, beta, dt, prev, alive, crush,
-                fc90, cdep, eps_d, E_d, fcap, creep, cfac, cdec, ga, gp):
+                fc90, cdep, eps_d, E_d, fcap, creep, cfac, cdec, ga, gp, crate, lr):
     nc = ca.shape[0]
     pa = np.empty(3)
     pb = np.empty(3)
@@ -678,8 +678,10 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
         ks = Ks[i]
         d = 0.0
         if breakable[i]:
-            dn0 = sig[i] / kn
-            ds0 = tau[i] / ks
+            # the strength at the physical test time so far (glue_rate in solver.py)
+            rs = math.exp(-crate[i] * lr) if lr != 0.0 else 1.0
+            dn0 = sig[i] * rs / kn
+            ds0 = tau[i] * rs / ks
             dm = math.sqrt(dnp * dnp + s2)
             if dnp > 1e-12:
                 mix = s / dnp

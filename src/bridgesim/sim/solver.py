@@ -120,6 +120,7 @@ class State:
     c_creep: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))  # creep slip
     creep_dt: float = 0.0  # physical test time of the current step (s): jack travel /
     #                        the real test rate; 0 while the jack stands
+    t_test: float = 0.0  # physical test time so far (s): the sum of creep_dt
     b_s2: np.ndarray = field(default_factory=lambda: np.zeros(0))
     b_s3: np.ndarray = field(default_factory=lambda: np.zeros(0))
     # shear stress / strength of each beam (through the plies, across the width)
@@ -477,6 +478,21 @@ def trilinear_damage(dmx, dm0, keff, Gc, ga: float, gp: float) -> np.ndarray:
     return np.clip(d, 0.0, 1.0)
 
 
+def glue_rate(m: Model, st: State) -> tuple[np.ndarray, float]:
+    """The glue points' rate exponents and log(t / t_ref) for the physical test time so
+    far: a glue line's strength depends on its time to failure, tau(t) = tau(t_ref) (t /
+    t_ref)^-n (PVAc: +16 % per decade faster, Wernersson 1994; -40 % at a tenth of the
+    rate, Serrano 2000), t_ref the time to failure of the lap tests tau_g describes
+    (glue.coupon_time_s). At each moment of the crush the glue holds what a test failing
+    then would show; before any physical time has passed (coupons, the screen) tau_g."""
+    nc = len(m.c_a)
+    rate = m.c_rate if len(m.c_rate) == nc else np.zeros(nc)
+    tref = float(m.params.get("glue_coupon_time_s", 60.0))
+    if st.t_test <= 0.0 or tref <= 0.0:
+        return rate, 0.0
+    return rate, math.log(max(st.t_test, 1.0) / tref)
+
+
 def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
                 update: bool = True, beta: float = 0.0, dt: float = 1.0) -> None:
     if len(m.c_a) == 0:
@@ -515,8 +531,10 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
         st.c_crush = st.c_crush - dp
     dn = dn + dp
     dnp = np.maximum(dn, 0.0)
-    dn0 = m.c_sig / Kn
-    ds0 = m.c_tau / Ks
+    rate, lr = glue_rate(m, st)
+    rs = np.exp(-rate * lr) if lr != 0.0 else 1.0
+    dn0 = m.c_sig * rs / Kn
+    ds0 = m.c_tau * rs / Ks
     dm = np.sqrt(dnp**2 + s**2)
     mix = s / np.maximum(dnp, 1e-12)
     dm0 = np.where(dnp > 1e-12, dn0 * ds0 * np.sqrt((1 + mix**2)
@@ -891,7 +909,7 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
                       st.c_dmax, st.c_d, st.c_slip, F, Mo, update,
                       s.beta if update else 0.0, s.dt, st.c_prev, st.c_alive, st.c_crush,
                       _glue_fc90(m), *_glue_crush(m), st.c_creep, *glue_creep(m, st),
-                      *glue_shape(m))
+                      *glue_shape(m), *glue_rate(m, st))
     if len(m.k_a):
         K.cable_kernel(x, R, m.a_node, m.a_r0, m.k_a, m.k_b, m.k_L0, m.k_EA, m.k_Fb,
                        st.k_alive, F, Mo, update)

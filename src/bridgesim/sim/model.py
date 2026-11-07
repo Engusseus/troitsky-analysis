@@ -158,6 +158,9 @@ class Model:
     notes: list[str] = field(default_factory=list)
     # render skin: vertex -> up to 3 (attachment) weights
     skin: dict = field(default_factory=dict)
+    # per glue point: the exponent n of its strength's dependence on the time to failure,
+    # tau(t) = tau(t_ref) (t / t_ref)^-n (glue.rate_exponent; the wood's for a solid face)
+    c_rate: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
     @property
     def n_nodes(self) -> int:

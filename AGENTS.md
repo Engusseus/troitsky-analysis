@@ -303,6 +303,11 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
   `--fidelity fine` before redesigning around one part, and use `ab` to confirm.
 * `events`: the first event of each kind per part, with `where_mm`; `events.csv` in the
   output folder has every event (`n_events_total`).
+* `test_time_at_Fu_s`: when the real test would reach F_u (the jack's travel to the peak at
+  `crusher.test_rate_mm_per_min`, 10 mm/min until someone times the crusher). The glue's
+  strength is taken at that time to failure: a PVA line is ~16 % stronger per decade
+  faster (`glue.rate_exponent` 0.1), against the 60 s its coupons took
+  (`glue.coupon_time_s`).
 * `Fu_first_joint_failure_kgf`: the highest load up to the moment the first glued joint
   separated or a member split in shear (what a strict judge who stops the test there
   reads: §12.5 counts "shear, including joint failure" as failure); it equals F_u when
@@ -337,7 +342,10 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
 
 0. Decide what to measure: `bridgesim sensitivity` ranks the placeholder values by how
    much they move F_u for *this* design (`measure_first`).
-1. Coupon level: fill the templates in `validation/physical/` for the tests you made:
+1. Coupon level: fill the templates in `validation/physical/` for the tests you made
+   (give each glue test its `time_to_failure_s`: a lap that breaks in 10 s reads ~16 %
+   stronger than one that takes 60 s, and `calibrate` brings each to `glue.coupon_time_s`;
+   the crush test's `time_s` column times the crusher):
    `stick_bending_template.csv` (E, bending strength) and `glue_joint_template.csv`
    (tau_g), which `calibrate` fits through the simulated coupons, and the direct ones:
    `stick_tension_template.csv` (f_t), `stick_compression_template.csv` (f_c, short
@@ -398,6 +406,8 @@ corners are up to 0.5 mm out of level and the bridge leans out of its plane by u
 0.005 rad (`contact.seating_mm`, `scatter.support_level_mm`, `scatter.lean_rad`: measure
 them on the built bridge); parts that come into contact during the test push on each other without
 friction; time is compressed (the jack moves ~mm/s instead of mm/min; the glue's creep
-runs on the physical test time, the jack's travel at the real rate; F_u falls a few %
+and its rate-dependent strength run on the physical test time, the jack's travel at the
+real rate; the wood is as dry as its coupons unless `wood.moisture_excess_pct` says the
+members were laminated in the days before the test; F_u falls a few %
 as the simulated jack slows, -2.4 % from quick's 200 to 100 mm/s on Bridge_v10 and
 -0.5 % from 100 to 50: `--rate-check` measures it and extrapolates to a jack at rest).

@@ -1,3 +1,3 @@
-test,bridge_file,load_kgf,midspan_deflection_mm,jack_travel_mm,event,notes
-C01,Bridge_v6.SLDPRT,0,0,0,start,example row: replace with your data (log deflection under the deck or the jack stroke; one of them is enough)
-C01,Bridge_v6.SLDPRT,1450,,,failure,top chord far side left (the part that broke first; the peak load alone is enough for the prediction error)
+test,bridge_file,load_kgf,midspan_deflection_mm,jack_travel_mm,time_s,event,notes
+C01,Bridge_v6.SLDPRT,0,0,0,0,start,example row: replace with your data (log deflection under the deck or the jack stroke; one of them is enough)
+C01,Bridge_v6.SLDPRT,1450,,,,failure,top chord far side left (the part that broke first; the peak load alone is enough for the prediction error)

@@ -126,11 +126,14 @@ of Berard et al., which the round-19 literature review corrected).
   (sigma/sigma_max)^2 + (tau/tau_max)^2 = 1, linear softening with mixed-mode fracture
   energy (Benzeggagh-Kenane, G_Ic, G_IIc). Since round 20 the law bends before its peak
   (trilinear): straight to `glue.prepeak_onset` (0.65) of the strength, then bending over
-  to the strength at `glue.peak_slip_ratio` (1.5) x the slip a straight line would reach
-  it at (~0.055 mm for a hand-made lap), then softening linearly; the work done to
-  separation is still G_c. A PVA bond line is a thermoplastic that yields before it
-  parts: a pressed PVAc line's load-slip curve bends from 60-70 % of its peak and peaks
-  at 0.05-0.07 mm (Serrano 2000, Lund TVSM-1012), so a joint near its strength slips more
+  to the strength at `glue.peak_slip_ratio` (2.0 since round 21; 1.5 in round 20) x the
+  slip a straight line would reach it at (~0.075 mm for a hand-made lap), then softening
+  linearly; the work done to separation is still G_c. A PVA bond line is a thermoplastic
+  that yields before it parts: a pressed PVAc line's load-slip curve bends from 60-75 % of
+  its peak and peaks at 0.05-0.07 mm, ~2.5x the slip of its own initial slope (Serrano
+  2000, Lund TVSM-1012, Fig. 4.10), or from 0.4-0.75 of its peak at 0.04-0.135 mm with a
+  negligible elastic part (Wernersson 1994, Lund TVSM-1006); montecarlo draws both
+  (0.45-0.75, 1.1-3.8). A joint near its strength slips more
   and passes load to its neighbours, and a bridge that fails at its joints bends over
   before its peak (`test_the_glue_law_bends_before_its_peak`). A glue line counts as
   failing (`glue_damage`, the joint's share let go) only past its peak. tau_max is tau_g of the material file times
@@ -151,9 +154,23 @@ of Berard et al., which the round-19 literature review corrected).
   (`crusher.test_rate_mm_per_min`), so it does not depend on the simulated jack speed.
   The elastic part of the slip carries the stress and drives the damage, so creep makes
   a joint softer, not weaker (`test_glue_creeps_in_test_time`: the relaxation of a held
-  glue line matches the Kelvin solution within 0.1 %). Over the ~40 s a test takes to
+  glue line matches the Kelvin solution within 0.1 %). Over the 10-40 s a test takes to
   its peak at 10 mm/min it adds a few % to the joints' slip; measure it with a lap
   joint held at a constant load.
+* **Rate of loading** (since round 21): a PVA line's strength depends on its time to
+  failure, tau(t) = tau(t_ref) (t / t_ref)^-n, `glue.rate_exponent` n = 0.1 (+16 % per
+  decade faster, Wernersson 1994, Table 4.1; -40 % at a tenth of the rate, Serrano 2000:
+  0.065-0.22, drawn by montecarlo), t_ref the time to failure of the lap tests tau_g
+  describes (`glue.coupon_time_s`, 60 s). The crush runs on physical test time (the
+  jack's travel at `crusher.test_rate_mm_per_min`, 10 mm/min, a placeholder nobody has
+  timed, drawn 50 %): at each moment the glue holds what a lap failing then would show,
+  so a bridge that peaks 13 s into the test (Bridge_v10) is ~16 % stronger at its glue
+  than 60 s coupons, one that takes 3 min ~10 % weaker. A face through one piece of wood
+  follows the wood's own exponent (`wood.rate_exponent`, 0.02: ~4 % per decade, USDA Wood
+  Handbook ch. 5). The coupons and the screen take tau_g (no physical time); the crush
+  reports when the real test would reach F_u (`test_time_at_Fu_s`). Give each glue test
+  its `time_to_failure_s` (glue_joint and short_beam_shear templates): `calibrate` brings
+  every one to t_ref (`test_the_glue_is_as_strong_as_a_test_failing_when_the_crush_does`).
 * A broken glue line keeps **bearing in compression** and **slides with friction**
   (mu = 0.4): pieces still lean on each other after the glue lets go.
 * The wood at a glue line **crushes** when the joint is pressed together, at the
@@ -207,7 +224,7 @@ of Berard et al., which the round-19 literature review corrected).
   inputs, not measurements; coupons cut from the gussets held 5.1 MPa, CoV 0.27.)
 * **Laminations.** Two plates glued face to face (a deck's plies drawn as separate
   bodies, a gusset flat on a plate) are glued as the plies inside one laminated body:
-  at `glue.interlaminar_MPa` (4 MPa) with no size effect and a pressed line's shear
+  at `glue.interlaminar_MPa` (3.5 MPa) with no size effect and a pressed line's shear
   stiffness (`glue.lamination_K_s_N_per_mm3`, 200 N/mm^3: a pressed PVAc line ~150
   secant, 300-400 initially, Serrano 2000, in series with two 2 mm sticks in shear), so
   the same bond line drawn as one body or two gives the same bridge. Round 19 gave
@@ -288,7 +305,7 @@ a quadratic interaction between, averaged over the plies
 (`test_plies_resist_a_split_across_the_width_with_their_fibres`). The glue
 planes of a laminate (pressed while they cured, long and continuous) are not a hand-made
 lap joint between parts (tau_g, an average over the lap): they split at the lower of the
-bond line's strength (`glue.interlaminar_MPa`, 4 MPa: craft-stick laminates glued with Elmer's split at 3.7 MPa; PVA bond lines in pressed wood
+bond line's strength (`glue.interlaminar_MPa`, 3.5 MPa since round 21: craft-stick laminates glued with Elmer's and pressed over their whole length split at 3.7 MPa, an upper bound, and hand clamps or weights press less evenly; PVA bond lines in pressed wood
 laminates fail in the wood next to them) and what the weakest ply takes there, the
 interlaminar shear running along its grain (f_v) and across it (rolling shear,
 `wood.f_rolling_MPa`, 3 MPa) in proportion to its angle: f_v for a UD stack, the
@@ -670,14 +687,21 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
 * Friction in the contact between parts that were not touching at the start.
 * Debris (pieces with nothing left holding them) falls under gravity and lands on the
   platform, but does not hit the bridge or the plate.
-* Creep of the wood, humidity, and the time the bridge waits loaded (the glue's creep is
-  modelled, section 3, in physical test time). The simulated curve shows the toe from
-  seating, then is near-linear to ~65 % of the peak and bends over as joints near their
-  strength yield (the glue law's pre-peak bend, round 20); its secant to the peak over
-  the 10-40 % secant (`compare`'s stiffness, as EN 12512) was 0.91 on Bridge_v10 with
-  round 18's bilinear law, inside the 0.84-0.92 of glued timber trusses tested to
-  failure (Debertolis et al. 2025, 7 m span, "mostly linear elastic until failure, which
-  occurred in a brittle manner"). Stick coupons loaded at the test's own pace (failure in
+* Creep of the wood and the time the bridge waits loaded (the glue's creep and its
+  rate-dependent strength are modelled, section 3, in physical test time). Moisture is
+  one input, `wood.moisture_excess_pct` (0): how many points wetter the bridge's wood is
+  than its coupons' (members laminated days before the test: a PVA line brings ~+8
+  points to a 2 mm ply, evened out only after a week), lowering E and G 2 %, f_c 5.7 %,
+  f_c90 5 % and f_v 2.4 % per point (USDA Wood Handbook eq. 5-3, paper birch); make the
+  coupons alongside the members, or weigh a member daily after gluing until its mass is
+  steady. The simulated curve shows the toe from seating, then is near-linear: the glue
+  law bends from 0.65 of a joint's strength, but on Bridge_v10 one brittle joint at node M
+  fails before any other reaches it, and the secant from 50 to 90 % of F_u equals the
+  10-40 % secant within 2 % (round 20). Glued timber trusses tested to failure were
+  "mostly linear elastic until failure, which occurred in a brittle manner", their
+  secant at the peak 0.84-0.92 of the 10-40 % secant (Debertolis et al. 2025, 7 m span):
+  the model is at the stiff end of that, and a real stick bridge with more scattered
+  joints may bend more before its peak. Stick coupons loaded at the test's own pace (failure in
   about the same minutes as the crush test; EN 408 asks 300 +- 120 s) carry the wood's
   creep of that duration in the E that `calibrate` fits, so a calibrated model includes
   it to first order; what is left out is how creep grows with the stress near the peak.

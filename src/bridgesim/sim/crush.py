@@ -121,6 +121,8 @@ class CrushResult:
     hold_time_s: float = 0.0
     governing: str = ""  # what broke when the load fell ("member shear: <part>", ...)
     competing: list[str] = field(default_factory=list)  # other breaks within 10 % of F_u
+    test_time_at_Fu_s: float = 0.0  # physical test time at the peak (s): the jack's
+    # travel at crusher.test_rate_mm_per_min, the time the glue's strength is taken at
 
 
 def _quat(R: np.ndarray) -> np.ndarray:
@@ -953,6 +955,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     glued_patch = patch_area > 0 if len(patch_of) else np.ones(n_patch, bool)
     peak = 0.0
     peak_travel = 0.0
+    peak_test_t = 0.0
     peak_defl = 0.0
     fail_at: float | None = None  # travel at which the bridge is judged failed
     fail_mode = ""
@@ -1019,6 +1022,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         # the physical test time of this step (glue creep): the jack's travel at the
         # real test rate, so creep follows the travel, not the compressed time
         st.creep_dt = v * dt / test_rate
+        st.t_test += st.creep_dt
         do_step(1.0, opt.alpha if fail_at is None else opt.alpha_collapse)
         k += 1
         travel = jack0 - st.jack_y
@@ -1069,6 +1073,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                                                  | ~st.b_alive).sum()))
             if force > peak and fail_at is None:  # F_u: the peak before the failure call
                 peak, peak_travel, peak_defl = force, travel, defl
+                peak_test_t = st.t_test
             # ---- events
             def ev(kind, what, detail="", where=None, _tr=travel, _f=force, fraction=None,
                    capacity=math.inf):
@@ -1387,7 +1392,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         criteria=criteria, dt=dt, steps=steps, wall_s=time.time() - t0,
         added_mass_kg=added * 1000, added_mass_frac=added / phys_mass.sum(),
         settle_sag_mm=sag, kinetic_ratio_max=max_ke_ratio, model=m,
-        speed_mm_s=float(opt.speed_mm_s), holds=holds, hold_time_s=hold_time)
+        speed_mm_s=float(opt.speed_mm_s), holds=holds, hold_time_s=hold_time,
+        test_time_at_Fu_s=float(peak_test_t))
     del ke
     return res
 

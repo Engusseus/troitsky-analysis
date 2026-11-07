@@ -471,7 +471,7 @@ def screen(cad: str | Path, overrides=None, material=None, sim_params=None, rule
     F = load_kgf * KGF
     sol = scr.solve(model, F)
     lims = scr.utilisations(model, sol, F,
-                            peak_over_avg=sp.values.get("glue.tau_peak_over_avg", 1.075))
+                            peak_over_avg=sp.values.get("glue.tau_peak_over_avg", 1.065))
     mass = rules.measurements.get("mass_kg", model.bridge_mass_kg)
     first = lims[0] if lims else None
     rep = ScreenReport(
@@ -674,6 +674,7 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         failure_detail=res.failure_detail, governing=res.governing,
         competing=list(getattr(res, "competing", [])),
         deflection_at_Fu_mm=round(res.deflection_at_Fu_mm, 2),
+        test_time_at_Fu_s=round(getattr(res, "test_time_at_Fu_s", 0.0), 1),
         mass_kg=round(mass, 3), efficiency_kgf_per_kg=round(res.Fu_kgf / mass, 2),
         criteria=_criteria(res.criteria),
         failures=_failures(res.events, _fail_time(res)),
@@ -1619,7 +1620,7 @@ def lab(material=None, sim_params=None, csv_dir: str | Path | None = None) -> La
                   "modulus_of_rupture_MPa": round(mor, 1),
                   "material_f_b_MPa": mat.f_b_MPa.value})
     ov, wd = mat.glue.overlap_mm.value, st.width_mm
-    tau_peak = mat.glue.tau_g_MPa.value * sp.values.get("glue.tau_peak_over_avg", 1.075)
+    tau_peak = mat.glue.tau_g_MPa.value * sp.values.get("glue.tau_peak_over_avg", 1.065)
     g = _lap(sp, tau_peak, ov, wd, E, t=st.thickness_mm)
     tests.append({"test": f"single-lap glue joint {ov:g} x {wd:g} mm", "peak_N": round(g.peak, 1),
                   "tau_avg_MPa": round(g.peak / (ov * wd), 3),
@@ -1640,6 +1641,19 @@ def _float(r: dict, k: str) -> float | None:
         return float(v)
     except ValueError:
         return None
+
+
+def at_coupon_time(F: float, r: dict, sp: SimParams) -> float:
+    """A glue test's failure load brought to the time to failure tau_g describes
+    (glue.coupon_time_s), from the row's time_to_failure_s: tau(t_ref) = tau(t) (t /
+    t_ref)^n (glue.rate_exponent), so a lap pulled apart in 10 s does not read 20 % strong;
+    unchanged without a time."""
+    t = _float(r, "time_to_failure_s")
+    n = float(sp.values.get("glue.rate_exponent", 0.0))
+    tref = float(sp.values.get("glue.coupon_time_s", 60.0))
+    if not t or t <= 0 or n <= 0 or tref <= 0:
+        return F
+    return F * (t / tref) ** n
 
 
 def _lab_gaps(d: Path, mat: Material, sp: SimParams) -> list[RealityGap]:
@@ -1688,8 +1702,9 @@ def _lab_gaps(d: Path, mat: Material, sp: SimParams) -> list[RealityGap]:
             faces = _float(r, "faces") or 1
             if not (ov and w and Ff):
                 continue
+            Ff = at_coupon_time(Ff, r, sp)
             tau_peak = mat.glue.tau_g_MPa.value * sp.values.get("glue.tau_peak_over_avg",
-                                                                 1.075)
+                                                                 1.065)
             sim = _lap(sp, tau_peak, ov, w, mat.E_MPa.value)
             mets.append(GapMetric(name=f"{r['specimen']} joint strength",
                                   simulated=round(sim.peak * faces, 1), measured=Ff,
@@ -1795,10 +1810,10 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
                 r, "failure_load_N")
             faces = _float(r, "faces") or 1
             if ov and w and Ff:
-                joints.append((ov, w, Ff / faces))
+                joints.append((ov, w, at_coupon_time(Ff, r, sp) / faces))
         if joints:
             tau = float(np.mean([F_ / (ov * w) for ov, w, F_ in joints]))
-            ratio = sp.values.get("glue.tau_peak_over_avg", 1.075)
+            ratio = sp.values.get("glue.tau_peak_over_avg", 1.065)
             E = changes.get("E_MPa", mat.E_MPa.value)
             # inverse fit through the simulated lap joint of each measured geometry
             for _ in range(3):
@@ -1957,8 +1972,8 @@ def _direct_coupons(d: Path, mat: Material, sp: SimParams, changes: dict, notes:
                    f"{len(ends)} end-to-end joints (their strength over the peel strength "
                    "of a face joint)")
     # short-beam shear of a laminate (ASTM D2344): tau = 0.75 P / (b h) on its glue lines
-    sbs = [0.75 * _float(r, "peak_load_N") / (_float(r, "width_mm") * _float(r,
-                                                                              "thickness_mm"))
+    sbs = [0.75 * at_coupon_time(_float(r, "peak_load_N"), r, sp)
+           / (_float(r, "width_mm") * _float(r, "thickness_mm"))
            for r in _coupon_rows(d, "short_beam")
            if _float(r, "peak_load_N") and _float(r, "width_mm") and _float(r, "thickness_mm")]
     if sbs:
@@ -2465,7 +2480,7 @@ PLACEHOLDER_PRIORS = {
     # across the grain (veneer 1.1-2.0 MPa), the pressed bond line (6-12), the plies'
     # shear and across-grain fracture energies (0.5-2, 0.2-0.5 N/mm), peel (0.5-0.8 x
     # shear), rolling shear (2-4 MPa), the fit-up of cut ends (0.1-0.6 mm)
-    "wood.f_t90_MPa": 0.25, "glue.interlaminar_MPa": 0.30, "wood.G_v_N_per_mm": 0.45,
+    "wood.f_t90_MPa": 0.25, "glue.interlaminar_MPa": 0.25, "wood.G_v_N_per_mm": 0.45,
     "wood.G_f90_N_per_mm": 0.35, "glue.peel_to_shear": 0.25, "wood.f_rolling_MPa": 0.25,
     "scatter.bearing_gap_mm": 0.50,
     # round 19 (the ambitious and realism reviews): the glue lines' stiffness decides where
@@ -2477,8 +2492,14 @@ PLACEHOLDER_PRIORS = {
     # round 20 (the literature review): the glue law's pre-peak bend (pressed PVAc bends
     # from 60-70 % of its peak, peaks at 0.05-0.07 mm), butt joints in thin plies in
     # tension (0.53-0.8 of the statics) and in compression (0.94-0.96 when they bear)
-    "glue.prepeak_onset": 0.10, "glue.peak_slip_ratio": 0.25,
+    "glue.prepeak_onset": 0.15, "glue.peak_slip_ratio": 0.40,
     "wood.butt_tension_efficiency": 0.15, "wood.butt_bearing_efficiency": 0.05,
+    # round 21 (the literature review of round 20): the glue law's shape from 0.45-0.75
+    # and 1.1-3.8 (Serrano 2000, Wernersson 1994), hand-made laminations 2-4.5 MPa, the
+    # glue's rate exponent 0.065-0.22 and the crusher's pace (nobody has timed it), which
+    # together set how much stronger the glue is in the crush than in its coupons
+    "glue.lamination_K_s_N_per_mm3": 0.35, "glue.rate_exponent": 0.37,
+    "crusher.test_rate_mm_per_min": 0.50,
 }
 
 SENSITIVITY = {  # key: (meaning, how to measure)

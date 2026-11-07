@@ -652,6 +652,10 @@ def test_brief_crush_report(synthetic_crush):
     assert b["kind"] == "crush_brief" and "curve" not in b and "events" not in b
     assert b["Fu_kgf"] == rep.Fu_kgf
     assert b["peak"]["load_kgf"] == pytest.approx(rep.Fu_kgf, rel=0.01)
+    # the real test reaches the peak after the jack's travel at its own pace (10 mm/min)
+    pace = SP["crusher.test_rate_mm_per_min"] / 60.0
+    assert rep.test_time_at_Fu_s == pytest.approx(b["peak"]["jack_travel_mm"] / pace,
+                                                  rel=0.1, abs=0.5)
     assert len(json.dumps(b)) < len(rep.model_dump_json())
     sev = [q["severity"] for q in b["questions"]]
     assert sev == sorted(sev, key=["important", "check", "info"].index)
@@ -3089,7 +3093,9 @@ def test_stick_sheets_with_unglued_edges_are_softer_and_weaker_in_shear():
     assert 0.6 < gk < 0.75
     assert sk * MAT.f_v_MPa.value == pytest.approx(tor * 10 / 12, rel=1e-9)
     assert sk < 0.5  # below half f_v: 3.3 MPa against 4
-    assert cross_ply_sheet_shear([0, 90, 0], 0.2, tor / MAT.f_v_MPa.value)[1] == 0.5
+    # 3 plies: t* = 3 t / 2, so the crossings hold 1.11 x their strength
+    assert cross_ply_sheet_shear([0, 90, 0], 0.2, tor / MAT.f_v_MPa.value)[1] == \
+        pytest.approx(min(0.5, tor * 2 / (3 * 3 * 0.2) / MAT.f_v_MPa.value), rel=1e-9)
     m0 = build_model(simple_beam_bridge(), MAT, SP, Overrides(), seed=None)
     m1 = build_model(simple_beam_bridge(), MAT, SP.updated({"glue.plate_edges_glued": 1}),
                      Overrides(), seed=None)
@@ -3151,7 +3157,7 @@ def test_the_glue_law_bends_before_its_peak():
     from bridgesim.sim.solver import trilinear_damage
 
     a, p = SP["glue.prepeak_onset"], SP["glue.peak_slip_ratio"]
-    assert (a, p) == (0.65, 1.5)
+    assert (a, p) == (0.65, 2.0)
     dm0, k, G = 2.2 / 60.0, 60.0, 1.2
     x = np.linspace(0.0, 1.2, 4001)
     for aa, pp in ((a, p), (1.0, 1.0)):
@@ -3180,3 +3186,49 @@ def test_the_glue_law_bends_before_its_peak():
     tri = lab.lap_shear(2.2, 0.66, **kw, onset=a, peak_slip=p)
     bil = lab.lap_shear(2.2, 0.66, **kw)
     assert bend(tri) < bend(bil) - 0.03
+
+
+def test_the_glue_is_as_strong_as_a_test_failing_when_the_crush_does():
+    """A PVA line's strength depends on its time to failure, tau(t) = tau(t_ref) (t /
+    t_ref)^-n (n 0.1: +16 % per decade faster, Wernersson 1994; -40 % at a tenth of the
+    rate, Serrano 2000): a lap that fails 10x sooner than the coupons tau_g describes
+    holds ~10^0.1 = 1.26x, through the compiled kernel and its NumPy mirror alike; at
+    the coupons' own time (or before any physical time has passed) tau_g. The crush's
+    glue points carry glue.rate_exponent, a face through one piece the wood's (0.02); the
+    crush reports the physical time at F_u; calibrate brings a lap pulled apart in 6 s
+    to the coupons' 60 s."""
+    from bridgesim.sim import lab
+    from bridgesim.sim import solver as S_
+    from bridgesim.sim.idealize import Overrides, build_model
+    from bridgesim.sim.study import at_coupon_time
+
+    n, tref = SP["glue.rate_exponent"], SP["glue.coupon_time_s"]
+    assert (n, tref) == (0.1, 60.0)
+    kw = {"Kn": SP["glue.K_n_N_per_mm3"], "Ks": SP["glue.K_s_N_per_mm3"],
+          "GIc": SP["glue.G_Ic_N_per_mm"], "GIIc": SP["glue.G_IIc_N_per_mm"],
+          "E": SP["wood.E_placeholder_MPa"], "rate_exponent": n, "coupon_time_s": tref}
+    ref = lab.lap_shear(2.2, 0.66, **kw).peak
+    assert lab.lap_shear(2.2, 0.66, **kw, test_time_s=tref).peak == pytest.approx(ref,
+                                                                                rel=1e-6)
+    fast = lab.lap_shear(2.2, 0.66, **kw, test_time_s=tref / 10).peak
+    assert fast / ref == pytest.approx(10 ** n, rel=0.03)
+    # the NumPy mirror of the kernel takes the same strength
+    m = build_model(simple_beam_bridge(), MAT, SP, Overrides(), seed=None)
+    st = S_.initial_state(m, 1e12)
+    st.t_test = 6.0
+    rate, lr = S_.glue_rate(m, st)
+    assert lr == pytest.approx(math.log(0.1))
+    assert np.allclose(rate[m.c_breakable], n) and np.allclose(rate[~m.c_breakable], 0.0)
+    st.t_test = 0.0
+    assert S_.glue_rate(m, st)[1] == 0.0
+    # one piece of wood: the wood's own exponent
+    bodies = simple_beam_bridge()
+    m2 = build_model(bodies, MAT, SP, Overrides.from_dict(
+        {"glue": {"Stringer Near* | Deck*": "solid"}}), seed=None)
+    solid = [p for p in m2.patches if p.kind == "solid"]
+    assert solid and np.allclose(m2.c_rate[np.array(solid[0].springs)],
+                                 SP["wood.rate_exponent"])
+    # calibrate: a lap pulled apart in 6 s read (6/60)^0.1 low at the coupons' time
+    assert at_coupon_time(1000.0, {"time_to_failure_s": "6"}, SP) == pytest.approx(
+        1000.0 * 0.1 ** n)
+    assert at_coupon_time(1000.0, {}, SP) == 1000.0

@@ -1,3 +1,3 @@
-specimen,overlap_mm,width_mm,load_N,slip_mm,notes
-L01,20,10.0,0,0,example rows: the load and the slip between the two sticks over the overlap during one lap test
-L01,20,10.0,,,
+specimen,overlap_mm,width_mm,load_N,slip_mm,time_s,notes
+L01,20,10.0,0,0,0,example rows: the load and the slip between the two sticks over the overlap during one lap test
+L01,20,10.0,,,,

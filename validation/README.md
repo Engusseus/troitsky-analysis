@@ -665,3 +665,33 @@ joints bearing). The curve stays straight to its peak (secant from 50 to 90 % of
 the 10-40 % secant 1.00-1.02): the failure is one brittle joint at node M, and no other
 joint reaches the glue law's bend (0.65 of its strength) before it. The 50 mm/s run, the
 Monte Carlo and the light truss follow.
+
+### 3.13 Round 21: the glue's time to failure, hand-made laminations, moisture
+
+From the literature review of round 20:
+
+* **The glue's strength follows its time to failure**, tau(t) = tau(t_ref) (t /
+  t_ref)^-0.1 (+16 % per decade faster for PVAc, Wernersson 1994, Lund TVSM-1006; -40 % at
+  a tenth of the rate, Serrano 2000), on the crush's physical test time (the jack's
+  travel at `crusher.test_rate_mm_per_min`, 10 mm/min until someone times the crusher),
+  against the 60 s of the coupons tau_g describes; a face through one piece of wood
+  follows the wood's 0.02. The crush reports `test_time_at_Fu_s`; the glue and
+  short-beam templates take `time_to_failure_s` and `calibrate` brings each test to 60
+  s; montecarlo draws the exponent (0.065-0.22) and the crusher's pace.
+* **Laminations made by hand**: `glue.interlaminar_MPa` 3.5 (4 was Karplus's pressed
+  beams, an upper bound; hand clamps cost 5-10 % against the optimum, Rabiej & Behm 1992,
+  uneven fit more).
+* **The glue law's shape**: peak at 2.0x the straight line's slip (Serrano's lines peak at
+  ~2.5x their own initial slope, Wernersson's with a negligible elastic part); drawn over
+  0.45-0.75 (onset) and 1.1-3.8 (peak); the lap coupon's peak/average ratio is 1.065.
+* **Moisture**: `wood.moisture_excess_pct` (0) for members laminated days before the
+  test (a PVA line brings ~+8 points of moisture to a 2 mm ply): E and G -2 %, f_c -5.7 %,
+  f_c90 -5 %, f_v -2.4 % per point (USDA Wood Handbook eq. 5-3).
+* **Hobby stick bridges** (Boon 2024, garrettsbridges.com: 9 Howe trusses, Elmer's,
+  48 h cure): the first failure was always a joint; 4 of 9 survived it (first failure at
+  0.65-0.90 of the peak); sanding the glued faces flat raised the mean peak 44 %; the
+  peak's CoV 6-19 % per group (log-sd 0.14 pooled), inside the model's ~20 % seed spread.
+  A Warren stick bridge failed at 710 N against 1780 N predicted on its gross section:
+  its compression diagonal buckled at stick joints on its outer faces (Silva et al. 2026,
+  Rev. Ensino Eng. 45:389), which the model's butt joints do not do (they scale strength,
+  not the bending stiffness at the joint).

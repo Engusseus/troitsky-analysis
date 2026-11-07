@@ -276,6 +276,10 @@ class CrushReport(BaseModel):
         "measures which one the load depends on). Empty: the governing failure stands "
         "alone"))
     deflection_at_Fu_mm: float
+    test_time_at_Fu_s: float = Field(0.0, description=(
+        "When the real test would reach F_u (s): the jack's travel to the peak at "
+        "crusher.test_rate_mm_per_min. The glue's strength is taken at this time to "
+        "failure (glue.rate_exponent, against its coupons' glue.coupon_time_s)"))
     mass_kg: float
     efficiency_kgf_per_kg: float = Field(description="§12.6: Fu / mass")
     criteria: Criteria = Field(description="First time each §12.5 failure criterion "

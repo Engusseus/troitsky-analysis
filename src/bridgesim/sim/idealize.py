@@ -883,6 +883,34 @@ def _merge_butt_questions(questions: list[dict]) -> list[dict]:
     return out
 
 
+# the change of the wood's properties per percentage point of moisture content, below
+# the fibre saturation point (USDA Wood Handbook 2010, eq. 5-3 with table 5-3a, paper
+# birch, intersection moisture content 27 %, table 5-13)
+MOISTURE_PER_PCT = {"E_MPa": -0.020, "G_MPa": -0.020, "f_c_MPa": -0.057, "f_v_MPa": -0.024,
+                    "wood.f_c90_MPa": -0.050}
+
+
+def moisture_adjusted(mat: Material, sp: SimParams) -> tuple[Material, SimParams]:
+    """The wood of the bridge ``wood.moisture_excess_pct`` percentage points wetter than
+    the coupons its values come from (laminated members glued days before the test: a
+    PVA line brings ~97 g/m^2 of water, ~+8 points in a 2 mm ply, and it takes a week to
+    even out, USDA Wood Handbook ch. 10): E, G, f_c, f_v and f_c90 lowered as the Wood
+    Handbook gives (MOISTURE_PER_PCT). Each value keeps its source."""
+    dm = float(sp.values.get("wood.moisture_excess_pct", 0.0))
+    if dm == 0.0:
+        return mat, sp
+    d = mat.model_dump()
+    for k, rate in MOISTURE_PER_PCT.items():
+        if k.startswith("wood."):
+            continue
+        d[k]["value"] = float(d[k]["value"]) * max(1.0 + rate * dm, 0.05)
+    k90 = "wood.f_c90_MPa"
+    if k90 in sp.values:
+        sp = sp.updated({k90: sp[k90] * max(1.0 + MOISTURE_PER_PCT[k90] * dm, 0.05)},
+                        source=sp.sources.get(k90, "assumed"))
+    return Material.model_validate(d), sp
+
+
 def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 ov: Overrides | None = None, seed: int | None = 0,
                 plate_offset_mm: tuple[float, float] = (0.0, 0.0),
@@ -896,6 +924,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                              if not k.startswith("material.")})
         except KeyError as exc:
             raise ValueError(str(exc).strip("'\"")) from None
+    mat, sp = moisture_adjusted(mat, sp)
     rng = np.random.default_rng(seed) if seed is not None else None
 
     def rng_for(key: str):
@@ -1666,10 +1695,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     # much the peak exceeds the average depends on how many nodes the glue points hang
     # on: with one node per side the glue shears uniformly (1.0); as soon as a side's
     # stretching is resolved the shear-lag peak appears. Fitted to the lap coupon with
-    # its glue on 1, 2, 3, 5 and 9 nodes per side (1.00, 1.045, 1.10, 1.08, 1.075 with
-    # the round-20 glue law; tests/test_sim.py checks it), so a joint's strength does not
+    # its glue on 1, 2, 3, 5 and 9 nodes per side (1.00, 1.04, 1.09, 1.07, 1.065 with
+    # the round-21 glue law; tests/test_sim.py checks it), so a joint's strength does not
     # jump with the mesh
-    peak_over_avg = sp.values.get("glue.tau_peak_over_avg", 1.075)
+    peak_over_avg = sp.values.get("glue.tau_peak_over_avg", 1.065)
 
     def peak_factor(n_nodes: int) -> float:
         return 1.0 + (peak_over_avg - 1.0) * (1.0 - math.exp(-2.2 * (n_nodes - 1)))
@@ -2229,6 +2258,17 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     floor_m = 1e-12
     mass = np.maximum(mass, floor_m)
     rot = np.maximum(rot, floor_m)
+    # each glue point's rate exponent: a glue line's (glue.rate_exponent), the wood's for
+    # a face through one piece (wood.rate_exponent: ~4 % per decade, USDA Wood Handbook
+    # ch. 5); unbreakable ties and overlaps none
+    kinds = np.array([p_.kind for p_ in patches] + ["glue"])
+    sp_patch = np.asarray(springs["patch"], int)
+    c_rate = np.where(kinds[np.where(sp_patch >= 0, sp_patch, len(patches))] == "solid",
+                      sp.values.get("wood.rate_exponent", 0.0),
+                      sp.values.get("glue.rate_exponent", 0.0)) if len(sp_patch) else \
+        np.zeros(0)
+    c_rate = np.where(np.asarray(springs["breakable"], bool), c_rate, 0.0) \
+        if len(sp_patch) else c_rate
     model = Model(
         X=np.array(bld.X), mass=mass, rot_inertia=rot, node_body=np.array(bld.node_body),
         b_i=arr(beams["i"], dtype=int), b_j=arr(beams["j"], dtype=int),
@@ -2250,7 +2290,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         c_Kn=arr(springs["Kn"]), c_Ks=arr(springs["Ks"]), c_sig=arr(springs["sig"]),
         c_tau=arr(springs["tau"]), c_GIc=arr(springs["GIc"]), c_GIIc=arr(springs["GIIc"]),
         c_mu=arr(springs["mu"]), c_patch=arr(springs["patch"], dtype=int),
-        c_breakable=arr(springs["breakable"], dtype=bool),
+        c_breakable=arr(springs["breakable"], dtype=bool), c_rate=np.asarray(c_rate, float),
         k_a=arr(cables["a"], dtype=int), k_b=arr(cables["b"], dtype=int),
         k_L0=arr(cables["L0"]), k_EA=arr(cables["EA"]), k_Fb=arr(cables["Fb"]),
         k_body=arr(cables["body"], dtype=int),
@@ -2264,6 +2304,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         params={"crush_softening": sp["wood.crush_softening"],
                 "glue_creep_factor": sp.values.get("glue.creep_factor", 0.0),
                 "glue_prepeak_onset": sp.values.get("glue.prepeak_onset", 1.0),
+                "glue_coupon_time_s": sp.values.get("glue.coupon_time_s", 60.0),
                 "glue_peak_slip_ratio": sp.values.get("glue.peak_slip_ratio", 1.0),
                 "glue_creep_time_s": sp.values.get("glue.creep_time_s", 600.0),
                 "fc_proportional": sp.values.get("wood.fc_proportional", 1.0),
