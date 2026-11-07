@@ -1779,6 +1779,29 @@ def test_reported_load_has_no_lag():
             assert abs(r2[j] - r2[i]) <= k * 0.01 + 0.01 * r2[i] + 1e-6
 
 
+def test_the_peak_before_a_break_is_read_where_it_was():
+    """A load that rises straight to a break and falls 45 % there (a joint letting go at
+    the peak, as on Bridge_v10): smoothed across the drop it read 9 % low and the break
+    at a fraction of its load; cut at the break (the hold that starts there), the peak
+    and the load at the break read within 1 %, and the ring is still removed."""
+    from bridgesim.sim.crush import reported_load
+
+    v = 100.0
+    t = np.arange(0, 0.06, 3e-5)
+    x = v * t
+    tb = 0.037  # the break, at 3.7 mm
+    true = np.where(t < tb, 500.0 * x, 0.55 * 500.0 * v * tb)
+    raw = true + 20.0 * np.sin(2 * np.pi * 270 * t)
+    across = reported_load(t, raw, v, x)
+    cut = reported_load(t, raw, v, x, breaks=[tb])
+    peak = 500.0 * v * tb
+    assert across.max() < 0.93 * peak  # the window across the drop: ~9 % low
+    assert cut.max() == pytest.approx(peak, rel=0.01)
+    assert cut[np.searchsorted(t, tb) - 1] == pytest.approx(peak, rel=0.01)  # at it
+    rise = (x > 0.5) & (x < 3.5)
+    assert np.abs(cut[rise] - true[rise]).max() < 0.01 * peak
+
+
 def test_governing_is_the_break_that_started_the_fall():
     """Bridge_v6 seed 1 at quick fidelity: a deck-stringer joint let go at the peak (the
     load fell 5 % and came back), then the End Post joints went at 96 % of the peak and
@@ -2408,3 +2431,51 @@ def test_glue_points_give_a_patch_its_turning_stiffness():
         assert (A * pts[:, 1] ** 2).sum() == pytest.approx(Lw**3 * Lu / 12, rel=1e-6)
     mid = _sample_polygon(poly, 40.0, max_pts=400, min_per_side=2)
     assert (Lu * Lw / 4 * mid[:, 0] ** 2).sum() == pytest.approx(0.75 * Lu**3 * Lw / 12)
+
+
+def test_stacked_plates_are_meshed_node_on_node(tmp_path):
+    """Plates glued face to face (a deck laminated from separate bodies, its middle
+    panel's plies grooved for the side panels' tongues, on a block under the plate, as
+    on Bridge_v10) are meshed so that the glue joins nodes straight across: no glue
+    point hangs on a node of either plate by an arm in its plane, and the deck's
+    stiffness under the plate is the same at the quick and the fine mesh (hung on
+    nodes off-centre, each thin layer bent between them: 9x softer at quick)."""
+    from bridgesim.cad.synthetic import box
+    from bridgesim.sim import screen as scr
+    from bridgesim.sim import study
+
+    y0 = 180.0
+    B = [box("Pier L", (-550, 0, -80), (-500, 150, 80)),
+         box("Pier R", (500, 0, -80), (550, 150, 80)),
+         box("Stringer Near (13-ply UD)", (-550, 150, 50), (550, y0, 76)),
+         box("Stringer Far (13-ply UD)", (-550, 150, -76), (550, y0, -50)),
+         box("Floor Block", (-100, 0, -50), (100, y0, 50)),
+         box("Deck Middle Bot (2-ply 0-90)", (-125, y0, -80), (125, y0 + 4, 80)),
+         box("Deck Middle Mid (3-ply 0-90)", (-105, y0 + 4, -80), (105, y0 + 10, 80)),
+         box("Deck Middle Top (2-ply 0-90)", (-125, y0 + 10, -80), (125, y0 + 14, 80))]
+    for side, (a, b) in (("L", (-550, -125)), ("R", (125, 550))):
+        B += [box(f"Deck {side} Bot (2-ply 0-90)", (a, y0, -80), (b, y0 + 4, 80)),
+              box(f"Deck {side} Top (2-ply 0-90)", (a, y0 + 10, -80), (b, y0 + 14, 80)),
+              box(f"Deck {side} Mid (3-ply 0-90)",  # its tongue runs 20 mm into the groove
+                  (a if side == "L" else 105, y0 + 4, -80),
+                  (-105 if side == "L" else b, y0 + 10, 80))]
+    cad = tmp_path / "deck.stl"
+    write_stl(B, cad, names=True)
+    _, bodies, ov, _, mat, sp, _ = study._inputs(
+        cad, {"bodies": {"Floor Block": {"kind": "block"}, "Pier*": {"kind": "block"}}},
+        None, None, None, None, "y", "x")
+    k = {}
+    for scale in (1.6, 0.5):
+        m = study._build(bodies, mat, sp, ov, None, scale, False)
+        names = [b.name for b in m.bodies]
+        for i in range(len(m.c_a)):
+            pa = m.patches[m.c_patch[i]]
+            if names[pa.body_a].startswith("Deck") and names[pa.body_b].startswith("Deck"):
+                nrm = m.c_n0[i] / np.linalg.norm(m.c_n0[i])
+                if abs(nrm[1]) < 0.99:
+                    continue  # an end face butting another: not a stack
+                for att in (m.c_a[i], m.c_b[i]):
+                    r = m.a_r0[att]
+                    assert np.linalg.norm(r - (r @ nrm) * nrm) < 1.0, scale
+        k[scale] = 1000.0 / scr.solve(m, 1000.0)["plate_dy"]
+    assert k[1.6] == pytest.approx(k[0.5], rel=0.15)  # was 9x softer at quick

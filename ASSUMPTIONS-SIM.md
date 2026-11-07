@@ -22,7 +22,7 @@ relevant parts in your Design Validation (§10). Units: mm, N, MPa, s.
 | extrusion at least 2x longer than its section, section no flatter than 1:4 (a deep cross-beam 221 x 88 x 63 mm is one) | **bar**: chain of corotational fibre beams on its centre line, ~25-30 mm elements (>= 4), real section and length, Timoshenko (shear-flexible) | members carry axial force + bending; buckling needs >= 4 elements |
 | slender but tapered extrusion (a wedge, a lip or filler cut along a diagonal: 40-75 % of its bounding box) | **tapered bar**: as above, each element with the width and centre offset of the profile at its position (same volume as the solid) | still a member; a rigid block would make the load path too stiff |
 | thin extrusion (width >= 3 x thickness) | **shell**: CST membrane + DKT bending triangles on the mid-surface, meshed from the real outline (holes > element size kept), integrated ply by ply (layered) | gussets, webs, decks, diaphragms |
-| plate made of narrow arms (an L-shaped leg, an X, a curved rib, a strut-like plate): arms narrower than 1.6 standard shell elements, or 3 when they are slender (centre lines >= 4x their width), arms covering >= 80 % of the plate and carrying what is glued to it (a part glued off the arms, a wing of a hub plate, gets an arm of its own out to it, if that runs inside the plate) | **frame**: fibre beams along the centre lines of its arms (the medial axis of its outline, `sim/skeleton.py`), each with the arm's local width and the plate's thickness, plies stacked through the thickness: a UD frame's sticks along each arm (it is built arm by arm), a cross-ply or angle-ply frame a sheet cut to shape whose plies keep the plate's long axis in every arm (an arm at 45 degrees to a +-45 plate is 0/90; asked as `frame_plies:`, `grain: arm` if they were laid along each arm; `test_frame_plies_follow_the_sheet_or_the_arm`), or the span; butt joints per arm as for bars, arms sharing nodes where they meet, glue on rigid arms to the nearest node | a strip of constant-strain triangles one or two elements wide is 2-4x too stiff in in-plane bending, and a 20 mm thick plate is no thin plate; a beam is exact there (`test_frame_plate_bends_like_a_beam`, a strip 40 mm deep on knife edges, ~2.5 elements across: beam theory within 3 %, the same strip as shells 20 % too stiff; the 70 % reported until round 15 was mostly the strip's ends glued to 10 mm piers, which fix them partly, for frames as for shells since round 15). The `frame_plates` question lists them; a plate whose glued parts cannot be reached that way stays a shell and the `narrow_plates` question asks about it |
+| plate made of narrow arms (an L-shaped leg, an X, a curved rib, a strut-like plate): arms narrower than 1.6 standard shell elements, or 3 when they are slender (centre lines >= 4x their width, and 90 % of their length no wider than 3 elements: a 140 mm gusset with 60 mm tails is a plate, not a strut; it was a single beam until round 16), arms covering >= 80 % of the plate and carrying what is glued to it (a part glued off the arms, a wing of a hub plate, gets an arm of its own out to it, if that runs inside the plate) | **frame**: fibre beams along the centre lines of its arms (the medial axis of its outline, `sim/skeleton.py`), each with the arm's local width and the plate's thickness, plies stacked through the thickness: a UD frame's sticks along each arm (it is built arm by arm), a cross-ply or angle-ply frame a sheet cut to shape whose plies keep the plate's long axis in every arm (an arm at 45 degrees to a +-45 plate is 0/90; asked as `frame_plies:`, `grain: arm` if they were laid along each arm; `test_frame_plies_follow_the_sheet_or_the_arm`), or the span; butt joints per arm as for bars, arms sharing nodes where they meet, glue on rigid arms to the nearest node | a strip of constant-strain triangles one or two elements wide is 2-4x too stiff in in-plane bending, and a 20 mm thick plate is no thin plate; a beam is exact there (`test_frame_plate_bends_like_a_beam`, a strip 40 mm deep on knife edges, ~2.5 elements across: beam theory within 3 %, the same strip as shells 20 % too stiff; the 70 % reported until round 15 was mostly the strip's ends glued to 10 mm piers, which fix them partly, for frames as for shells since round 15). The `frame_plates` question lists them; a plate whose glued parts cannot be reached that way stays a shell and the `narrow_plates` question asks about it |
 | compact piece (less than 2x longer than its section, not thin), a body named a block, short toothpick | **rigid body** with its real mass and the mean of its principal moments of inertia (one value for all axes: the loading is quasi-static, kinetic energy below 1 % of the jack's work, so a block's rotational inertia only enters the time step) | much stiffer than the members; a question lists those in the load path |
 | floss (by name) | **cable**: tension only, snaps at its breaking load | §8.4.5 |
 
@@ -77,6 +77,15 @@ assumed tight in compression (they bear).
   centre node resisting turning, 1769 kgf with two points per side and 1778 with three:
   converged (two points at the cell midpoints, 75 % of the turning stiffness, gave
   1534; validation README §3.7).
+* **Plates glued face to face are meshed node on node** over their overlap (a deck
+  laminated from separate ply bodies, tongue and groove included; a gusset on a plate):
+  finest first, each takes the nodes of those meshed before it, then each its partners'
+  final ones, its own outline kept. The glue then joins nodes straight across. Hung on
+  nodes off-centre by rigid arms, a load through the stack bent each thin layer between
+  them, a compliance that grew with the element size: Bridge_v10's stiffness under the
+  plate was 360 / 623 / 737 / 816 kgf/mm at x1.6 / x1 / x0.75 / x0.5, now 838 / 819 /
+  836 / 833 (`test_stacked_plates_are_meshed_node_on_node`: a three-ply deck with a
+  tongue and groove on a block, 9x too soft at quick before).
 * Glue law: penalty stiffness K_n, K_s (glue line + adjacent wood), quadratic initiation
   (sigma/sigma_max)^2 + (tau/tau_max)^2 = 1, linear softening with mixed-mode fracture
   energy (Benzeggagh-Kenane, G_Ic, G_IIc). tau_max is tau_g of the material file times
@@ -282,8 +291,16 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   something breaks) is one point of the curve, weighted by the little travel it covers,
   so the load can neither jump nor keep rising at constant travel there (round 11
   smoothed the moving and held stretches apart, which left steps of 4-6 % at their
-  boundaries). The curve, F_u, the deflection at F_u and the load of every event are the
-  reported one. (Until round 10
+  boundaries). **The window never reaches across a break**: each stretch between the
+  holds (each starting when something breaks) is smoothed on its own, with odd
+  reflection at its ends, so a load that rises to a break and falls there reads its
+  peak where it was. Until round 16 the window averaged across the drop: Bridge_v10's
+  raw jack force peaked at 1879 kgf, the reported F_u was 1769 (-6 %, up to -9 % for a
+  sharp peak), and its governing joint, which broke at the peak, read 1393 kgf, as if
+  after it (`test_the_peak_before_a_break_is_read_where_it_was`). The curve, F_u, the
+  deflection at F_u and the load of every event (the last reading at or before it) are
+  the reported one; `curve.csv` and the report's curve also give the raw force
+  (`load_raw_kgf`). (Until round 10
   the online reading was reported: the same F_u within 0.2 % on Bridge_v6, but its lag
   put the rising branch 0.3 mm late, the secant stiffness 7 % low.)
 * **Failures run their course at constant load**, as in the real test where the jack

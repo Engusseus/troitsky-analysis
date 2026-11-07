@@ -180,10 +180,14 @@ class Criteria(BaseModel):
 
 class Curve(BaseModel):
     jack_travel_mm: list[float]
-    load_kgf: list[float]
+    load_kgf: list[float] = Field(description=(
+        "The reported load: the jack force smoothed along the travel between breaks "
+        "(stress waves removed, no lag, the peak kept where a break cuts the curve)"))
     deflection_mm: list[float]
     joints_broken: list[int]
     members_broken: list[int]
+    load_raw_kgf: list[float] = Field(default_factory=list, description=(
+        "The jack force as computed, before smoothing (stress waves included)"))
 
 
 class Quality(BaseModel):
@@ -265,9 +269,11 @@ class CrushReport(BaseModel):
                                                "events.csv)")
     n_events_total: int = 0
     Fu_first_joint_failure_kgf: float | None = Field(
-        None, description="Jack load when the first glued joint separated (>= 90 % of its "
-                          "area let go) or a member split in shear. §12.5 counts joint "
-                          "failure as failure, so a strict judge could stop the test here.")
+        None, description="The highest jack load up to the moment the first glued joint "
+                          "separated (>= 90 % of its area let go) or a member split in "
+                          "shear: what a strict judge who stops the test there reads (§12.5 "
+                          "counts joint failure as failure). It equals F_u when the first "
+                          "joint goes at or after the peak.")
     warnings: list[str] = []
     failure_sequence: list[str] = Field(description="Plain-language order in which things "
                                                     "broke.")

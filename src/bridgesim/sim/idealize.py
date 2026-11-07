@@ -404,11 +404,14 @@ def _sample_polygon(poly, spacing: float, max_pts: int = 25,
 # ------------------------------------------------------------------------------- meshing
 
 
-def mesh_polygon(poly: Polygon, h: float, seeds: np.ndarray | None = None
-                 ) -> tuple[np.ndarray, np.ndarray]:
+def mesh_polygon(poly: Polygon, h: float, seeds: np.ndarray | None = None,
+                 fixed: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
     """Triangulate a polygon (holes allowed) with elements of about size h. Holes
     smaller than about h (floss holes, pin holes) are filled: they do not change the
-    plate's stiffness or strength noticeably and would force tiny elements."""
+    plate's stiffness or strength noticeably and would force tiny elements. ``fixed``:
+    points that become nodes (those inside the polygon), the mesh's own points near them
+    dropped: another plate's nodes over the face glued to this one, so the two meshes
+    meet node on node."""
     if isinstance(poly, Polygon):
         keep = [r for r in poly.interiors if Polygon(r).area > (0.8 * h) ** 2]
         poly = Polygon(poly.exterior, keep)
@@ -447,13 +450,38 @@ def mesh_polygon(poly: Polygon, h: float, seeds: np.ndarray | None = None
         inside = shapely.contains_xy(poly.buffer(1e-6), seeds[:, 0], seeds[:, 1])
         allp = np.vstack([allp, seeds[(dd > 0.55 * h) & inside]])
     allp = np.unique(np.round(allp, 6), axis=0)
+    n_fix = 0
+    keep_pt = np.zeros(len(allp), bool)  # points never merged away
+    if fixed is not None and len(fixed):
+        fx = np.unique(np.round(np.asarray(fixed, float), 6), axis=0)
+        fx = fx[shapely.contains_xy(poly.buffer(1e-6), fx[:, 0], fx[:, 1])]
+        if len(fx):
+            # this plate's own outline nodes stay (the partner may have them too, or
+            # needs them where its overlap ends); its inner points near a fixed one
+            # give way to it
+            on_bnd = shapely.distance(poly.boundary, shapely.points(allp)) < 1e-6
+            dd, _ = cKDTree(fx).query(allp)
+            sel = (dd > 0.5 * h) | on_bnd
+            allp, on_bnd = allp[sel], on_bnd[sel]
+            dup = cKDTree(fx).query(allp)[0] < 1e-6  # an outline node it has already
+            allp, on_bnd = allp[~dup], on_bnd[~dup]
+            allp = np.vstack([fx, allp])
+            n_fix = len(fx)
+            keep_pt = np.r_[np.ones(n_fix, bool), on_bnd]
     # merge points closer than 0.3 h (short CAD edges, seeds next to the boundary): they
-    # would make sliver elements and a tiny stable time step
+    # would make sliver elements and a tiny stable time step (fixed points, another
+    # mesh's nodes, and the outline's nodes beside them are kept unless nearly on top
+    # of each other)
     tree = cKDTree(allp)
     drop = np.zeros(len(allp), bool)
     for i, j in sorted(tree.query_pairs(0.3 * h)):
-        if not drop[i] and not drop[j]:
-            drop[j] = True
+        if drop[i] or drop[j]:
+            continue
+        if keep_pt[i] and keep_pt[j]:
+            if np.linalg.norm(allp[i] - allp[j]) < 0.05 * h:
+                drop[j if j >= n_fix else i] = True
+            continue
+        drop[j if not keep_pt[j] else i] = True
     allp = allp[~drop]
     tri = Delaunay(allp).simplices
     cen = allp[tri].mean(axis=1)
@@ -823,6 +851,40 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     bar_axis: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     shell_tree: dict[int, cKDTree] = {}
     shell_mesh: dict[int, tuple[np.ndarray, np.ndarray, float]] = {}
+    # plates glued face to face (the plies of a laminated deck drawn as separate
+    # bodies, a gusset on a plate) are meshed node on node over their overlap, finest
+    # first: the glue between them then joins nodes straight across, and a load passes
+    # through the stack instead of bending each thin layer between nodes it is hung on
+    # off-centre (a three-layer deck under the plate made Bridge_v10 2x too soft at
+    # quick and 12 % at standard)
+    stacked: dict[int, set] = {}
+    for ia, ib, _inter, _oa, _e1, _e2, na in raw_patches:
+        if shapes[ia].kind == "shell" and shapes[ib].kind == "shell" and \
+                abs(float(np.dot(shapes[ia].n, na))) > 0.99 and \
+                abs(float(np.dot(shapes[ib].n, na))) > 0.99:
+            stacked.setdefault(ia, set()).add(ib)
+            stacked.setdefault(ib, set()).add(ia)
+    pre_shell: dict[int, tuple[np.ndarray, np.ndarray, float]] = {}
+
+    def _partner_nodes(bi: int) -> np.ndarray | None:
+        sh = shapes[bi]
+        fixed = []
+        for ob in sorted(stacked[bi]):
+            if ob in pre_shell:
+                so = shapes[ob]
+                X3 = so.origin + np.outer(pre_shell[ob][0][:, 0], so.e1) \
+                    + np.outer(pre_shell[ob][0][:, 1], so.e2)
+                fixed.append(np.c_[(X3 - sh.origin) @ sh.e1, (X3 - sh.origin) @ sh.e2])
+        return np.vstack(fixed) if fixed else None
+
+    # forward, finest first: each plate takes the nodes of those meshed before it;
+    # back again: each takes its partners' final nodes (a shorter ply's ends included),
+    # so both meshes have the same nodes over the whole overlap
+    order_st = sorted(stacked, key=lambda i: (_shell_h(shapes[i]), i))
+    for bi in order_st + order_st[-2::-1]:
+        sh = shapes[bi]
+        pre_shell[bi] = _mesh_robust(sh.poly, _shell_h(sh) * mesh_scale, bodies[bi].name,
+                                     fixed=_partner_nodes(bi))
     frame_tree: dict[int, cKDTree] = {}
     frame_h: dict[int, float] = {}
     beams: dict[str, list] = {k: [] for k in ("i", "j", "L0", "E0", "fy", "fz", "fA", "E",
@@ -1181,7 +1243,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             o_mid = sh.origin - sh.n * T / 2
             area = sh.poly.area
             h = _shell_h(sh) * mesh_scale
-            P2, tri, h = _mesh_robust(sh.poly, h, b.name)  # glue attaches by rigid arms
+            P2, tri, h = pre_shell[bi] if bi in pre_shell else \
+                _mesh_robust(sh.poly, h, b.name)  # glue attaches by rigid arms
             ids = np.array([bld.node(o_mid + p[0] * sh.e1 + p[1] * sh.e2, bi) for p in P2])
             body_nodes[bi] = ids
             shell_tree[bi] = cKDTree(np.array([bld.X[i] for i in ids]))
@@ -1306,6 +1369,11 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             q2 = np.c_[(proj - oa) @ e1, (proj - oa) @ e2]
             inside = shapely.contains_xy(inter, q2[:, 0], q2[:, 1])
             band = shapely.contains_xy(inter.buffer(0.5 * hl), q2[:, 0], q2[:, 1]) & ~inside
+            if ib in stacked.get(ia, ()):
+                # plates meshed node on node: the overlap's edge has nodes on both, so
+                # the glue is at the nodes on or inside it (none hangs beyond the edge)
+                inside = shapely.contains_xy(inter.buffer(1e-3 * hl), q2[:, 0], q2[:, 1])
+                band = np.zeros_like(inside)
             w = np.where(inside, trib, np.where(band, 0.5 * trib, 0.0))
             sel = w > 0
             if sel.sum() >= 3:
@@ -1930,13 +1998,13 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     return model
 
 
-def _mesh_robust(poly, h: float, name: str):
+def _mesh_robust(poly, h: float, name: str, fixed=None):
     """Mesh a plate outline; if the element size is too coarse for the outline (a narrow
     plate at --fidelity quick), refine until the mesh covers the plate."""
     last = None
     for _ in range(6):
         try:
-            P2, tri = mesh_polygon(poly, h)
+            P2, tri = mesh_polygon(poly, h, fixed=fixed)
             if len(tri) >= 2:
                 a = P2[tri]
                 area = 0.5 * np.abs((a[:, 1, 0] - a[:, 0, 0]) * (a[:, 2, 1] - a[:, 0, 1])
@@ -1987,8 +2055,13 @@ def _frame_chains(sh: Shape, force: bool = False, patches=()) -> list | None:
         return None
     if not chains:
         return None
-    width = float(np.median(np.concatenate([c.width for c in chains])))
-    slender = sum(c.length for c in chains) >= FRAME_SLENDER * width
+    widths = np.concatenate([c.width for c in chains])
+    width = float(np.median(widths))
+    # slender arms: long against their width, and narrow along (nearly) all of it: a
+    # plate with a deep part (a 140 mm gusset with 60 mm tails) is a plate there, not a
+    # strut, whatever its tails make the median width
+    slender = sum(c.length for c in chains) >= FRAME_SLENDER * width and \
+        float(np.percentile(widths, 90)) <= FRAME_SLENDER_ACROSS * h
     if not force and arm >= FRAME_MAX_ACROSS * h and not slender:
         return None
     bnd = poly.boundary

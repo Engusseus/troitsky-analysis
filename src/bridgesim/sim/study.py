@@ -414,7 +414,9 @@ def screen(cad: str | Path, overrides=None, material=None, sim_params=None, rule
     path, bodies, ov, ov_raw, mat, sp, rs = _inputs(cad, overrides, material, sim_params,
                                                      ruleset, units, up, span,
                                                      doc=overrides_data)
-    model = _build(bodies, mat, sp, ov, None, 1.0, strict)
+    # the standard crush's mesh, so the screen's stiffness and limits are those of the
+    # model the crush runs (at x1.0 it was 14 % softer on Bridge_v10)
+    model = _build(bodies, mat, sp, ov, None, 0.75, strict)
     rules = _rules(bodies, mat, rs, model)
     F = load_kgf * KGF
     sol = scr.solve(model, F)
@@ -604,8 +606,10 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         keep.add(next((i for i, f in enumerate(c["force"]) if f >= 0.999999 * res.Fu_N),
                       len(c["force"]) - 1))
     keep = sorted(keep)
+    raw = c.get("force_raw", c["force"])
     curve = Curve(jack_travel_mm=[round(c["travel"][i], 3) for i in keep],
                   load_kgf=[round(c["force"][i] / KGF, 2) for i in keep],
+                  load_raw_kgf=[round(raw[i] / KGF, 2) for i in keep],
                   deflection_mm=[round(c["deflection"][i], 3) for i in keep],
                   joints_broken=[c["glue_broken"][i] for i in keep],
                   members_broken=[c["members_broken"][i] for i in keep])
@@ -636,12 +640,13 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         with (out / "curve.csv").open("w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
             w.writerow(["t_s", "jack_travel_mm", "load_N", "load_kgf", "deflection_mm",
-                        "joints_broken", "members_broken"])
+                        "joints_broken", "members_broken", "load_raw_kgf"])
+            raw = c.get("force_raw", c["force"])
             for i in range(len(c["t"])):
                 w.writerow([f"{c['t'][i]:.6f}", f"{c['travel'][i]:.4f}",
                             f"{c['force'][i]:.2f}", f"{c['force'][i] / KGF:.3f}",
                             f"{c['deflection'][i]:.4f}", c["glue_broken"][i],
-                            c["members_broken"][i]])
+                            c["members_broken"][i], f"{raw[i] / KGF:.3f}"])
         rep.artifacts["curve_csv"] = str(out / "curve.csv")
         with (out / "events.csv").open("w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
@@ -1130,8 +1135,17 @@ def _fail_time(res: CrushResult) -> float | None:
 
 
 def _first_joint(res: CrushResult) -> float | None:
+    """The strict reading: the highest load up to the first glued joint separating or
+    member splitting in shear, what a judge who stops the test there reads on the load
+    cell (its peak), not the load the moment it happens (on a falling branch when the
+    joint goes after the peak)."""
     hit = [e for e in res.events if e.kind in ("joint_failure", "member_shear")]
-    return round(hit[0].force_N / KGF, 2) if hit else None
+    if not hit:
+        return None
+    tt = np.asarray(res.curve.get("t", []), float)
+    f = np.asarray(res.curve.get("force", []), float)
+    upto = f[tt <= hit[0].t] if len(tt) == len(f) and len(tt) else np.zeros(0)
+    return round(max(float(upto.max()) if len(upto) else 0.0, hit[0].force_N) / KGF, 2)
 
 
 def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = None

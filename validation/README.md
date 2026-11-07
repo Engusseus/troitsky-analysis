@@ -368,3 +368,40 @@ and ramps are those of a stiff bridge.
   brace half, and settings the report does not list), so the report's numbers are not
   reproduced here. Both agree on where it fails: at node M of one truss.
 
+### 3.8 Round 16: the load reading, plates on plates, gussets that are plates
+
+Three things a review of round 15 measured on Bridge_v10, now changed:
+
+* **The reported load cut at breaks.** The raw jack force of standard seed 0 (round 15
+  model) rose smoothly to 1879 kgf, held there while node M let go, then fell; the
+  reported F_u was 1769 kgf (-6 %) and the governing joint's break read 1393 kgf, as if
+  after the peak, because the 0.9 mm smoothing window reached across the drop. It no
+  longer does: each stretch between breaks is smoothed on its own. The strict reading
+  is the highest load up to the first separation (it was the load at that moment, on the
+  falling branch: 1075 kgf for the Load Prediction Form against 1503).
+* **Plates glued face to face meshed node on node.** Bridge_v10's three-layer deck under
+  the plate (a tongue and groove into the middle panel) hung its glue and its layers on
+  nodes off-centre: the stiffness under the plate was 360 / 623 / 737 / 816 kgf/mm at
+  quick / x1 / standard / fine, now 838 / 819 / 836 / 833.
+* **The centre gussets are plates.** plate_M (470 x 140 mm with 60 mm tails) was a
+  single beam (a "slender" frame by its median width, set by the tails); a plate counts
+  as slender now only if 90 % of its arms are at most three elements wide.
+
+Bridge_v10 with the round-16 model (the same file and settings as §3.7):
+
+| | quick seed 0 | standard seed 0 | standard seed 1 |
+|---|---|---|---|
+| F_u (reported / raw peak) | 2210 / 2213 kgf | 2154 / 2154 kgf | 2532 kgf |
+| secant stiffness 10-50 % | 798 kgf/mm | 793 kgf/mm | - |
+| deflection at F_u | 3.0 mm | 2.9 mm | 3.7 mm |
+| governs | End Post R Far to its gusset at node A | the same joint | End Post L Near to its gusset at node A |
+| strict reading | 2210 | 2154 | 2532 |
+
+Quick now follows standard (F_u +2.6 %, the same stiffness, deflection and failure);
+in round 15 it was 4.6x softer, 2.9x the deflection, and failed elsewhere. The failure
+moved from node M (round 15: the diagonal feet) to node A, where the end post's glue to
+the gussets lets go: with the gussets as plates, node M carries its load through them,
+as a review found by setting them to shells by hand (2065 kgf, node A, with the old
+reading). F_u is higher than round 15's 1769 / 1895 kgf by the reading (+6 %), the
+gussets and the deck; the seeds differ by 17 %.
+

@@ -456,26 +456,40 @@ LOAD_CELL_MM = 0.3  # time constant of the online load-cell filter, in jack trav
 
 
 def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
-                  travel: np.ndarray | None = None) -> np.ndarray:
+                  travel: np.ndarray | None = None, breaks=()) -> np.ndarray:
     """The load reported for a crush: the raw jack force smoothed by a centred Hann
     window 0.9 mm of jack travel wide (three online load-cell time constants at full
     speed), along the jack travel: the load against travel, as a test record plots it.
     Centred, so it has no lag (the rising branch, the stiffness and F_u are where they
     are), while it removes the stress waves ringing through the bridge. Along the
     travel, a hold (the jack nearly still while something breaks) is one point of the
-    curve, weighted by the little travel it covers: the load can neither jump nor keep
-    rising at constant travel there. Without ``travel``: along time at full speed."""
+    curve, weighted by the little travel it covers. ``breaks``: the times something
+    broke (a hold started): the window never reaches across one, each stretch between
+    breaks is smoothed on its own with odd reflection at its ends, so a load that rises
+    to a break and falls there reads its peak where it was (a window across the drop
+    read a bridge 6 % low, and its breaks after the peak at a quarter less load).
+    Without ``travel``: along time at full speed."""
     raw = np.asarray(raw, float)
+    t = np.asarray(t, float)
+    cuts = sorted({int(np.searchsorted(t, b)) for b in breaks if t[0] < b <= t[-1]})
+    cuts = [c for c in cuts if 0 < c < len(raw)]
+    if cuts:
+        out = np.empty_like(raw)
+        trv = None if travel is None else np.asarray(travel, float)
+        for a, b in zip([0] + cuts, cuts + [len(raw)], strict=True):
+            out[a:b] = reported_load(t[a:b], raw[a:b], speed_mm_s,
+                                     None if trv is None else trv[a:b])
+        return out
     if len(raw) < 3:
         return raw.copy()
     u = (np.asarray(travel, float) / max(speed_mm_s, 1e-9) if travel is not None
-         else np.asarray(t, float))  # the time the jack needs at full speed
+         else t)  # the time the jack needs at full speed
     u = np.maximum.accumulate(u)
     W = 3 * LOAD_CELL_MM / max(speed_mm_s, 1e-9)
     du = np.gradient(u)
     du = np.maximum(du, 1e-6 * (float(np.median(du[du > 0])) if (du > 0).any() else 1.0))
-    # odd reflection at both ends: a load rising from the start (or still changing at
-    # the end) is not biased by a one-sided window there
+    # odd reflection at both ends: a load rising from the start (or to a break, or still
+    # changing at the end) is not biased by a one-sided window there
     m0 = int(np.searchsorted(u, u[0] + W / 2))
     m1 = len(u) - int(np.searchsorted(u, u[-1] - W / 2))
     m0, m1 = max(1, min(m0, len(u) - 1)), max(1, min(m1, len(u) - 1))
@@ -860,6 +874,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     test_rate = max(float(m.params.get("test_rate_mm_per_min", 10.0)), 1e-6) / 60.0  # mm/s
     drop_start = None  # (time, travel) the load first fell 30 % below its peak
     out_of_steps = False
+    hold_starts: list[float] = []  # when each hold began: the load may jump there
     hold_period = float(m.params.get("period_s", 0.0)) if opt.auto_speed else 0.0
     while not unstable:
         tl = st.t - t_load0
@@ -997,6 +1012,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                     if st.t >= hold_until:
                         holds += 1
                         hold_start = st.t
+                        hold_starts.append(st.t)
                     hold_until = min(st.t + hold_settle, hold_start + hold_max)
                 n_seen = len(events)
             # ... and until the bridge has settled: no hold ends while it still rings
@@ -1113,14 +1129,20 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     if curve["t"] and not unstable:
         tt = np.asarray(curve["t"])
         fz = reported_load(tt, np.asarray(curve["force_raw"]), opt.speed_mm_s,
-                           np.asarray(curve["travel"]))
+                           np.asarray(curve["travel"]), breaks=hold_starts)
         curve["force_online"] = curve["force"]
         curve["force"] = [float(f) for f in fz]
+        # each event's load: the reading at the last sample at or before it (not an
+        # interpolation across a break, which would mix the load before the drop with
+        # the load after it)
+        def load_at(ts: float) -> float:
+            return float(fz[max(0, int(np.searchsorted(tt, ts, side="right")) - 1)])
+
         for e in events:
-            e.force_N = float(np.interp(e.t, tt, fz))
+            e.force_N = load_at(e.t)
         for c in criteria.values():
             if c and "t_s" in c and "load_N" in c and c["t_s"] >= tt[0]:
-                c["load_N"] = float(np.interp(c["t_s"], tt, fz))
+                c["load_N"] = load_at(c["t_s"])
         n_ok = len(tt) if i_fail is None else i_fail + 1
         i_pk = int(np.argmax(fz[:n_ok]))
         peak, peak_travel = float(fz[i_pk]), float(curve["travel"][i_pk])
