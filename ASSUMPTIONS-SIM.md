@@ -538,8 +538,11 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   sticks: nothing published, bounded at 2-6 MPa by the bond line's, the stick surface's
   and the peel strengths). Since round 18 the draws include the values that set where a
   bridge fails (f_t90, the bond line, G_v, peel, the fit-up gap: the adversarial review
-  found f_v draws inert in members, whose glue lines split first). The values F_u is most
-  sensitive to are the least known. `montecarlo` also gives a **total range**
+  found f_v draws inert in members, whose glue lines split first). Since round 19 the
+  draws are a Latin hypercube over the runs: each value falls once in each of n
+  equal-probability strata of its prior, so a few runs still cover its range (with plain
+  draws seeds 1-8 all drew the glue's strength below its placeholder, a 1-in-256 chance
+  that pulled the median down). The values F_u is most sensitive to are the least known. `montecarlo` also gives a **total range**
   (`total_p05_kgf`, `total_p95_kgf`): the runs' F_u each times a lognormal mesh error
   (`uncertainty.mesh_cov`, 5 %, the fine-vs-standard study) and a model-form error
   (`uncertainty.model_cov`, 30 % since round 18: Bridge_v10's F_u moved 14-30 % per
