@@ -68,7 +68,10 @@ coincide up to ~90 % of the peak, and quick is ~7 % below standard. The spread
 cross-beam's joints to the deck stringers) compete within a few %, and which goes first
 changes with the mesh and the seed (`competing` lists them; `montecarlo` counts them in
 `governing_parts`). So rank designs with one fidelity and the same seeds (`ab`, n >= 3),
-give F_u as the `montecarlo` range, and never compare F_u across fidelities. `ab`, `montecarlo`, `sensitivity` and `calibrate-bridge`
+give F_u as the `montecarlo` range, and never compare F_u across fidelities. A small,
+light bridge (members ~10 mm, glued joints of a few tens of mm^2) converges less well:
+on a light truss standard was 14 % below fine and quick failed elsewhere
+(`validation/README.md` §3.6): use standard or fine for it, not quick. `ab`, `montecarlo`, `sensitivity` and `calibrate-bridge`
 stop each crush 2 mm of jack travel after the bridge is judged failed (F_u and the
 failures are known by then; no replay), which saves about a third of the time.
 

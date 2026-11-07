@@ -378,7 +378,11 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   (`competing`: the hub core, the End Post joints, the cross-beam's joints to the deck
   stringers) goes first. Read F_u at standard with ~5 % discretisation uncertainty, on
   the safe side. The load curves coincide up to ~90 % of the peak; the first joint to
-  separate agrees within 10 %. The quick mesh (x1.6) is 7 % below standard on average
+  separate agrees within 10 %. **A small, light bridge converges less well**: the
+  element sizes were set on Bridge_v6 (members 20-30 mm deep); on a light truss of 10 mm
+  members and 40-60 mm^2 glued joints (`validation/README.md` §3.6) standard was 14 %
+  below fine and quick found a different, much weaker failure. Read such a bridge's F_u
+  at fine. The quick mesh (x1.6) is 7 % below standard on average
   (for ranking designs). A perfect bridge is symmetric, so which side gives way first is
   a bifurcation round-off decides; `--amplitude 0.1` keeps the seed's asymmetry at a
   tenth of its imperfections for a mesh study.

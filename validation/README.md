@@ -280,16 +280,24 @@ twenty times slower, and the same jack outran it. Three synthetic bridges
   comes down to it; the last run passes the 5 % rate criterion (56 s on 2 cores). It
   fails where such a truss does: the end-grain glue of the top struts on the verticals
   lets go at 3.9 mm of travel, and the far truss, no longer braced, rolls over.
-  **Glued joints that are not hinges.** Up to here every glued patch smaller than an
-  element was one spring: the webs were pinned to the chords and the top struts to the
-  verticals, and quick and standard differed by 39 % (11.93 and 8.56 kgf). With at least
-  two points across each side of a patch (it then resists turning, as a glued joint
-  does) the period under the plate is 47 ms instead of 74, and seed 0 gives F_u 14.51 /
-  12.27 / 13.30 kgf at quick / standard / fine (quick +9 %, standard -8 % against fine,
-  the spread Bridge_v6's seeds showed between meshes). The collapse now starts in the
-  floor system, as the inspect `weak_joints` question warned: the end-grain joints of
-  the middle floor beam and the deck's edge to the middle verticals (12 kgf each by
-  inspect) let go together (`competing` names the other three), at every mesh.
+  **The final truss** (floor beams resting on the bottom chords mid-panel; until then
+  they hung from the verticals by end-grain glue, and the floor barely held the 4.2 kg
+  plate: one run collapsed under it at 0.1 kgf of jack load), with glued joints that
+  resist turning (§3.7), rings in 45 ms under the plate. Seed 0, with `--rate-check`:
+
+  | fidelity | jack | F_u at speed / half speed | change | governs |
+  |---|---|---|---|---|
+  | quick | 44 / 22 mm/s | 14.0 / 13.6 kgf | +3.3 % | the deck's glued edges to the middle verticals |
+  | standard | 24 / 12 mm/s | 34.3 / 34.5 kgf | -0.5 % | a floor beam's joint to a chord |
+  | fine | 12 mm/s | 39.8 kgf | - | the deck's edges; a floor beam splitting competes |
+
+  The jack is quasi-static at every fidelity (the rate checks), but **the mesh is not
+  converged for a bridge this small**: standard is 14 % below fine, and quick, whose
+  48 mm elements are coarser than the deck is wide, finds a different and much weaker
+  failure (a deck of four elements across at quick does not change it: 12.6 kgf). The
+  element sizes were set on Bridge_v6, whose members are 20-30 mm deep and plates
+  hundreds of mm across; this truss's members are 10 mm wide and its glued joints 40-60
+  mm^2. For such a bridge read F_u at fine, and rank designs at standard, not quick.
   (Before the truss was made to fit the plate it stood 86 mm apart: the plate started
   inside its verticals and threw them off; such a design now gets an important
   `plate_fit` question. Its diagonals had been cut 12 mm short at both ends and held by
@@ -322,8 +330,8 @@ file names (one half of a portal X brace could not be put together; inspect now 
 so, `cad_unread`). Its lowest mode under the plate rings in 6.7 ms, so its jack speed
 and ramps are those of a stiff bridge.
 
-* **Screen** (seconds): 673 kgf/mm under the plate; the first glue limits at 343 kgf
-  (the deck's bottom plies to the inner centre plates) and 490 kgf (the diagonal feet in
+* **Screen** (seconds): 674 kgf/mm under the plate; the first glue limits at 340 kgf
+  (the deck's bottom plies to the inner centre plates) and 449 kgf (the diagonal feet in
   node M), which the team's report also lists (496 kgf). Until round 15 the dry cut
   ends came first, at ~1 kgf, and the report had to footnote it.
 * **Crush, standard**, seeds 0 and 1:
@@ -346,6 +354,14 @@ and ramps are those of a stiff bridge.
   truss (the diagonal feet into the stub), seed 1 by the deck cracking under the plate
   (all three layers of the middle panel) with node M holding: two failure modes within
   7 %. The deck deflection at F_u is 2.7 and 3.3 mm.
+* **The spread** (`montecarlo -n 8 --fidelity standard --sample-placeholders`: seeds
+  1-8, each also drawing the nine placeholder material values with their own priors):
+  F_u 932 to 2297 kgf, median 1641; with the mesh and model-form error, 865 to 2507 kgf
+  (p05 / p95); the Load Prediction Form value 1503 kgf (1/F weighted), 1075 kgf judged
+  at the first separated joint. Where it starts (`governing_parts`): the diagonal feet in
+  node M on 4 of 8 runs, the deck under the plate on 2, the end post's joint to the
+  gusset at node A on 2. The range is set mostly by the glue values not yet measured
+  (lap strength +-40 %, toughness +-50 %): lap-joint tests would narrow it most.
 * **Against the team's own runs.** The design report gives 1632 and 1548 kgf (bridgesim
   v0.2 on a scripted 70-body model of the same design). On this SLDPRT with the report's
   settings the previous release gives 1360 and 1333 kgf: the models differ (the missing
