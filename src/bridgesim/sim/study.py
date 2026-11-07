@@ -573,7 +573,7 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         if progress is not None:
             slow.progress = lambda f, msg: progress(f, "rate check (half speed): " + msg)
         res2 = run_crush(_build(bodies, mat, sp, ov, seed, scale, False), slow)
-        rc = {"speed_mm_s": slow.speed_mm_s, "Fu_kgf": round(res2.Fu_kgf, 2),
+        rc = {"speed_mm_s": res2.speed_mm_s, "Fu_kgf": round(res2.Fu_kgf, 2),
               "change": round((res.Fu_kgf - res2.Fu_kgf) / max(res2.Fu_kgf, 1e-9), 4),
               "failure_mode": res2.failure_mode, "governing": res2.governing,
               # F_u linear in the jack speed, extrapolated to a jack at rest

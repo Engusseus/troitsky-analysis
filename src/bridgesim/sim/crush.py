@@ -553,7 +553,10 @@ def run_crush(m: Model, opt: CrushOptions | None = None) -> CrushResult:
     T1 = fundamental_period(m)
     m.params["period_s"] = T1
     if opt.auto_speed:
-        opt = dataclasses.replace(opt, speed_mm_s=jack_speed(opt.speed_mm_s, T1))
+        # a slower jack needs as many more steps for the same travel
+        v = jack_speed(opt.speed_mm_s, T1)
+        opt = dataclasses.replace(opt, speed_mm_s=v,
+                                  max_steps=int(opt.max_steps * opt.speed_mm_s / v))
     X0, m0, r0 = m.X.copy(), m.mass.copy(), m.rot_inertia.copy()
     att0 = (m.a_node.copy(), m.a_r0.copy())
     notes = []
@@ -822,6 +825,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         (float(lift.max()) if lift.size else 0.0) + 0.2
     test_rate = max(float(m.params.get("test_rate_mm_per_min", 10.0)), 1e-6) / 60.0  # mm/s
     drop_start = None  # (time, travel) the load first fell 30 % below its peak
+    out_of_steps = False
     hold_period = float(m.params.get("period_s", 0.0)) if opt.auto_speed else 0.0
     while not unstable:
         tl = st.t - t_load0
@@ -1041,7 +1045,10 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             break
         if fail_at is not None and travel > fail_at + opt.after_failure_mm:
             break
-        if travel > opt.max_travel_mm or k > min(opt.max_steps, 3 * est_steps):
+        if travel > opt.max_travel_mm:
+            break
+        if k > min(opt.max_steps, 3 * est_steps):
+            out_of_steps = True
             break
     frames.append(_frame(m, st, jack0 - st.jack_y, st.jack_force, deck0 - deck_y()))
     if unstable:
@@ -1058,7 +1065,10 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                                 fail_detail))
     if fail_at is None:
         fail_mode = "none"
-        fail_detail = (f"no failure within {opt.max_travel_mm:g} mm of jack travel")
+        fail_detail = (f"no failure within {opt.max_travel_mm:g} mm of jack travel"
+                       if not out_of_steps else
+                       f"no failure before the run reached its step limit, at "
+                       f"{jack0 - st.jack_y:.1f} mm of jack travel")
         Fu_at_fail = peak
     # ---- the reported load: the raw force smoothed without lag (reported_load). The
     # online reading above only decided when to hold the jack and when the bridge was

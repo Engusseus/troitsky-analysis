@@ -111,6 +111,13 @@ has bedded in on its supports (it judged one seed failed at 17.8 kgf while it ro
 the corner that stood off the platform). The cross-beam under the plate ("Body 21531") is
 what the designer answered: a laminated block of sticks, 31-ply UD.
 
+(The Bridge_v6 numbers below are from the round-14 code. Round 15 changed what touches
+them only slightly and has not been re-run on Bridge_v6, whose file was not at hand: its
+period under the plate, ~8 ms, is below the 10 ms reference, so its jack speeds are
+unchanged; a load drop now has to last that period before it is the failure; a joint
+carrying under 2 % of F_u no longer governs; the split check weights its averaging window
+by overlap; and the placeholder priors are per value, wider for the glue (§3.6).)
+
 **Five seeds** (imperfections and scatter; each seed is the same imperfect bridge at
 every mesh, its random values being keyed on the CAD, not the mesh):
 

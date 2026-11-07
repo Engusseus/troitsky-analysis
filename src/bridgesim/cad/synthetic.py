@@ -97,8 +97,8 @@ def layered_truss(span: float = 1000.0, height: float = 140.0, panels: int = 4
         zd = sorted(((w + 12) * s, (w + 18) * s))
         out.append(box(f"Bottom Chord (3-ply UD) - {side}", (x0, y0, zo[0]),
                        (x1, y0 + 20, zo[1])))
-        out.append(box(f"Top Chord (3-ply UD) - {side}", (xs[0] - 5, yt - 20, zo[0]),
-                       (xs[-1] + 5, yt, zo[1])))
+        out.append(box(f"Top Chord (3-ply UD) - {side}", (xs[0] - 25, yt - 20, zo[0]),
+                       (xs[-1] + 25, yt, zo[1])))
         for k, xv in enumerate(xs):
             out.append(box(f"Vertical {k} (3-ply UD) - {side}", (xv - 5, y0, zv[0]),
                            (xv + 5, yt, zv[1])))
@@ -109,10 +109,12 @@ def layered_truss(span: float = 1000.0, height: float = 140.0, panels: int = 4
             [((xs[k + 1], yt - 10), (xs[k], y0 + 10)) for k in range(mid, len(xs) - 1)]
         for k, (p, q) in enumerate(ends + inner):
             p, q = np.asarray(p, float), np.asarray(q, float)
-            d = (q - p) / np.linalg.norm(q - p) * 12.0  # stop short of the next web
-            a = p if k < 2 else p + d  # an end diagonal runs on into the bottom chord
+            # each end runs to a chord's centreline, set 10 mm along the chord toward
+            # the diagonal's other end, so the two diagonals meeting at a node lie side
+            # by side on the chord (each lapped over ~20 mm of it) instead of crossing
+            dx = np.array([np.sign(q[0] - p[0]) * 10.0, 0.0])
             out.append(upright(f"Diagonal {k} (3-ply UD) - {side}",
-                               _strip(a, q - d, 10.0), zd[0], zd[1]))
+                               _strip(p + dx, q - dx, 10.0), zd[0], zd[1]))
     for k, xv in enumerate(xs):  # between the webs, glued to the verticals' inner faces
         out.append(box(f"Floor Beam {k} (3-ply UD)", (xv - 5, y0 + 20, -w),
                        (xv + 5, y0 + 26, w)))
