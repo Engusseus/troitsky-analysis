@@ -583,7 +583,8 @@ def calibrate(data: Annotated[Path, typer.Argument(help="Folder with your test C
     if params:
         ov_path = out.with_name(out.stem + ".overrides.yaml")
         ov_path.write_text(yaml.safe_dump({"params": {k: round(v, 4)
-                                                      for k, v in params.items()}}),
+                                                      for k, v in params.items()},
+                                           "measured": sorted(params)}),
                            encoding="utf-8")
     if json_out:
         import json as _json

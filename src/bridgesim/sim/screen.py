@@ -399,8 +399,8 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
                 continue
             ut = math.hypot(max(fN[p], 0.0) / max(capN[p], 1e-9),
                             float(np.linalg.norm(fT[p])) / capT[p])
-            add(f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}", "glue", ut,
-                pa.centroid)
+            add(f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
+                "wood" if pa.kind == "solid" else "glue", ut, pa.centroid)
         for p, pa in enumerate(m.patches):
             if uB[p] > 0:
                 add(f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}", "bearing",

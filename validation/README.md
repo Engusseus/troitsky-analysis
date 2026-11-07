@@ -566,3 +566,40 @@ and other settings as §3.7):
   is 29 % above standard (round 15: 14.0 / 34.3 / 39.8). Not converged at standard: since
   round 18 a crush whose elements are more than 3x its members' median depth is flagged
   (quick and standard here, not fine; Bridge_v10's members are 20 mm deep, so not there).
+
+### 3.11 Round 19: one-piece parts, the size of a lap, gaps in compression, stick sheets
+
+Four reviews of round 18 (realism 5/10: validation -2.5, placeholders -0.75, compact
+parts -0.75, solution verification -0.5, an idealised curve -0.5) and what changed:
+
+* **One piece drawn as two bodies** (`glue: {"A | B": solid}`): the face between a
+  floor beam and its tenon, or a heel seat and its chord, breaks at the wood's own
+  strength (shear f_v / 1.5 averaged, as the code check of a notched end; tension across
+  it) instead of 10x glue, which made it unbreakable. On Bridge_v10 the tenon roots carry
+  about a quarter of the jack load each in the model (the floor beam also bears on the
+  parts it touches) and reach their limit at ~6900 kgf in the linear screen: not
+  governing, but no longer impossible.
+* **Larger laps are weaker** (a Weibull size effect, m = 6, drawn 4-10 by montecarlo):
+  the 1320 mm^2 gusset laps at node A hold 0.73 of tau_g; the 200 mm^2 coupon tau_g is
+  measured on still reproduces it.
+* **Butt joints in compression bear only if their gap closes** before the member
+  crushes (~0.1 mm) or glue fills it (0.15 mm): seeded per member from 0 to 0.3 mm, so
+  about half the laminated members keep their butt-joint factor in compression too (73 %
+  for Bridge_v10's 40 mm stagger); `butt_gap_mm: 0` for ends sanded tight.
+* **Stick sheets with unglued edges** (0/90 plates, the default; asked as `plate_edges`)
+  carry in-plane shear like cross-laminated timber with unglued narrow faces: x0.68 of
+  the shear stiffness, half the shear strength.
+* **Bearing is capped** at the wood's crushing strength along the grain (a face pressed
+  on end grain plateaus; densified wood across the grain stops there): it hardened
+  without limit, up to ~10 f_c, and propped up the Monte Carlo's top runs.
+* **The reading's envelope stops at a break** (a bounce after a joint let go read a
+  light truss 4 % high); **values typed under params stay placeholders** (still drawn by
+  montecarlo) unless listed under `measured:` (calibrate writes that); the crush's 10.5
+  GPa replaces the material file's E only while it holds its shipped value; **the
+  stick modulus** is 10.5 GPa (a static value, 5 % below the low end of dry sticks by
+  vibration); **montecarlo also draws** the glue lines' stiffness and the size-effect
+  modulus; a part drawn a little off its neighbour is tied by breakable dabs of glue and
+  asked about as important (it was an unbreakable tie); a joint alone between two bodies
+  keeps its random draw when an edit moves it; the coarse-mesh flag looks at the members
+  that fail; calibrate fits tau_g through the measured glue law and takes a toughness only
+  from a record with a softening branch.

@@ -582,7 +582,7 @@ def _add(F, Mo, nd, arm, f, sign):
 @njit(cache=True, fastmath=True, error_model="numpy")
 def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GIIc, mu,
                 breakable, dmax, dd, slip, F, Mo, update, beta, dt, prev, alive, crush,
-                fc90, cdep, eps_d, E_d, creep, cfac, cdec):
+                fc90, cdep, eps_d, E_d, fcap, creep, cfac, cdec):
     nc = ca.shape[0]
     pa = np.empty(3)
     pb = np.empty(3)
@@ -638,6 +638,9 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
         else:
             fy = fc90[i] * (1.0 + eps_d) + E_d * (q - eps_d)
             hh = E_d / cdep[i]
+        if fy > fcap:  # no wood bears more than it crushes at along its grain
+            fy = fcap
+            hh = 0.0
         if kn * dn < -fy:
             dp = (-kn * dn - fy) / (kn + hh)
             if update:

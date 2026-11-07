@@ -476,12 +476,15 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     # the wood under a glue line crushes (permanent set), hardening as it compacts and
     # densified past eps_d of its depth (see kernels.glue_kernel)
     fc90 = _glue_fc90(m)
-    cdep, eps_d, E_d = _glue_crush(m)
+    cdep, eps_d, E_d, fcap = _glue_crush(m)
     dn = dn - st.c_crush
     q = -st.c_crush / cdep
     lo = q < eps_d
     fy = np.where(lo, fc90 * (1 + q), fc90 * (1 + eps_d) + E_d * (q - eps_d))
     hh = np.where(lo, fc90 / cdep, E_d / cdep)
+    capped = fy > fcap
+    fy = np.where(capped, fcap, fy)
+    hh = np.where(capped, 0.0, hh)
     over = Kn * dn < -fy
     dp = np.where(over, (-Kn * dn - fy) / (Kn + hh), 0.0)
     if update:
@@ -771,15 +774,18 @@ def _kc(m: Model, key: str, s: Settings) -> np.ndarray:
     return k
 
 
-def _glue_crush(m: Model) -> tuple[np.ndarray, float, float]:
+def _glue_crush(m: Model) -> tuple[np.ndarray, float, float, float]:
     """Depth of wood that can crush at each glue point (mm), the strain at which crushed
-    wood is densified, and its stiffness then (MPa)."""
+    wood is densified, its stiffness then (MPa), and the most any face bears (MPa: the
+    wood's crushing strength along the grain, which neither end grain nor densified wood
+    across the grain exceeds)."""
     d = m.params.get("glue_cdep")
     if d is None or len(d) != len(m.c_a):
         d = np.full(len(m.c_a), 1e30)
         m.params["glue_cdep"] = d
     return d, float(m.params.get("densification_strain", 0.45)), \
-        float(m.params.get("densified_E", 500.0))
+        float(m.params.get("densified_E", 500.0)), \
+        float(m.params.get("bearing_cap", 1e30))
 
 
 def _glue_fc90(m: Model) -> np.ndarray:

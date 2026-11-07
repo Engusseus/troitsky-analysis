@@ -182,7 +182,8 @@ NMODE = 5  # history per point: fibre t, fibre c, across t, across c, shear
 
 
 def element_data(xy: np.ndarray, angles: list[float], t: float, ply, Ef: float, Sf: float,
-                 G: tuple[float, float, float], E_t_drill: float, kt: float = 1.0) -> dict:
+                 G: tuple[float, float, float], E_t_drill: float, kt: float = 1.0,
+                 kc: float = 1.0) -> dict:
     """Everything the layered kernel needs for one triangle with local in-plane corner
     coordinates ``xy`` and ply ``angles`` (deg, in element axes); ``kt`` scales the fibre
     tension strength alone (the butt joints of a plate laid from sticks)."""
@@ -197,6 +198,7 @@ def element_data(xy: np.ndarray, angles: list[float], t: float, ply, Ef: float, 
     lim = np.array([ply.f_t / ply.E_L, ply.f_c / ply.E_L, ply.f_t90 / ply.E_T,
                     ply.f_c90 / ply.E_T, ply.f_v / ply.G_LT]) * Sf
     lim[0] *= kt
+    lim[1] *= kc  # butt joints that do not bear (gapped) in compression
     lc = float(np.sqrt(2.0 * area))
     Em = np.array([ply.E_L, ply.E_T, ply.G_LT]) * Ef
     e0 = lim[[0, 2, 4]]

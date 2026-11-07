@@ -515,8 +515,19 @@ def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
     h = 0.5 * (period_s if period_s > 0 else 3 * LOAD_CELL_MM / max(speed_mm_s, 1e-9))
     lo = np.searchsorted(t, t - h)
     hi = np.searchsorted(t, t + h, side="right")
+    # the envelope never reaches across a break either (a bounce after a joint let go is
+    # not a load the bridge carried before it)
+    cuts = np.array(sorted({int(np.searchsorted(t, b)) for b in breaks
+                            if t[0] < b <= t[-1]}), int)
+    seg_lo = np.zeros(len(t), int)
+    seg_hi = np.full(len(t), len(t), int)
+    if len(cuts):
+        k = np.searchsorted(cuts, np.arange(len(t)), side="right")
+        seg_lo = np.where(k > 0, cuts[np.maximum(k - 1, 0)], 0)
+        seg_hi = np.where(k < len(cuts), cuts[np.minimum(k, len(cuts) - 1)], len(t))
     for i in range(len(t)):
-        seg = raw[lo[i]:hi[i]]
+        a, b = max(lo[i], seg_lo[i]), min(hi[i], seg_hi[i])
+        seg = raw[a:b] if b > a else raw[i:i + 1]
         out[i] = min(max(out[i], float(seg.min())), float(seg.max()))
     return out
 
@@ -1129,14 +1140,19 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             for pid in np.where(cracked & ~prev_patch_cracked & ~broken)[0]:
                 pa = m.patches[pid]
                 ev("joint_cracking", f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
-                   f"{pfrac[pid]:.0%} of the glued joint has let go ({pa.area_mm2:.0f} mm^2)",
+                   (f"{pfrac[pid]:.0%} of the section through the wood (one piece drawn as "
+                    "two bodies) has cracked" if pa.kind == "solid" else
+                    f"{pfrac[pid]:.0%} of the glued joint has let go")
+                   + f" ({pa.area_mm2:.0f} mm^2)",
                    pa.centroid, fraction=float(pfrac[pid]), capacity=float(patch_cap[pid]))
             for pid in np.where(broken & ~prev_patch_broken)[0]:
                 pa = m.patches[pid]
                 ev("joint_failure", f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
-                   f"glued joint separated ({pfrac[pid]:.0%} of its {pa.area_mm2:.0f} mm^2 "
-                   "let go)", pa.centroid, fraction=float(pfrac[pid]),
-                   capacity=float(patch_cap[pid]))
+                   (f"the wood broke through its {pa.area_mm2:.0f} mm^2 section (one piece "
+                    "drawn as two bodies: a tenon's root, a notched end)" if pa.kind == "solid"
+                    else f"glued joint separated ({pfrac[pid]:.0%} of its "
+                         f"{pa.area_mm2:.0f} mm^2 let go)"), pa.centroid,
+                   fraction=float(pfrac[pid]), capacity=float(patch_cap[pid]))
             prev_b, prev_bs, prev_s = st.b_fractured.copy(), st.b_shear.copy(), st.s_dmg > 0.5
             prev_a = st.b_alive.copy()
             prev_k = st.k_alive.copy()

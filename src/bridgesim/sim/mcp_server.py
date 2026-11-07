@@ -546,7 +546,8 @@ def build_server():
         Path(out_path).write_text(yaml.safe_dump(mat.model_dump(mode="json"),
                                                  sort_keys=False), encoding="utf-8")
         return json.dumps({"material": out_path, "changes": log,
-                           "overrides_yaml": yaml.safe_dump({"params": params})
+                           "overrides_yaml": yaml.safe_dump({"params": params,
+                                                             "measured": sorted(params)})
                            if params else ""})
 
     @srv.tool()

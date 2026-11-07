@@ -52,7 +52,8 @@ class Patch:
     centroid: np.ndarray
     normal: np.ndarray  # from A towards B
     springs: list[int] = field(default_factory=list)
-    kind: str = "glue"  # "glue", "tie" (floss knot), "bonded" (bodies overlap in CAD)
+    kind: str = "glue"  # "glue", "tie" (floss knot), "bonded" (bodies overlap in CAD),
+    # "solid" (two bodies of one piece of wood: the wood's strength across the face)
     polygon: np.ndarray | None = None  # (k, 3) outline
 
 

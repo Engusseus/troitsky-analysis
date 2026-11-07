@@ -77,8 +77,16 @@ directions scales the fibre tension strength of every ply of the plate (a shell 
 one fibre strength per element): about half for a deck in a brick pattern. Shear across
 the thickness through which the plies are stacked runs along the glue lines, so there the
 shear strength is min(f_v, the bond line); shear in the other direction crosses the plies
-and is resisted by the wood (f_v). Butt joints are assumed tight in compression (they
-bear).
+and is resisted by the wood (f_v). A butt joint bears in compression only
+if its gap closes before the member crushes (two ply ends close by ~2 e / lambda, 0.05-0.14
+mm with the glue's shear stiffness, lambda ~13-19 mm) or glue fills it
+(`glue.gap_fill_mm`): otherwise the ply's force goes round it through the glue lines as
+in tension, and the member keeps its butt-joint factor in compression too (`butt_gap_mm`
+the designer's gap, 0 when the ends are sanded tight; else seeded per member from 0 to
+`scatter.bearing_gap_mm`, a hand cut or a stick's rounded end; round 18's literature
+review, Berard et al. 2011: 1 mm gaps in LVL never closed;
+`test_butt_joints_with_a_gap_are_out_in_compression_too`). Until round 18 butt joints
+were assumed tight in compression.
 
 ## 3. Joints
 
@@ -141,8 +149,8 @@ bear).
   (`test_glue_line_crushing_densifies`). A crushed pair keeps bearing; the crushed part's
   own section is not reduced. A face whose wood has crushed 0.1 mm deep on average is
   reported (`bearing_crushing`, with the load then): the first non-linearity of a node
-  that bears, often before any glue lets go (on Bridge_v10 a knee face from ~90 % of F_u
-  at quick seed 0). A strengthen step then does not offer more glue on that face (it
+  that bears, often before any glue lets go (on Bridge_v10 standard seed 0 the End
+  Post's face on the knee at 99.6 % of F_u, just before its gussets' glue lets go). A strengthen step then does not offer more glue on that face (it
   changes nothing the grain takes): a bigger bearing face or the grain along the force.
   `screen` lists each face's `bearing` utilisation (glued or dry). A compact block bears
   across its grain (f_c90) unless a layup override gives it a grain (`layup: "13-ply
@@ -166,6 +174,21 @@ bear).
   17 took a face as dry wherever the gap passed 0.15 mm, which the literature review found
   too severe for PVAc; with the round-16 materials that had lowered Bridge_v10 quick seed
   0 by 11 %.)
+* **Size effect.** A hand-made lap larger than the coupon tau_g is measured on (200 mm^2,
+  the 20 x 10 mm lap) holds less on average: (A / 200)^(-1/m), a Weibull size effect of
+  modulus `glue.weibull_m` (6; range 4-10, drawn by montecarlo), 0.73 for Bridge_v10's
+  1320 mm^2 gusset laps (more defects, starved spots and uneven clamping over a larger
+  area: Tannert, Vallee & Hehl 2012; hand-clamped gussets bonded over 54-89 % of their
+  area, Debertolis et al. 2025; CSA O86's volume^-0.18 for glulam shear). The fracture
+  part of the size effect, shear lag along a long lap, is in the glue law itself
+  (generalised Volkersen, §3.9 of the validation README).
+* **One piece drawn as two bodies** (a tenon and its beam, a seat laminated with its
+  chord): the glue override `solid` gives the face between them the wood's own strength
+  instead of a glue line's (round 18 used 10x glue, which made a tenon's root
+  unbreakable): shear f_v / 1.5 averaged over the section, as the code check of a notched
+  end (EN 1995-1-1 6.1.7, 6.5.2), tension across the face by the grain on either side (a
+  block with no grain known has its fibres across it), the wood's fracture energies, no
+  fit-up gap and no glue scatter (`test_a_solid_joint_breaks_at_the_wood_strength`).
 * **Shear lag and the mesh.** The glue points of a joint hang on the nearest nodes of
   each part (rigid arms), so how much shear lag a joint shows depends on how many nodes
   that is. The lap coupon with its glue hung on 1, 2, 3, 5 and 9 nodes per side needs a
@@ -197,21 +220,21 @@ Wood Handbook: f_v 8 MPa (veneer 9.2), f_t90 1.5 MPa (veneer 1.1-2.0), f_c90 6 M
 2025). The stick modulus is about as high as clear birch's: dry craft sticks are 11-15 GPa
 (the wave speed of 2.2 mm birch sticks measured by vibration, 4600 m/s, Sautel et al.,
 Am. J. Phys. 85, 783 (2017), Table I: E = rho c0^2 = 11.6-14.8 GPa at 550-700 kg/m^3;
-2 mm veneer 14.6 GPa). The crush uses 11 GPa, the low end, and G = E/16, while the
+2 mm veneer 14.6 GPa). The crush uses 10.5 GPa (the low end, less 5 % for a modulus from vibration against a static one) and G = E/16, while the
 material's E is a placeholder (`wood.E_placeholder_MPa`; the material file's 10 GPa is the
 linear analysis's; a measured E from `calibrate` or `material.E_MPa` in the overrides
 replaces it). Until round 17 the crush used 7.1 GPa, from a stick weighted at a table edge
 (*Emergent Scientist* 1, 3 (2017)), which reads low because the edge lets the stick turn,
 and cited Sautel's 5.0 GPa, which was for sticks soaked in water for three weeks (the
 literature review of round 17). Stiffness, buckling and deflections scale with E, so
-measure your own sticks: a free tap test (simulation.yaml) or 3-point bending. your own sticks. f_t (40 MPa) is below f_b on purpose: a stick
-in tension fails at its weakest cross-section (slope of grain, defects), which bending
-loads only at one face, so graded timber has f_t,0 = 0.6 f_m (EN 338), while clear wood
-has the opposite. `bridgesim sensitivity` shows how much each
+measure your own sticks: a free tap test (simulation.yaml) or 3-point bending. f_t (40
+MPa) is below f_b on purpose: a stick in tension fails at its weakest cross-section (slope
+of grain, defects), which bending loads only at one face, so graded timber has f_t,0 = 0.6
+f_m (EN 338), while clear wood has the opposite. `bridgesim sensitivity` shows how much each
 placeholder moves F_u for your design. Your own stick tests replace them
 (`bridgesim calibrate`). In the fibre
 sections: linear elastic; tension softens to zero after f_t with fracture energy G_f
-(3 N/mm, element-length regularised); compression is straight to the proportional limit
+(8 N/mm, element-length regularised); compression is straight to the proportional limit
 (`wood.fc_proportional`, 0.65 f_c: clear wood 0.6-0.75, *Wood Handbook*), bends over
 smoothly to f_c (reached at 1.35 f_c / E, unloading at E), then crushes, softening to
 70 % (`test_wood_softens_before_it_crushes`), so a member near its crushing strength
@@ -231,7 +254,7 @@ a quadratic interaction between, averaged over the plies
 (`test_plies_resist_a_split_across_the_width_with_their_fibres`). The glue
 planes of a laminate (pressed while they cured, long and continuous) are not a hand-made
 lap joint between parts (tau_g, an average over the lap): they split at the lower of the
-bond line's strength (`glue.interlaminar_MPa`, 6 MPa: PVA bond lines in pressed wood
+bond line's strength (`glue.interlaminar_MPa`, 4 MPa: craft-stick laminates glued with Elmer's split at 3.7 MPa; PVA bond lines in pressed wood
 laminates fail in the wood next to them) and what the weakest ply takes there, the
 interlaminar shear running along its grain (f_v) and across it (rolling shear,
 `wood.f_rolling_MPa`, 3 MPa) in proportion to its angle: f_v for a UD stack, the
@@ -259,16 +282,16 @@ points through each ply group (Simpson's rule, exact for the elastic bending
 stiffness), the strain is turned into the grain axes and each failure mode has its own
 damage, in the spirit of LS-DYNA's MAT_054 or Abaqus' Hashin damage but with an
 independent maximum-strain criterion per mode: fibre tension softens to zero with
-fracture energy G_f (3 N/mm); fibre compression crushes to a plateau at 70 % of f_c;
+fracture energy G_f (8 N/mm); fibre compression crushes to a plateau at 70 % of f_c;
 across-grain tension (sticks parting edge to edge, f_t90 = 1.5 MPa) softens with G_f90
-(0.3 N/mm); across-grain compression yields at f_c90; in-plane shear softens with G_v
-(1 N/mm). Cracks close: a broken ply still carries compression. The softening strain of
+(0.45 N/mm); across-grain compression yields at f_c90; in-plane shear softens with G_v
+(1.3 N/mm). Cracks close: a broken ply still carries compression. A 0/90 sheet of sticks with unglued edges (`glue.plate_edges_glued` 0, asked as `plate_edges`) carries in-plane shear through the glued crossings of its plies, like cross-laminated timber with unglued narrow faces: ~0.68 of the shear stiffness and half the shear strength (Bogensperger, Moosbrugger & Silly 2010). The softening strain of
 each element is set from its size (crack band, Bažant & Oh 1983), so the energy a crack
 dissipates does not depend on the mesh: a plate strip pulled apart dissipates
 G_f x width x thickness within 2 % with 5, 2.5 and 1.25 mm elements
 (`test_shell_fracture_energy_is_mesh_independent`). An element larger than the crack
-band a mode allows (h_max = 2 E G_f / f^2: fibre tension ~27 mm, in-plane shear ~14 mm
-with the round-17 values) cannot soften steeply enough; its strength in that mode is
+band a mode allows (h_max = 2 E G_f / f^2: fibre tension ~105 mm, in-plane shear ~27 mm
+with the round-18 values) cannot soften steeply enough; its strength in that mode is
 lowered until its steepest softening dissipates exactly G_f, f' = f sqrt(rf / 1.05)
 (Bažant & Oh 1983; Turon et al. 2007 do the same for cohesive elements on coarse meshes;
 `test_elements_past_the_crack_band_dissipate_the_fracture_energy`). That is also about
@@ -486,16 +509,18 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   governs on 2 of 5 seeds; on the others another of the sites competing within a few %
   (`competing`: the hub core, the End Post joints, the cross-beam's joints to the deck
   stringers) goes first. Read F_u at standard with ~5 % discretisation uncertainty,
-  either way: on Bridge_v10 (round 16) standard is 1.3 % above fine, quick 3.9 %, all
-  three failing at the same joint, with the same stiffness under the plate (until round
-  16 its quick mesh was 4.6x too soft: plates on plates, below). On Bridge_v6 the load
-  curves coincided up to ~90 % of the peak, and the first joint to separate agreed within
-  10 %. **A small, light bridge converges less well**: the
-  element sizes were set on Bridge_v6 (members 20-30 mm deep); on a light truss of 10 mm
-  members and 40-60 mm^2 glued joints (`validation/README.md` §3.6) standard was 14 %
-  below fine and quick found a different, much weaker failure. Read such a bridge's F_u
-  at fine. The quick mesh (x1.6) was 7 % below standard on Bridge_v6 and is 2.6 % above
-  it on Bridge_v10 (for ranking designs). A perfect bridge is symmetric, so which side gives way first is
+  either way: on Bridge_v10 seed 0 at one jack speed (round 18, `validation/README.md`
+  §3.10) quick / standard / fine give 2506 / 2483 / 2479 kgf at the same joint, with the
+  same stiffness under the plate (until round 16 its quick mesh was 4.6x too soft: plates
+  on plates, below; the round-16 spread was mostly the jack speed, which each fidelity
+  changes with the mesh). A seed whose failure starts as a plate crack converges less
+  well (the round-18 adversarial review: quick +6.6 % over standard, at the other end of
+  the bridge). On Bridge_v6 the load curves coincided up to ~90 % of the peak, and the
+  first joint to separate agreed within 10 %. **A small, light bridge converges less
+  well**: the element sizes were set on Bridge_v6 (members 20-30 mm deep); on a light
+  truss of 6 mm members (round 18) quick read 17.9, standard 34.5, fine 44.6 kgf and
+  x0.35 44.8 (fine converged): read such a bridge's F_u at fine; a crush whose elements
+  are more than 3x the depth of the members that fail is flagged untrustworthy. A perfect bridge is symmetric, so which side gives way first is
   a bifurcation round-off decides; `--amplitude 0.1` keeps the seed's asymmetry at a
   tenth of its imperfections for a mesh study.
 * **Uncertainty** (`montecarlo -n 20 --sample-placeholders`, standard): with the build

@@ -234,9 +234,12 @@ bodies:                     # by exact body name or glob pattern
   "Hub Cover*": {grain: arm}                    # a +-45 frame's plies laid along each arm
   "Deck Stringer*": {butt_stagger_mm: 30}       # joints of neighbouring plies 30 mm apart
   "Bottom Chord*": {butt_stagger_mm: 0}         # plies without butt joints (long strips)
+  "Top Chord*": {butt_gap_mm: 0}                # ply ends sanded tight: joints bear
   "Deck Stringer*": {section_scale: 1.25}       # what-if: section x1.25 (area x1.56)
 glue:
   "Top Chord (10-ply UD 20.9x47.5) - Far | T-Node (10-ply) - R Far": 0.5   # one joint
+  "Floor Beam (block) | Floor Beam Tenon*": solid   # one piece drawn as two bodies:
+                                                    # the wood's strength across the face
 params:                     # any key of materials/simulation.yaml, or material.<key>
   floss.strands: 6
   material.density_kg_m3: 590
@@ -322,10 +325,10 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
   `quality.reasons` says which. Re-run with `--rate-check` or a finer `--fidelity` before relying on an
   untrustworthy F_u.
 * `assumed_parameters`: values still not measured. With placeholders the absolute load
-  is uncertain by tens of %: on Bridge_v10 (round 16) 8 build-scatter runs spread -24 % /
-  +55 % around their median, and the total range (with the model-form error) -40 % / +94
-  %; `montecarlo --sample-placeholders` adds the placeholder values drawn per run. Design
-  comparisons (A vs B, same seeds) are much more reliable.
+  is uncertain by tens of %: on Bridge_v10 (round 18, `montecarlo -n 8
+  --sample-placeholders`) the runs spread 1226-3299 kgf around a median of 1954, and the
+  total range (with the mesh and model-form error) 939-3997 kgf. Design comparisons (A vs
+  B, same seeds) are much more reliable.
 * `rules`: the 2027 dimensional rules measured on the solids (penalties, bans).
 * `warnings`: overrides without effect, CAD faces that had to be closed over, etc.
 
