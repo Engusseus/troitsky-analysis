@@ -108,8 +108,9 @@ inside it; no SolidWorks licence needed). Every solid body is rebuilt with its n
 body becomes what an engineer would model it as: a **member** (corotational
 shear-flexible beam with a fibre section that cracks in tension and crushes in
 compression; tapered members follow their profile), a **plate** (shell
-elements meshed on its real outline, holes included, that crack ply by ply with
-mesh-independent fracture energy), a **rigid block**, or **floss** (a tension-only cable
+elements meshed on its real outline, holes included, that crack ply by ply, each
+crack dissipating its fracture energy whatever the element size; where a crack starts
+still depends on the mesh), a **rigid block**, or **floss** (a tension-only cable
 that snaps). The layup comes from the body name: `10-ply UD`, `2-ply 0-90`, `4-ply +-45`,
 `block`, `round toothpick`, `waxed floss`. Laminates use classical lamination theory;
 members longer than one stick lose tension strength at their butt joints. Every place
@@ -299,7 +300,7 @@ the two, which shows whether the X is worth its mass.
 
 Stated plainly:
 
-* **Placeholder materials.** E = 10 GPa (7.1 GPa in the crush, the published craft-stick value), f_t = 40, f_c = 30, f_b = 50, f_v = 6 MPa, glue
+* **Placeholder materials.** E = 10 GPa (10.5 GPa in the crush: dry craft sticks are 11-15 GPa by vibration, a little less static), f_t = 40, f_c = 30, f_b = 50, f_v = 8 MPa, glue
   τ = 2 MPa: textbook-order guesses, **not data**. Popsicle sticks vary a lot between brands
   and batches.
 * **Linear, first-failure.** No P-Δ, no imperfections, no joint slip, no load

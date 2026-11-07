@@ -13,7 +13,6 @@ import streamlit.components.v1 as components
 import yaml
 
 from bridgesim.sim import study
-from bridgesim.sim.crush import CrushOptions
 
 st.set_page_config(page_title="bridgesim: SolidWorks crush test", page_icon="🌉",
                    layout="wide")
@@ -93,15 +92,17 @@ st.subheader("Crushing test")
 cc1, cc2 = st.columns(2)
 seed = cc1.number_input("Imperfection / scatter seed (-1 = perfect bridge)", value=0,
                         step=1, min_value=-1)
-speed = cc2.select_slider("Simulated jack speed (mm/s)", options=[50, 100, 150, 200],
-                          value=100, help="Slower is closer to quasi-static but takes "
-                                          "longer; the report says if it was quasi-static.")
+fid = cc2.select_slider("Fidelity", options=["quick", "standard", "fine"],
+                        value="standard",
+                        help="The mesh and jack speed together (quick ~3 min, standard "
+                             "5-10 min, fine 30-40 min for a 100-body bridge). Compare "
+                             "designs at one fidelity only.")
 if st.button("Run the crushing test", type="primary"):
     bar = st.progress(0.0, text="Starting…")
-    out = work / f"run_{seed}_{speed}"
+    out = work / f"run_{seed}_{fid}"
     crush_rep, _ = study.crush(cad, overrides_data=overrides,
                                seed=None if seed < 0 else int(seed),
-                               out_dir=out, options=CrushOptions(speed_mm_s=float(speed)),
+                               out_dir=out, fidelity=fid,
                                progress=lambda f, m: bar.progress(min(1.0, f), text=m))
     bar.empty()
     st.session_state["crush"] = crush_rep.model_dump(mode="json")
@@ -109,10 +110,26 @@ if st.button("Run the crushing test", type="primary"):
 res = st.session_state.get("crush")
 if res and res["sha256"].startswith(digest):
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Predicted ultimate load F_u", f"{res['Fu_kgf']:.1f} kgf")
+    m1.metric("F_u of this one seed", f"{res['Fu_kgf']:.1f} kgf",
+              help="One imperfect bridge. Seeds differ by ~20 % and the material values "
+                   "are placeholders: for the Load Prediction Form use `bridgesim "
+                   "montecarlo` (its range includes the model-form error).")
     m2.metric("Failure", res["failure_mode"])
     m3.metric("Efficiency η_s", f"{res['efficiency_kgf_per_kg']:.0f} kgf/kg")
     m4.metric("Deflection at F_u", f"{res['deflection_at_Fu_mm']:.1f} mm")
+    q = res["quality"]
+    if not q["trustworthy"]:
+        st.error("This result is not trustworthy: " + "; ".join(q.get("reasons") or []))
+    st.write(f"**Governing:** {res.get('governing') or res['failure_mode']}")
+    if res.get("competing"):
+        st.warning("Competing failure sites (within 10 % of F_u; another seed or mesh may "
+                   "fail there first; run `bridgesim diagnose` before redesigning): "
+                   + "; ".join(res["competing"]))
+    if res.get("assumed_parameters"):
+        st.info(f"{len(res['assumed_parameters'])} material values are still placeholders: "
+                "the absolute load is uncertain by tens of % (`bridgesim sensitivity` says "
+                "which to measure first); comparisons of two designs on the same seeds "
+                "(`bridgesim ab`) are much more reliable.")
     st.write(res["failure_detail"])
     html = Path(res["artifacts"]["replay_html"]).read_text(encoding="utf-8")
     components.html(html, height=720, scrolling=False)

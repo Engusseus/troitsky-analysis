@@ -287,12 +287,14 @@ def lap_shear(tau_max: float, peel_to_shear: float = 0.5, Kn: float = 150.0,
               Ks: float = 60.0, GIc: float = 0.25, GIIc: float = 0.6,
               overlap: float = 20.0, width: float = 10.0, t: float = 2.0,
               E: float = 10000.0, free: float = 40.0, rate: float = 20.0,
-              n_ov: int = 8, n_glue: int = 9, one_node: bool = False) -> TestResult:
+              n_ov: int = 8, n_glue: int = 9, one_node: bool = False,
+              onset: float = 1.0, peak_slip: float = 1.0) -> TestResult:
     """Single-lap joint of two sticks (overlap x width), pulled along X. Returns the
     pull force; tau_avg = peak / (overlap * width). The overlap has ``n_ov`` elements per
     stick and ``n_glue`` rows of glue points, each hung on the nearest node of each stick
     by a rigid arm (as in a bridge model, where a joint's glue points hang on fewer
-    nodes than there are points)."""
+    nodes than there are points). ``onset``, ``peak_slip``: the glue law's pre-peak
+    shape (glue.prepeak_onset, glue.peak_slip_ratio; 1, 1 bilinear)."""
     n_free = 8
     # stick A from x=0 to free+overlap at y = 0; stick B overlaps, at y = t
     xa = np.r_[np.linspace(0, free, n_free + 1)[:-1], np.linspace(free, free + overlap,
@@ -337,6 +339,7 @@ def lap_shear(tau_max: float, peel_to_shear: float = 0.5, Kn: float = 150.0,
     m.c_mu = np.full(nc, 0.4)
     m.c_patch = np.zeros(nc, int)
     m.c_breakable = np.ones(nc, bool)
+    m.params["glue_prepeak_onset"], m.params["glue_peak_slip_ratio"] = onset, peak_slip
     # grips: the outer ends, clamped (no rotation); the B grip is pulled along +X
     return drive(m, {na[0]: "xyzr", nb[-1]: "yzr"}, nb[-1], 0, rate, max_disp=2.0,
                  stop_drop=0.2)

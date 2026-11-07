@@ -57,10 +57,21 @@ class BodyReport(BaseModel):
 class JointReport(BaseModel):
     a: str
     b: str
-    kind: Literal["glue", "tie", "bonded"]
+    kind: Literal["glue", "tie", "bonded", "solid"] = Field(description=(
+        "glue (a glued joint), tie (a floss knot), bonded (bodies that overlap in the "
+        "CAD), solid (two bodies of one piece of wood, glue override 'solid': the face "
+        "between them breaks at the wood's shear strength f_v / 1.5 averaged, as a "
+        "notched end, and its tension across the grain)"))
     area_mm2: float
-    shear_capacity_N: float = Field(description="Glue area x tau_g: what a lap test of "
-                                                "this joint would give in pure shear.")
+    lamination: bool = Field(False, description=(
+        "Two plates glued face to face (a deck's plies drawn as separate bodies): glued "
+        "as the plies inside one laminated body, at glue.interlaminar_MPa and "
+        "glue.lamination_K_s_N_per_mm3, with no size effect"))
+    shear_capacity_N: float = Field(description=(
+        "Area x the face's average shear strength, what a lap test of this joint would "
+        "give in pure shear: tau_g times the lap size factor (glue.weibull_m, up to "
+        "glue.size_cap_mm2), glue.interlaminar_MPa for a lamination, f_v / 1.5 for a "
+        "solid face; before the joint-to-joint scatter, glue_factor and end grain"))
 
 
 class RuleLine(BaseModel):
@@ -129,7 +140,7 @@ class InspectReport(BaseModel):
 
 
 EventKind = Literal["member_fracture", "member_shear", "member_crushing", "member_erosion",
-                    "plate_crack",
+                    "plate_crack", "bearing_crushing",
                     "glue_damage",
                     "joint_cracking", "joint_failure", "floss_break", "criterion",
                     "instability", "numerical"]
@@ -146,7 +157,10 @@ class EventOut(BaseModel):
         "lines or grain), member_crushing (fibres folding in compression past f_c), "
         "member_erosion (an element bent or twisted past 1 rad removed, its section not "
         "cracked through), "
-        "plate_crack, glue_damage (a joint's glue starts to soften), "
+        "plate_crack, bearing_crushing (the wood under a face pressed together, a member "
+        "end bearing on a knee or a tenon on its sill, has crushed by 0.1 mm on average: "
+        "the face bears more than its grain can take), "
+        "glue_damage (a joint's glue starts to soften), "
         "joint_cracking (>= 30 % of a joint's glued area has let go), joint_failure "
         "(>= 90 %: separated), floss_break, criterion (§12.5), instability, numerical"))
     what: str = Field(description="The part, or 'A | B' for a glued joint")
@@ -180,10 +194,14 @@ class Criteria(BaseModel):
 
 class Curve(BaseModel):
     jack_travel_mm: list[float]
-    load_kgf: list[float]
+    load_kgf: list[float] = Field(description=(
+        "The reported load: the jack force smoothed along the travel between breaks "
+        "(stress waves removed, no lag, the peak kept where a break cuts the curve)"))
     deflection_mm: list[float]
     joints_broken: list[int]
     members_broken: list[int]
+    load_raw_kgf: list[float] = Field(default_factory=list, description=(
+        "The jack force as computed, before smoothing (stress waves included)"))
 
 
 class Quality(BaseModel):
@@ -197,23 +215,34 @@ class Quality(BaseModel):
     kinetic_to_work_max: float = Field(description="Peak kinetic energy of the bridge "
                                                    "(debris excluded) / work done by the "
                                                    "jack, while the load rises to 95 % of "
-                                                   "its peak; < 0.1 means the loading was "
+                                                   "its peak; < 0.05 means the loading was "
                                                    "quasi-static.")
     settle_sag_mm: float
     notes: list[str] = []
     trustworthy: bool = Field(True, description="False if any of `reasons` applies: then "
                                                 "treat F_u with suspicion")
     reasons: list[str] = []
-    speed_mm_s: float = 0.0
+    speed_mm_s: float = Field(0.0, description=(
+        "The simulated jack speed: the fidelity's (quick 200, standard 100, fine 50 mm/s) "
+        "for a bridge whose lowest mode under the plate rings in up to 10 ms; for a softer "
+        "or lighter one (fundamental_period_ms), the speed at the start, slower in "
+        "proportion to its period (at most 16x), rising back toward the fidelity's once "
+        "the jack travel passes 6 mm x period / 10 ms"))
+    fundamental_period_ms: float = Field(0.0, description=(
+        "Period of the bridge's lowest mode under the loading plate (the plate's mass and "
+        "half the bridge's on its linear stiffness). A load drop must last this long to "
+        "count as the moment of failure"))
     holds: int = Field(0, description="Times the jack was slowed to 2 % while something "
                                       "was breaking, until it stopped (quasi-static failure)")
     hold_time_s: float = 0.0
     rate_check: dict | None = Field(None, description=(
         "With --rate-check: the same crush at half the jack speed (speed_mm_s, Fu_kgf, "
         "change = relative change of F_u, governing). |change| < 0.05 shows the simulated "
-        "test is slow enough to stand for the real one. Fu_extrapolated_kgf = 2 F(v/2) - "
-        "F(v): F_u extrapolated to a jack at rest (linear in the speed), the closest the "
-        "simulation gets to the real test's mm/min"))
+        "test is slow enough to stand for the real one. Fu_extrapolated_kgf = (4 F(v/2) - "
+        "F(v)) / 3: F_u extrapolated to a jack at rest along the square of the speed (the "
+        "inertia effects grow with the kinetic energy; on Bridge_v10 F_u fell 2.4 % from "
+        "200 to 100 mm/s and 0.5 % from 100 to 50), the closest the simulation gets to the "
+        "real test's mm/min"))
 
 
 class CrushReport(BaseModel):
@@ -223,6 +252,9 @@ class CrushReport(BaseModel):
     sha256: str
     seed: int | None
     overrides: dict[str, Any]
+    inputs_sha256: str = Field("", description=(
+        "Fingerprint of everything the run depends on: the CAD, the overrides as read, "
+        "the material, the simulation parameters, seed, fidelity and the code"))
     Fu_kgf: float = Field(description="Predicted ultimate load (rulebook §12.5), kgf.")
     Fu_N: float
     failure_mode: FailureMode = Field(description="collapse (the load fell 30 % below "
@@ -256,9 +288,11 @@ class CrushReport(BaseModel):
                                                "events.csv)")
     n_events_total: int = 0
     Fu_first_joint_failure_kgf: float | None = Field(
-        None, description="Jack load when the first glued joint separated (>= 90 % of its "
-                          "area let go) or a member split in shear. §12.5 counts joint "
-                          "failure as failure, so a strict judge could stop the test here.")
+        None, description="The highest jack load up to the moment the first glued joint "
+                          "separated (>= 90 % of its area let go) or a member split in "
+                          "shear: what a strict judge who stops the test there reads (§12.5 "
+                          "counts joint failure as failure). It equals F_u when the first "
+                          "joint goes at or after the peak.")
     warnings: list[str] = []
     failure_sequence: list[str] = Field(description="Plain-language order in which things "
                                                     "broke.")
@@ -320,9 +354,21 @@ class MonteCarloReport(BaseModel):
         "Several entries with similar counts mean failure sites competing within the "
         "scatter: strengthen them together (diagnose ranks them)"))
     recommended_prediction_kgf: float = Field(
-        description="Value for the Load Prediction Form (§12.7): the median of the runs "
-                    "weighted by 1/F_u, which minimises the expected prediction error "
-                    "E = |F_u - F_p| / F_u.")
+        description="Value for the Load Prediction Form (§12.7): the median weighted by "
+                    "1/F_u, which minimises the expected prediction error "
+                    "E = |F_u - F_p| / F_u, over the runs times the mesh and model-form "
+                    "error (uncertainty.*), which pulls it below the runs' own value "
+                    "(recommended_prediction_runs_kgf)")
+    recommended_prediction_runs_kgf: float | None = Field(
+        None, description="The same over the runs alone (no mesh or model-form error)")
+    recommended_interval_kgf: list[float] = Field([], description=(
+        "5 % and 95 % points of recommended_prediction_kgf over bootstrap resamples of "
+        "the runs: how far other runs could move it (wide with few runs or two clusters "
+        "of failure loads: run more)"))
+    Fu_untrustworthy_kgf: list[float] = Field([], description=(
+        "F_u of the runs whose quality.trustworthy is false, left out of Fu_kgf, the "
+        "percentiles and the prediction (unless fewer than half the runs are "
+        "trustworthy)"))
     fidelity: str = "standard"
     Fu_strict_kgf: list[float] = Field([], description=(
         "The same runs judged strictly: the load when the first glued joint separated or a "
@@ -335,6 +381,11 @@ class MonteCarloReport(BaseModel):
                           "for judges who stop at the collapse (the usual practice)")
     untrustworthy_runs: int = Field(0, description="Runs whose quality.trustworthy is "
                                                    "false")
+    total_p05_kgf: float | None = Field(None, description=(
+        "The 5 % point of F_u including the mesh error and the model-form error "
+        "(uncertainty.mesh_cov, uncertainty.model_cov in materials/simulation.yaml) on top "
+        "of the runs' spread: the range to quote until a validation test narrows it"))
+    total_p95_kgf: float | None = Field(None, description="The 95 % point of the same")
     min_kgf: float | None = Field(None, description="Lowest F_u of the runs")
     max_kgf: float | None = Field(None, description="Highest F_u of the runs (with fewer "
                                                     "than 20 runs, read these rather than "
@@ -460,6 +511,9 @@ class BridgeCalibration(BaseModel):
 class ScreenLimit(BaseModel):
     part: str = Field(description="A body, or 'A | B' for a glued joint")
     mode: str = Field(description="glue (the joint's resultant against its capacity), "
+                                  "bearing (the peak pressure on a face pressed together, "
+                                  "glued or dry, against what the wood under it takes "
+                                  "across or along its grain: where it starts to crush), "
                                   "tension, compression, shear, buckling (Euler, the "
                                   "member's length, pinned), plate fibre tension, plate "
                                   "fibre crushing, plate across-grain tension, plate "
@@ -490,6 +544,13 @@ class ScreenReport(BaseModel):
     limits: list[ScreenLimit] = Field(description="Most utilised first (up to 25)")
     n_limits: int
     mass_kg: float
+    modes: list[dict] = Field([], description=(
+        "The lowest natural frequencies of the bridge on its supports with the loading "
+        "plate on its deck (frequency_hz) and the parts that move most in each: what a "
+        "tap test of the built bridge measures (a phone's accelerometer app on a node, a "
+        "light tap). Measured frequencies against these check the sticks' and the glue's "
+        "stiffness and the supports before the crush: the stick modulus moves every "
+        "mode, the glue stiffness the sway modes most, the supports the lowest"))
     wall_s: float
     note: str = ""
     warnings: list[str] = []

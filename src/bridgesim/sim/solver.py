@@ -453,6 +453,30 @@ def glue_creep(m: Model, st: State) -> tuple[float, float]:
     return phi / (1.0 + phi), math.exp(-(1.0 + phi) * max(st.creep_dt, 0.0) / tr)
 
 
+def glue_shape(m: Model) -> tuple[float, float]:
+    """The glue law's pre-peak shape: (onset, peak slip ratio), glue.prepeak_onset and
+    glue.peak_slip_ratio; (1, 1) is the bilinear law."""
+    return (float(m.params.get("glue_prepeak_onset", 1.0)),
+            float(m.params.get("glue_peak_slip_ratio", 1.0)))
+
+
+def trilinear_damage(dmx, dm0, keff, Gc, ga: float, gp: float) -> np.ndarray:
+    """The glue law of kernels._trilinear_damage, over arrays: the damage at the largest
+    separation ``dmx`` reached (elastic to ga x the strength, bending over to the
+    strength at gp dm0, linear softening to nothing where the work done is Gc)."""
+    dmx, dm0 = np.asarray(dmx, float), np.asarray(dm0, float)
+    e, q = ga * dm0, gp * dm0
+    lf = np.maximum(gp + 2.0 * Gc / (keff * dm0 * dm0) - ga * ga - (ga + 1.0) * (gp - ga),
+                    1.05 * gp)
+    dmf = lf * dm0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        T = np.where(dmx <= q, dm0 * (ga + (1.0 - ga) * (dmx - e) / np.maximum(q - e, 1e-30)),
+                     dm0 * (dmf - dmx) / np.maximum(dmf - q, 1e-30))
+        d = np.where(dmx <= e, 0.0, np.where(dmx >= dmf, 1.0,
+                                             1.0 - T / np.maximum(dmx, 1e-30)))
+    return np.clip(d, 0.0, 1.0)
+
+
 def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
                 update: bool = True, beta: float = 0.0, dt: float = 1.0) -> None:
     if len(m.c_a) == 0:
@@ -476,12 +500,15 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     # the wood under a glue line crushes (permanent set), hardening as it compacts and
     # densified past eps_d of its depth (see kernels.glue_kernel)
     fc90 = _glue_fc90(m)
-    cdep, eps_d, E_d = _glue_crush(m)
+    cdep, eps_d, E_d, fcap = _glue_crush(m)
     dn = dn - st.c_crush
     q = -st.c_crush / cdep
     lo = q < eps_d
     fy = np.where(lo, fc90 * (1 + q), fc90 * (1 + eps_d) + E_d * (q - eps_d))
     hh = np.where(lo, fc90 / cdep, E_d / cdep)
+    capped = fy > fcap
+    fy = np.where(capped, fcap, fy)
+    hh = np.where(capped, 0.0, hh)
     over = Kn * dn < -fy
     dp = np.where(over, (-Kn * dn - fy) / (Kn + hh), 0.0)
     if update:
@@ -499,9 +526,8 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     B = Gs / np.maximum(Gs + Gn, 1e-30)
     Gc = m.c_GIc + (m.c_GIIc - m.c_GIc) * B**2
     Keff = np.where(dm > 1e-12, (Gn + Gs) / np.maximum(dm**2, 1e-30), Ks)
-    dmf = np.maximum(2 * Gc / (Keff * np.maximum(dm0, 1e-12)), 1.05 * dm0)
     dmax = np.maximum(st.c_dmax, dm)
-    d = np.clip(dmf * (dmax - dm0) / (np.maximum(dmax, 1e-12) * (dmf - dm0)), 0, 1)
+    d = trilinear_damage(dmax, np.maximum(dm0, 1e-12), Keff, Gc, *glue_shape(m))
     d = np.where(m.c_breakable, np.maximum(st.c_d, d), 0.0)
     if update:
         st.c_dmax = np.where(m.c_breakable, dmax, 0.0)
@@ -682,11 +708,13 @@ class Settings:
 
 def split_averaging(m: Model):
     """The averaging of the split check (cached on the model): each beam element's
-    shear stress over strength is averaged, by length, over the elements of the same body
-    whose centres lie within half a section depth (the larger of its width and its
-    thickness) of its own, so that a split starts where the shear acts over a member's
-    depth, not where one element resolves a peak next to a glued joint (a local onset
-    would come earlier the finer the mesh). Returns a sparse averaging matrix."""
+    shear stress over strength is averaged over a window of one section depth (the larger
+    of its width and its thickness) centred on it, each element of the same body weighted
+    by the length of it inside the window, so that a split starts where the shear acts
+    over a member's depth, not where one element resolves a peak next to a glued joint
+    (a local onset would come earlier the finer the mesh). The window is the same on
+    every mesh whose elements are no longer than a section depth; a longer element
+    averages over itself. Returns a sparse averaging matrix."""
     W = getattr(m, "_split_W", None)
     if W is not None and W.shape[0] == len(m.b_i):
         return W
@@ -701,12 +729,16 @@ def split_averaging(m: Model):
         depth = float(max(sec)) if sec and max(sec) > 0 else \
             2.0 * float(np.abs(np.r_[m.b_fy[idx].ravel(), m.b_fz[idx].ravel()]).max())
         d = np.linalg.norm(c[idx, None, :] - c[None, idx, :], axis=2)
+        r = 0.5 * depth
+        half = 0.5 * m.b_L0[idx]
         for a, e in enumerate(idx):
-            near = idx[d[a] <= max(0.5 * depth, 0.5 * m.b_L0[e])]
-            w = m.b_L0[near] / m.b_L0[near].sum()
+            # the length of each element inside [-r, r] around this one's centre
+            ov = np.clip(np.minimum(d[a] + half, r) - np.maximum(d[a] - half, -r), 0.0, None)
+            ov[a] = max(ov[a], 1e-9)
+            near = np.where(ov > 0)[0]
             rows += [e] * len(near)
-            cols += list(near)
-            vals += list(w)
+            cols += list(idx[near])
+            vals += list(ov[near] / ov[near].sum())
     W = csr_matrix((vals, (rows, cols)), shape=(nb, nb))
     m._split_W = W
     return W
@@ -765,15 +797,18 @@ def _kc(m: Model, key: str, s: Settings) -> np.ndarray:
     return k
 
 
-def _glue_crush(m: Model) -> tuple[np.ndarray, float, float]:
+def _glue_crush(m: Model) -> tuple[np.ndarray, float, float, float]:
     """Depth of wood that can crush at each glue point (mm), the strain at which crushed
-    wood is densified, and its stiffness then (MPa)."""
+    wood is densified, its stiffness then (MPa), and the most any face bears (MPa: the
+    wood's crushing strength along the grain, which neither end grain nor densified wood
+    across the grain exceeds)."""
     d = m.params.get("glue_cdep")
     if d is None or len(d) != len(m.c_a):
         d = np.full(len(m.c_a), 1e30)
         m.params["glue_cdep"] = d
     return d, float(m.params.get("densification_strain", 0.45)), \
-        float(m.params.get("densified_E", 500.0))
+        float(m.params.get("densified_E", 500.0)), \
+        float(m.params.get("bearing_cap", 1e30))
 
 
 def _glue_fc90(m: Model) -> np.ndarray:
@@ -855,7 +890,8 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
                       m.c_Ks, m.c_sig, m.c_tau, m.c_GIc, m.c_GIIc, m.c_mu, m.c_breakable,
                       st.c_dmax, st.c_d, st.c_slip, F, Mo, update,
                       s.beta if update else 0.0, s.dt, st.c_prev, st.c_alive, st.c_crush,
-                      _glue_fc90(m), *_glue_crush(m), st.c_creep, *glue_creep(m, st))
+                      _glue_fc90(m), *_glue_crush(m), st.c_creep, *glue_creep(m, st),
+                      *glue_shape(m))
     if len(m.k_a):
         K.cable_kernel(x, R, m.a_node, m.a_r0, m.k_a, m.k_b, m.k_L0, m.k_EA, m.k_Fb,
                        st.k_alive, F, Mo, update)

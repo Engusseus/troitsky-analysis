@@ -21,6 +21,7 @@ agent can answer it in an overrides file and run again.
 
 from __future__ import annotations
 
+import dataclasses
 import difflib
 import fnmatch
 import math
@@ -74,12 +75,17 @@ class Overrides:
     bodies: dict[str, dict] = field(default_factory=dict)
     params: dict[str, float] = field(default_factory=dict)
     glue: dict[str, float] = field(default_factory=dict)
+    solid: list[str] = field(default_factory=list)  # glue keys set to "solid": one piece
     acknowledge: list[str] = field(default_factory=list)  # question ids (or patterns)
+    # params keys whose values were measured (calibrate writes them); any other value set
+    # under params stays a placeholder (assumed), still drawn by montecarlo around it
+    measured: list[str] = field(default_factory=list)
     unknown: list[str] = field(default_factory=list)  # top-level keys we do not read
     used: set = field(default_factory=set)  # patterns and glue keys that matched
 
     KINDS = ("bar", "shell", "frame", "block", "cable", "ignore")
     FIELDS = ("kind", "layup", "grain", "glue_factor", "strength_factor", "butt_stagger_mm",
+              "butt_gap_mm",
               "section_scale")
 
     def for_body(self, name: str) -> dict:
@@ -93,9 +99,11 @@ class Overrides:
     def problems(self, body_names: list[str]) -> list[str]:
         """Everything in the overrides that had no effect (a typo, an unknown kind, a
         layup bridgesim cannot read, a joint that does not exist)."""
-        out = [f"overrides: top-level key {k!r} is not read (bodies, glue, params and "
-               "acknowledge are; 'cad' and 'cli' in a question's answer_with are things to "
-               "do, not overrides)" for k in self.unknown]
+        out = [f"overrides: top-level key {k!r} is not read (bodies, glue, params, "
+               "measured and acknowledge are; 'cad' and 'cli' in a question's answer_with "
+               "are things to do, not overrides)" for k in self.unknown]
+        out += [f"overrides: measured {k!r} is not set under params" for k in self.measured
+                if k not in self.params]
         for pat, val in self.bodies.items():
             if pat not in self.used:
                 stem = pat.rstrip("*").lower()
@@ -150,17 +158,24 @@ class Overrides:
                 raise ValueError(f"overrides: {section}.{k} must be a number, got {v!r}") \
                     from None
 
+        g_raw = d.get("glue", {}) or {}
+        solid = [k for k, v in g_raw.items() if str(v).strip().lower() in SOLID_WORDS]
         return cls(bodies=dict(d.get("bodies", {}) or {}),
                    params={k: num("params", k, v)
                            for k, v in (d.get("params", {}) or {}).items()},
-                   glue={k: num("glue", k, v) for k, v in (d.get("glue", {}) or {}).items()},
+                   glue={k: num("glue", k, v) for k, v in g_raw.items() if k not in solid},
+                   solid=solid,
                    acknowledge=[str(a) for a in (ack if isinstance(ack, list) else [ack])],
+                   measured=[str(x) for x in (d.get("measured") or [])],
                    unknown=[str(k) for k in d if k not in ("bodies", "params", "glue",
-                                                           "acknowledge")])
+                                                           "acknowledge", "measured")])
 
     def acknowledged(self, qid: str) -> bool:
         """Whether a question was acknowledged ('the design is as drawn', 'confirmed')."""
         return any(qid == a or fnmatch.fnmatchcase(qid, a) for a in self.acknowledge)
+
+
+SOLID_WORDS = ("solid", "one piece")  # a glue override: the two bodies are one piece
 
 
 def _joint_matches(key: str, a: str, b: str) -> bool:
@@ -359,10 +374,17 @@ def find_patches(bodies: list[CadBody]) -> list[tuple[int, int, Polygon, np.ndar
     return out
 
 
-def _sample_polygon(poly, spacing: float, max_pts: int = 25) -> np.ndarray:
+def _sample_polygon(poly, spacing: float, max_pts: int = 25,
+                    min_per_side: int = 1, exact_moment: bool = False) -> np.ndarray:
     """Points spread over a (multi)polygon on a grid aligned with its minimum rotated
     rectangle, so long thin strips (a deck glued along a stringer) get a row of points
-    along their length instead of one point."""
+    along their length instead of one point. ``min_per_side``: at least this many
+    across each side of 3 mm or more (a glued patch sampled at one point, or in one
+    row, would be a hinge about it). ``exact_moment``: the rows spread so that equal
+    shares of the area at the points have the rectangle's own second moment about each
+    axis (two rows at +-L / (2 sqrt 3), the Gauss points; n rows: their midpoints x
+    sqrt(n^2 / (n^2 - 1))), so a glued patch resists turning with its full stiffness
+    whatever the number of points (midpoints give 75 % with two, 89 % with three)."""
     if poly.is_empty:
         return np.zeros((0, 2))
     base = poly if isinstance(poly, Polygon) else poly.convex_hull
@@ -374,13 +396,16 @@ def _sample_polygon(poly, spacing: float, max_pts: int = 25) -> np.ndarray:
     c0 = np.asarray(shapely.minimum_rotated_rectangle(base).centroid.coords[0])
     sp_ = spacing
     for _ in range(8):
-        nu = max(1, int(round(Lu / sp_)))
-        nw = max(1, int(round(Lw / sp_)))
+        nu = max(min_per_side if Lu >= 3.0 else 1, int(round(Lu / sp_)))
+        nw = max(min_per_side if Lw >= 3.0 else 1, int(round(Lw / sp_)))
         if nu * nw > max_pts:
             sp_ *= 1.25
             continue
         a = (np.arange(nu) + 0.5) / nu * Lu - Lu / 2
         b = (np.arange(nw) + 0.5) / nw * Lw - Lw / 2
+        if exact_moment:
+            a = a * (math.sqrt(nu**2 / (nu**2 - 1.0)) if nu > 1 else 1.0)
+            b = b * (math.sqrt(nw**2 / (nw**2 - 1.0)) if nw > 1 else 1.0)
         A, B = np.meshgrid(a, b, indexing="ij")
         pts = c0 + np.outer(A.ravel(), u) + np.outer(B.ravel(), w)
         pts = pts[shapely.contains_xy(poly, pts[:, 0], pts[:, 1])]
@@ -394,11 +419,14 @@ def _sample_polygon(poly, spacing: float, max_pts: int = 25) -> np.ndarray:
 # ------------------------------------------------------------------------------- meshing
 
 
-def mesh_polygon(poly: Polygon, h: float, seeds: np.ndarray | None = None
-                 ) -> tuple[np.ndarray, np.ndarray]:
+def mesh_polygon(poly: Polygon, h: float, seeds: np.ndarray | None = None,
+                 fixed: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
     """Triangulate a polygon (holes allowed) with elements of about size h. Holes
     smaller than about h (floss holes, pin holes) are filled: they do not change the
-    plate's stiffness or strength noticeably and would force tiny elements."""
+    plate's stiffness or strength noticeably and would force tiny elements. ``fixed``:
+    points that become nodes (those inside the polygon), the mesh's own points near them
+    dropped: another plate's nodes over the face glued to this one, so the two meshes
+    meet node on node."""
     if isinstance(poly, Polygon):
         keep = [r for r in poly.interiors if Polygon(r).area > (0.8 * h) ** 2]
         poly = Polygon(poly.exterior, keep)
@@ -437,13 +465,38 @@ def mesh_polygon(poly: Polygon, h: float, seeds: np.ndarray | None = None
         inside = shapely.contains_xy(poly.buffer(1e-6), seeds[:, 0], seeds[:, 1])
         allp = np.vstack([allp, seeds[(dd > 0.55 * h) & inside]])
     allp = np.unique(np.round(allp, 6), axis=0)
+    n_fix = 0
+    keep_pt = np.zeros(len(allp), bool)  # points never merged away
+    if fixed is not None and len(fixed):
+        fx = np.unique(np.round(np.asarray(fixed, float), 6), axis=0)
+        fx = fx[shapely.contains_xy(poly.buffer(1e-6), fx[:, 0], fx[:, 1])]
+        if len(fx):
+            # this plate's own outline nodes stay (the partner may have them too, or
+            # needs them where its overlap ends); its inner points near a fixed one
+            # give way to it
+            on_bnd = shapely.distance(poly.boundary, shapely.points(allp)) < 1e-6
+            dd, _ = cKDTree(fx).query(allp)
+            sel = (dd > 0.5 * h) | on_bnd
+            allp, on_bnd = allp[sel], on_bnd[sel]
+            dup = cKDTree(fx).query(allp)[0] < 1e-6  # an outline node it has already
+            allp, on_bnd = allp[~dup], on_bnd[~dup]
+            allp = np.vstack([fx, allp])
+            n_fix = len(fx)
+            keep_pt = np.r_[np.ones(n_fix, bool), on_bnd]
     # merge points closer than 0.3 h (short CAD edges, seeds next to the boundary): they
-    # would make sliver elements and a tiny stable time step
+    # would make sliver elements and a tiny stable time step (fixed points, another
+    # mesh's nodes, and the outline's nodes beside them are kept unless nearly on top
+    # of each other)
     tree = cKDTree(allp)
     drop = np.zeros(len(allp), bool)
     for i, j in sorted(tree.query_pairs(0.3 * h)):
-        if not drop[i] and not drop[j]:
-            drop[j] = True
+        if drop[i] or drop[j]:
+            continue
+        if keep_pt[i] and keep_pt[j]:
+            if np.linalg.norm(allp[i] - allp[j]) < 0.05 * h:
+                drop[j if j >= n_fix else i] = True
+            continue
+        drop[j if not keep_pt[j] else i] = True
     allp = allp[~drop]
     tri = Delaunay(allp).simplices
     cen = allp[tri].mean(axis=1)
@@ -522,20 +575,66 @@ def hankinson(f_par: float, f_perp: float, cos_t: float) -> float:
     return f_par * f_perp / (f_par * (1.0 - c2) + f_perp * c2)
 
 
-def grain_bearing(sh, n: np.ndarray, f_c: float, f_c90: float) -> tuple[float, float]:
+def end_grain_share(cos_t: float, end_factor: float = 0.5) -> float:
+    """How much a glued face is end grain, 0 (side grain) to 1 (end grain), for a ply
+    whose fibres meet the face's normal at cos_t: the glue's strength on the face is
+    1 - share x (1 - end_factor), interpolated like Hankinson's formula, g = e / (e (1 -
+    c^2) + c^2), so a face cut obliquely across the fibres is partly end grain (a
+    diagonal's foot cut at 55 degrees to its fibres: 0.78 of the way), not side grain up
+    to 60 degrees and end grain past it (glued at 0.6 of side grain with end grain at
+    0.5)."""
+    c2 = min(1.0, cos_t * cos_t)
+    if end_factor >= 0.999:
+        return c2
+    g = end_factor / (end_factor * (1.0 - c2) + c2)
+    return (1.0 - g) / (1.0 - end_factor)
+
+
+def grain_bearing(sh, n: np.ndarray, f_c: float, f_c90: float, end_factor: float = 0.5
+                  ) -> tuple[float, float]:
     """Crushing strength of a body pressed along n (MPa), averaged over its plies, and
-    the share of its plies that meet n with their end grain (within 30 degrees)."""
+    how much of a face across n is end grain (end_grain_share, averaged)."""
     gs = grain_vectors(sh)
     if not gs:
         return f_c90, 0.0
     cs = [abs(float(g @ n)) for g in gs]
     return (float(np.mean([hankinson(f_c, f_c90, c) for c in cs])),
-            float(np.mean([c > 0.866 for c in cs])))
+            float(np.mean([end_grain_share(c, end_factor) for c in cs])))
+
+
+# the words that name a copy's side, standing on their own in a body's name ("End Post
+# L Near", "gus_A_R Far Inner", "Diagonal - Left"): copies differ only in these
+SIDE_WORDS = re.compile(r"(?<![A-Za-z0-9])(L|R|Left|Right|Near|Far)(?![A-Za-z0-9])")
+SIDE_GLOB = {"L": "[LR]", "R": "[LR]", "Left": "[LR]*t", "Right": "[LR]*t",
+             "Near": "[NF]*r", "Far": "[NF]*r"}
+
+
+def _base(name: str) -> str:
+    return re.sub(r"( - .*| \(mirror copy\).*| #\d+)$", "", name).strip()
 
 
 def _group(name: str) -> str:
-    """Name without its side / copy suffix ('Top Chord (..) - Far' -> 'Top Chord (..)')."""
-    return re.sub(r"( - .*| \(mirror copy\).*| #\d+)$", "", name).strip()
+    """Name without its side / copy words: 'Top Chord (..) - Far' -> 'Top Chord (..)',
+    'Knee-Diagonal L Near (13-ply UD)' -> 'Knee-Diagonal (13-ply UD)', 'gus_A_R Far
+    Inner' -> 'gus_A Inner': the same for every copy of a part."""
+    g = SIDE_WORDS.sub("", _base(name))
+    g = re.sub(r"_+(?=[\s_]|$)", "", g)  # 'gus_A_ ' -> 'gus_A '
+    return re.sub(r"\s+", " ", g).strip()
+
+
+def copies_glob(name: str) -> str:
+    """A glob that matches a part and its copies on the other sides ('End Post L Near
+    (13-ply UD)' -> 'End Post [LR] [NF]*r (13-ply UD)', 'Top Chord - Far' -> 'Top
+    Chord*'), and nothing else ('Body 4' does not match 'Body 41')."""
+    import glob as _glob
+
+    base = _base(name)
+    parts = SIDE_WORDS.split(base)
+    pat = "".join(_glob.escape(p) if i % 2 == 0 else SIDE_GLOB[p]
+                  for i, p in enumerate(parts))
+    if base != name:
+        pat += "*"  # the suffix the copies carry
+    return pat
 
 
 def stick_factors(seed: int | None, name: str, n_plies: int, sp: SimParams
@@ -579,24 +678,105 @@ def interlaminar_strength(angles, f_v: float, f_rolling: float, bond: float) -> 
     return min(bond, worst)
 
 
+def cross_ply_sheet_shear(angles, t_over_a: float = 0.2,
+                          tor_over_fv: float = math.inf) -> tuple[float, float]:
+    """In-plane shear of a 0/90 sheet laid from sticks whose edges are not glued: its
+    shear stiffness and strength factors (Bogensperger, Moosbrugger & Silly 2010, WCTE,
+    cross-laminated timber with unglued narrow faces: G* / G0 = 1 / (1 + 6 F (t/a)^2),
+    F = 0.5345 (t/a)^-0.7947 for 3 layers, 0.4253 (t/a)^-0.7941 for 5 or more, t/a a
+    stick's thickness over its width; the shear in the boards' cross-sections doubles,
+    so the nominal shear strength is halved). The glued crossings carry the shear by
+    torsion, tau_T = 3 tau t* / a with t* = n t / (n - 1) the sheet's thickness per glued
+    interface (Boggian, Andreolli & Tomasi 2019, Front. Built Environ. 5:58), which
+    caps the nominal shear at ``tor_over_fv`` (a crossing's torsional strength over
+    f_v) x a (n - 1) / (3 n t): 0.83 x the crossing's strength for 2 plies of 2 x 10 mm
+    sticks, below half f_v once the crossings are weaker than ~5 MPa. (1, 1) for a
+    sheet that is not 0/90."""
+    fam = {round(((float(a) % 180) + 180) % 180 / 90.0) % 2 for a in angles}
+    near = all(min(abs(float(a) % 90), 90 - abs(float(a) % 90)) < 10 for a in angles)
+    if len(fam) < 2 or not near:
+        return 1.0, 1.0
+    F = (0.5345 * t_over_a ** -0.7947 if len(angles) <= 3
+         else 0.4253 * t_over_a ** -0.7941)
+    n = len(angles)
+    tor = tor_over_fv * (n - 1) / (3.0 * n * t_over_a) if n > 1 else math.inf
+    return 1.0 / (1.0 + 6.0 * F * t_over_a**2), min(0.5, tor)
+
+
+def lap_size_factor(area_mm2: float, ref_mm2: float = 200.0, m: float = 10.0,
+                    cap_mm2: float = 3000.0) -> float:
+    """The average strength of a hand-made glued lap of ``area_mm2`` over that of the
+    coupon tau_g is measured on (``ref_mm2``, the 20 x 10 mm lap): a Weibull size effect
+    of modulus ``m``, (A / A_ref)^(-1/m), for a lap larger than the coupon (more starved
+    spots and uneven clamping over a larger area: bonded timber laps follow a Weibull
+    size effect, Tannert, Vallee & Hehl 2012, Wood Sci. Technol. 46:503), no further than
+    ``cap_mm2``: pressed glued crossings of 1600 to 29,000 mm^2 showed none (Flaig &
+    Blass 2013, CIB-W18 46-12-1), so the law is not carried past the laps it is meant
+    for. The fracture part of the size effect (shear lag along a long lap) is in the glue
+    law itself, so m is the statistical part only: ~10 (6-20)."""
+    if area_mm2 <= ref_mm2 or m <= 0:
+        return 1.0
+    return float((min(area_mm2, max(cap_mm2, ref_mm2)) / ref_mm2) ** (-1.0 / m))
+
+
+def gap_strength(gap: float, fill: float = 0.15) -> float:
+    """Strength of a white-glue line filling a gap ``gap`` mm wide, as a share of a thin
+    one: full up to ``fill`` (glue.gap_fill_mm), then falling as the thick line shrinks
+    and voids, 0.9 at fill + 0.1 mm, 0.6 at fill + 0.35 and nothing from fill + 0.85
+    (with fill 0.15: 0.25, 0.5 and 1.0 mm; shimmed block-shear tests, Kurt 2006, Wood Res.
+    51(1):59, -10 % at 0.25 and -39 % at 0.48 mm; a 0.4 mm PVAc line carried 1.38 MPa for
+    70 days, River & Gillespie 1981, USDA FPL RP-400; with PVAc a loose mortise and tenon
+    lost little, Tankut 2007)."""
+    x = gap - fill
+    if x <= 0:
+        return 1.0
+    return float(np.interp(x, [0.0, 0.1, 0.35, 0.85], [1.0, 0.9, 0.6, 0.0]))
+
+
+def butt_path_capacity(n: int, s: float, Ls: float, P_ply: float, tau_w: float) -> float:
+    """Tension capacity of ``n`` plies (or stick rows) of sticks ``Ls`` long whose butt
+    joints are staggered by ``s`` from one ply to the next (ply i's joints at i s, every
+    ``Ls``): the weakest path through the plies. A path crosses each ply either at one of
+    its joints (free) or through its fibres (``P_ply``), and between neighbouring plies
+    shears the glue line over the distance between their crossings (``tau_w`` per mm).
+    Joints repeat every stick, so in a brick pattern (s = Ls / 2) every other ply is cut at
+    the same section: the net section keeps n // 2 plies, not n - 1. Found by dynamic
+    programming over the joint positions (where a path's optimum crossings lie)."""
+    if n < 1:
+        return 0.0
+    pos = np.unique(np.round(np.mod(np.arange(n) * s, Ls), 6))
+    joint = np.isclose(np.mod(np.arange(n)[:, None] * s, Ls), pos[None, :], atol=1e-6) | \
+        np.isclose(np.mod(np.arange(n)[:, None] * s, Ls) - Ls, pos[None, :], atol=1e-6)
+    d = np.abs(pos[:, None] - pos[None, :])
+    d = np.minimum(d, Ls - d)  # the nearest joint of the next ply, either way
+    cost = np.where(joint[0], 0.0, P_ply)
+    for i in range(1, n):
+        cost = np.where(joint[i], 0.0, P_ply) + (cost[:, None] + tau_w * d).min(0)
+    return float(cost.min())
+
+
 def _laminated_member(name: str, sh, lam, L: float, mat: Material, o: dict,
                       questions: list, f_rolling: float = 2.0,
-                      bond: float = 6.0) -> tuple[float, float]:
+                      bond: float = 6.0, butt_eff: float = 1.0) -> tuple[float, float]:
     """Tension-strength factor and shear strength of a member laminated from sticks.
 
     A ply longer than one stick has butt joints; its load goes round each joint through
-    the glue lines to the next plies. With joints staggered by ``s`` the weakest tension
-    path cuts k plies at their joints and shears the glue between them:
-    ``P_k = (n - k) P_ply + (k - 1) tau_g w s``, the smallest over k (k = 1 is the net
-    section, k = n a path through every joint). Bending shear between plies runs in the
-    glue lines between them: :func:`interlaminar_strength` (the bond line, pressed while
-    it cured, ``bond``; the plies along and across their grain, ``f_rolling``)."""
+    the glue lines to the next plies. The tension capacity is the weakest path through
+    the plies (:func:`butt_path_capacity`): straight through the joints that line up
+    (every other ply in a brick pattern), or zigzagging from joint to joint and shearing
+    the glue lines between them at the laminate's interlaminar strength (the pressed bond
+    lines and the plies next to them, as where a member splits), times ``butt_eff``: in
+    plies as thin as a stick the glue line cracks from a butt joint's tips well before
+    the member fails and the fracture runs into the plies, below the statics (Jung &
+    Murphy 1983; wood.butt_tension_efficiency). Bending shear between
+    plies runs in the same glue lines: :func:`interlaminar_strength` (the bond line,
+    pressed while it cured, ``bond``; the plies along and across their grain,
+    ``f_rolling``)."""
     n = len(lam.angles)
     f_v = mat.f_v_MPa.value
     if sh.layup.kind != "laminate" or n < 2:
         return 1.0, f_v
     gf = float(o.get("glue_factor", 1.0))
-    tau = mat.glue.tau_g_MPa.value * max(gf, 1e-3)
     fv = interlaminar_strength(lam.angles, f_v, f_rolling, bond * max(gf, 1e-3))
     Ls = mat.stick.length_mm
     if L <= 1.02 * Ls or o.get("butt_stagger_mm") == 0:
@@ -604,27 +784,77 @@ def _laminated_member(name: str, sh, lam, L: float, mat: Material, o: dict,
     s = float(o.get("butt_stagger_mm") or Ls / 2)  # brick pattern: half a stick
     w = sh.Wp  # glue-line width (plies stacked through the thickness)
     P_ply = lam.f_t * sh.Wp * sh.T / n
-    P = min((n - k) * P_ply + (k - 1) * tau * w * s for k in range(1, n + 1))
+    P = butt_path_capacity(n, s, Ls, P_ply, fv * w)
     kt = min(1.0, P / (n * P_ply))
+    if kt < 1.0:
+        kt *= butt_eff
     g = _group(name)
     if o.get("butt_stagger_mm") is None and not any(
             q["id"] == f"butt_joints:{g}" for q in questions):
-        questions.append({
-            "member": f"'{g}' ({L:.0f} mm long, {kt:.0%} of a solid member's tension "
-                      f"strength with joints {s:.0f} mm apart)",
-            "id": f"butt_joints:{g}", "body": name, "topic": "design", "severity": "check",
-            "question": f"'{g}' is {L:.0f} mm long, longer than one stick "
-                        f"({Ls:.0f} mm), so its plies have butt joints. How far apart are "
-                        "the joints of neighbouring plies? This sets its tension "
-                        f"strength: {kt:.0%} of a solid member with joints {s:.0f} mm "
-                        "apart; joints closer together let the glue between them shear "
-                        "first.",
-            "assumed": f"brick pattern: each ply's joints {s:.1f} mm (half a stick) from "
-                       "its neighbours'",
-            "answer_with": {"bodies": {g + "*": {
-                "butt_stagger_mm": "<distance between joints of neighbouring plies, mm; "
-                                   "0 if the plies have no joints>"}}}})
+        questions.append(_butt_question(g, name, L, Ls, s, kt))
     return kt, fv
+
+
+def _butt_question(g: str, name: str, L: float, Ls: float, s: float, kt: float,
+                   what: str = "member") -> dict:
+    return {
+        "member": f"'{g}' ({L:.0f} mm long, {kt:.0%} of a solid {what}'s tension "
+                  f"strength with joints {s:.0f} mm apart)",
+        "id": f"butt_joints:{g}", "body": name, "topic": "design", "severity": "check",
+        "question": f"'{g}' is {L:.0f} mm long, longer than one stick ({Ls:.0f} mm), so "
+                    "its plies have butt joints. How far apart are the joints of "
+                    "neighbouring plies? This sets its tension strength: "
+                    f"{kt:.0%} of a solid {what} with joints {s:.0f} mm apart. Joints "
+                    "that line up across the plies (a brick pattern lines up every other "
+                    "ply) or lie close together cut more of it. And how do the ply ends "
+                    "meet: cut square and butted tight (sanded), or as cut, or rounded "
+                    "stick ends? A gap that does not close before the member is damaged "
+                    "(more than ~0.5 mm; rounded stick ends leave ~2 mm) leaves the joint "
+                    "out in compression too.",
+        "assumed": f"brick pattern: each ply's joints {s:.1f} mm (half a stick) from its "
+                   "neighbours', so every other ply is cut at the same section; the gap "
+                   "at the butted ends seeded from 0 to scatter.bearing_gap_mm",
+        "answer_with": {"bodies": {g + "*": {
+            "butt_stagger_mm": "<distance between joints of neighbouring plies, mm; 0 if "
+                               "the plies have no joints>",
+            "butt_gap_mm": "<gap between butted ply ends, mm; 0 if sanded tight>"}}}}
+
+
+def plate_butt_factor(name: str, sh, mat: Material, o: dict, questions: list,
+                      ext_along: float, ext_across: float, angles: list[float],
+                      f_v: float, f_rolling: float, bond: float,
+                      butt_eff: float = 1.0) -> float:
+    """Fibre-tension factor of a plate laid from sticks: the plies of a direction in
+    which the plate is longer than one stick have butt joints, staggered row to row and
+    ply to ply by ``butt_stagger_mm`` (a brick pattern by default). The rows and plies of
+    that direction form a chain of stick strands; :func:`butt_path_capacity` gives their
+    weakest path, the glue between strands shearing at the laminate's interlaminar
+    strength (rolling shear through a cross ply). The lower factor of the two directions
+    applies to every ply (the shell keeps one fibre strength per element), times
+    ``butt_eff`` (as for a laminated member: :func:`_laminated_member`)."""
+    Ls, wst = mat.stick.length_mm, mat.stick.width_mm
+    if o.get("butt_stagger_mm") == 0 or sh.layup.kind != "laminate":
+        return 1.0
+    s = float(o.get("butt_stagger_mm") or Ls / 2)
+    gf = float(o.get("glue_factor", 1.0))
+    fv = interlaminar_strength(angles, f_v, f_rolling, bond * max(gf, 1e-3))
+    kt, longest = 1.0, 0.0
+    for ref, L, across in ((0.0, ext_along, ext_across), (90.0, ext_across, ext_along)):
+        fam = [a for a in angles if abs(math.cos(math.radians(a - ref))) > 0.9]
+        if not fam or L <= 1.02 * Ls:
+            continue
+        rows = max(1, int(round(across / wst)))
+        n = min(len(fam) * rows, 40)  # the factor has converged by 40 strands
+        P_strand = 1.0  # per strand (cancels): the shear path per mm is fv w / P_strand
+        P_ply = mat.f_t_MPa.value * wst * sh.T / len(angles)
+        k = butt_path_capacity(n, s, Ls, P_strand, fv * wst / P_ply) / n
+        if k < kt:
+            kt, longest = k * butt_eff, L
+    g = _group(name)
+    if kt < 1.0 and o.get("butt_stagger_mm") is None and not any(
+            q["id"] == f"butt_joints:{g}" for q in questions):
+        questions.append(_butt_question(g, name, longest, Ls, s, kt, what="plate"))
+    return kt
 
 
 def _merge_butt_questions(questions: list[dict]) -> list[dict]:
@@ -695,6 +925,40 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         if r is None or cov <= 0:
             return 1.0
         return lognormal(cov, float(r.standard_normal()))
+
+    butt_gap_max = float(sp.values.get("scatter.bearing_gap_mm", 0.0))
+    butt_bear = (float(sp.values.get("wood.butt_bearing_efficiency", 0.95)),
+                 float(sp.values.get("wood.butt_bear_gap_mm", 0.5)),
+                 float(sp.values.get("wood.butt_open_gap_mm", 1.0)))
+
+    def butt_compression(name: str, kt: float, o: dict) -> float:
+        """Compression-strength factor of a laminated member or plate with butt joints:
+        a joint whose gap closes before the member is damaged bears, and the member keeps
+        wood.butt_bearing_efficiency (0.95) of its strength; a gap that does not close
+        leaves the ply's force to go round the joint through the glue lines as in
+        tension, and the member keeps its butt-joint tension factor ``kt``. In 2 mm
+        veneer laminates gaps of 0.25 and 0.5 mm close early after first yield and 1 mm
+        gaps never do (Berard et al. 2011, J Wood Sci 57:107); tight butt joints keep
+        0.94-0.96 of a jointless laminate's compression strength (Dansoh et al. 2003, J
+        Wood Sci 49:405). Between wood.butt_bear_gap_mm (0.5) and wood.butt_open_gap_mm
+        (1.0) the factor falls linearly. The gap: ``butt_gap_mm`` (the designer's: 0 if
+        the ends are sanded tight, ~2 for rounded stick ends), else seeded per member from
+        0 to scatter.bearing_gap_mm (hand-cut); the perfect bridge's ends are tight."""
+        if kt >= 1.0:
+            return 1.0
+        eff, g0, g1 = butt_bear
+        if o.get("butt_gap_mm") is not None:
+            g = float(o["butt_gap_mm"])
+        else:
+            r = rng_for(f"buttgap:{name}")
+            if r is None:
+                return max(eff, kt)
+            g = amp * float(r.uniform(0.0, butt_gap_max))
+        if g <= g0:
+            return max(eff, kt)
+        if g >= g1:
+            return kt
+        return max(kt, eff + (kt - eff) * (g - g0) / (g1 - g0))
 
     # ---------------------------------------------------------------- body analysis
     shapes: list[Shape] = []
@@ -813,6 +1077,40 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     bar_axis: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     shell_tree: dict[int, cKDTree] = {}
     shell_mesh: dict[int, tuple[np.ndarray, np.ndarray, float]] = {}
+    # plates glued face to face (the plies of a laminated deck drawn as separate
+    # bodies, a gusset on a plate) are meshed node on node over their overlap, finest
+    # first: the glue between them then joins nodes straight across, and a load passes
+    # through the stack instead of bending each thin layer between nodes it is hung on
+    # off-centre (a three-layer deck under the plate made Bridge_v10 2x too soft at
+    # quick and 12 % at standard)
+    stacked: dict[int, set] = {}
+    for ia, ib, _inter, _oa, _e1, _e2, na in raw_patches:
+        if shapes[ia].kind == "shell" and shapes[ib].kind == "shell" and \
+                abs(float(np.dot(shapes[ia].n, na))) > 0.99 and \
+                abs(float(np.dot(shapes[ib].n, na))) > 0.99:
+            stacked.setdefault(ia, set()).add(ib)
+            stacked.setdefault(ib, set()).add(ia)
+    pre_shell: dict[int, tuple[np.ndarray, np.ndarray, float]] = {}
+
+    def _partner_nodes(bi: int) -> np.ndarray | None:
+        sh = shapes[bi]
+        fixed = []
+        for ob in sorted(stacked[bi]):
+            if ob in pre_shell:
+                so = shapes[ob]
+                X3 = so.origin + np.outer(pre_shell[ob][0][:, 0], so.e1) \
+                    + np.outer(pre_shell[ob][0][:, 1], so.e2)
+                fixed.append(np.c_[(X3 - sh.origin) @ sh.e1, (X3 - sh.origin) @ sh.e2])
+        return np.vstack(fixed) if fixed else None
+
+    # forward, finest first: each plate takes the nodes of those meshed before it;
+    # back again: each takes its partners' final nodes (a shorter ply's ends included),
+    # so both meshes have the same nodes over the whole overlap
+    order_st = sorted(stacked, key=lambda i: (_shell_h(shapes[i]), i))
+    for bi in order_st + order_st[-2::-1]:
+        sh = shapes[bi]
+        pre_shell[bi] = _mesh_robust(sh.poly, _shell_h(sh) * mesh_scale, bodies[bi].name,
+                                     fixed=_partner_nodes(bi))
     frame_tree: dict[int, cKDTree] = {}
     frame_h: dict[int, float] = {}
     beams: dict[str, list] = {k: [] for k in ("i", "j", "L0", "E0", "fy", "fz", "fA", "E",
@@ -820,11 +1118,19 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                                               "nply", "Wt", "kGA", "body")}
     shells: dict[str, list] = {k: [] for k in ("nodes", "E0", "P", "t", "el", "body")}
     n_snap = 0
-    snap_excess = 1.0
+    snap_el: list[bool] = []  # per shell element: larger than its crack band
+    snap3: list[np.ndarray] = []  # ... per mode: fibre tension, across the grain, shear
+    snap_excess = 1.0  # the lowest strength factor an oversized element got
+    sheets_unglued: list[str] = []  # 0/90 sheets taken with their stick edges unglued
     snap_modes: set = set()
     G_f = sp["wood.G_f_N_per_mm"]
     il_strength = {"f_rolling": sp.values.get("wood.f_rolling_MPa", 2.0),
-                   "bond": sp.values.get("glue.interlaminar_MPa", 6.0)}
+                   "bond": sp.values.get("glue.interlaminar_MPa", 6.0),
+                   "butt_eff": sp.values.get("wood.butt_tension_efficiency", 1.0)}
+    # a glued crossing of two sticks in torsion: its bond line, or the plies rolling
+    # across their grain, ~2.4 x their rolling-shear strength (Flaig & Blass 2013:
+    # torsion 3.5-4.7 MPa against rolling shear 1.43-1.51 on CLT crossings)
+    crossing_tor = min(il_strength["bond"], 2.4 * il_strength["f_rolling"])
 
     def _frame_body(bi, b, sh, info, o, ssc, Ef, Sf, mass_t):
         """A plate of narrow arms as a frame: each arm a chain of fibre beams along its
@@ -977,6 +1283,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 rel = math.degrees(math.atan2(float(gref @ e2v), float(gref @ e1v)))
             lam, fv_lam, fv_in = lam_at(rel)
             kt = kt_fv[ci][0]
+            kc = butt_compression(b.name, kt, o)
             ny, nz = (5, 3) if We >= T else (3, 5)
             gy = ((np.arange(ny) + 0.5) / ny - 0.5) * We * _exact(ny)
             gz = ((np.arange(nz) + 0.5) / nz - 0.5) * T * _exact(nz)
@@ -992,7 +1299,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             beams["fA"].append(np.full(ny * nz, A_e / (ny * nz)))
             beams["E"].append(lam.E_x * Ef)
             beams["ft"].append(lam.f_t * Ef * Sf * kt)
-            beams["fc"].append(lam.f_c * Ef * Sf)
+            beams["fc"].append(lam.f_c * Ef * Sf * kc)
             beams["Gf"].append(G_f * Sf)
             beams["GJ"].append(lam.G_xy * Ef * J)
             beams["A"].append(A_e)
@@ -1073,6 +1380,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             L = s1 - s0
             kt, fv_lam = _laminated_member(b.name, sh, lam, L, mat, o, questions,
                                            **il_strength)
+            kc = butt_compression(b.name, kt, o)
             fv_in = inplane_split_strength(lam.angles, mat.f_v_MPa.value,
                                            0.5 * min(ply.f_t, ply.f_c))
             # uniform elements; joints attach to the nearest node through a rigid arm
@@ -1142,7 +1450,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 beams["fA"].append(fA)
                 beams["E"].append(lam.E_x * Ef)
                 beams["ft"].append(lam.f_t * Ef * Sf * kt)
-                beams["fc"].append(lam.f_c * Ef * Sf)
+                beams["fc"].append(lam.f_c * Ef * Sf * kc)
                 beams["Gf"].append(G_f * Sf)
                 beams["GJ"].append(lam.G_xy * Ef * J)
                 beams["A"].append(A_e)
@@ -1161,17 +1469,29 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 for nn in (a_, b_):
                     bld.rot[nn] += me / 2 * (L0**2 / 12 + r2)
             del E0
-            info.E_eff_MPa, info.f_t_eff_MPa, info.f_c_eff_MPa = lam.E_x, lam.f_t * kt, lam.f_c
+            info.E_eff_MPa, info.f_t_eff_MPa, info.f_c_eff_MPa = (lam.E_x, lam.f_t * kt,
+                                                                  lam.f_c * kc)
             info.section_mm = (round(Wm if sh.fill < 0.75 else Wp, 2), round(T, 2))
             info.length_mm = L
             info.nodes = list(ids)
         elif sh.kind == "shell":
             T = sh.T * ssc
-            lam_ref = laminate(ply, sh.layup.angles, T)
+            # a 0/90 sheet of sticks with unglued edges is softer and weaker in in-plane
+            # shear (cross-laminated timber, Bogensperger 2010)
+            ply_s = ply
+            if sp.values.get("glue.plate_edges_glued", 0.0) < 0.5:
+                gk, sk = cross_ply_sheet_shear(sh.layup.angles,
+                                               mat.stick.thickness_mm / mat.stick.width_mm,
+                                               crossing_tor / max(ply.f_v, 1e-9))
+                if gk < 1.0:
+                    ply_s = dataclasses.replace(ply, G_LT=ply.G_LT * gk, f_v=ply.f_v * sk)
+                    sheets_unglued.append(b.name)
+            lam_ref = laminate(ply_s, sh.layup.angles, T)
             o_mid = sh.origin - sh.n * T / 2
             area = sh.poly.area
             h = _shell_h(sh) * mesh_scale
-            P2, tri, h = _mesh_robust(sh.poly, h, b.name)  # glue attaches by rigid arms
+            P2, tri, h = pre_shell[bi] if bi in pre_shell else \
+                _mesh_robust(sh.poly, h, b.name)  # glue attaches by rigid arms
             ids = np.array([bld.node(o_mid + p[0] * sh.e1 + p[1] * sh.e2, bi) for p in P2])
             body_nodes[bi] = ids
             shell_tree[bi] = cKDTree(np.array([bld.X[i] for i in ids]))
@@ -1195,6 +1515,16 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                     edges.append((ext[k], ext[k + 1]))
             Gm = (sp["wood.G_f_N_per_mm"] * Sf, sp["wood.G_f90_N_per_mm"],
                   sp["wood.G_v_N_per_mm"])
+            # butt joints: the plies of a direction longer than one stick
+            g2 = np.array([float(gdir @ sh.e1), float(gdir @ sh.e2)])
+            g2 /= max(np.linalg.norm(g2), 1e-12)
+            pc = np.asarray(sh.poly.exterior.coords)
+            kt_pl = plate_butt_factor(
+                b.name, sh, mat, o, questions, float(np.ptp(pc @ g2)),
+                float(np.ptp(pc @ np.array([-g2[1], g2[0]]))), list(sh.layup.angles),
+                mat.f_v_MPa.value, il_strength["f_rolling"], il_strength["bond"],
+                il_strength["butt_eff"])
+            kc_pl = butt_compression(b.name, kt_pl, o)
             for t3 in tri:
                 xy3 = P2[t3]
                 X3 = np.array([bld.X[ids[k]] for k in t3])
@@ -1217,12 +1547,14 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 angs = [gang + a for a in sh.layup.angles]
                 if float(ez @ sh.n) < 0:  # plies listed from the -n face up
                     angs = angs[::-1]
-                ed = shellmod.element_data(Ploc[:, :2], angs, T, ply, Ef, Sf, Gm,
-                                           lam_ref.E_x * Ef * T)
+                ed = shellmod.element_data(Ploc[:, :2], angs, T, ply_s, Ef, Sf, Gm,
+                                           lam_ref.E_x * Ef * T, kt=kt_pl, kc=kc_pl)
                 if ed["snapback"]:
                     n_snap += 1
-                    snap_excess = max(snap_excess, ed["excess"])
+                    snap_excess = min(snap_excess, ed["excess"])
                     snap_modes.update(ed["snap_modes"])
+                snap_el.append(bool(ed["snapback"]))
+                snap3.append(np.asarray(ed["snap3"], bool))
                 shells["nodes"].append(ids[t3])
                 shells["E0"].append(E0)
                 shells["P"].append(Ploc)
@@ -1236,7 +1568,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                     bld.mass[ids[k]] += me / 3
                     bld.rot[ids[k]] += me / 3 * (h * h / 12 + T * T / 12)
             info.E_eff_MPa = lam_ref.E_x
-            info.f_t_eff_MPa, info.f_c_eff_MPa = lam_ref.f_t, lam_ref.f_c
+            info.f_t_eff_MPa, info.f_c_eff_MPa = lam_ref.f_t * kt_pl, lam_ref.f_c * kc_pl
             info.thickness_mm = T
             info.nodes = list(ids)
         elif sh.kind == "frame":
@@ -1283,6 +1615,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
 
     patch_pts3: list[tuple[int, int, np.ndarray, np.ndarray, float, np.ndarray,
                            np.ndarray]] = []
+    face_of: dict[int, np.ndarray] = {}  # each patch's outline (for fit-up gaps)
     for ia, ib, inter, oa, e1, e2, na in raw_patches:
         if shapes[ia].kind in ("ignore", "cable") or shapes[ib].kind in ("ignore", "cable"):
             continue
@@ -1296,6 +1629,11 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             q2 = np.c_[(proj - oa) @ e1, (proj - oa) @ e2]
             inside = shapely.contains_xy(inter, q2[:, 0], q2[:, 1])
             band = shapely.contains_xy(inter.buffer(0.5 * hl), q2[:, 0], q2[:, 1]) & ~inside
+            if ib in stacked.get(ia, ()):
+                # plates meshed node on node: the overlap's edge has nodes on both, so
+                # the glue is at the nodes on or inside it (none hangs beyond the edge)
+                inside = shapely.contains_xy(inter.buffer(1e-3 * hl), q2[:, 0], q2[:, 1])
+                band = np.zeros_like(inside)
             w = np.where(inside, trib, np.where(band, 0.5 * trib, 0.0))
             sel = w > 0
             if sel.sum() >= 3:
@@ -1303,13 +1641,21 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 wts = w[sel] / w[sel].sum() * inter.area
         if pts3 is None:
             sp_ = max(3.0, min(elem_size(ia), elem_size(ib)))
-            pts2 = _sample_polygon(inter, sp_, max_pts=400)
+            # at least two points across each side: a glued patch resists turning
+            # about any axis in its plane (its glue is pulled at one edge and pressed
+            # at the other), which one point, or one row, would make a hinge
+            pts2 = _sample_polygon(inter, sp_, max_pts=400, min_per_side=int(
+                sp.values.get("glue.points_per_side", 2)), exact_moment=True)
             pts3 = oa + np.outer(pts2[:, 0], e1) + np.outer(pts2[:, 1], e2)
             wts = np.full(len(pts3), inter.area / len(pts3))
         # where the joint is, from the CAD overlap alone (not from the mesh): the key of
         # its random glue strength, so a seed draws the same bridge at every fidelity
         cc = inter.centroid
         cad_c = oa + cc.x * e1 + cc.y * e2
+        if inter.area > 0 and inter.convex_hull.geom_type == "Polygon":
+            hull = np.asarray(inter.convex_hull.exterior.coords)
+            face_of[len(patch_pts3)] = oa + np.outer(hull[:, 0], e1) + np.outer(hull[:, 1],
+                                                                              e2)
         patch_pts3.append((ia, ib, pts3, na, inter.area, cad_c, wts))
 
     # ---------------------------------------------------------------- glue springs
@@ -1320,14 +1666,18 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     # much the peak exceeds the average depends on how many nodes the glue points hang
     # on: with one node per side the glue shears uniformly (1.0); as soon as a side's
     # stretching is resolved the shear-lag peak appears. Fitted to the lap coupon with
-    # its glue on 1, 2, 3, 4, 5 and 9 nodes per side (1.01, 1.11, 1.20, 1.15, 1.16, 1.15;
-    # tests/test_sim.py checks it), so a joint's strength does not jump with the mesh
-    peak_over_avg = sp.values.get("glue.tau_peak_over_avg", 1.155)
+    # its glue on 1, 2, 3, 5 and 9 nodes per side (1.00, 1.045, 1.10, 1.08, 1.075 with
+    # the round-20 glue law; tests/test_sim.py checks it), so a joint's strength does not
+    # jump with the mesh
+    peak_over_avg = sp.values.get("glue.tau_peak_over_avg", 1.075)
 
     def peak_factor(n_nodes: int) -> float:
         return 1.0 + (peak_over_avg - 1.0) * (1.0 - math.exp(-2.2 * (n_nodes - 1)))
 
     end_factor = sp.values.get("glue.end_grain_factor", 0.5)
+    gap_max = float(sp.values.get("scatter.bearing_gap_mm", 0.0))
+    gap_fill = float(sp.values.get("glue.gap_fill_mm", 0.15))
+    n_gapped = 0
     zone = sp.values.get("wood.crush_zone_depth_factor", 3.0)
     frame_axes: dict[int, tuple[np.ndarray, np.ndarray]] = {}
 
@@ -1360,7 +1710,26 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             return ply.f_c90, 0.0
         cs = [abs(float(g @ n)) for g in gs]
         return (float(np.mean([hankinson(ply.f_c, ply.f_c90, c) for c in cs])),
-                float(np.mean([c > 0.866 for c in cs])))
+                float(np.mean([end_grain_share(c, end_factor) for c in cs])))
+
+    def tension_at(bi: int, p: np.ndarray, n: np.ndarray, solid: bool = False) -> float:
+        """The wood's tension strength across a face of normal n at the point p (along
+        its grain on end grain, f_t90 on side grain; Hankinson in between): what a glue
+        line's peel pulls on. ``solid``: a face inside one piece of wood, where a part
+        with no grain known (a block) has its fibres across it (a tenon's root)."""
+        gs = grain_at(bi, p)
+        if not gs:
+            return ply.f_t if solid else ply.f_t90
+        return float(np.mean([hankinson(ply.f_t, ply.f_t90, abs(float(g @ n)))
+                              for g in gs]))
+
+    def cross_share(bi: int, p: np.ndarray, n: np.ndarray) -> float:
+        """Share of a part's fibres that cross a face inside one piece of wood (1 for a
+        block with no grain known, a tenon's root)."""
+        gs = grain_at(bi, p)
+        if not gs:
+            return 1.0
+        return float(np.mean([abs(float(g @ n)) ** 2 for g in gs]))
 
     def crush_depth(i: int, n: np.ndarray) -> float:
         ext = float(np.ptp(bodies[i].mesh.vertices @ n))
@@ -1375,15 +1744,31 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     patches: list[Patch] = []
     # the workmanship of the whole build: one factor on every joint of the bridge
     gf_bridge = scatter(sp.values.get("scatter.glue_bridge_cov", 0.0), "glue:bridge")
-    for ia, ib, pts3, na, area, cad_c, wts in patch_pts3:
+    n_pair: dict[tuple[int, int], int] = {}
+    for ia, ib, *_ in patch_pts3:
+        n_pair[(min(ia, ib), max(ia, ib))] = n_pair.get((min(ia, ib), max(ia, ib)), 0) + 1
+    for k_patch, (ia, ib, pts3, na, area, cad_c, wts) in enumerate(patch_pts3):
         key = "|".join(sorted((bodies[ia].name, bodies[ib].name)))
-        gf = gf_bridge * scatter(sp["scatter.glue_cov"],
-                                 f"glue:{key}:{np.round(cad_c).astype(int).tolist()}")
+        # the stream of its random glue strength: a joint alone between its two bodies by
+        # their names (an edit that moves it keeps its draw, so ab compares the design,
+        # not new luck at the joint changed); several between the same two bodies also
+        # by where they are (to 10 mm)
+        where = "" if n_pair[(min(ia, ib), max(ia, ib))] == 1 else \
+            f":{np.round(cad_c / 10.0).astype(int).tolist()}"
+        gf = gf_bridge * scatter(sp["scatter.glue_cov"], f"glue:{key}{where}")
         gf *= float(ov.for_body(bodies[ia].name).get("glue_factor", 1.0))
         gf *= float(ov.for_body(bodies[ib].name).get("glue_factor", 1.0))
         for key, val in ov.glue.items():
             if _joint_matches(key, bodies[ia].name, bodies[ib].name):
                 gf *= val
+                ov.used.add(key)
+        # two bodies drawn apart but one piece of wood (a tenon and its beam, a seat
+        # laminated with its chord): the face between them breaks at the wood's own
+        # strength, not a glue line's
+        solid = False
+        for key in ov.solid:
+            if _joint_matches(key, bodies[ia].name, bodies[ib].name):
+                solid = True
                 ov.used.add(key)
         # how much of the face is really glued (and how well): a joint glued over less
         # of its face (starved edges, gaps) is softer in shear as well as weaker, in
@@ -1404,27 +1789,94 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         c_dep = min(crush_depth(i, na) for i, f in ((ia, fa), (ib, fb))
                     if f <= 1.05 * f_bear)
         e_end = max(ea, eb)  # share of the plies on a side meeting the glue end-on
+        # peel pulls the wood on either side apart across the face: a glue line holds in
+        # peel no more than its weaker side's tension across the face
+        f_peel = min(tension_at(ia, cen, na), tension_at(ib, cen, na))
+        if solid:  # one piece: no glue line, no fit-up, the wood's strength across it
+            gf, e_end, k_cov = 1.0, 0.0, 1.0
+            f_peel = min(tension_at(ia, cen, na, solid=True),
+                         tension_at(ib, cen, na, solid=True))
         gf *= 1.0 - e_end * (1.0 - end_factor)
-        if e_end > 0.5:
+        if e_end > 0.5 and not solid:
             end_grain_joints.append((bodies[ia].name, bodies[ib].name, float(area)))
+        # fit-up: a member's end cut to bear on another part is not square. It touches
+        # at one edge and stands off by up to scatter.bearing_gap_mm at the other
+        # (seeded per face, in a random direction across it); the glue filling the gap
+        # is weaker the wider it is (gap_strength), and where it is too wide to bridge
+        # the face is dry and bears only once the gap has closed
+        gaps = np.zeros(len(pts3))
+        if e_end > 0.5 and gap_max > 0 and len(pts3) > 1 and not solid:
+            names2 = "|".join(sorted((bodies[ia].name, bodies[ib].name)))
+            rg = rng_for(f"gap:{names2}{where}")
+            if rg is not None:
+                g = amp * float(rg.uniform(0.0, gap_max))
+                t1 = np.cross(na, [0.0, 0.0, 1.0] if abs(na[2]) < 0.9 else [1.0, 0.0, 0.0])
+                t1 /= np.linalg.norm(t1)
+                phi = float(rg.uniform(0.0, 2 * math.pi))
+                u = math.cos(phi) * t1 + math.sin(phi) * np.cross(na, t1)
+                tt = (pts3 - cen) @ u
+                # 0 at the face's edge that touches, g at the opposite edge (its outline,
+                # not its outermost glue points, which stand inside it)
+                tf = (face_of.get(k_patch, pts3) - cen) @ u
+                if np.ptp(tf) > 1e-9:
+                    gaps = g * np.clip((tt - tf.min()) / np.ptp(tf), 0.0, 1.0)
+                    n_gapped += 1
+        # a PVA line that fills a gap is weaker the thicker it is (gap_strength): full
+        # strength up to gap_fill, none (dry) from about a millimetre
+        fill = np.array([gap_strength(gi, gap_fill) for gi in gaps])
+        dry = fill <= 0.0
         att_a = [attach(ia, p) for p in pts3]
-        att_b = [attach(ib, p) for p in pts3]
+        att_b = [attach(ib, p + gi * na) if d_ else attach(ib, p)
+                 for p, gi, d_ in zip(pts3, gaps, dry, strict=True)]
         n_nodes = max(len({bld.att_node[a] for a in att_a}),
                       len({bld.att_node[b] for b in att_b}))
-        tau_p = mat.glue.tau_g_MPa.value * peak_factor(n_nodes)
-        for wa, a_, b_ in zip(wts, att_a, att_b, strict=True):
-            springs["d0"].append(1.0 if gf <= 0 else 0.0)  # glue_factor 0: not glued
+        tau_p = mat.glue.tau_g_MPa.value * peak_factor(n_nodes) * lap_size_factor(
+            float(area), sp.values.get("glue.size_ref_mm2", 200.0),
+            sp.values.get("glue.weibull_m", 10.0), sp.values.get("glue.size_cap_mm2", 3000.0))
+        ks_line = sp_glue["K_s_N_per_mm3"]
+        patches[pid].strength_MPa = tau_p / peak_factor(n_nodes)
+        # two plates glued face to face (a deck's plies drawn as separate bodies): a
+        # lamination, pressed flat over its whole face, as the glue lines inside one
+        # laminated body are, so it is as strong and stiff as they are (the same bond
+        # line drawn as one body or two gives the same bridge), with no size effect
+        lamination = (not solid and shapes[ia].kind == "shell" and shapes[ib].kind == "shell"
+                      and abs(float(na @ shapes[ia].n)) > 0.99
+                      and abs(float(na @ shapes[ib].n)) > 0.99)  # as ``stacked``
+        if lamination:
+            tau_p = sp.values.get("glue.interlaminar_MPa", 4.0) * peak_factor(n_nodes)
+            ks_line = sp.values.get("glue.lamination_K_s_N_per_mm3", ks_line)
+            patches[pid].strength_MPa = tau_p / peak_factor(n_nodes)
+            patches[pid].lamination = True
+        if solid:
+            # the wood's shear on the section, averaged as a code check does (EN 1995
+            # 6.1.7 and 6.5.2: 1.5 V / A <= f_v at a notched end), and its fracture
+            # energies: in shear along the grain, across the fibres where they cross it
+            tau_p = mat.f_v_MPa.value / 1.5 * peak_factor(n_nodes)
+            patches[pid].strength_MPa = mat.f_v_MPa.value / 1.5
+            cross = min(cross_share(ia, cen, na), cross_share(ib, cen, na))
+            g1 = sp["wood.G_f90_N_per_mm"] + cross * (sp["wood.G_f_N_per_mm"]
+                                                      - sp["wood.G_f90_N_per_mm"])
+            g2 = sp["wood.G_v_N_per_mm"]
+            patches[pid].kind = "solid"
+        for wa, a_, b_, d_, fl in zip(wts, att_a, att_b, dry, fill, strict=True):
+            # glue_factor 0: not glued; past the glue's reach across a fit-up gap: dry
+            springs["d0"].append(1.0 if gf <= 0 or d_ else 0.0)
             springs["a"].append(a_)
             springs["b"].append(b_)
             springs["area"].append(float(wa))
             springs["n0"].append(na)
             springs["Kn"].append(sp_glue["K_n_N_per_mm3"])
-            springs["Ks"].append(sp_glue["K_s_N_per_mm3"] * k_cov)
-            gq = max(gf, 1e-3)  # glue_factor 0 is handled as "already broken" (d0 = 1)
+            springs["Ks"].append(ks_line * k_cov)
+            gq = max(gf * fl, 1e-3)  # glue_factor 0: handled as "already broken" (d0 = 1)
             springs["tau"].append(tau_p * gq)
-            springs["sig"].append(tau_p * gq * sp_glue["peel_to_shear"])
-            springs["GIc"].append(sp_glue["G_Ic_N_per_mm"] * gq)
-            springs["GIIc"].append(sp_glue["G_IIc_N_per_mm"] * gq)
+            if solid:
+                springs["sig"].append(f_peel)
+                springs["GIc"].append(g1)
+                springs["GIIc"].append(g2)
+            else:
+                springs["sig"].append(min(tau_p * sp_glue["peel_to_shear"], f_peel) * gq)
+                springs["GIc"].append(sp_glue["G_Ic_N_per_mm"] * gq)
+                springs["GIIc"].append(sp_glue["G_IIc_N_per_mm"] * gq)
             springs["mu"].append(sp_glue["friction"])
             springs["patch"].append(pid)
             springs["breakable"].append(True)
@@ -1445,32 +1897,84 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                         "as drawn, or are they reinforced (gussets, laps, sized end grain)?",
             "assumed": f"glue strength x {end_factor:g} on the end-grain share of these "
                        "joints (glue.end_grain_factor; a 0/90 plate's edge, half end "
-                       "grain, gets the mean)",
+                       "grain, gets the mean); each cut end out of square, standing off "
+                       f"its seat by up to {gap_max:g} mm at one edge (seeded per face, "
+                       "scatter.bearing_gap_mm), dry where that is wider than "
+                       f"{gap_fill:g} mm (glue.gap_fill_mm) and bearing there only once "
+                       "the gap has closed",
             "answer_with": {"params": {"glue.end_grain_factor":
                                        "<0.5 for plain end-grain joints, 1 if sized or "
-                                       "measured as strong as side grain>"},
+                                       "measured as strong as side grain>",
+                                       "scatter.bearing_gap_mm":
+                                       "<the widest gap under a cut end held on its seat "
+                                       "(feeler gauge or paper of known thickness), 0 if "
+                                       "each end is sanded to fit>"},
                             "glue": {names[0]: "<factor for one joint>"}}})
 
-    # bodies touching nothing: tie them to the nearest body (and ask)
+    if sheets_unglued:
+        groups = sorted({_group(n) for n in sheets_unglued})
+        gk_, sk_ = cross_ply_sheet_shear([0, 90], mat.stick.thickness_mm / mat.stick.width_mm,
+                                         crossing_tor / max(mat.f_v_MPa.value, 1e-9))
+        questions.append({
+            "id": "plate_edges", "body": sheets_unglued[0], "topic": "material",
+            "severity": "check",
+            "question": "Are the sticks of the 0/90 plates glued edge to edge, or only face "
+                        "to face? " + "; ".join(groups[:12]) + (" ..." if len(groups) > 12
+                                                              else "")
+                        + ". With the edges unglued a sheet carries in-plane shear through "
+                          "the glued crossings of its plies, like cross-laminated timber: "
+                          f"x{gk_:.2f} of its shear stiffness and x{sk_:.2f} of its shear "
+                          "strength for 2 plies (the glued crossings twist).",
+            "assumed": "edges not glued (glue spread on the faces only)",
+            "answer_with": {"params": {"glue.plate_edges_glued":
+                                       "<1 if every stick is glued to its neighbours, 0 if "
+                                       "not>"}}})
+
+    # bodies touching nothing: tie them to the nearest body (and ask: a part a CAD slip
+    # left a little off its neighbour is usually meant to be glued there)
     allV = [b.mesh.vertices for b in bodies]
+    surf: dict[int, np.ndarray] = {}
+
+    def surface_points(i: int) -> np.ndarray:
+        """Points over body i's faces (5 mm apart at most), so the distance between two
+        bodies is measured face to face, not corner to corner."""
+        if i not in surf:
+            V, T = bodies[i].mesh.vertices, bodies[i].mesh.triangles
+            pts = [V]
+            for t3 in V[T]:
+                n = int(min(40, math.ceil(max(np.linalg.norm(t3[1] - t3[0]),
+                                              np.linalg.norm(t3[2] - t3[0]),
+                                              np.linalg.norm(t3[2] - t3[1])) / 5.0)))
+                if n > 1:
+                    ij = [(a, b_) for a in range(n + 1) for b_ in range(n + 1 - a)]
+                    w = np.array([(a / n, b_ / n) for a, b_ in ij])
+                    pts.append(t3[0] + w[:, :1] * (t3[1] - t3[0]) + w[:, 1:] * (t3[2] - t3[0]))
+            surf[i] = np.vstack(pts)
+        return surf[i]
+
     for bi, b in enumerate(bodies):
         if shapes[bi].kind in ("ignore", "cable") or touching[bi]:
             continue
         best, bd, bp = None, math.inf, None
-        tree_b = cKDTree(allV[bi])
+        tree_b = cKDTree(surface_points(bi))
         for bj in range(len(bodies)):
             if bj == bi or shapes[bj].kind in ("ignore", "cable"):
                 continue
-            d, k = tree_b.query(allV[bj])
+            sj = surface_points(bj)
+            d, k = tree_b.query(sj)
             j = int(np.argmin(d))
             if d[j] < bd:
-                bd, best, bp = float(d[j]), bj, allV[bj][j]
+                bd, best, bp = float(d[j]), bj, sj[j]
         if best is None or bd > 10.0:
             questions.append({
                 "id": f"floating:{b.name}", "body": b.name, "topic": "connection",
-                "question": f"'{b.name}' does not touch any other part. How is it held?",
+                "severity": "important",
+                "question": f"'{b.name}' does not touch any other part. How is it held? (A "
+                            "part drawn a little off where it is glued is a CAD slip: move "
+                            "it onto its neighbour.)",
                 "assumed": "it is free (it will fall off)",
-                "answer_with": {"bodies": {b.name: {"kind": "ignore"}}}})
+                "answer_with": {"bodies": {b.name: {"kind": "ignore"}},
+                                "cad": f"move '{b.name}' onto the part it is glued to"}})
             continue
         pid = len(patches)
         patches.append(Patch(bi, best, 4.0, bp, np.array([0.0, 1, 0]), kind="tie"))
@@ -1487,25 +1991,31 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             springs["n0"].append(np.array([0.0, 1.0, 0.0]))
             springs["Kn"].append(sp_glue["K_n_N_per_mm3"])
             springs["Ks"].append(sp_glue["K_s_N_per_mm3"])
-            springs["tau"].append(1e3)
-            springs["sig"].append(1e3)
-            springs["GIc"].append(1e3)
-            springs["GIIc"].append(1e3)
+            # dabs of glue across the gap: they hold and break as glue does (until round
+            # 18 an unbreakable tie, an infinitely strong joint from a CAD slip)
+            springs["tau"].append(mat.glue.tau_g_MPa.value)
+            springs["sig"].append(mat.glue.tau_g_MPa.value * sp_glue["peel_to_shear"])
+            springs["GIc"].append(sp_glue["G_Ic_N_per_mm"])
+            springs["GIIc"].append(sp_glue["G_IIc_N_per_mm"])
             springs["mu"].append(0.5)
             springs["patch"].append(pid)
-            springs["breakable"].append(False)
+            springs["breakable"].append(True)
             springs["d0"].append(0.0)
-            springs["fc"].append(1e30)
+            springs["fc"].append(ply.f_c90)
             springs["cdep"].append(1e30)
             patches[pid].springs.append(len(springs["a"]) - 1)
         questions.append({
             "id": f"loose:{b.name}", "body": b.name, "topic": "connection",
+            "severity": "important",
             "question": f"'{b.name}' has no glued face; its nearest part is "
-                        f"'{bodies[best].name}' ({bd:.1f} mm away). Is it tied or wedged "
-                        "there (e.g. a floss toggle)?",
-            "assumed": f"held to '{bodies[best].name}' at its nearest point "
-                       "(cannot come loose)",
-            "answer_with": {"bodies": {b.name: {"kind": "ignore"}}}})
+                        f"'{bodies[best].name}' ({bd:.1f} mm away, face to face). Is it "
+                        "glued there (a CAD slip: move it onto that part) or tied or "
+                        "wedged (e.g. a floss toggle)?",
+            "assumed": f"held to '{bodies[best].name}' by three dabs of glue at its nearest "
+                       "points (they break as glue does)",
+            "answer_with": {"bodies": {b.name: {"kind": "ignore"}},
+                            "cad": f"move '{b.name}' onto '{bodies[best].name}' if it is "
+                                   "glued there"}})
 
     # ---------------------------------------------------------------- floss cables
     cables: dict[str, list] = {k: [] for k in ("a", "b", "L0", "EA", "Fb", "body")}
@@ -1656,6 +2166,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     region_lo = np.array([mid_x - PL / 2 - 20, plate_bottom - 40, deck_z - PW / 2 - 20])
     region_hi = np.array([mid_x + PL / 2 + 20, plate_bottom + PT + 150, deck_z + PW / 2 + 20])
     q_fmax = []
+    q_body: list[int] = []
     for bi in active:
         if shapes[bi].kind == "cable":
             continue
@@ -1678,12 +2189,31 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         for p, a in zip(np.vstack(pts), np.concatenate(areas), strict=True):
             q_att.append(attach(bi, p))
             q_fmax.append(bearing(bi, p) * a)
+            q_body.append(bi)
 
     plate_mass = sp["crusher.plate_mass_kg"] * TONNE_PER_KG
     pc = np.array([mid_x, plate_bottom + PT / 2 + 0.02, deck_z])
     plate_node = bld.node(pc, -1)
     bld.mass[plate_node] = plate_mass
     bld.rot[plate_node] = plate_mass * (PL**2 + PW**2) / 12
+    # the plate has to fit where it goes. A part it would start inside (trusses closer
+    # together than the plate is wide, a strut lower than its top) is a design problem
+    # for which the rules ban the crush test (§8.9, §8.2.3.1); simulated, such a part is
+    # taken as clear of the plate (as if the plate were trimmed to fit) instead of being
+    # thrown off by a contact that starts deep inside it
+    half = np.array([PL / 2, PT / 2, PW / 2])
+    q_in, misfit_mm, misfit_bodies = [], 0.0, set()
+    for i, a in enumerate(q_att):
+        gap = half - np.abs(np.asarray(bld.X[bld.att_node[a]]) + bld.att_r0[a] - pc)
+        if (gap > 0.05).all():
+            q_in.append(i)
+            misfit_mm = max(misfit_mm, float(gap.min()))
+            misfit_bodies.add(bodies[q_body[i]].name)
+    if q_in:
+        out_ = set(q_in)
+        q_att = [a for i, a in enumerate(q_att) if i not in out_]
+        q_fmax = [f for i, f in enumerate(q_fmax) if i not in out_]
+        q_body = [b for i, b in enumerate(q_body) if i not in out_]
     jr = sp["crusher.jack_diameter_mm"] / 2
     fw = sp["crusher.frame_clear_width_mm"]
 
@@ -1733,6 +2263,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         bridge_mass_kg=float(sum(i.mass_kg for i in infos if i.kind != "ignore")),
         params={"crush_softening": sp["wood.crush_softening"],
                 "glue_creep_factor": sp.values.get("glue.creep_factor", 0.0),
+                "glue_prepeak_onset": sp.values.get("glue.prepeak_onset", 1.0),
+                "glue_peak_slip_ratio": sp.values.get("glue.peak_slip_ratio", 1.0),
                 "glue_creep_time_s": sp.values.get("glue.creep_time_s", 600.0),
                 "fc_proportional": sp.values.get("wood.fc_proportional", 1.0),
                 "friction_platform": sp["contact.friction_platform"],
@@ -1749,10 +2281,25 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 "glue_cdep": np.array(springs["cdep"], float),
                 "densification_strain": sp.values.get("wood.densification_strain", 0.45),
                 "densified_E": sp["wood.E_T_MPa"],
+                "bearing_cap": float(ply.f_c),
                 "plate_offset_mm": [float(off[0]), float(off[1])],
                 "seed": seed},
         questions=_merge_butt_questions(questions), notes=notes)
     model.notes += ov.problems([b.name for b in bodies])
+    if misfit_bodies:
+        names = sorted(misfit_bodies)
+        model.questions.insert(0, {
+            "id": "plate_fit", "body": names[0], "topic": "rules", "severity": "important",
+            "question": f"The loading plate ({PL:g} x {PW:g} x {PT:g} mm, §12.5) does not "
+                        f"fit where it goes at mid-span: it would start up to "
+                        f"{misfit_mm:.1f} mm inside " + ", ".join(names[:8])
+                        + (" ..." if len(names) > 8 else "") + ". The rules ban the "
+                        "crushing test for a bridge the plate does not fit (§8.9 clear "
+                        "opening, §8.2.3.1 deck width): widen the deck or move those parts.",
+            "assumed": "those parts are clear of the plate (as if it were trimmed to fit)",
+            "answer_with": {"cad": "make the clear width between the parts at mid-span "
+                                   f"more than {PW:g} mm and the clear height above the "
+                                   "deck more than the plate and the jack need"}})
     # a rigid (unbreakable) piece directly under the loading plate takes the load without
     # any crushing: say so
     glued_to: dict[int, set] = {}
@@ -1873,22 +2420,26 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             "answer_with": {"cad": "split the part into one body per member (SolidWorks: "
                                    "Split or separate extrusions), then inspect again",
                             "acknowledge": ["narrow_plates"]}})
+    model.params["mesh_scale"] = float(mesh_scale)
+    model.params["s_snap"] = np.array(snap_el, bool)
+    model.params["s_snap3"] = np.array(snap3, bool).reshape(-1, 3)
     if n_snap:
         model.notes.append(
             f"{n_snap} shell element(s) are larger than the crack band their fracture energy "
-            f"allows ({', '.join(sorted(snap_modes))}): they keep their strength and fail as "
-            f"brittly as possible, dissipating up to {snap_excess:.1f}x the fracture energy "
-            "of that mode; a finer mesh (--fidelity fine) reduces this")
+            f"allows ({', '.join(sorted(snap_modes))}): their strength in that mode is "
+            f"lowered (down to {snap_excess:.0%}) so that they dissipate the fracture energy "
+            "(Bazant & Oh's crack band limit): where they crack first depends on the mesh; a "
+            "finer mesh (--fidelity fine) reduces this")
     return model
 
 
-def _mesh_robust(poly, h: float, name: str):
+def _mesh_robust(poly, h: float, name: str, fixed=None):
     """Mesh a plate outline; if the element size is too coarse for the outline (a narrow
     plate at --fidelity quick), refine until the mesh covers the plate."""
     last = None
     for _ in range(6):
         try:
-            P2, tri = mesh_polygon(poly, h)
+            P2, tri = mesh_polygon(poly, h, fixed=fixed)
             if len(tri) >= 2:
                 a = P2[tri]
                 area = 0.5 * np.abs((a[:, 1, 0] - a[:, 0, 0]) * (a[:, 2, 1] - a[:, 0, 1])
@@ -1939,8 +2490,13 @@ def _frame_chains(sh: Shape, force: bool = False, patches=()) -> list | None:
         return None
     if not chains:
         return None
-    width = float(np.median(np.concatenate([c.width for c in chains])))
-    slender = sum(c.length for c in chains) >= FRAME_SLENDER * width
+    widths = np.concatenate([c.width for c in chains])
+    width = float(np.median(widths))
+    # slender arms: long against their width, and narrow along (nearly) all of it: a
+    # plate with a deep part (a 140 mm gusset with 60 mm tails) is a plate there, not a
+    # strut, whatever its tails make the median width
+    slender = sum(c.length for c in chains) >= FRAME_SLENDER * width and \
+        float(np.percentile(widths, 90)) <= FRAME_SLENDER_ACROSS * h
     if not force and arm >= FRAME_MAX_ACROSS * h and not slender:
         return None
     bnd = poly.boundary
