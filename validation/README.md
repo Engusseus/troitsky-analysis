@@ -309,3 +309,46 @@ twenty times slower, and the same jack outran it. Three synthetic bridges
   slow-down, and a run that reaches it says so). With the jack speeding up past 6 mm x
   79 / 10 of travel, the test runs in 77 s instead of 110 s.
 
+### 3.7 Bridge_v10: a team's Rev N, and joints that turn (round 15)
+
+`examples/cad/Bridge_v10.SLDPRT` (a team's Revision N, kept out of the repository like
+Bridge_v6): a Pratt-like truss of 13-ply members, 1050 mm between pier centres, 535 mm
+high, 7.90 kg; the floor beam under the jack (a block) bears through tenons on sills in
+node blocks at the centre node M. The overrides follow the team's design report
+(section 10.1): the cut ends of the bottom chord and of the deck plies at the field
+joints touch but are not glued (glue 0), and the heel seat with its chord and the floor
+beam with its tenons are one piece (glue x10). The reader found 69 of the 70 bodies the
+file names (one half of a portal X brace could not be put together; inspect now says
+so, `cad_unread`). Its lowest mode under the plate rings in 6.7 ms, so its jack speed
+and ramps are those of a stiff bridge.
+
+* **Screen** (seconds): 673 kgf/mm under the plate; the first glue limits at 343 kgf
+  (the deck's bottom plies to the inner centre plates) and 490 kgf (the diagonal feet in
+  node M), which the team's report also lists (496 kgf). Until round 15 the dry cut
+  ends came first, at ~1 kgf, and the report had to footnote it.
+* **Crush, standard**, seeds 0 and 1:
+
+  | model | seed 0 | seed 1 |
+  |---|---|---|
+  | previous release (round 14) | 1360 kgf | 1333 kgf |
+  | round 15, each small glued patch one point (a hinge) | 1397 | 1332 |
+  | round 15, two points per side at the cell midpoints | 1534 | 1876 |
+  | round 15, three points per side at the cell midpoints | 1784 | 1899 |
+  | **round 15, two points per side, exact second moment** | **1769** | **1895** |
+  | round 15, three points per side, exact second moment | 1778 | - |
+
+  The rest of round 15 (jack, holds, drop rule, plate damping, split window) moves this
+  stiff bridge by less than 3 % (rows 1 and 2). What moves it is how a glued patch
+  smaller than an element resists turning: the diagonal feet glued into the stub at
+  node M (475 mm^2 each, end grain) were hinges, and the node's glue lines peeled
+  apart around them. With the patch's own turning stiffness the answer converges (two
+  and three points per side within 0.5 %). Seed 0 then fails at node M of the near
+  truss (the diagonal feet into the stub), seed 1 by the deck cracking under the plate
+  (all three layers of the middle panel) with node M holding: two failure modes within
+  7 %. The deck deflection at F_u is 2.7 and 3.3 mm.
+* **Against the team's own runs.** The design report gives 1632 and 1548 kgf (bridgesim
+  v0.2 on a scripted 70-body model of the same design). On this SLDPRT with the report's
+  settings the previous release gives 1360 and 1333 kgf: the models differ (the missing
+  brace half, and settings the report does not list), so the report's numbers are not
+  reproduced here. Both agree on where it fails: at node M of one truss.
+

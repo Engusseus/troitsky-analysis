@@ -360,12 +360,16 @@ def find_patches(bodies: list[CadBody]) -> list[tuple[int, int, Polygon, np.ndar
 
 
 def _sample_polygon(poly, spacing: float, max_pts: int = 25,
-                    min_per_side: int = 1) -> np.ndarray:
+                    min_per_side: int = 1, exact_moment: bool = False) -> np.ndarray:
     """Points spread over a (multi)polygon on a grid aligned with its minimum rotated
     rectangle, so long thin strips (a deck glued along a stringer) get a row of points
     along their length instead of one point. ``min_per_side``: at least this many
     across each side of 3 mm or more (a glued patch sampled at one point, or in one
-    row, would be a hinge about it)."""
+    row, would be a hinge about it). ``exact_moment``: the rows spread so that equal
+    shares of the area at the points have the rectangle's own second moment about each
+    axis (two rows at +-L / (2 sqrt 3), the Gauss points; n rows: their midpoints x
+    sqrt(n^2 / (n^2 - 1))), so a glued patch resists turning with its full stiffness
+    whatever the number of points (midpoints give 75 % with two, 89 % with three)."""
     if poly.is_empty:
         return np.zeros((0, 2))
     base = poly if isinstance(poly, Polygon) else poly.convex_hull
@@ -384,6 +388,9 @@ def _sample_polygon(poly, spacing: float, max_pts: int = 25,
             continue
         a = (np.arange(nu) + 0.5) / nu * Lu - Lu / 2
         b = (np.arange(nw) + 0.5) / nw * Lw - Lw / 2
+        if exact_moment:
+            a = a * (math.sqrt(nu**2 / (nu**2 - 1.0)) if nu > 1 else 1.0)
+            b = b * (math.sqrt(nw**2 / (nw**2 - 1.0)) if nw > 1 else 1.0)
         A, B = np.meshgrid(a, b, indexing="ij")
         pts = c0 + np.outer(A.ravel(), u) + np.outer(B.ravel(), w)
         pts = pts[shapely.contains_xy(poly, pts[:, 0], pts[:, 1])]
@@ -1310,7 +1317,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             # about any axis in its plane (its glue is pulled at one edge and pressed
             # at the other), which one point, or one row, would make a hinge
             pts2 = _sample_polygon(inter, sp_, max_pts=400, min_per_side=int(
-                sp.values.get("glue.points_per_side", 2)))
+                sp.values.get("glue.points_per_side", 2)), exact_moment=True)
             pts3 = oa + np.outer(pts2[:, 0], e1) + np.outer(pts2[:, 1], e2)
             wts = np.full(len(pts3), inter.area / len(pts3))
         # where the joint is, from the CAD overlap alone (not from the mesh): the key of

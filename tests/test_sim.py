@@ -2387,3 +2387,24 @@ def test_dry_faces_are_no_joint_failures(tmp_path):
     assert not any("Weight" in e.what for e in res.events)
     assert rep.curve.joints_broken[0] == 0
     assert rep.Fu_first_joint_failure_kgf is None or rep.Fu_first_joint_failure_kgf > 0
+
+
+def test_glue_points_give_a_patch_its_turning_stiffness():
+    """The glue points of a patch, equal shares of its area, have the rectangle's own
+    second moment about both axes whatever their number (two per side at the Gauss
+    points), so a small glued joint is neither a hinge (one point) nor 25 % too soft in
+    turning (two points at the cell midpoints)."""
+    from shapely.geometry import box as sbox
+
+    from bridgesim.sim.idealize import _sample_polygon
+
+    Lu, Lw = 26.0, 18.0
+    poly = sbox(-Lu / 2, -Lw / 2, Lu / 2, Lw / 2)
+    for spacing in (40.0, 9.0, 4.0):  # 2 x 2, 3 x 2, 6 x 4 points
+        pts = _sample_polygon(poly, spacing, max_pts=400, min_per_side=2, exact_moment=True)
+        A = Lu * Lw / len(pts)
+        assert len(pts) >= 4
+        assert (A * pts[:, 0] ** 2).sum() == pytest.approx(Lu**3 * Lw / 12, rel=1e-6)
+        assert (A * pts[:, 1] ** 2).sum() == pytest.approx(Lw**3 * Lu / 12, rel=1e-6)
+    mid = _sample_polygon(poly, 40.0, max_pts=400, min_per_side=2)
+    assert (Lu * Lw / 4 * mid[:, 0] ** 2).sum() == pytest.approx(0.75 * Lu**3 * Lw / 12)

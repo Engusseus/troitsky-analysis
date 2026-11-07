@@ -68,13 +68,15 @@ assumed tight in compression (they bear).
 * Every pair of coplanar touching faces of two bodies is a **glued patch** of the exact
   overlap shape. The glue is a grid of cohesive springs (one per node of the finer mesh,
   or between two members a grid at their element size with at least two points across
-  each side of the patch, each with its share of the area) attached to both bodies
-  through rigid arms at their real positions: joint eccentricity, peel from bending and
-  the joint's rotational stiffness all come out of the geometry. (Until round 15 a
-  patch smaller than an element was one spring, a hinge: the webs of a light truss were
-  pinned to its chords, its period under the plate was 74 ms instead of 47, and its
-  quick and standard meshes differed by 39 % in F_u instead of 18 %; validation
-  README §3.6.)
+  each side of the patch, `glue.points_per_side`, spaced so that their equal shares of
+  the area have the patch's own second moment: two at the Gauss points) attached to
+  both bodies through rigid arms at their real positions: joint eccentricity, peel from
+  bending and the joint's rotational stiffness all come out of the geometry. Until
+  round 15 a patch smaller than an element was one spring, a hinge. On Bridge_v10 (a
+  team's Rev N) seed 0 then gave F_u 1397 kgf; with the glued diagonal feet at its
+  centre node resisting turning, 1769 kgf with two points per side and 1778 with three:
+  converged (two points at the cell midpoints, 75 % of the turning stiffness, gave
+  1534; validation README §3.7).
 * Glue law: penalty stiffness K_n, K_s (glue line + adjacent wood), quadratic initiation
   (sigma/sigma_max)^2 + (tau/tau_max)^2 = 1, linear softening with mixed-mode fracture
   energy (Benzeggagh-Kenane, G_Ic, G_IIc). tau_max is tau_g of the material file times
