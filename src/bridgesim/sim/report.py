@@ -236,6 +236,9 @@ class CrushReport(BaseModel):
     sha256: str
     seed: int | None
     overrides: dict[str, Any]
+    inputs_sha256: str = Field("", description=(
+        "Fingerprint of everything the run depends on: the CAD, the overrides as read, "
+        "the material, the simulation parameters, seed, fidelity and the code"))
     Fu_kgf: float = Field(description="Predicted ultimate load (rulebook §12.5), kgf.")
     Fu_N: float
     failure_mode: FailureMode = Field(description="collapse (the load fell 30 % below "

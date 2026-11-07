@@ -73,6 +73,31 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+_CODE_SHA: list[str] = []
+
+
+def _code_sha() -> str:
+    """Fingerprint of the bridgesim code (every module), so a run made by other code
+    is never taken for this code's."""
+    if not _CODE_SHA:
+        h = hashlib.sha256()
+        root = Path(__file__).resolve().parents[1]
+        for f in sorted(root.rglob("*.py")):
+            h.update(f.relative_to(root).as_posix().encode())
+            h.update(f.read_bytes())
+        _CODE_SHA.append(h.hexdigest()[:16])
+    return _CODE_SHA[0]
+
+
+def _inputs_sha(path: Path, ov_raw: dict, mat: Material, sp: SimParams, seed,
+                fidelity: str, mesh_scale) -> str:
+    doc = {"cad": _sha(path), "overrides": ov_raw, "material": mat.model_dump(mode="json"),
+           "params": sp.values, "seed": seed, "fidelity": fidelity,
+           "mesh_scale": mesh_scale, "code": _code_sha()}
+    return hashlib.sha256(json.dumps(doc, sort_keys=True, default=str).encode()
+                          ).hexdigest()[:16]
+
+
 def load_overrides(overrides: str | Path | dict | None) -> tuple[Overrides, dict]:
     """Overrides from a dict (already parsed: MCP, the app) or from a YAML file the user
     names (the CLI's -o). Only a .yaml/.yml file is read, and its content must be a
@@ -129,7 +154,16 @@ def _inputs(cad: str | Path, overrides, material, sim_params, ruleset, units=Non
         if bad:
             raise ValueError(f"unknown material parameter(s) {bad}; known: "
                              f"{sorted('material.' + k for k in known)}")
+        g_scaled = None
+        if "E_MPa" in mat_over and "G_MPa" not in mat_over and mat.E_MPa.value > 0:
+            # wood's shear modulus follows its modulus (E/G kept): an E alone would
+            # otherwise leave G, and E/G drift (11 to 23 over a montecarlo's draws)
+            g_scaled = mat.G_MPa.value * float(mat_over["E_MPa"]) / mat.E_MPa.value
         mat = _material_with(mat, mat_over)
+        if g_scaled is not None:
+            mat = _material_with(mat, {"G_MPa": g_scaled},
+                                 {"G_MPa": "assumed: scaled with E (E/G kept)"},
+                                 source="assumed")
     rs = ruleset if isinstance(ruleset, RuleSet) else RuleSet.load(ruleset or "troitsky_2027")
     return path, bodies, ov, ov_raw, mat, sp, rs
 
@@ -616,6 +650,7 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
     mass = rules.measurements.get("mass_kg", model.bridge_mass_kg)
     rep = CrushReport(
         file=path.name, sha256=_sha(path), seed=seed, overrides=ov_raw,
+        inputs_sha256=_inputs_sha(path, ov_raw, mat, sp, seed, fidelity, mesh_scale),
         Fu_kgf=round(res.Fu_kgf, 2), Fu_N=round(res.Fu_N, 1), failure_mode=res.failure_mode,
         failure_detail=res.failure_detail, governing=res.governing,
         competing=list(getattr(res, "competing", [])),
@@ -885,12 +920,11 @@ def _next_inspect(rep: InspectReport, path: Path, overrides) -> list[NextStep]:
 
 def _copies(name: str) -> str:
     """A glob matching a part and its copies on the other sides ('Top Chord - Far' ->
-    'Top Chord*'): a design change is made on every copy, not on the one this seed broke."""
-    import glob as _glob
+    'Top Chord*', 'End Post L Near' -> 'End Post [LR] [NF]*r'): a design change is made
+    on every copy, not on the one this seed broke."""
+    from bridgesim.sim.idealize import copies_glob
 
-    g = _group(name)
-    # only names with a side or copy suffix have copies ("Body 4" must not match "Body 41")
-    return _glob.escape(name) if g == name else _glob.escape(g) + "*"
+    return copies_glob(name)
 
 
 def _whatif(gov: list[EventOut]) -> dict:
@@ -1002,11 +1036,10 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
         close = {e.what for e in gov if e.load_kgf <= 1.03 * gov[0].load_kgf}
         if rep.fidelity == "quick":
             steps.append(NextStep(
-                action="confirm", why="quick fidelity is for ranking designs: its F_u can "
-                "be ~10 % below standard (Bridge_v6: 7-8 % on its coarser mesh, more "
-                "at twice the jack speed), the part that breaks first can differ at "
-                "standard, and the strict reading (Fu_first_joint_failure_kgf) is not "
-                "converged at quick",
+                action="confirm", why="quick fidelity is for ranking designs on one "
+                "mesh: its F_u was within 3-10 % of standard on two team bridges "
+                "(Bridge_v6, Bridge_v10), but 59 % below it on a light truss of 10 mm "
+                "members, and the part that breaks first can differ at standard",
                 cli=f"bridgesim crush {f}{ov} --fidelity standard --out {out}_standard "
                     "--json --brief"))
         elif rep.fidelity == "standard" and len(close) > 1:
@@ -1165,6 +1198,20 @@ def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = N
         reasons.append("the bridge did not fail within the jack travel")
     if res.notes:
         reasons.append("the run was restarted with a smaller time step")
+    # a plate cracking where its elements are larger than the crack band its fracture
+    # energy allows: when such a crack starts depends on the mesh
+    gov = getattr(res, "governing", "") or ""
+    snap = np.asarray(res.model.params.get("s_snap", np.zeros(0)), bool)
+    if gov.startswith("plate crack: ") and len(snap) == len(res.model.s_body):
+        names = [b.name for b in res.model.bodies]
+        part = gov.split(": ", 1)[1]
+        if part in names:
+            sel = res.model.s_body == names.index(part)
+            if sel.any() and snap[sel].mean() > 0.5:
+                reasons.append(f"the failure starts as a crack in '{part}', whose elements "
+                               f"are larger than the crack band ({snap[sel].mean():.0%} of "
+                               "them): when it starts depends on the mesh; confirm with "
+                               "--fidelity fine")
     return Quality(dt_s=res.dt, steps=res.steps, wall_s=round(res.wall_s, 1),
                    added_mass_fraction=round(res.added_mass_frac, 4),
                    kinetic_to_work_max=round(res.kinetic_ratio_max, 4),
@@ -1981,8 +2028,18 @@ def draw_placeholders(overrides: dict | None, drawn: dict[str, float], seed: int
     rng = np.random.default_rng([seed, 104729])
     doc = json.loads(json.dumps(overrides or {}))
     prm = dict(doc.get("params") or {})
-    for k, v in drawn.items():
-        x = v * float(np.exp(rng.normal(0.0, PLACEHOLDER_PRIORS.get(k, PLACEHOLDER_COV))))
+    # the wood's strengths follow its stiffness (stiffer wood is stronger, the
+    # correlation the per-body scatter uses, scatter.E_strength_corr): one draw for E,
+    # the strengths partly from it
+    keys = sorted(drawn)
+    z = {k: float(rng.normal()) for k in keys}
+    zE = z.get("material.E_MPa", 0.0)
+    for k in keys:
+        if k in WOOD_STRENGTHS and "material.E_MPa" in z:
+            z[k] = E_STRENGTH_CORR * zE + math.sqrt(1 - E_STRENGTH_CORR**2) * z[k]
+    for k in keys:
+        v = drawn[k]
+        x = v * float(np.exp(z[k] * PLACEHOLDER_PRIORS.get(k, PLACEHOLDER_COV)))
         if k == "glue.end_grain_factor":
             x = min(x, 1.0)  # end grain never glues better than side grain
         prm[k] = round(x, 6)
@@ -2015,7 +2072,8 @@ def _screening(fidelity: str) -> CrushOptions:
 def _mc_one(a):
     cad, overrides, material, sim_params, ruleset, seed, options, fidelity, out, units, \
         up, span = a
-    rep = _finished(out, cad, seed, fidelity, overrides)
+    rep = _finished(out, cad, seed, fidelity, overrides, material, sim_params, ruleset,
+                    units, up, span)
     if rep is None:
         rep, _ = crush(cad, overrides, material, sim_params, ruleset, seed=seed,
                        options=options or _screening(fidelity), replay=False,
@@ -2035,22 +2093,23 @@ def _mc_one(a):
             "efficiency_kgf_per_kg": rep.efficiency_kgf_per_kg}
 
 
-def _finished(out, cad, seed, fidelity, overrides) -> CrushReport | None:
-    """The report a run of the same study left in ``out`` (same file, seed, fidelity and
-    overrides), so an interrupted montecarlo resumes instead of starting over."""
+def _finished(out, cad, seed, fidelity, overrides, material=None, sim_params=None,
+              ruleset=None, units=None, up="y", span="x") -> CrushReport | None:
+    """The report a run of the same study left in ``out``, so an interrupted montecarlo
+    resumes instead of starting over: only if everything it depends on is the same (the
+    CAD, the overrides as read now, from a file too, the material, the simulation
+    parameters, seed, fidelity and the code: ``inputs_sha256``)."""
     f = Path(out) / "crush.json" if out else None
     if f is None or not f.exists():
         return None
     try:
         rep = CrushReport.model_validate_json(f.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 - a partial or old file: run again
+        path, _b, _ov, ov_raw, mat, sp, _rs = _inputs(cad, overrides, material, sim_params,
+                                                      ruleset, units, up, span)
+    except Exception:  # noqa: BLE001 - a partial or old file, or inputs that fail: run
         return None
-    same = (rep.file == Path(cad).name and rep.seed == seed and rep.fidelity == fidelity
-            and rep.sha256 == _sha(Path(cad))
-            and json.dumps(rep.overrides or {}, sort_keys=True)
-            == json.dumps(overrides if isinstance(overrides, dict) else rep.overrides or {},
-                          sort_keys=True))
-    return rep if same else None
+    want = _inputs_sha(path, ov_raw, mat, sp, seed, fidelity, None)
+    return rep if rep.inputs_sha256 and rep.inputs_sha256 == want else None
 
 
 def _rising_secant(rep: CrushReport, jack: bool) -> float:
@@ -2194,6 +2253,11 @@ def total_range(F, s_tot: float) -> tuple[float, float]:
 
 
 PLACEHOLDER_COV = 0.3  # for a placeholder without its own prior below
+# drawn partly from the stick modulus's draw (materials/simulation.yaml,
+# scatter.E_strength_corr: r = 0.6-0.8 between MOE and MOR, USDA Wood Handbook)
+WOOD_STRENGTHS = ("material.f_t_MPa", "material.f_c_MPa", "material.f_v_MPa",
+                  "wood.f_c90_MPa")
+E_STRENGTH_CORR = 0.7
 # how far each placeholder may be from the truth for a team's own sticks and glue
 # (lognormal sigma around the placeholder, ~ the half-width of the literature or
 # craft-stick range at 90 %): hand-made PVA laps on birch sticks 1-6 MPa, glue

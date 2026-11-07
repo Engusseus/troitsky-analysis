@@ -389,16 +389,19 @@ Three things a review of round 15 measured on Bridge_v10, now changed:
 
 Bridge_v10 with the round-16 model (the same file and settings as §3.7):
 
-| | quick seed 0 | standard seed 0 | standard seed 1 |
-|---|---|---|---|
-| F_u (reported / raw peak) | 2210 / 2213 kgf | 2154 / 2154 kgf | 2532 kgf |
-| secant stiffness 10-50 % | 798 kgf/mm | 793 kgf/mm | - |
-| deflection at F_u | 3.0 mm | 2.9 mm | 3.7 mm |
-| governs | End Post R Far to its gusset at node A | the same joint | End Post L Near to its gusset at node A |
-| strict reading | 2210 | 2154 | 2532 |
+| | quick seed 0 | standard seed 0 | fine seed 0 | standard seed 1 |
+|---|---|---|---|---|
+| F_u (reported / raw peak) | 2210 / 2213 kgf | 2154 / 2154 kgf | 2127 kgf | 2532 kgf |
+| secant stiffness 10-50 % | 798 kgf/mm | 793 kgf/mm | - | - |
+| deflection at F_u | 3.0 mm | 2.9 mm | 2.9 mm | 3.7 mm |
+| governs | End Post R Far to its gusset at node A | the same joint | the same joint | End Post L Near to its gusset at node A |
+| strict reading | 2210 | 2154 | 2127 | 2532 |
 
-Quick now follows standard (F_u +2.6 %, the same stiffness, deflection and failure);
-in round 15 it was 4.6x softer, 2.9x the deflection, and failed elsewhere. The failure
+The mesh is converged on seed 0: standard is 1.3 % above fine and quick 3.9 %, all
+three failing at the same joint at 4.1-4.2 mm of jack travel. In round 15 quick was 4.6x
+softer, had 2.9x the deflection and failed elsewhere, and on seed 1 fine was 3.4 %
+below standard (round-15 model): standard is not on the safe side of fine, on this
+bridge it is 1-3 % above it. The failure
 moved from node M (round 15: the diagonal feet) to node A, where the end post's glue to
 the gussets lets go: with the gussets as plates, node M carries its load through them,
 as a review found by setting them to shells by hand (2065 kgf, node A, with the old

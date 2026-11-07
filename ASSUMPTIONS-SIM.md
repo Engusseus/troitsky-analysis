@@ -10,7 +10,10 @@ relevant parts in your Design Validation (§10). Units: mm, N, MPa, s.
   (faces, loops, edges, vertices, planes, cylinders, circles) and every solid body is
   rebuilt exactly, with its SolidWorks body name. Each body is checked to be a closed,
   outward-oriented surface with positive volume; a face that cannot be decoded is closed
-  over (only seen on 3 mm floss holes) and reported.
+  over and reported (3 mm floss holes; on Bridge_v10 18.5 % of a portal brace's
+  surface, `cad_approximated`). A body the file names whose faces cannot be put
+  together is missing from the model and asked about (`cad_unread`: one of
+  Bridge_v10's 70, half a portal brace).
 * STL (all bodies in one file) and Parasolid `.x_b` are also read. STL bodies have no
   names, so their layups become questions.
 * Assemblies (`.SLDASM`) are not read: save the assembly as a multi-body part.
@@ -393,14 +396,17 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   standard one (x0.75) on average, -1.1 % to +11 % seed by seed, and the same part
   governs on 2 of 5 seeds; on the others another of the sites competing within a few %
   (`competing`: the hub core, the End Post joints, the cross-beam's joints to the deck
-  stringers) goes first. Read F_u at standard with ~5 % discretisation uncertainty, on
-  the safe side. The load curves coincide up to ~90 % of the peak; the first joint to
-  separate agrees within 10 %. **A small, light bridge converges less well**: the
+  stringers) goes first. Read F_u at standard with ~5 % discretisation uncertainty,
+  either way: on Bridge_v10 (round 16) standard is 1.3 % above fine, quick 3.9 %, all
+  three failing at the same joint, with the same stiffness under the plate (until round
+  16 its quick mesh was 4.6x too soft: plates on plates, below). On Bridge_v6 the load
+  curves coincided up to ~90 % of the peak, and the first joint to separate agreed within
+  10 %. **A small, light bridge converges less well**: the
   element sizes were set on Bridge_v6 (members 20-30 mm deep); on a light truss of 10 mm
   members and 40-60 mm^2 glued joints (`validation/README.md` §3.6) standard was 14 %
   below fine and quick found a different, much weaker failure. Read such a bridge's F_u
-  at fine. The quick mesh (x1.6) is 7 % below standard on average
-  (for ranking designs). A perfect bridge is symmetric, so which side gives way first is
+  at fine. The quick mesh (x1.6) was 7 % below standard on Bridge_v6 and is 2.6 % above
+  it on Bridge_v10 (for ranking designs). A perfect bridge is symmetric, so which side gives way first is
   a bifurcation round-off decides; `--amplitude 0.1` keeps the seed's asymmetry at a
   tenth of its imperfections for a mesh study.
 * **Uncertainty** (`montecarlo -n 20 --sample-placeholders`, standard): with the build
@@ -415,7 +421,7 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   the least known, so the range is wider than round 14's. `montecarlo` also gives a
   **total range** (`total_p05_kgf`, `total_p95_kgf`): the runs' F_u each times a
   lognormal mesh error (`uncertainty.mesh_cov`, 5 %, the fine-vs-standard study) and a
-  model-form error (`uncertainty.model_cov`, 15 %, what the equations leave out for a
+  model-form error (`uncertainty.model_cov`, 25 %, what the equations leave out for a
   real bridge, until a physical test measures it): the range to give a team before any
   test, the runs' range being what the model knows it does not know.
 * **Crack onset is local.** A plate left as a shell cracks where its strain first

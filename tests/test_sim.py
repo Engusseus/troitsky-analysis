@@ -1431,6 +1431,13 @@ def test_montecarlo_can_sample_the_placeholders():
         assert np.std(logs) == pytest.approx(PLACEHOLDER_PRIORS[key], rel=0.15)
     assert PLACEHOLDER_PRIORS["material.glue.tau_g_MPa"] > PLACEHOLDER_PRIORS[
         "material.E_MPa"] and 0 < PLACEHOLDER_COV < 1
+    # the wood's strength is drawn with its stiffness (r ~ 0.7), the glue on its own
+    lE, lft, ltg = (np.array([math.log(draw_placeholders({}, ph, s)["params"][k] / ph[k])
+                              for s in range(300)])
+                    for k in ("material.E_MPa", "material.f_t_MPa",
+                              "material.glue.tau_g_MPa"))
+    assert np.corrcoef(lE, lft)[0, 1] == pytest.approx(0.7, abs=0.1)
+    assert abs(np.corrcoef(lE, ltg)[0, 1]) < 0.15
     measured = MAT.model_copy(update={"E_MPa": MAT.E_MPa.model_copy(
         update={"source": "measured"})})
     assert "material.E_MPa" not in placeholders(measured, SP)
@@ -2479,3 +2486,61 @@ def test_stacked_plates_are_meshed_node_on_node(tmp_path):
                     assert np.linalg.norm(r - (r @ nrm) * nrm) < 1.0, scale
         k[scale] = 1000.0 / scr.solve(m, 1000.0)["plate_dy"]
     assert k[1.6] == pytest.approx(k[0.5], rel=0.15)  # was 9x softer at quick
+
+
+def test_a_finished_run_is_reused_only_for_the_same_inputs(synthetic_crush, tmp_path):
+    """montecarlo resumes from a run left in its folder only if everything it depends
+    on is unchanged: the overrides as read now (a file passed by path too), the
+    material, the simulation parameters, seed and fidelity. (An overrides file was
+    compared by its path, so a run with other values was reused.)"""
+    import yaml
+
+    from bridgesim.sim.study import _finished
+
+    d, rep, _ = synthetic_crush
+    out, cad = d / "out", d / "bridge.stl"
+    assert rep.inputs_sha256
+    assert _finished(out, cad, 0, "standard", None) is not None
+    other = tmp_path / "other.yaml"
+    other.write_text(yaml.safe_dump({"params": {"material.glue.tau_g_MPa": 0.5}}))
+    assert _finished(out, cad, 0, "standard", other) is None
+    assert _finished(out, cad, 1, "standard", None) is None
+    assert _finished(out, cad, 0, "quick", None) is None
+    same = tmp_path / "same.yaml"
+    same.write_text("{}\n")
+    assert _finished(out, cad, 0, "standard", same) is not None
+
+
+def test_a_stick_modulus_override_scales_the_shear_modulus(tmp_path):
+    """Setting the stick modulus (by hand, or a montecarlo draw) keeps the wood's E/G:
+    G follows, marked assumed, unless it is set too."""
+    from bridgesim.sim import study
+
+    cad = tmp_path / "b.stl"
+    write_stl(simple_beam_bridge(), cad)
+    *_, mat0, _sp, _rs = study._inputs(cad, None, None, None, None)
+    *_, mat, _sp, _rs = study._inputs(cad, {"params": {"material.E_MPa": 9000}}, None,
+                                      None, None)
+    assert mat.E_MPa.value / mat.G_MPa.value == pytest.approx(
+        mat0.E_MPa.value / mat0.G_MPa.value)
+    assert mat.G_MPa.source == "assumed"
+    *_, mat2, _sp, _rs = study._inputs(
+        cad, {"params": {"material.E_MPa": 9000, "material.G_MPa": 700}}, None, None, None)
+    assert mat2.G_MPa.value == 700
+
+
+
+def test_end_grain_glue_changes_smoothly_with_the_cut():
+    """A glued face is the more end grain the closer its normal lies to the fibres,
+    smoothly (like Hankinson's bearing), not side grain up to 60 degrees and end grain
+    past it: a diagonal's foot cut at 55 degrees to its fibres (Bridge_v10) glues at
+    0.60 of side grain with end grain at 0.5, not at 1."""
+    from bridgesim.sim.idealize import end_grain_share
+
+    ef = 0.5
+    cs = np.cos(np.radians(np.linspace(0, 90, 91)))
+    share = np.array([end_grain_share(c, ef) for c in cs])
+    assert share[0] == pytest.approx(1.0) and share[-1] == pytest.approx(0.0)
+    assert np.all(np.diff(share) < 0) and np.abs(np.diff(share)).max() < 0.05
+    c = math.cos(math.radians(34.6))
+    assert 1 - end_grain_share(c, ef) * (1 - ef) == pytest.approx(0.60, abs=0.01)

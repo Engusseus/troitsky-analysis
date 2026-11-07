@@ -110,5 +110,5 @@ scatter:
 uncertainty:
   mesh_cov: {value: 0.05, source: assumed,
              note: "Discretisation error of F_u at the standard mesh (as a CoV): Bridge_v6, fine vs standard over five seeds, +4.6 % on average (validation/README.md §3.4). Added to the montecarlo range (total_p05_kgf, total_p95_kgf)."}
-  model_cov: {value: 0.15, source: assumed,
-              note: "Model-form error of F_u (as a CoV): what the equations leave out or get wrong for a real bridge, not the material values. Unknown until a physical crush test is compared (bridgesim compare); 15 % is the order of a well-calibrated timber-joint model against tests. Replace it with the scatter of compare's F_u errors once you have tests."}
+  model_cov: {value: 0.25, source: assumed,
+              note: "Model-form error of F_u (as a CoV): what the equations leave out or get wrong for a real bridge, not the material values. Unknown until a physical crush test is compared (bridgesim compare). Until then set from how far F_u moves with modelling choices not settled by tests: on Bridge_v10 a small glued patch as a hinge or as a patch that turns (+27 to +42 %), its centre gussets as one beam or as plates (+17 %), its floor beam under the jack rigid or deformable (-9 %), release to release on the same file (1360 to 2154 kgf). Replace it with the scatter of compare's F_u errors once you have tests."}

@@ -560,20 +560,66 @@ def hankinson(f_par: float, f_perp: float, cos_t: float) -> float:
     return f_par * f_perp / (f_par * (1.0 - c2) + f_perp * c2)
 
 
-def grain_bearing(sh, n: np.ndarray, f_c: float, f_c90: float) -> tuple[float, float]:
+def end_grain_share(cos_t: float, end_factor: float = 0.5) -> float:
+    """How much a glued face is end grain, 0 (side grain) to 1 (end grain), for a ply
+    whose fibres meet the face's normal at cos_t: the glue's strength on the face is
+    1 - share x (1 - end_factor), interpolated like Hankinson's formula, g = e / (e (1 -
+    c^2) + c^2), so a face cut obliquely across the fibres is partly end grain (a
+    diagonal's foot cut at 55 degrees to its fibres: 0.78 of the way), not side grain up
+    to 60 degrees and end grain past it (glued at 0.6 of side grain with end grain at
+    0.5)."""
+    c2 = min(1.0, cos_t * cos_t)
+    if end_factor >= 0.999:
+        return c2
+    g = end_factor / (end_factor * (1.0 - c2) + c2)
+    return (1.0 - g) / (1.0 - end_factor)
+
+
+def grain_bearing(sh, n: np.ndarray, f_c: float, f_c90: float, end_factor: float = 0.5
+                  ) -> tuple[float, float]:
     """Crushing strength of a body pressed along n (MPa), averaged over its plies, and
-    the share of its plies that meet n with their end grain (within 30 degrees)."""
+    how much of a face across n is end grain (end_grain_share, averaged)."""
     gs = grain_vectors(sh)
     if not gs:
         return f_c90, 0.0
     cs = [abs(float(g @ n)) for g in gs]
     return (float(np.mean([hankinson(f_c, f_c90, c) for c in cs])),
-            float(np.mean([c > 0.866 for c in cs])))
+            float(np.mean([end_grain_share(c, end_factor) for c in cs])))
+
+
+# the words that name a copy's side, standing on their own in a body's name ("End Post
+# L Near", "gus_A_R Far Inner", "Diagonal - Left"): copies differ only in these
+SIDE_WORDS = re.compile(r"(?<![A-Za-z0-9])(L|R|Left|Right|Near|Far)(?![A-Za-z0-9])")
+SIDE_GLOB = {"L": "[LR]", "R": "[LR]", "Left": "[LR]*t", "Right": "[LR]*t",
+             "Near": "[NF]*r", "Far": "[NF]*r"}
+
+
+def _base(name: str) -> str:
+    return re.sub(r"( - .*| \(mirror copy\).*| #\d+)$", "", name).strip()
 
 
 def _group(name: str) -> str:
-    """Name without its side / copy suffix ('Top Chord (..) - Far' -> 'Top Chord (..)')."""
-    return re.sub(r"( - .*| \(mirror copy\).*| #\d+)$", "", name).strip()
+    """Name without its side / copy words: 'Top Chord (..) - Far' -> 'Top Chord (..)',
+    'Knee-Diagonal L Near (13-ply UD)' -> 'Knee-Diagonal (13-ply UD)', 'gus_A_R Far
+    Inner' -> 'gus_A Inner': the same for every copy of a part."""
+    g = SIDE_WORDS.sub("", _base(name))
+    g = re.sub(r"_+(?=[\s_]|$)", "", g)  # 'gus_A_ ' -> 'gus_A '
+    return re.sub(r"\s+", " ", g).strip()
+
+
+def copies_glob(name: str) -> str:
+    """A glob that matches a part and its copies on the other sides ('End Post L Near
+    (13-ply UD)' -> 'End Post [LR] [NF]*r (13-ply UD)', 'Top Chord - Far' -> 'Top
+    Chord*'), and nothing else ('Body 4' does not match 'Body 41')."""
+    import glob as _glob
+
+    base = _base(name)
+    parts = SIDE_WORDS.split(base)
+    pat = "".join(_glob.escape(p) if i % 2 == 0 else SIDE_GLOB[p]
+                  for i, p in enumerate(parts))
+    if base != name:
+        pat += "*"  # the suffix the copies carry
+    return pat
 
 
 def stick_factors(seed: int | None, name: str, n_plies: int, sp: SimParams
@@ -892,6 +938,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                                               "nply", "Wt", "kGA", "body")}
     shells: dict[str, list] = {k: [] for k in ("nodes", "E0", "P", "t", "el", "body")}
     n_snap = 0
+    snap_el: list[bool] = []  # per shell element: larger than its crack band
     snap_excess = 1.0
     snap_modes: set = set()
     G_f = sp["wood.G_f_N_per_mm"]
@@ -1296,6 +1343,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                     n_snap += 1
                     snap_excess = max(snap_excess, ed["excess"])
                     snap_modes.update(ed["snap_modes"])
+                snap_el.append(bool(ed["snapback"]))
                 shells["nodes"].append(ids[t3])
                 shells["E0"].append(E0)
                 shells["P"].append(Ploc)
@@ -1442,7 +1490,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             return ply.f_c90, 0.0
         cs = [abs(float(g @ n)) for g in gs]
         return (float(np.mean([hankinson(ply.f_c, ply.f_c90, c) for c in cs])),
-                float(np.mean([c > 0.866 for c in cs])))
+                float(np.mean([end_grain_share(c, end_factor) for c in cs])))
 
     def crush_depth(i: int, n: np.ndarray) -> float:
         ext = float(np.ptp(bodies[i].mesh.vertices @ n))
@@ -1989,6 +2037,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             "answer_with": {"cad": "split the part into one body per member (SolidWorks: "
                                    "Split or separate extrusions), then inspect again",
                             "acknowledge": ["narrow_plates"]}})
+    model.params["s_snap"] = np.array(snap_el, bool)
     if n_snap:
         model.notes.append(
             f"{n_snap} shell element(s) are larger than the crack band their fracture energy "
