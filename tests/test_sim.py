@@ -1503,8 +1503,10 @@ def test_linear_screen_matches_beam_theory(tmp_path):
 
     T = 29.4
     cad = tmp_path / "beam.stl"
-    write_stl([box("Pier L", (-550, 0, -40), (-540, 150, 40)),
-               box("Pier R", (540, 0, -40), (550, 150, 40)),
+    # knife-edge piers (2 mm), so the beam is pinned as beam theory has it: glued on a
+    # wider pier standing on the table its ends are partly fixed (10 mm: 29 % stiffer)
+    write_stl([box("Pier L", (-546, 0, -40), (-544, 150, 40)),
+               box("Pier R", (544, 0, -40), (546, 150, 40)),
                box("Beam", (-550, 150, -25), (550, 150 + T, 25))], cad)
     kinds = {b.name: b.kind for b in study.inspect(cad).bodies}
     ov = {"bodies": {n: ({"layup": "14-ply UD", "butt_stagger_mm": 0} if k == "bar"
@@ -1576,10 +1578,12 @@ def test_members_split_on_their_shear_over_a_section_depth():
 
 
 def test_frame_plate_bends_like_a_beam(tmp_path):
-    """A strip of plate standing on its edge on two piers (in-plane bending, ~2.5 shell
-    elements across) becomes a frame member and has beam theory's stiffness and first
-    fibre limit; the same strip kept as constant-strain shells comes out ~70 % too stiff.
-    A curved rib becomes one member chain following its curve."""
+    """A strip of plate standing on its edge on two knife-edge piers (in-plane bending,
+    ~2.5 shell elements across) becomes a frame member and has beam theory's stiffness
+    and first fibre limit; the same strip kept as constant-strain shells comes out ~20 %
+    too stiff. (Glued on 10 mm piers its ends are partly fixed, frame and shell alike:
+    the 70 % once reported here was mostly that.) A curved rib becomes one member chain
+    following its curve."""
     from shapely.geometry import Polygon
 
     from bridgesim.cad.synthetic import box, prism
@@ -1588,8 +1592,8 @@ def test_frame_plate_bends_like_a_beam(tmp_path):
 
     H, T = 40.0, 8.0
     cad = tmp_path / "strip.stl"
-    write_stl([box("Pier L", (-550, 0, -40), (-540, 150, 40)),
-               box("Pier R", (540, 0, -40), (550, 150, 40)),
+    write_stl([box("Pier L", (-546, 0, -40), (-544, 150, 40)),  # knife edges: pinned
+               box("Pier R", (544, 0, -40), (546, 150, 40)),
                box("Strip", (-550, 150, -T / 2), (550, 150 + H, T / 2))], cad)
     names = {b.name: b.kind for b in study.inspect(cad).bodies}
     strip = next(n for n, k in names.items() if k == "frame")  # found without asking
@@ -1609,7 +1613,7 @@ def test_frame_plate_bends_like_a_beam(tmp_path):
             assert lim["compression"] == pytest.approx(
                 MAT.f_c_MPa.value * S / (0.5 * a) / 9.80665, rel=0.03)
     assert k["frame"] == pytest.approx(1.0, rel=0.03)
-    assert k["shell"] > 1.4  # in-plane bending locks with ~2.5 elements across
+    assert k["shell"] > 1.12  # in-plane bending locks with ~2.5 elements across: 1.2
     # a semicircular rib 30 mm wide: one chain along its mid-line
     th = np.linspace(0, np.pi, 60)
     outer = np.c_[500 * np.cos(th), 300 * np.sin(th)]

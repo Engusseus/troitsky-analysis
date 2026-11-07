@@ -359,10 +359,13 @@ def find_patches(bodies: list[CadBody]) -> list[tuple[int, int, Polygon, np.ndar
     return out
 
 
-def _sample_polygon(poly, spacing: float, max_pts: int = 25) -> np.ndarray:
+def _sample_polygon(poly, spacing: float, max_pts: int = 25,
+                    min_per_side: int = 1) -> np.ndarray:
     """Points spread over a (multi)polygon on a grid aligned with its minimum rotated
     rectangle, so long thin strips (a deck glued along a stringer) get a row of points
-    along their length instead of one point."""
+    along their length instead of one point. ``min_per_side``: at least this many
+    across each side of 3 mm or more (a glued patch sampled at one point, or in one
+    row, would be a hinge about it)."""
     if poly.is_empty:
         return np.zeros((0, 2))
     base = poly if isinstance(poly, Polygon) else poly.convex_hull
@@ -374,8 +377,8 @@ def _sample_polygon(poly, spacing: float, max_pts: int = 25) -> np.ndarray:
     c0 = np.asarray(shapely.minimum_rotated_rectangle(base).centroid.coords[0])
     sp_ = spacing
     for _ in range(8):
-        nu = max(1, int(round(Lu / sp_)))
-        nw = max(1, int(round(Lw / sp_)))
+        nu = max(min_per_side if Lu >= 3.0 else 1, int(round(Lu / sp_)))
+        nw = max(min_per_side if Lw >= 3.0 else 1, int(round(Lw / sp_)))
         if nu * nw > max_pts:
             sp_ *= 1.25
             continue
@@ -1303,7 +1306,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 wts = w[sel] / w[sel].sum() * inter.area
         if pts3 is None:
             sp_ = max(3.0, min(elem_size(ia), elem_size(ib)))
-            pts2 = _sample_polygon(inter, sp_, max_pts=400)
+            # at least two points across each side: a glued patch resists turning
+            # about any axis in its plane (its glue is pulled at one edge and pressed
+            # at the other), which one point, or one row, would make a hinge
+            pts2 = _sample_polygon(inter, sp_, max_pts=400, min_per_side=2)
             pts3 = oa + np.outer(pts2[:, 0], e1) + np.outer(pts2[:, 1], e2)
             wts = np.full(len(pts3), inter.area / len(pts3))
         # where the joint is, from the CAD overlap alone (not from the mesh): the key of
