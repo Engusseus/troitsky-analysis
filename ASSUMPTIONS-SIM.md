@@ -788,7 +788,8 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   (quick, standard, seed 1) in round 22 (§3.15), 2079 / 2021 / 2014 and 2142 / 1944 in
   round 23 (§3.16), 1830 / 1725 / 1701 and 1927 / 1796 in round 24 (§3.17), 1877 / 1938
   / 1845 and 2137 / 1829 in round 25 (§3.18), 1694 / 1823 / 1805 and 1832 / 1862 in
-  round 26 (§3.19), standard and fine at node M (the diagonal's gusset laps, one truss's
+  round 26 (§3.19), 1693 / 1823 / 1811 and 1830 / 1864 in round 27 (§3.20), standard and
+  fine at node M (the diagonal's gusset laps, one truss's
   or its mirror's). The meshes are not monotone (standard the lowest of the
   three in rounds 19-20), so there is no Richardson estimate: over 10 seed pairs of
   Bridge_v6 fine read +2.3 % above standard on average (-1.1 to +11 %), but on
@@ -870,14 +871,16 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   over the runs (`recommended_interval_kgf`: wide with 8 runs in two clusters, as on
   Bridge_v10). How much the judgement of the model-form error moves it is given next to
   it (`prediction_by_model_cov`: 0.15, the shipped 0.40 and 0.76, the published tests'
-  scatter about the model; on Bridge_v10's round-26 runs 1511 / 1317 / 877 kgf, round 25's
+  scatter about the model; on Bridge_v10's round-27 runs 1455 / 1278 / 850 kgf, round 26's
+  1511 / 1317 / 877, round 25's
   1501 / 1296 / 859, round 24's 1443 / 1263 / 848, the adversarial review of round 24), and
   what it would be if the model read the bridge as it reads the published white-glue
   tests (`prediction_if_biased_kgf`, `uncertainty.published_bias`, the geometric mean of
-  B's and C's medians over their tests: 0.93 in round 26, 0.67 in round 25; shown, not
-  applied). The published tests read on average about half their
+  medians over their tests of the published tests not set by a stand-in, C and D: 0.43
+  since round 27; B's and C's 0.93 in round 26, 0.67 in round 25; shown, not applied). The published tests read on average about half their
   loads (the mean of ln(median / test) over A, B and C -0.70 in round 24, -0.80 in round
-  25, -0.57 in round 26, B and C alone -0.08): they are small
+  25, -0.57 in round 26, B and C alone -0.08; -0.67 in round 27 over A, B, C and D, the
+  semi-blind D among them): they are small
   trusses outside a team's bridge's range whose rebuilds were set with their comparisons,
   so they inform the error's width, not a correction (validation README 3.14). A run
   flagged only as not quasi-static is crushed again at half the jack speed, not left out

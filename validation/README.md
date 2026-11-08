@@ -765,11 +765,12 @@ diagonal's laps on it, where the adversarial review found the load depends; the 
 would reach the peak ~24 s in (the glue ~9 % stronger than in 60 s coupons). Standard
 seed 0: 2061 kgf in round 20, +10 %.
 
-### 3.14 Validation against published tests (rounds 21-25)
+### 3.14 Validation against published tests (rounds 21-27)
 
 No team has crushed a bridge for this repository yet, but three craft-stick trusses were
 built, loaded to failure and published with their geometry, stick, glue, load and
-failure. `validation/published_tests.py` rebuilds them as bridgesim models from the
+failure, and a fourth (D, round 27: Boon's Basic Warren, ten jig-built bridges with their
+loads, no failure place) with its photos and dimensions. `validation/published_tests.py` rebuilds them as bridgesim models from the
 papers' drawings and photos (each value tagged stated, drawing, photo or assumed in its
 docstrings) and loads them as they were loaded: a rigid hanger on the loaded node (dry on
 A's bottom chords, glued to B's putty lumps), C's rebar resting dry on the top chords, the
@@ -787,10 +788,13 @@ is a calibration case, and that it fails in its test's place is no evidence for 
 law (the 2.6 MPa is this repository's own derivation, 0.5 x 0.49 kN / 2 / 46.8 mm^2, not
 the paper's: 2.25 MPa with the text's 0.421 kN, and it assumes the vertical that broke
 was a loaded one; the adversarial review and the published-test check of round 24-25).
-They are listed for what they show about the model's form.
+They are listed for what they show about the model's form. **D is semi-blind**: its
+geometry was set from the page's photos and committed before it was crushed (§3.20), on
+round 26's frozen code; its rebuild's choices (doubled top chords, mitred diagonals, the
+load block) are assumptions, not fits.
 
-**As distributions** (round 26, `r26_runs/published`, one frozen code, `code_sha`
-2dae53140d889084: `montecarlo -n 10 --fidelity fine --sample-placeholders` per case, the
+**As distributions** (round 27, `r27_runs/published`, one frozen code, `code_sha`
+ebb6dd6a3dc9fae1: `montecarlo -n 10 --fidelity fine --sample-placeholders` per case, the
 members 6-9 mm deep, summarised by `published_tests.py --summarize` over the runs
 montecarlo keeps: a run crushed again at half speed in place of its first, untrustworthy
 runs left out while at least half remain; the realism review of round 22: one seed
@@ -798,24 +802,27 @@ misrepresented trusses whose seeds alone spread 2x):
 
 | Test | Glue | Test F_u (kgf) | Runs (kgf) | Median / test | Recommended / test | Test in the total range | Runs failing where the test did |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| A, Lamberti et al. 2025: Warren, 6 x 100 mm, 3-ply, dead weights | superglue | 140-160 | 23-65 (9; 1 restarted) | 0.21 | 0.16 | no: above 16-82 | 0 of 9 (test: top chord and a diagonal after a lateral drift; model: the diagonals' laps on the bottom chord at the centre) |
-| B, Silva et al. 2026: Warren, 4 x 260 mm, 5-8 ply, putty nodes | wood glue, epoxy putty | 72.4 | 42-227 (10) | 1.48 | 0.79 | yes, 32-308 | 0 of 10 (test: a diagonal buckling at its butted plies; model: putty joints, 9 of 10) |
-| C, Moraes et al. 2019: Howe, 6 x 80 mm, 3-ply, test machine (calibration) | wood glue | 42.9 (text) - 50 (curve) | 18-88 (9; 1 slowed, still flagged) | 0.58 | 0.42 | yes, 12-109 | 3 of 9 at a vertical's foot on the bottom chord (test: the bottom chord and a vertical's foot) |
+| A, Lamberti et al. 2025: Warren, 6 x 100 mm, 3-ply, dead weights | superglue | 140-160 | 25-66 (10) | 0.22 | 0.17 | no: above 16-89 | 0 of 10 (test: top chord and a diagonal after a lateral drift; model: the diagonals' laps on the bottom chord at the centre) |
+| B, Silva et al. 2026: Warren, 4 x 260 mm, 5-8 ply, putty nodes | wood glue, epoxy putty | 72.4 | 41-228 (10) | 1.55 | 0.83 | yes, 34-318 | 0 of 10 (test: a diagonal buckling at its butted plies; model: putty joints) |
+| C, Moraes et al. 2019: Howe, 6 x 80 mm, 3-ply, test machine (calibration) | wood glue | 42.9 (text) - 50 (curve) | 18-89 (9; 1 flagged) | 0.64 | 0.44 | yes, 13-110 | 3 of 9 at a vertical's foot on the bottom chord (test: the bottom chord and a vertical's foot) |
+| D, Boon 2025: Warren, 3 x 114 mm, single uncut sticks, 10 jig-built bridges (semi-blind, round 27) | Elmer's Glue-All (PVAc) | 37.7-53.6, mean 45.5, CoV 0.10 | 8-30 (9; 1 flagged); seeds alone 14.9-19.5, CoV 0.088 | 0.32 (seeds alone 0.36) | 0.23 | no: above 6-38 | failure place not published (model: the end compression diagonals buckling, their mitred joints) |
 
-The median over the three is 0.57 of the tests (geometric; mean ln -0.57), over B and C
-0.93; A's test above its total range. Round 26 raises C (0.37 to 0.58): its web members
-are glued on their end grain, and the end-grain factor rose to the literature's 0.75
-(0.5 before; Frolovs et al. 2017), which C did not choose this time; B rose (1.21 to
-1.48) with the sampling and rate changes of round 26, its putty joints governing as
-before; A stays where its load path puts it. C's seed 7 stayed at kinetic/work 6-8 at
-half speed and is left out, A's seed 6 restarted and is left out. Round 25
-(`r25_runs/published`): A 22-61 (0.20), B 37-223 (1.21), C 12-78 (0.37), the lap law
-lowering A (superglue laps across the grain capped by the face wood: ~4.5 MPa at 63
-degrees against 8 for the glue); loads hung from nodes are crushed with a soft "press"
-(A, B: 2 kN/mm) and C's machine a stiff one (20). A test of A's wire seated in the
-diagonals' crotch (the paper's load path, `r25_runs/published/A_mc10_crotch`) read 3-8
-kgf, the rigid hanger falling over with no restraint at the plate, then ~24 kgf with it,
-the wedge slipping out of its dry contacts: not kept (§3.18). Round 24
+D is the one case set before any run (§3.20): its level is a third of the builds', its
+scatter from build to build theirs. The median over the four is 0.51 of the tests
+(geometric; over C and D, the two not set by a stand-in, 0.45: `uncertainty.published_bias`
+0.43 from round 26's runs); A's and D's tests lie above their total ranges. The
+recommended prediction missed by 83 / 17 / 56 / 77 % (§12.7 error, A / B / C / D), all but
+B low: on small trusses the model reads low, through mechanisms (superglue laps loaded off
+their node, end-grain feet, single-stick diagonals buckling) a team's 13-ply bridge may not
+share. Round 26 (`r26_runs/published`): A 23-65 (0.21), B 42-227 (1.48), C 18-88 (0.58),
+C raised by the literature's end-grain factor (0.75, 0.5 before), which C did not choose
+that time. Round 25 (`r25_runs/published`): A 22-61 (0.20), B 37-223 (1.21), C 12-78
+(0.37), the lap law lowering A (superglue laps across the grain capped by the face wood:
+~4.5 MPa at 63 degrees against 8 for the glue); loads hung from nodes are crushed with a
+soft "press" (A, B: 2 kN/mm) and C's machine a stiff one (20). A test of A's wire seated
+in the diagonals' crotch (the paper's load path, `r25_runs/published/A_mc10_crotch`) read
+3-8 kgf, the rigid hanger falling over with no restraint at the plate, then ~24 kgf with
+it, the wedge slipping out of its dry contacts: not kept (§3.18). Round 24
 (`r24_runs/published`): A 23-61 (0.26), B 40-215 (1.18), C 12-78 (0.40), their tables
 counting every run; round 23: 0.24 / 1.24 / 0.40.
 
@@ -826,7 +833,8 @@ What they say:
 
 * **B's and C's loads fall inside the model's range, A's far above it**; the ranges
   are wide (a factor of 3-6 over 10 runs, the placeholders drawn), and the medians read
-  0.21, 1.48 and 0.58 of the tests (round 26; 0.20, 1.21 and 0.37 in round 25).
+  0.22, 1.55 and 0.64 of the tests (round 27; 0.21, 1.48 and 0.58 in round 26; 0.20,
+  1.21 and 0.37 in round 25); D's, the semi-blind case, 0.32, its test above the range.
 * **Two of three failure mechanisms are wrong.** A's test failed in its members after a
   lateral drift, the model at its joints; B's in a diagonal buckling at its butted outer
   plies, the model at a putty joint. Neither can happen in the model as built: A's drift
@@ -836,7 +844,7 @@ What they say:
   whole member) cannot do: Silva et al.'s own back-analysis with 3 of the 5 plies over
   the length reproduces the test within 3.5-15 % (the literature review of round 22).
   C fails at a vertical's foot on the bottom chord, where its test did, in 3 of 9 runs
-  (rounds 25 and 26; 4 of 10 in round 24).
+  (rounds 25-27; 4 of 10 in round 24).
 * **A is far below its test**. Its laps are 36 mm^2 of superglue on members crossing at
   ~62 degrees; to carry the test's load they would hold ~12 MPa, above what the maker
   gives for pine with the wood failing (10-12 MPa, parallel laps) and above the face
@@ -1299,3 +1307,126 @@ nearest node or by the element's shape functions alike, within 10 % at 1.5 eleme
 across; the flag at 3x is loose); a semi-blind fourth published test (Boon's Basic
 Warren, 10 jig-built white-glue bridges, 45.5 kg, CoV 0.10: its build-to-build scatter
 against the model's).
+
+### 3.20 Round 27: a semi-blind test, joints drawn apart, butt joints at their places
+
+From the four reviews of round 26 (realism 5/10: validation -2.5, placeholders and drift
+-1.0, idealisation -0.75, stiffness, light bridges and the uncertainty statement -0.25
+each; the reading and attribution fixed):
+
+* **A fourth published test, semi-blind** (the realism, ambitious and literature
+  reviews): Boon's "Basic Warren Truss Popsicle Bridge (Short)" (garrettsbridges.com, 13
+  Feb 2025): ten bridges of 44 uncut craft sticks and Elmer's Glue-All built in jigs, 12
+  in span, loaded on top by the author's machine, held 37.7-53.6 kg (mean 45.5, CoV
+  0.10). Its geometry was set from the page's three photos and its stated dimensions
+  before any run (`published_tests.py` case D, committed before it was crushed: each side
+  a three-panel Warren of single sticks, the bottom chord in two staggered layers, the top
+  chord doubled because a single stick would buckle at half the test's chord force, the
+  diagonals on the chords' outer faces and mitred at the nodes, cross sticks and lateral
+  braces from the photos, the end portals' braces left out, the load a 76 x 102 mm block
+  on the middle top cross sticks), and crushed on round 26's frozen code (`code_sha`
+  2dae53140d889084, `r27_runs/D`). With the placeholders drawn (`montecarlo -n 10 --fidelity fine
+  --sample-placeholders`) its nine trusted runs read 8.4-31.1 kgf, median 0.32 of the
+  test (recommended prediction 0.23), every run below the builds' 37.7-53.6 and the test
+  above the total range (5.9-38.4): its end compression diagonals, single sticks mitred at
+  the nodes, buckle (member crushing in 3 runs, joint failures at their nodes in 3, a chord
+  splitting in 1, and 2 called at contact as the bridge sank after their diagonals had
+  crushed, before round 27's label fix). On the seeds alone (the
+  imperfections and the joint-to-joint glue scatter, `montecarlo -n 10`) it reads 14.9-19.5
+  kgf, median 0.36, CoV 0.088 against the builds' 0.101: the model's scatter from one
+  build to the next is the measured one, its level a third. The diagonals carry ~31 N at
+  the model's peak where the builds' carried ~131 N; a single 108 mm stick buckles at ~53 N
+  pinned, ~210 N with ends fixed, so the real nodes hold the diagonals' ends far better
+  than the rebuild's half-node mitred laps (A, a modelling choice of the rebuild; not
+  changed after the run).
+* **Joints drawn a little apart** (the adversarial review, proven): faces that face each
+  other over an overlap but are drawn up to 0.8 mm apart, or one up to 0.8 mm inside
+  the other, are glued as if they touched and asked about pair by pair (`near_miss:A | B`,
+  important; 0.8-3 mm apart: asked, not glued: a glue line fills nothing at 1 mm); not when the overrides leave the pair
+  unglued (a load hanger) or a third part fills the gap. Bridge_v10's Knee-Diagonals drawn
+  0.4 mm thin lost their eight gusset laps (27,770 mm^2) and read 37-49 % low with no
+  question: now 227 joints and eight questions, and quick seed 0 reads 1687 kgf against 1693 as drawn (1067 before). `CONTACT_TOL_MM` (0.3) is
+  documented. `weak_joints` counts a part's one-piece (`solid`) joints too.
+* **Butt joints at their places** (the realism reviews of rounds 21-26, the literature
+  review of round 26): a laminated member's butt joints that stay open (rounded stick
+  ends) are each a short element of the net section, the cut plies' fibres taken out and
+  the rest at their centroid, over the gap plus the shear-lag length 2 / lambda (~11 mm
+  for 2 mm sticks), at the stagger from a seeded offset or where `butt_at` puts them
+  (`inspect`: `butt_zones_mm`); the rest of the member keeps its full section. Joints that
+  bear (Bridge_v10's) keep the factors. Published test B's diagonal with its outer plies
+  open at mid-length still fails at a putty joint first on seed 0 (112.97 kgf against
+  112.94): its buckling needs more than the net section, as the literature review said.
+* **Small joints on coarse plates**: a plate's nodes carry a joint's glue only with two
+  rows of them across its narrow width (nine in one row were a hinge, the realism review);
+  a joint that fails or competes at the peak more than 1.5x narrower than its plate's
+  elements (3x before; the literature review's own-element check: peel off by up to 1.9x
+  at 2.6x) flags the crush, and when even fine cannot resolve it says so instead of
+  advising fine again. `diagnose` runs at the crush's fidelity, at least standard (quick
+  named the diagonal's foot, whose glue x1.5 gave +3.6 %, where the gusset laps gave +30 %).
+* **The uncertainty statement** (the realism and adversarial reviews): the quick mesh's
+  bias is the jack speed's share only (-2.6 %, measured by the realism review; -5 % before,
+  the wrong sign) and its scatter `uncertainty.mesh_cov_quick` 0.07; the published bias
+  from the tests not set by a stand-in, C and D (0.43; B's putty joints are a x5
+  stand-in, A's load path a known mismatch); each Monte Carlo report says how far its
+  recommended prediction missed on the published tests (`published_check`) and that its
+  bootstrap interval is not F_u's uncertainty; seven more placeholders drawn (the glue's
+  peel toughness, gap fill and coupon time, the bridge-to-bridge glue scatter, the
+  sticks' scatter of E and strength, crushed wood's softening).
+* **Labels**: a run called at contact or deflection after a part broke at the peak names
+  that part (D's end diagonals crushing at 1.9 mm of travel, the call at 6.2 mm).
+* **calibrate-bridge** lists as measured only what the test can tell, if the fit
+  converged (the governing mechanism's strengths, the wood's moduli with a curve), and
+  leaves the model-form error until another test (the adversarial review: every strength
+  was locked from one glue-governed test).
+* **Provenance and drift**: each crush records `values_sha` (the material and simulation
+  values as resolved; `check_runs.py` lists them), each Monte Carlo report its
+  `provenance` (the CAD, overrides, values and code hashes and the time: a prediction
+  kept with a date shows it was made before a test); `validation/benchmark.py` crushes a
+  fixed set every release against `benchmark_history.json` (the ambitious and realism
+  reviews: the reference F_u moved 18 % per round on average). Policy: a law changes only
+  with data; a release that moves a case more than 10 % says why.
+* **The reference overrides** (`validation/bridge_v10.overrides.yaml`, now in the
+  repository): node A's gusset laps, glued on build day and crushed the next (team report
+  section 8), get glue_factor 0.9, the material file's own advice (the adversarial review).
+* **Stale text**: the end-grain factor (0.75), the 10 mm truss's figures, the quick
+  range, the machine stiffness in `compare`'s advice, the rate cap's floor, the suite's
+  time.
+
+**Evidence** (`r27_runs/`, one frozen code, `code_sha` ebb6dd6a3dc9fae1, `validation/check_runs.py`
+passes on every folder quoted; Bridge_v10 with `validation/bridge_v10.overrides.yaml`, now
+committed). **The benchmark** (`validation/benchmark.py`, against round 26): Bridge_v10
+standard seeds 0 and 1 1822.7 and 1863.6 kgf (1823 and 1862: 0.0 and +0.1 %), quick seeds 0
+and 1 1692.9 and 1830.4 (1694.0 and 1831.7), all trustworthy, the same parts governing; the
+6 mm truss at fine 30.32 (30.3) and the 10 mm truss at standard 46.41 (46.4), both now
+flagged: a deck joint competing at the peak is 3.8x and 5.6x narrower than the deck's
+elements, which no fidelity resolves (the 10 mm truss reads 46.4 / 46.4 / 46.7 at quick /
+standard / fine, so the flag can be cautious: it says to check, not that F_u moved); the
+published tests' seed 0 at fine A 36.7, B 116.6, C 37.4, D 17.9 kgf (round 22's A 33.5, B
+85.6, C 28.2: four rounds of law changes, C's end grain and B's sampling the most). So
+round 27 moved none of the benchmark's F_u by more than 0.1 %: its changes act on drawings,
+labels, flags and the uncertainty statement, not on the bridges as drawn. The screen: 694 kgf/mm, the first mode 40.9 Hz, the first glue
+limit at 262 kgf; fine seed 0 1811.0 kgf (1805.1, +0.3 %), at node M's laps. The Monte Carlo
+(`montecarlo -n 12 --fidelity standard --sample-placeholders`, 46 values drawn): 11 trusted
+runs 1136-2502 kgf, median ~1577 (round 26: 1119-2374, ~1615), node M's laps in 6, node A's
+in 3, the knee diagonal itself in 2; one run left out by the new flag (a joint competing at
+its peak, plate_M's edge glued on the floor beam's tenon, 5.6x narrower than the plate's
+elements); the recommended prediction 1278 kgf (interval 1171-1426; round 26: 1317), the
+total range 758-3373 kgf, at a model-form error of 0.15 / 0.40 / 0.76: 1455 / 1278 / 850,
+and 2972 if the model read this bridge as it reads C and D (`published_bias` 0.43: small
+trusses whose diagonals buckle or whose end-grain feet fail, which Bridge_v10's 13-ply
+members and gusset laps do not share: shown, not applied). The flag also reads 5.6x on the
+deck's plies stacked face to face, meshed node on node, where it means nothing: they
+competed in no run, and round 28 leaves plate-to-plate joints out of it.
+
+**The published tests on round 27's code** (§3.14, `r27_runs/published`, 10 runs each at
+fine, placeholders drawn): A 25-66 kgf (median 0.22 of its test, recommended 0.17, the test
+above the total range 16-89), B 41-228 (1.55; 0.83; inside 34-318), C 18-89 (0.64; 0.44;
+inside 13-110; 3 of 9 at a vertical's foot on the bottom chord), D 8-30 (0.32; 0.23; above
+6-38; on the seeds alone 14.9-19.5, CoV 0.088 against the builds' 0.101). The recommended prediction's §12.7 error: A 83 %, B 17 %, C 56 %, D 77 %
+(`published_check`); geometric mean of the medians over C and D 0.45 (`published_bias`
+0.43 from round 26's runs).
+
+Not done, and why: physical tests (the -2 the user accepts); a U-frame verification of
+the portals' effect (Engesser / Holt; the adversarial review measured +10 to +19 % without
+the portals over every variant, the mechanism unverified); local plate refinement at small
+joints; competing model forms sampled by the Monte Carlo (the ambitious review's leap 6).
