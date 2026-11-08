@@ -40,6 +40,7 @@ class BodyInfo:
     bbox_mm: tuple | None = None
     axis: tuple | None = None
     chains: list = field(default_factory=list)  # a frame's beams, arm by arm
+    butt_zones: list = field(default_factory=list)  # open butt joints at their places
 
 
 @dataclass
@@ -52,8 +53,18 @@ class Patch:
     centroid: np.ndarray
     normal: np.ndarray  # from A towards B
     springs: list[int] = field(default_factory=list)
-    kind: str = "glue"  # "glue", "tie" (floss knot), "bonded" (bodies overlap in CAD)
+    kind: str = "glue"  # "glue", "tie" (floss knot), "bonded" (bodies overlap in CAD),
+    # "solid" (two bodies of one piece of wood: the wood's strength across the face)
     polygon: np.ndarray | None = None  # (k, 3) outline
+    strength_MPa: float = 0.0  # average shear strength of its face (before scatter and
+    # glue factors): tau_g x the lap size factor, the interlaminar strength of a
+    # lamination, f_v / 1.5 of a solid face
+    lamination: bool = False  # two plates glued face to face
+    peak_factor: float = 1.0  # the glue points' local strength over the face's average
+    # the largest element of a plate it is glued to over its own width (its glue points
+    # hang on that plate's nodes by rigid arms: above ~3 the joint is coarser than the
+    # plate's mesh can follow; 0: no plate)
+    mesh_ratio: float = 0.0
 
 
 @dataclass
@@ -153,6 +164,9 @@ class Model:
     notes: list[str] = field(default_factory=list)
     # render skin: vertex -> up to 3 (attachment) weights
     skin: dict = field(default_factory=dict)
+    # per glue point: the exponent n of its strength's dependence on the time to failure,
+    # tau(t) = tau(t_ref) (t / t_ref)^-n (glue.rate_exponent; the wood's for a solid face)
+    c_rate: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
     @property
     def n_nodes(self) -> int:

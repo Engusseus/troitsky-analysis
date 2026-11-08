@@ -453,7 +453,7 @@ def build_server():
         """Which material values move F_u most? Starts, in the background, crushes with
         each placeholder value lowered and raised by rel; the report (job_status) ranks
         them and lists what to measure first. params: the values to vary (keys of
-        materials/simulation.yaml or material.<key>; default the 9 that usually matter
+        materials/simulation.yaml or material.<key>; default the 22 that usually matter
         most); seeds > 1 averages over that many seeds."""
         cad_path = _infile(cad_path, "CAD file")
         out = _outpath(out_dir)
@@ -546,7 +546,8 @@ def build_server():
         Path(out_path).write_text(yaml.safe_dump(mat.model_dump(mode="json"),
                                                  sort_keys=False), encoding="utf-8")
         return json.dumps({"material": out_path, "changes": log,
-                           "overrides_yaml": yaml.safe_dump({"params": params})
+                           "overrides_yaml": yaml.safe_dump({"params": params,
+                                                             "measured": sorted(params)})
                            if params else ""})
 
     @srv.tool()

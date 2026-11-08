@@ -18,9 +18,17 @@ E_MPa:
   value: 10000
   source: assumed
   note: >-
-    Longitudinal modulus. Measure with 3-point bending, E = F L^3 / (48 delta I). The one
-    published measurement on craft sticks (cantilever tests, Emergent Scientist 1, 3
-    (2017)) gives 7.1 +- 0.2 GPa; clear birch is 11 GPa (USDA Wood Handbook).
+    Longitudinal modulus. Measure with 3-point bending, E = F L^3 / (48 delta I), or a free
+    tap test (simulation.yaml, wood.E_placeholder_MPa). Dry craft sticks are about 11-15
+    GPa: the wave speed of 2.2 mm birch sticks measured by vibration, 4600 m/s, gives
+    11.6-14.8 GPa at 550-700 kg/m^3 (Sautel et al., Am. J. Phys. 85, 783 (2017), Table I;
+    their 5.0 GPa was for sticks soaked in water for three weeks); 2 mm rotary-cut birch
+    veneer in tension is 14.6 GPa (CoV 9 %; Kruger et al. 2025,
+    doi:10.5281/zenodo.17201843); clear birch 11-15 GPa (USDA Wood Handbook 2010, table
+    5-3). A stick weighted at a table edge read 7.1 GPa (Emergent Scientist 1, 3 (2017)):
+    the edge lets it turn. The crush uses wood.E_placeholder_MPa (10.5 GPa) until you
+    measure it (this file's 10 GPa is the linear analysis's): this is the value that
+    matters most for the bridge's stiffness.
 G_MPa:
   value: 625
   source: assumed
@@ -33,23 +41,40 @@ f_t_MPa:
   value: 40
   source: assumed
   note: >-
-    Tensile strength parallel to grain. Below the bending strength on purpose: in clear
-    wood tension exceeds the modulus of rupture, but a whole stick in tension is limited
-    by its weakest cross-section (slope of grain, knots, the cut across growth rings),
-    which bending stresses only at one face; graded timber has f_t,0 = 0.6 f_m (EN 338).
-    Reduce further for splices.
+    Tensile strength parallel to grain. 2 mm birch veneer breaks at 81 MPa (CoV 14 %;
+    Kruger et al. 2025, doi:10.5281/zenodo.17201843), but craft sticks are about half as
+    strong as clear birch of the same size: one broke at 0.52 of a solid birch strip in
+    3-point bending (Karplus 1996, ASEE, Craft Stick Beams), so their lathe checks, grain
+    slope and edges cost strength more than stiffness; 40 MPa here. That ratio is weak
+    evidence: recomputed with Karplus's own stick size and span, his Table 1 loads give
+    148 MPa for one stick and 181-286 MPa for solid birch, 2-3x the modulus of rupture he
+    quotes, so they are not simple 3-point failure loads (the round-19 literature
+    review). A 115 x 8.4 x 2 mm Brazilian stick broke at 883 N in tension, ~53 MPa
+    (Avila 2009, UFJF bridge-contest handout), consistent with 40-50. Pull ten sticks
+    (stick_tension_template.csv). Strength follows
+    stiffness stick to stick (r = 0.64-0.69 between ln E and ln f_t in the veneer data;
+    scatter.E_strength_corr). Butt joints in a laminated member are a separate reduction
+    (butt_stagger_mm).
 f_c_MPa:
   value: 30
   source: assumed
-  note: Compressive (crushing) strength parallel to grain.
+  note: >-
+    Compressive (crushing) strength parallel to grain. 2 mm birch veneer: 60 MPa (CoV 9 %)
+    with E 17.7 GPa in compression (Kruger et al. 2025); clear birch 39-59 MPa at 12 %
+    moisture (USDA Wood Handbook 2010, table 5-3); craft sticks about half of clear birch
+    (Karplus 1996); 30 MPa here. Short glued stacks in compression
+    (stick_compression_template.csv) measure it.
 f_b_MPa:
   value: 50
   source: assumed
   note: Bending strength (modulus of rupture).
 f_v_MPa:
-  value: 6
+  value: 8
   source: assumed
-  note: Shear strength parallel to grain (member shear check, tau = 1.5 V / A).
+  note: >-
+    Shear strength parallel to grain (member shear check, tau = 1.5 V / A). 2 mm birch
+    veneer in in-plane shear: 9.2 MPa (CoV 10 %, Kruger et al. 2025); clear birch
+    8.3-15 MPa (USDA Wood Handbook 2010, table 5-3). Shear follows density more than E.
 density_kg_m3:
   value: 650
   source: assumed
@@ -58,7 +83,28 @@ glue:
   tau_g_MPa:
     value: 2.0
     source: assumed
-    note: Average shear strength of a white-glue lap joint. Test single-lap joints.
+    note: >-
+      Average shear strength of a hand-made white-glue lap joint between sticks, the
+      value that moves the predicted load most. Nothing is published for craft sticks:
+      a pressed PVAc bond line holds 9-14 MPa (EN 205 laps; Serrano 2000, Lund), the
+      stick's surface fails in shear at ~9 MPa, peel at the lap ends at ~1.5 MPa, all
+      scaled by how much of the face the glue covers; pressed craft-stick laminates
+      failed at 3.7 MPa of glue-line shear (Karplus 1996), hand pressure costs 5-10 %
+      (Rabiej & Behm 1992) and unsanded faces ~30 % (Boon 2024), ~2.3 MPa for a hand-made
+      lap: 2 MPa here, montecarlo drawing 0.9-4.5 (90 %). Larger laps are weaker on average (a size effect,
+      simulation.yaml glue.weibull_m). Joints glued on build day are crushed the next day
+      at the Troitsky competition (15-30 h old): ~0.85-1.0 of their cured strength (PVAc
+      laps reach EN 204's 10 MPa 75-165 min after bonding, Bomba et al., BioResources 9(1)
+      2014; makers ask 24 h before stressing): give them glue_factor 0.9. It is the
+      strength of a lap of parallel sticks: a lap across a ply's grain holds no more than
+      that ply sheared at its angle, a wide lap on a thin gusset less (simulation.yaml
+      wood.f_rolling_MPa). Superglue (cyanoacrylate) is not PVA: its maker's lap
+      shear on pine is 10-12 MPa with the wood failing (ISO 4587, Ceys Superunick data
+      sheet 2020), and a published stick truss's laps held more than 5.5 MPa (Lamberti et
+      al. 2025): for a superglued bridge set material.glue.tau_g_MPa ~8 and
+      glue.rate_exponent 0 until laps of your own say more (validation/published_tests.py,
+      case A). Test 10 single laps 20 x 10 mm glued and clamped as on the bridge, loaded
+      to fail in about a minute (a bucket filled with sand).
   mass_fraction:
     value: 0.10
     source: assumed

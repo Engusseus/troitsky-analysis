@@ -11,6 +11,11 @@ import math
 
 import numpy as np
 
+# the glue's rate law is taken no further than its data: a line failing at most this many
+# times faster than its coupons (PVAc 16x the rate, Wernersson 1994; the adversarial
+# review of round 25: a line picked up in a cascade 1 s before it failed read 1.51x)
+RATE_RANGE = 16.0
+
 try:
     from numba import njit, prange
 
@@ -580,9 +585,38 @@ def _add(F, Mo, nd, arm, f, sign):
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
+def _trilinear_damage(dmx, dm0, keff, Gc, ga, gp):
+    """Damage of a glue point at the largest mixed-mode separation ``dmx`` reached: the
+    traction rises with keff to ga x its strength (at ga dm0), bends over to the
+    strength at gp dm0 (a PVA line's pre-peak work, Serrano 2000) and falls linearly to
+    nothing at the separation where the work done is Gc. ga = gp = 1: bilinear."""
+    e = ga * dm0
+    if dmx <= e:
+        return 0.0
+    q = gp * dm0
+    lf = gp + 2.0 * Gc / (keff * dm0 * dm0) - ga * ga - (ga + 1.0) * (gp - ga)
+    if lf < 1.05 * gp:
+        lf = 1.05 * gp
+    dmf = lf * dm0
+    if dmx <= q:
+        T = dm0 * (ga + (1.0 - ga) * (dmx - e) / (q - e))
+    elif dmx < dmf:
+        T = dm0 * (dmf - dmx) / (dmf - q)
+    else:
+        return 1.0
+    d = 1.0 - T / dmx
+    if d < 0.0:
+        return 0.0
+    if d > 1.0:
+        return 1.0
+    return d
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
 def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GIIc, mu,
                 breakable, dmax, dd, slip, F, Mo, update, beta, dt, prev, alive, crush,
-                fc90, cdep, eps_d, E_d, creep, cfac, cdec):
+                fc90, cdep, eps_d, E_d, fcap, creep, cfac, cdec, ga, gp, crate, tnow,
+                tref, t0):
     nc = ca.shape[0]
     pa = np.empty(3)
     pb = np.empty(3)
@@ -638,6 +672,9 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
         else:
             fy = fc90[i] * (1.0 + eps_d) + E_d * (q - eps_d)
             hh = E_d / cdep[i]
+        if fy > fcap:  # no wood bears more than it crushes at along its grain
+            fy = fcap
+            hh = 0.0
         if kn * dn < -fy:
             dp = (-kn * dn - fy) / (kn + hh)
             if update:
@@ -647,29 +684,33 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
         ks = Ks[i]
         d = 0.0
         if breakable[i]:
+            # the strength at the line's own time under load (glue_rate in solver.py): its
+            # clock starts when it reaches RATE_LOAD of its mixed-mode onset
+            dm = math.sqrt(dnp * dnp + s2)
             dn0 = sig[i] / kn
             ds0 = tau[i] / ks
-            dm = math.sqrt(dnp * dnp + s2)
             if dnp > 1e-12:
                 mix = s / dnp
                 dm0 = dn0 * ds0 * math.sqrt((1.0 + mix * mix)
                                             / (ds0 * ds0 + (mix * dn0) ** 2))
             else:
                 dm0 = ds0
+            if update and tnow > 0.0 and t0[i] < 0.0 and dm > 0.1 * dm0:  # RATE_LOAD
+                t0[i] = tnow
+            if crate[i] != 0.0 and tnow > 0.0 and tref > 0.0:
+                tl = tnow - t0[i] if t0[i] >= 0.0 else 0.0
+                tmin = tref / RATE_RANGE
+                rs = math.exp(-crate[i] * math.log((tl if tl > tmin else tmin) / tref))
+                dn0 *= rs
+                ds0 *= rs
+                dm0 *= rs
             Gs = ks * s2
             Gn = kn * dnp * dnp
             B = Gs / (Gs + Gn) if Gs + Gn > 1e-30 else 0.0
             Gc = GIc[i] + (GIIc[i] - GIc[i]) * B * B
             keff = (Gn + Gs) / (dm * dm) if dm > 1e-12 else ks
-            dmf = 2.0 * Gc / (keff * (dm0 if dm0 > 1e-12 else 1e-12))
-            if dmf < 1.05 * dm0:
-                dmf = 1.05 * dm0
             dmx = dmax[i] if dmax[i] > dm else dm
-            dnew = dmf * (dmx - dm0) / ((dmx if dmx > 1e-12 else 1e-12) * (dmf - dm0))
-            if dnew < 0.0:
-                dnew = 0.0
-            elif dnew > 1.0:
-                dnew = 1.0
+            dnew = _trilinear_damage(dmx, dm0 if dm0 > 1e-12 else 1e-12, keff, Gc, ga, gp)
             d = dd[i] if dd[i] > dnew else dnew
             if update:
                 dmax[i] = dmx

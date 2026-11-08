@@ -1,0 +1,52 @@
+{
+ "_note": "F_u (kgf) of each benchmark case by round, the reference settings of that round (validation/README.md 3.x); null: not run. Bridge_v10 rounds 16-21 from the round reports (round 20 at one jack speed), the published tests' seed 0 at fine from round 22.",
+ "bridge_v10_s0_standard": {
+  "16": 2154,
+  "17": 2457,
+  "18": 2483,
+  "19": 1850,
+  "20": 2061,
+  "21": 2276,
+  "22": 1651,
+  "23": 2021,
+  "24": 1725,
+  "25": 1938,
+  "26": 1823,
+  "27": 1822.7
+ },
+ "bridge_v10_s1_standard": {
+  "22": 1638,
+  "23": 1944,
+  "24": 1796,
+  "25": 1829,
+  "26": 1862,
+  "27": 1863.6
+ },
+ "truss6_fine": {
+  "18": 44.6,
+  "21": 35.8,
+  "25": 44.8,
+  "26": 30.3,
+  "27": 30.3
+ },
+ "truss10_standard": {
+  "25": 47.9,
+  "26": 46.4,
+  "27": 46.4
+ },
+ "published_A_fine": {
+  "22": 33.5,
+  "27": 36.7
+ },
+ "published_B_fine": {
+  "22": 85.6,
+  "27": 116.6
+ },
+ "published_C_fine": {
+  "22": 28.2,
+  "27": 37.4
+ },
+ "published_D_fine": {
+  "27": 17.9
+ }
+}

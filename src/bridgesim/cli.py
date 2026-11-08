@@ -583,7 +583,8 @@ def calibrate(data: Annotated[Path, typer.Argument(help="Folder with your test C
     if params:
         ov_path = out.with_name(out.stem + ".overrides.yaml")
         ov_path.write_text(yaml.safe_dump({"params": {k: round(v, 4)
-                                                      for k, v in params.items()}}),
+                                                      for k, v in params.items()},
+                                           "measured": sorted(params)}),
                            encoding="utf-8")
     if json_out:
         import json as _json
@@ -762,7 +763,7 @@ def sensitivity(cad: CadArg, overrides: OverridesOpt = None, material: MaterialO
                 param: Annotated[list[str] | None, typer.Option(
                     "--param", help="A value to vary (repeat the option; any key of "
                                     "materials/simulation.yaml or material.<key>). "
-                                    "Default: the 9 that usually matter most")] = None,
+                                    "Default: the 22 that usually matter most")] = None,
                 seeds: Annotated[int, typer.Option(
                     help="Average the effect over this many seeds (paired)")] = 1,
                 units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",

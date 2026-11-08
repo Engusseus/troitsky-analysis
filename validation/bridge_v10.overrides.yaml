@@ -1,0 +1,128 @@
+# Bridge_v10 (Rev N), as the design report (section 10.1) describes the analysis model;
+# butt joints staggered so a laminated member keeps ~75 % of its tension strength
+# (report section 5): 40 mm between the joints of neighbouring plies; the heel seat
+# laminated with its chord, the floor beam with its tenons: one piece each ('solid');
+# the heel seats' layers as the report's section 7 lays them: 6 of 13 along the end post
+# (the post bears end grain on end grain), 7 along the chord
+# round 26: no rigid_under_plate acknowledgement (the floor beam is a bar since round
+# 24: no such question; the reference passes inspect --strict, the adversarial review of
+# round 25)
+# round 24: the floor beam under the jack as the beam it is (team report section 7:
+# laminated in vertical layers, spanning between the trusses along z): a bar along z,
+# one ply through its depth (no glue line in its bending shear plane); its tenons
+# stay rigid blocks, one piece with it
+glue:
+  BC * | Stub *: 0
+  Deck ? Top* | Deck Middle Top*: 0
+  Deck ? Bot* | Deck Middle Bot*: 0
+  Deck ? Mid* | Deck Middle Mid*: 0
+  BC * | Heel Seat *: solid
+  Floor Beam M (block) | Floor Beam M Tenon *: solid
+acknowledge:
+# round 25: an unread body makes a crush untrustworthy unless acknowledged; the one the
+# reader cannot decode is half of a portal's X brace (Portal X R Half b), lateral bracing
+# at the bridge's end, out of the vertical load path (round 26: rebuilt as its twin's
+# mirror image through an STL of the bridge, F_u moved 0.3 %)
+- cad_unread
+- rigid_blocks
+- end_grain_joints
+- weak_joints
+- rule:8.8
+- material:density
+- material:measure
+- kind:Floor Beam M (block)
+bodies:
+  # round 27 (the adversarial review of round 26): node A's gussets slide over the knee,
+  # the top chord and the diagonal and are glued and clamped on build day, crushed the
+  # next day (team report section 8, step 5): popsicle_birch.yaml's advice for such
+  # joints, ~0.85-1.0 of their cured strength
+  gus_A*:
+    glue_factor: 0.9
+  '*':
+    butt_stagger_mm: 40
+  Heel Seat L*:
+    grain:
+    - - 0.7071
+      - 0.7071
+      - 0
+    - - 0.7071
+      - 0.7071
+      - 0
+    - - 0.7071
+      - 0.7071
+      - 0
+    - - 0.7071
+      - 0.7071
+      - 0
+    - - 0.7071
+      - 0.7071
+      - 0
+    - - 0.7071
+      - 0.7071
+      - 0
+    - - 1
+      - 0
+      - 0
+    - - 1
+      - 0
+      - 0
+    - - 1
+      - 0
+      - 0
+    - - 1
+      - 0
+      - 0
+    - - 1
+      - 0
+      - 0
+    - - 1
+      - 0
+      - 0
+    - - 1
+      - 0
+      - 0
+  Heel Seat R*:
+    grain:
+    - - 0.7071
+      - -0.7071
+      - 0
+    - - 0.7071
+      - -0.7071
+      - 0
+    - - 0.7071
+      - -0.7071
+      - 0
+    - - 0.7071
+      - -0.7071
+      - 0
+    - - 0.7071
+      - -0.7071
+      - 0
+    - - 0.7071
+      - -0.7071
+      - 0
+    - - 1
+      - 0
+      - 0
+    - - 1
+      - 0
+      - 0
+    - - 1
+      - 0
+      - 0
+    - - 1
+      - 0
+      - 0
+    - - 1
+      - 0
+      - 0
+    - - 1
+      - 0
+      - 0
+    - - 1
+      - 0
+      - 0
+  Floor Beam M (block):
+    kind: bar
+    axis: z
+    layup: 1-ply UD

@@ -182,9 +182,11 @@ NMODE = 5  # history per point: fibre t, fibre c, across t, across c, shear
 
 
 def element_data(xy: np.ndarray, angles: list[float], t: float, ply, Ef: float, Sf: float,
-                 G: tuple[float, float, float], E_t_drill: float) -> dict:
+                 G: tuple[float, float, float], E_t_drill: float, kt: float = 1.0,
+                 kc: float = 1.0) -> dict:
     """Everything the layered kernel needs for one triangle with local in-plane corner
-    coordinates ``xy`` and ply ``angles`` (deg, in element axes)."""
+    coordinates ``xy`` and ply ``angles`` (deg, in element axes); ``kt`` scales the fibre
+    tension strength alone (the butt joints of a plate laid from sticks)."""
     from bridgesim.sim.materials import laminate, ply_layers
 
     lam = laminate(ply, angles, t)
@@ -195,16 +197,27 @@ def element_data(xy: np.ndarray, angles: list[float], t: float, ply, Ef: float, 
     Q = ply.Q() * Ef
     lim = np.array([ply.f_t / ply.E_L, ply.f_c / ply.E_L, ply.f_t90 / ply.E_T,
                     ply.f_c90 / ply.E_T, ply.f_v / ply.G_LT]) * Sf
+    lim[0] *= kt
+    lim[1] *= kc  # butt joints that do not bear (gapped) in compression
     lc = float(np.sqrt(2.0 * area))
     Em = np.array([ply.E_L, ply.E_T, ply.G_LT]) * Ef
     e0 = lim[[0, 2, 4]]
     rf_raw = 2.0 * np.asarray(G, float) / (Em * e0**2 * lc)
-    rf = np.maximum(rf_raw, 1.05)  # element too large for the fracture energy: snap-back
+    # an element larger than the crack band its fracture energy allows (snap-back): its
+    # strength in that mode is lowered until its steepest softening dissipates exactly
+    # G_f (Bazant & Oh 1983; for cohesive elements Turon et al. 2007): f' = f
+    # sqrt(rf / 1.05), the stress a crack as long as the element needs to release G_f.
+    # Keeping the strength (until round 16) dissipated up to several times G_f, a
+    # coarse plate tougher than a fine one
+    red = np.where(rf_raw < 1.05, np.sqrt(np.maximum(rf_raw, 1e-12) / 1.05), 1.0)
+    lim[[0, 2, 4]] *= red
+    rf = np.maximum(rf_raw / red**2, 1.05)
     return {"K": K, "Bm": Bm, "Bb": Bb, "area": area,
             "kd": drill_stiffness(E_t_drill, area), "lay": lay,
             "Q": np.array([Q[0, 0], Q[1, 1], Q[0, 1], Q[2, 2]]), "lim": lim, "rf": rf,
             "lc": lc, "snapback": bool((rf_raw < 1.05).any()),
-            "excess": float(np.max(1.05 / np.maximum(rf_raw, 1e-9))),
+            "snap3": (rf_raw < 1.05),
+            "excess": float(np.min(red)),
             "snap_modes": [k for k, r in zip(("fibre tension", "across the grain", "shear"),
                                              rf_raw, strict=True) if r < 1.05]}
 

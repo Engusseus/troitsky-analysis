@@ -2,9 +2,12 @@
 
     uv run python validation/convergence_study.py BRIDGE.SLDPRT [--out results.json]
         [--save runs/] [--scales 1.6,0.75,0.5] [--seeds 0,1,2] [--amplitude 1]
+        [--overrides overrides.yaml] [--speed 100]
 
 Crushes the bridge with each element size (x1.6 = quick, x0.75 = standard, x0.5 = fine
-by default) for each seed, all at 100 mm/s, two runs at a time, and prints F_u, the
+by default) for each seed, all at one jack speed (100 mm/s; ``--speed``, so the mesh is
+not confused with the jack speed, which the fidelities otherwise change with it), with
+the design's overrides (``--overrides``), two runs at a time, and prints F_u, the
 deflection at F_u and the first failure of each, plus the mean and spread per mesh.
 ``--seeds -1`` is the perfect bridge (no imperfections, no scatter): with it, a change
 of F_u between meshes is discretisation error alone, not a different random bridge.
@@ -34,7 +37,7 @@ def _name(scale: float) -> str:
 
 
 def _one(args):
-    cad, scale, seed, save, amp, threads = args
+    cad, scale, seed, save, amp, threads, ov_path, speed = args
     done = Path(save) / f"{_name(scale)}_seed{seed}" / "result.json" if save else None
     if done is not None and done.exists():  # finished before a restart: keep it
         return json.loads(done.read_text())
@@ -47,11 +50,17 @@ def _one(args):
     t0 = time.time()
     out = Path(save) / f"{_name(scale)}_seed{seed}" if save else None
     full = seed in (0, -1) and bool(save)  # replay (and the collapse) for one seed
+    ov = {}
+    if ov_path:
+        import yaml
+
+        ov = yaml.safe_load(Path(ov_path).read_text(encoding="utf-8")) or {}
+    if amp != 1:
+        ov["params"] = dict(ov.get("params") or {}) | {"scatter.amplitude": amp}
     rep, _ = study.crush(cad, seed=None if seed < 0 else seed, fidelity="standard",
                          mesh_scale=scale, replay=full, out_dir=out,
-                         overrides=({"params": {"scatter.amplitude": amp}} if amp != 1
-                                    else None),
-                         options=CrushOptions(speed_mm_s=100.0,
+                         overrides=ov or None,
+                         options=CrushOptions(speed_mm_s=speed,
                                               dt_target=dt_target_for(scale),
                                               after_failure_mm=15.0 if full else 2.0))
     first = next((f for f in rep.failures if f.kind != "joint_cracking"), None)
@@ -77,6 +86,10 @@ def main() -> None:
     ap.add_argument("--amplitude", type=float, default=1.0,
                     help="scale on the seeded imperfections and scatter (scatter.amplitude)")
     ap.add_argument("--processes", type=int, default=2, help="runs at a time")
+    ap.add_argument("--overrides", default="", help="the design's overrides YAML")
+    ap.add_argument("--speed", type=float, default=100.0,
+                    help="jack speed for every mesh, mm/s (the auto slowdown for a soft "
+                         "bridge still applies)")
     ap.add_argument("--save", default="", help="folder for each run's crush.json, curves, "
                     "events (and the replay of seed 0 or -1); a run whose result.json is "
                     "there already is not run again (resume after an interruption)")
@@ -84,7 +97,8 @@ def main() -> None:
     scales = [float(x) for x in a.scales.split(",")]
     seeds = [int(s) for s in a.seeds.split(",")]
     threads = max(1, (os.cpu_count() or 4) // a.processes)
-    jobs = [(a.cad, sc, sd, a.save, a.amplitude, threads) for sc in scales for sd in seeds]
+    jobs = [(a.cad, sc, sd, a.save, a.amplitude, threads, a.overrides, a.speed)
+            for sc in scales for sd in seeds]
     res = []
     with cf.ProcessPoolExecutor(a.processes, mp_context=mp.get_context("spawn")) as ex:
         for r in ex.map(_one, jobs):

@@ -140,12 +140,14 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
           max_disp: float, dt: float | None = None, alpha: float = 200.0,
           stop_drop: float = 0.3, record_every: int = 20, max_steps: int = 2_000_000,
           gravity: bool = False, sign: float = 1.0, slow_disp: float = 0.0,
-          slow_rate: float | None = None) -> TestResult:
+          slow_rate: float | None = None, test_time_s: float = 0.0) -> TestResult:
     """Move ``node`` (one node or a list: a grip) along global ``dof`` at ``rate`` mm/s
     (displacement control) with the ``fixed`` nodes held ("xyz", "xyzr" = also rotations,
     any subset of x, y, z, r) and record the reaction force. Stops at ``max_disp`` or
     when the force drops below ``stop_drop`` x peak after the peak. Up to ``slow_disp``
-    the node moves at ``slow_rate`` instead (a quasi-static start, for the stiffness)."""
+    the node moves at ``slow_rate`` instead (a quasi-static start, for the stiffness).
+    ``test_time_s``: the physical time to failure the glue's strength is taken at
+    (solver.glue_rate; 0: the coupon's own, tau_g)."""
     node = np.atleast_1d(np.asarray(node, int))
     m.mass = np.maximum(m.mass, 1e-12)
     m.rot_inertia = np.maximum(m.rot_inertia, 1e-12)
@@ -156,6 +158,8 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
         m.mass, m.rot_inertia = mass, rot
         s.dt = dt
     st = S.initial_state(m, jack_y=1e12)
+    st.t_test = float(test_time_s)
+    st.c_t0 = np.zeros(len(m.c_a))  # every line loaded from the coupon's start
     F = np.zeros((m.n_nodes, 3))
     Mo = np.zeros((m.n_nodes, 3))
     fix_t = np.zeros((m.n_nodes, 3), bool)
@@ -287,12 +291,17 @@ def lap_shear(tau_max: float, peel_to_shear: float = 0.5, Kn: float = 150.0,
               Ks: float = 60.0, GIc: float = 0.25, GIIc: float = 0.6,
               overlap: float = 20.0, width: float = 10.0, t: float = 2.0,
               E: float = 10000.0, free: float = 40.0, rate: float = 20.0,
-              n_ov: int = 8, n_glue: int = 9, one_node: bool = False) -> TestResult:
+              n_ov: int = 8, n_glue: int = 9, one_node: bool = False,
+              onset: float = 1.0, peak_slip: float = 1.0, rate_exponent: float = 0.0,
+              test_time_s: float = 0.0, coupon_time_s: float = 60.0) -> TestResult:
     """Single-lap joint of two sticks (overlap x width), pulled along X. Returns the
     pull force; tau_avg = peak / (overlap * width). The overlap has ``n_ov`` elements per
     stick and ``n_glue`` rows of glue points, each hung on the nearest node of each stick
     by a rigid arm (as in a bridge model, where a joint's glue points hang on fewer
-    nodes than there are points)."""
+    nodes than there are points). ``onset``, ``peak_slip``: the glue law's pre-peak
+    shape (glue.prepeak_onset, glue.peak_slip_ratio; 1, 1 bilinear). ``test_time_s``:
+    a lap failing at that time instead of the coupons' ``coupon_time_s`` (with
+    ``rate_exponent``, glue.rate_exponent)."""
     n_free = 8
     # stick A from x=0 to free+overlap at y = 0; stick B overlaps, at y = t
     xa = np.r_[np.linspace(0, free, n_free + 1)[:-1], np.linspace(free, free + overlap,
@@ -337,9 +346,12 @@ def lap_shear(tau_max: float, peel_to_shear: float = 0.5, Kn: float = 150.0,
     m.c_mu = np.full(nc, 0.4)
     m.c_patch = np.zeros(nc, int)
     m.c_breakable = np.ones(nc, bool)
+    m.params["glue_prepeak_onset"], m.params["glue_peak_slip_ratio"] = onset, peak_slip
+    m.params["glue_coupon_time_s"] = coupon_time_s
+    m.c_rate = np.full(nc, float(rate_exponent))
     # grips: the outer ends, clamped (no rotation); the B grip is pulled along +X
     return drive(m, {na[0]: "xyzr", nb[-1]: "yzr"}, nb[-1], 0, rate, max_disp=2.0,
-                 stop_drop=0.2)
+                 stop_drop=0.2, test_time_s=test_time_s)
 
 
 def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2.0,

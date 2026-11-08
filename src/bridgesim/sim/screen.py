@@ -34,7 +34,7 @@ KGF = 9.80665
 @dataclass
 class Limit:
     part: str  # a body, or 'A | B' for a glued joint
-    mode: str  # "glue", "tension", "compression", "shear", "buckling", "plate ..."
+    mode: str  # "glue", "bearing", "tension", "compression", "shear", "buckling", "plate ..."
     utilisation: float  # at the reference load
     load_kgf: float  # plate load at which it reaches its limit (linear)
     where_mm: tuple[float, float, float]
@@ -122,6 +122,15 @@ def _beam_K(m: Model) -> np.ndarray:
     return K
 
 
+def _unglued(m: Model) -> np.ndarray:
+    """The glue points of faces that touch but are not glued (glue_factor 0: the crush
+    starts them broken, bearing and sliding with friction only)."""
+    d0 = m.params.get("c_d0")
+    if d0 is None or len(d0) != len(m.c_a):
+        return np.zeros(len(m.c_a), bool)
+    return np.asarray(d0) >= 1.0
+
+
 def _block(Rm: np.ndarray, k: int) -> np.ndarray:
     """Block-diagonal matrix of k copies of the 3 x 3 rotation Rm (global -> local)."""
     T = np.zeros((3 * k, 3 * k))
@@ -134,7 +143,6 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
           tie_tol_mm: float = 1.0) -> dict:
     """Assemble and solve. Returns the nodal displacements (n, 6), the plate's
     displacement, and the pieces needed to evaluate utilisations."""
-    from scipy.sparse.linalg import spsolve
 
     n = m.n_nodes
     asm = _Assembler(n)
@@ -149,7 +157,10 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
         T = _block(m.s_E0[e].T, 6)
         dofs = np.concatenate([6 * nd + np.arange(6) for nd in m.s_nodes[e]])
         asm.add(dofs, T.T @ m.s_K[e] @ T)
+    unglued = _unglued(m)
     for i in range(len(m.c_a)):
+        if unglued[i]:  # touching, not glued: bears in compression only (below)
+            continue
         nrm = m.c_n0[i] / max(np.linalg.norm(m.c_n0[i]), 1e-12)
         P = np.outer(nrm, nrm)
         k3 = m.c_area[i] * (m.c_Kn[i] * P + m.c_Ks[i] * (np.eye(3) - P))
@@ -165,19 +176,45 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
             asm.spring(m, int(m.k_a[i]), int(m.k_b[i]),
                        m.k_EA[i] / max(m.k_L0[i], 1e-9) * np.outer(t, t))
     # contacts, compression only (solved again without the ones that would pull, until
-    # none does): the points resting on the platform, held in every direction (friction
-    # sticks under a linear load) while they press on it, and the loading plate, a rigid
+    # none does): the points resting on the platform, held in every direction while they
+    # press on it (friction sticks), unless the bridge's thrust at one end is more than
+    # friction holds (contact.friction_platform x the reaction there): that end slides
+    # along the span (pinned at one end, a roller at the other; held everywhere a truss
+    # read as an arch, 42 % too stiff on a light truss); and the loading plate, a rigid
     # body bearing on the deck points under it, which tilts freely on the jack's
     # hemisphere (the jack holds it across and against turning)
     contacts: list[tuple[np.ndarray, np.ndarray, np.ndarray, float]] = []
     sup = np.where(m.p_support)[0] if len(m.p_support) else np.zeros(0, int)
+    sup_T = []
     for i in sup:
         att = int(m.p_att[i])
         nd = int(m.a_node[att])
         _, T = _att_T(m, att)
         dofs = 6 * nd + np.arange(6)
+        sup_T.append(T)
         # opening = the point rising off the platform
         contacts.append((dofs, T.T @ (k_contact * np.eye(3)) @ T, T[1].copy(), 1.0))
+    sup_x = np.array([float((m.X[m.a_node[m.p_att[i]]] + m.a_r0[m.p_att[i]])[0])
+                      for i in sup]) if len(sup) else np.zeros(0)
+    mu = float(m.params.get("friction_platform", 0.2))
+    # faces that touch but are not glued (glue_factor 0: a cut end, a part only resting
+    # on another) bear across their faces while pressed, and hold along them as friction
+    # sticks (as the platform's contacts do: a loading bar resting on two chords is held
+    # in place, not left free to slide, which left the linear system all but singular
+    # and a published truss's period at 5.7 s: the realism review of round 21), and
+    # open freely
+    for i in np.where(unglued)[0]:
+        na, Ta = _att_T(m, int(m.c_a[i]))
+        nb, Tb = _att_T(m, int(m.c_b[i]))
+        if na == nb:
+            continue
+        nrm = m.c_n0[i] / max(np.linalg.norm(m.c_n0[i]), 1e-12)
+        T = np.hstack([-Ta, Tb])
+        B = nrm @ T  # opening: B . u > 0
+        P = np.outer(nrm, nrm)
+        k3 = m.c_area[i] * (m.c_Kn[i] * P + m.c_Ks[i] * (np.eye(3) - P))
+        dofs = np.r_[6 * na + np.arange(6), 6 * nb + np.arange(6)]
+        contacts.append((dofs, T.T @ k3 @ T, B, 1.0))
     P_ = m.plate_node
     q_on = []
     if P_ >= 0 and len(m.q_att):
@@ -185,7 +222,11 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
         h = m.plate_half
         pts = m.X[m.a_node[m.q_att]] + m.a_r0[m.q_att]
         loc = pts - Xp  # plate frame = global at the start
-        under = (np.abs(loc[:, 0]) <= h[0] + 1e-6) & (np.abs(loc[:, 2]) <= h[2] + 1e-6)
+        # the deck points under the plate's footprint, at or below its underside: parts
+        # above it (top struts, the top chords' bracing) are what the plate slides in
+        # under, not what it rests on (the crush's plate is a box, touched from below)
+        under = ((np.abs(loc[:, 0]) <= h[0] + 1e-6) & (np.abs(loc[:, 2]) <= h[2] + 1e-6)
+                 & (loc[:, 1] <= -h[1] + tie_tol_mm))
         if under.any():
             top = pts[under, 1].max()
             q_on = np.where(under & (pts[:, 1] >= top - tie_tol_mm))[0]
@@ -204,7 +245,7 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
     K0 = asm.matrix()
     diag = K0.diagonal()
     scale = float(np.mean(np.abs(diag[diag != 0]))) if np.any(diag) else 1.0
-    from scipy.sparse import coo_matrix, diags
+    from scipy.sparse import diags
 
     K0 = K0 + diags(np.full(6 * n, 1e-9 * scale))  # loose debris, unused rotations
     f = np.zeros(6 * n)
@@ -212,6 +253,57 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
         f[6 * P_ + 1] = -load_N
     active = np.ones(len(contacts), bool)
     u = np.zeros(6 * n)
+    slide = np.zeros(len(sup), bool)  # supports free to slide along the span
+    for _pass in range(3):
+        for k_s in range(len(sup)):
+            kx = 0.0 if slide[k_s] else k_contact
+            T = sup_T[k_s]
+            contacts[k_s] = (contacts[k_s][0], T.T @ np.diag([kx, k_contact, k_contact]) @ T,
+                             contacts[k_s][2], 1.0)
+        u, active, K = _solve_contacts(K0, f, contacts, active)
+        if not len(sup):
+            break
+        # the reactions at the supports that bear, by end of the bridge
+        uu = np.array([sup_T[k_s] @ u[contacts[k_s][0]] for k_s in range(len(sup))])
+        V = np.where(active[:len(sup)], -k_contact * uu[:, 1], 0.0)
+        H = np.where(active[:len(sup)] & ~slide, -k_contact * uu[:, 0], 0.0)
+        mid = 0.5 * (sup_x.min() + sup_x.max())
+        ratio = {}
+        for end, sel in (("lo", sup_x < mid), ("hi", sup_x >= mid)):
+            if sel.any() and not slide[sel].all():
+                ratio[end] = abs(H[sel].sum()) / max(V[sel].sum(), 1e-9)
+        over = {e: r for e, r in ratio.items() if r > mu}
+        if not over or len(ratio) < 2:
+            break
+        end = max(over, key=over.get)  # that end slides; the other keeps the bridge
+        slide |= (sup_x >= mid) if end == "hi" else (sup_x < mid)
+    u = u.reshape(n, 6)
+    # how far the points the plate rests on went down (the bridge under the plate): the
+    # plate's own drop is that, unless it rests on a line (a loading bar across two
+    # chords), where it pivots freely in a linear solve and its drop means nothing
+    deck_dy = 0.0
+    if len(q_on):
+        ys = []
+        for i in q_on:
+            att = int(m.q_att[i])
+            nd, Ta = _att_T(m, att)
+            ys.append(-(Ta @ u[nd])[1])
+        deck_dy = float(np.mean(ys))
+    plate_dy = float(-u[P_, 1]) if P_ >= 0 else 0.0
+    if deck_dy > 0 and plate_dy > 3.0 * deck_dy:
+        plate_dy = deck_dy
+    return {"u": u, "beamT": beamT, "Kb": Kb, "q_on": q_on, "K": K,
+            "n_contact": int(active.sum()), "sliding_supports": int(slide.sum()),
+            "plate_dy": plate_dy, "deck_dy": deck_dy}
+
+
+def _solve_contacts(K0, f, contacts, active):
+    """Solve with the compression-only contacts (an active set, at most 8 passes)."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.linalg import spsolve
+
+    u = np.zeros(len(f))
+    K = K0
     for _ in range(8):
         rows, cols, vals = [], [], []
         for (dofs, Kc, _B, _s), on in zip(contacts, active, strict=True):
@@ -232,14 +324,52 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
         if np.array_equal(new, active):
             break
         active = new
-    u = u.reshape(n, 6)
-    return {"u": u, "beamT": beamT, "Kb": Kb, "q_on": q_on,
-            "n_contact": int(active.sum()),
-            "plate_dy": float(-u[P_, 1]) if P_ >= 0 else 0.0}
+    return u, active, K
+
+
+def modes(m: Model, sol: dict, k: int = 6) -> list[dict]:
+    """The lowest natural frequencies of the bridge standing on its supports with the
+    loading plate on its deck (the stiffness of :func:`solve`, its contacts as they bear
+    under the load; the model's lumped masses, the plate's included), and for each mode
+    the parts that move most (their share of its kinetic energy): what a tap test of the
+    built bridge measures (a phone's accelerometer or microphone), so its stick and glue
+    stiffness and its support can be checked before the crush."""
+    from scipy.sparse import diags
+    from scipy.sparse.linalg import eigsh
+
+    n = m.n_nodes
+    mv = np.zeros(6 * n)
+    mv[0::6] = mv[1::6] = mv[2::6] = np.maximum(m.mass, 1e-12)
+    rot = np.maximum(np.asarray(m.rot_inertia, float), 1e-12)
+    mv[3::6] = mv[4::6] = mv[5::6] = rot
+    K = sol["K"].tocsc()
+    try:
+        vals, vecs = eigsh(K, k=min(k + 6, 6 * n - 2), M=diags(mv), sigma=0.0, which="LM")
+    except Exception:  # noqa: BLE001 - a singular or tiny model: no modes
+        return []
+    out = []
+    names = [b.name for b in m.bodies]
+    for lam, v in sorted(zip(vals, vecs.T, strict=True), key=lambda t: t[0]):
+        f = float(np.sqrt(max(lam, 0.0)) / (2 * np.pi))
+        u = v.reshape(n, 6)[:, :3]
+        ke = mv[0::6] * (u**2).sum(1)
+        if f < 1.0 or ke.sum() <= 0:  # a loose part or a rigid-body motion
+            continue
+        share: dict[str, float] = {}
+        for i in np.argsort(ke)[::-1][:200]:
+            b = int(m.node_body[i]) if i < len(m.node_body) else -1
+            nm = names[b] if 0 <= b < len(names) else "loading plate"
+            share[nm] = share.get(nm, 0.0) + float(ke[i] / ke.sum())
+        top = sorted(share.items(), key=lambda kv: -kv[1])[:3]
+        out.append({"frequency_hz": round(f, 1),
+                    "moves": [f"{nm} ({sh:.0%})" for nm, sh in top]})
+        if len(out) >= k:
+            break
+    return out
 
 
 def utilisations(m: Model, sol: dict, load_N: float, ply=None,
-                 peak_over_avg: float = 1.155) -> list[Limit]:
+                 peak_over_avg: float = 1.065) -> list[Limit]:
     """Every joint's, member's and plate's utilisation at ``load_N``."""
     from bridgesim.sim import shell as shellmod
 
@@ -258,6 +388,15 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
         fT = np.zeros((len(m.patches), 3))
         capN = np.zeros(len(m.patches))
         capT = np.zeros(len(m.patches))
+        # bearing: the wood under a face pressed together (glued or dry) starting to
+        # crush where its pressure first reaches what the grain there takes (Hankinson,
+        # glue_fc): the peak over the face's glue points, as a face pressed off-centre
+        # crushes at its edge first
+        uB = np.zeros(len(m.patches))
+        fc = np.asarray(m.params.get("glue_fc", np.zeros(len(m.c_a))), float)
+        if len(fc) != len(m.c_a):
+            fc = np.zeros(len(m.c_a))
+        unglued = _unglued(m)
         for i in range(len(m.c_a)):
             if not m.c_breakable[i]:
                 continue
@@ -266,8 +405,12 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
             d = ub - ua
             nrm = m.c_n0[i] / max(np.linalg.norm(m.c_n0[i]), 1e-12)
             dn = float(d @ nrm)
-            dt = d - dn * nrm
             p = int(m.c_patch[i])
+            if fc[i] > 0:
+                uB[p] = max(uB[p], m.c_Kn[i] * max(-dn, 0.0) / fc[i])
+            if unglued[i]:
+                continue
+            dt = d - dn * nrm
             fN[p] += m.c_area[i] * m.c_Kn[i] * dn
             fT[p] += m.c_area[i] * m.c_Ks[i] * dt
             capN[p] += m.c_area[i] * m.c_sig[i] / peak_over_avg
@@ -277,8 +420,12 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
                 continue
             ut = math.hypot(max(fN[p], 0.0) / max(capN[p], 1e-9),
                             float(np.linalg.norm(fT[p])) / capT[p])
-            add(f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}", "glue", ut,
-                pa.centroid)
+            add(f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
+                "wood" if pa.kind == "solid" else "glue", ut, pa.centroid)
+        for p, pa in enumerate(m.patches):
+            if uB[p] > 0:
+                add(f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}", "bearing",
+                    uB[p], pa.centroid)
     # members: fibre stresses, shear, buckling over the member's length
     if len(m.b_i):
         A = m.b_fA.sum(1)
