@@ -196,7 +196,7 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
         contacts.append((dofs, T.T @ (k_contact * np.eye(3)) @ T, T[1].copy(), 1.0))
     sup_x = np.array([float((m.X[m.a_node[m.p_att[i]]] + m.a_r0[m.p_att[i]])[0])
                       for i in sup]) if len(sup) else np.zeros(0)
-    mu = float(m.params.get("friction_platform", 0.35))
+    mu = float(m.params.get("friction_platform", 0.2))
     # faces that touch but are not glued (glue_factor 0: a cut end, a part only resting
     # on another) bear across their faces while pressed, and hold along them as friction
     # sticks (as the platform's contacts do: a loading bar resting on two chords is held

@@ -763,7 +763,7 @@ def sensitivity(cad: CadArg, overrides: OverridesOpt = None, material: MaterialO
                 param: Annotated[list[str] | None, typer.Option(
                     "--param", help="A value to vary (repeat the option; any key of "
                                     "materials/simulation.yaml or material.<key>). "
-                                    "Default: the 18 that usually matter most")] = None,
+                                    "Default: the 22 that usually matter most")] = None,
                 seeds: Annotated[int, typer.Option(
                     help="Average the effect over this many seeds (paired)")] = 1,
                 units: UnitsOpt = None, up_axis: UpOpt = "y", span_axis: SpanOpt = "x",

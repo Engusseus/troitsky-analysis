@@ -237,7 +237,14 @@ def _outward(n: np.ndarray, c: np.ndarray) -> float:
     """How far the normal n of a body centred at c (from the bridge's centre) faces away
     from the bridge's centre (its largest component's sign, for a body centred on the
     centre's plane): a gusset's outer face, whatever the CAD origin (the adversarial
-    review of round 23: moving a bridge 300 mm changed which ply its gussets glue on)."""
+    review of round 23: moving a bridge 300 mm changed which ply its gussets glue on). A
+    plate lying flat (its normal within 45 degrees of y, up) faces up, whatever its
+    height: a deck's first-named ply is its bottom one, on what it rests on (the
+    adversarial review of round 24: whether a deck sat above or below the bridge's
+    mid-height decided it, and a taller truss turned the floor beams' laps on its 0 ply
+    into laps on its 90 ply)."""
+    if abs(float(n[1])) > math.sqrt(0.5) * float(np.linalg.norm(n)):
+        return float(n[1])
     d = float(np.dot(n, c))
     if abs(d) > 1e-6 * max(float(np.linalg.norm(c)), 1.0):
         return d
@@ -367,9 +374,12 @@ def _pca_shape(b: CadBody, layup: Layup, forced: str | None) -> Shape:
 # ------------------------------------------------------------------------------ contacts
 
 
-def find_patches(bodies: list[CadBody]) -> list[tuple[int, int, Polygon, np.ndarray,
-                                                       np.ndarray, np.ndarray, np.ndarray]]:
-    """(body a, body b, overlap polygon in a's face basis, origin, e1, e2, normal a->b)."""
+def find_patches(bodies: list[CadBody], outlines: list | None = None
+                 ) -> list[tuple[int, int, Polygon, np.ndarray, np.ndarray, np.ndarray,
+                                 np.ndarray]]:
+    """(body a, body b, overlap polygon in a's face basis, origin, e1, e2, normal a->b).
+    ``outlines``: if given, the two faces' own outlines in that basis are appended to it,
+    one (a's, b's) pair per patch (how far a gusset reaches past a member lapped on it)."""
     lo = np.array([b.mesh.bbox[0] for b in bodies]) - CONTACT_TOL_MM
     hi = np.array([b.mesh.bbox[1] for b in bodies]) + CONTACT_TOL_MM
     faces = []
@@ -403,6 +413,8 @@ def find_patches(bodies: list[CadBody]) -> list[tuple[int, int, Polygon, np.ndar
                     inter = pa.intersection(pbp)
                     if inter.area >= MIN_PATCH_MM2:
                         out.append((ia, ib, inter, oa, e1, e2, na))
+                        if outlines is not None:
+                            outlines.append((pa, pbp))
     return out
 
 
@@ -808,27 +820,30 @@ VENEER_ANGLE_DEG = (0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0)
 VENEER_SHEAR_RATIO = (1.0, 0.89, 0.69, 0.625, 0.656, 0.594, 0.719)
 
 
-def lap_crossing_factor(cos_t: float, wood_share: float = 0.5) -> float:
-    """Shear strength of a glued lap whose two parts' grains cross at an angle (cos_t
-    between them, in the glue plane) over that of a lap of parallel sticks (what tau_g's
-    coupon is): 1 - w (1 - f(theta)), f the face ply's shear strength at that angle to
-    its grain over that along it (birch veneer, VENEER_SHEAR_RATIO: 0.62 at 45 degrees,
-    0.72 at 90) and w the share of the lap that fails in the wood (glue.wood_failure_share).
-    A bonded joint holds what its weakest component holds: where the wood next to the
-    glue gives way, the face ply's angle sets the strength (glued birch-plywood laps on
-    glulam failed 80 % in the face veneer at 30-90 degrees and followed 0.88 x the
-    veneer's strength at its angle + 1.3 MPa, Wang et al. 2024; gusset coupons failed in
-    the face veneer's rolling shear, Debertolis et al. 2025); where the glue line itself
-    gives way (a starved hand-made lap), the angle matters little (welded wood, Rheme et al.
-    2016; plywood edges glued at 0 or 90 degrees, Frolovs et al. 2017). Pine blocks with a
-    strong adhesive, failing in the wood, went down to 0.38 at 90 degrees (Padilha et al.
-    2023): pine's rolling shear is lower than birch's. A lap's wood-failure share is what
-    its broken faces show (estimate it to 10 % on each broken coupon)."""
+def face_shear_strength(f_v: float, f_rolling: float, cos_t: float) -> float:
+    """Shear strength of the ply a glue line lies on, sheared at an angle to its grain
+    (cos_t between the force and the grain, in the glue plane): the lower of birch
+    veneer's measured ratio at that angle x f_v (VENEER_SHEAR_RATIO: 0.62 at 45 degrees,
+    0.72 at 90, with a dip at 45-75 degrees) and Hankinson's form between f_v along the
+    grain and the rolling shear f_rolling across it (4.0 of 8 at 90 degrees)."""
     c = min(abs(cos_t), 1.0)
-    w = min(max(wood_share, 0.0), 1.0)
     deg = math.degrees(math.acos(c))
-    f = float(np.interp(deg, VENEER_ANGLE_DEG, VENEER_SHEAR_RATIO))
-    return 1.0 - w * (1.0 - f)
+    r = float(np.interp(deg, VENEER_ANGLE_DEG, VENEER_SHEAR_RATIO))
+    return min(f_v * r, hankinson(f_v, f_rolling, c))
+
+
+def panel_factor(h_f: float, b_w: float, sides: int) -> float:
+    """What a panel (a gusset) passes in rolling shear under a part glued on its face
+    (a member: the web) as a share of its rolling shear strength: (4 sides h_f / b_w)^0.8,
+    at most 1, h_f the panel's thickness, b_w the glued width across the force, sides
+    the number of sides on which the panel reaches past the web (EN 1995-1-1 9.1.2 eq.
+    9.14 for glued thin-flanged beams: 8 h_f inside a panel, 4 h_f at its edge, the
+    U-section; APA PDS Supplement 3 3.6.4: half the rolling shear at the edge stringers).
+    A panel that reaches past the web on neither side is sheared evenly over the glued
+    face, as a lap of two sticks is (1)."""
+    if sides <= 0 or b_w <= 0 or h_f <= 0:
+        return 1.0
+    return float(min(1.0, (4.0 * sides * h_f / b_w) ** 0.8))
 
 
 def gap_strength(gap: float, fill: float = 0.15) -> float:
@@ -905,6 +920,53 @@ def _laminated_member(name: str, sh, lam, L: float, mat: Material, o: dict,
             q["id"] == f"butt_joints:{g}" for q in questions):
         questions.append(_butt_question(g, name, L, Ls, s, kt))
     return kt, fv
+
+
+def bearing_depth(ell: float, b: float, h: float, ca: float = 1.0, cb: float = 0.33
+                  ) -> float:
+    """The depth of wood that would deform as much as a part ``h`` deep does under a
+    face ``ell`` long and ``b`` wide pressed into it, the stress spreading at slope
+    ``ca`` along ``ell`` and ``cb`` along ``b`` (45 degrees along the grain, ~1/3 across
+    it): ell b times the integral over the depth of 1 / ((ell + 2 ca z)(b + 2 cb z))
+    (Blass & Gorlacher 2004, with spread across the grain added)."""
+    if h <= 0:
+        return 0.0
+    z = np.linspace(0.0, h, 201)
+    f = ell * b / ((ell + 2.0 * ca * z) * (b + 2.0 * cb * z))
+    return float(np.trapezoid(f, z))
+
+
+def butt_open_compression(n: int, s: float, Ls: float, t: float, tol: float = 1.0) -> float:
+    """Compression strength of ``n`` plies whose butt joints stand open (their gaps never
+    close) over that of plies without joints: at the weakest section the cut plies carry
+    nothing and each ply next to a cut one only y(d) = sqrt(1 - (1 - min(d / 50 t, 1))^2)
+    of its share, d the distance to its own nearest joint (Freas & Selbo 1954, USDA Tech.
+    Bull. 1069, fig. 61: 0.6 at 10 t, 0.8 at 20 t, 0.92 at 30 t; open butt joints carry
+    compression only after considerable deformation, p. 93): a 13-ply brick pattern of
+    2 mm plies 0.42, joints 40 mm apart ply to ply 0.89. Ply i's joints at i s, every
+    ``Ls``."""
+    if n < 2 or Ls <= 0 or t <= 0:
+        return 1.0
+    pos = np.mod(np.arange(n) * s, Ls)
+
+    def dist(a: float, b: float) -> float:
+        d = abs(a - b) % Ls
+        return min(d, Ls - d)
+
+    worst = 1.0
+    for x0 in np.unique(np.round(pos, 6)):
+        cut = {i for i in range(n) if dist(pos[i], x0) <= tol}
+        tot = 0.0
+        for i in range(n):
+            if i in cut:
+                continue
+            if i - 1 in cut or i + 1 in cut:
+                x = min(dist(pos[i], x0) / (50.0 * t), 1.0)
+                tot += math.sqrt(max(0.0, 1.0 - (1.0 - x) ** 2))
+            else:
+                tot += 1.0
+        worst = min(worst, tot / n)
+    return float(worst)
 
 
 def butt_stiffness_factor(n: int, L: float, Ls: float, stagger: float | None, E: float,
@@ -1043,8 +1105,22 @@ def moisture_adjusted(mat: Material, sp: SimParams) -> tuple[Material, SimParams
 LAMINATION_COVER = 0.5  # share of the smaller plate two plates glued face to face cover
 # to be taken as a lamination (the middle of the ramp from a hand-made lap to one)
 LAMINATION_RAMP = (0.3, 0.7)
-BEARING_DEPTH_SHARE = 0.5  # depth a face's normal stress reaches, over sqrt(its area)
+BEARING_DEPTH_SHARE = 0.5  # depth an end-grain face's normal stress reaches, over
+# sqrt(its area) (side grain: bearing_depth)
 DEPTH_ELEMENTS = 2.0  # a member's beam elements at most this x its depth at standard
+DEPTH_ELEMENTS_THIN = 1.33  # ... and this x for a member shallower than THIN_MEMBER_MM
+THIN_MEMBER_MM = 10.0
+
+
+def element_depth_cap(depth: float, mesh_scale: float) -> float:
+    """The longest beam element a member ``depth`` mm deep gets: DEPTH_ELEMENTS x its
+    depth (DEPTH_ELEMENTS_THIN below THIN_MEMBER_MM) at standard and at quick, in
+    proportion finer at fine. Quick does not coarsen a member's elements past
+    standard's (the realism review of round 24: a light truss of 6 mm members read about
+    half at quick what it read at fine); a light member's are as long as fine's were at
+    round 24 (6 mm members: 8 mm elements)."""
+    k = DEPTH_ELEMENTS_THIN if depth < THIN_MEMBER_MM else DEPTH_ELEMENTS
+    return k * depth * min(mesh_scale / 0.75, 1.0)
 
 
 def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
@@ -1096,12 +1172,15 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                  float(sp.values.get("wood.butt_bear_gap_mm", 0.5)),
                  float(sp.values.get("wood.butt_open_gap_mm", 1.0)))
 
-    def butt_compression(name: str, kt: float, o: dict) -> float:
+    def butt_compression(name: str, kt: float, o: dict, n: int = 0,
+                         L: float = 0.0) -> float:
         """Compression-strength factor of a laminated member or plate with butt joints:
         a joint whose gap closes before the member is damaged bears, and the member keeps
         wood.butt_bearing_efficiency (0.95) of its strength; a gap that does not close
-        leaves the ply's force to go round the joint through the glue lines as in
-        tension, and the member keeps its butt-joint tension factor ``kt``. In 2 mm
+        leaves the ply's force to go round the joint through the glue lines: a member of
+        ``n`` plies ``L`` long keeps its open joints' net section with the plies beside
+        them weakened (butt_open_compression, USDA TB 1069), a plate its butt-joint
+        tension factor ``kt``. In 2 mm
         veneer laminates gaps of 0.25 and 0.5 mm close early after first yield and 1 mm
         gaps never do (Berard et al. 2011, J Wood Sci 57:107); tight butt joints keep
         0.94-0.96 of a jointless laminate's compression strength (Dansoh et al. 2003, J
@@ -1112,6 +1191,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         if kt >= 1.0:
             return 1.0
         eff, g0, g1 = butt_bear
+        Ls = mat.stick.length_mm
+        if n >= 2 and L > 1.02 * Ls and o.get("butt_stagger_mm") != 0:
+            kt = butt_open_compression(n, float(o.get("butt_stagger_mm") or Ls / 2), Ls,
+                                       mat.stick.thickness_mm)
         if o.get("butt_gap_mm") is not None:
             g = float(o["butt_gap_mm"])
         else:
@@ -1223,7 +1306,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         shapes.append(sh)
 
     # ---------------------------------------------------------------- contacts
-    raw_patches = find_patches(bodies)
+    raw_outlines: list[tuple[Polygon, Polygon]] = []
+    raw_patches = find_patches(bodies, raw_outlines)
     # plates of narrow arms become frames (where their arms carry what is glued to them)
     for bi, sh in enumerate(shapes):
         forced = ov.for_body(bodies[bi].name).get("kind")
@@ -1564,7 +1648,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             L = s1 - s0
             kt, fv_lam = _laminated_member(b.name, sh, lam, L, mat, o, questions,
                                            **il_strength)
-            kc = butt_compression(b.name, kt, o)
+            kc = butt_compression(b.name, kt, o,
+                                  len(lam.angles) if sh.layup.kind == "laminate" else 0, L)
             # butt joints cost stiffness too (shear lag round each joint)
             kE = butt_stiffness_factor(
                 len(lam.angles) if sh.layup.kind == "laminate" else 1, L,
@@ -1574,13 +1659,12 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             fv_in = inplane_split_strength(lam.angles, mat.f_v_MPa.value,
                                            0.5 * min(ply.f_t, ply.f_c))
             # uniform elements; joints attach to the nearest node through a rigid arm. No
-            # longer than DEPTH_ELEMENTS x the member's depth at standard (in proportion at
-            # the other fidelities): a light bridge's 6 mm members had 22 mm elements at
-            # standard and read 13 % below fine (the realism review of round 20); members
-            # 20 mm deep and more are unchanged
+            # longer than element_depth_cap: a light bridge's 6 mm members had 22 mm
+            # elements at standard and read 13 % below fine (the realism review of round
+            # 20); members 20 mm deep and more change little
             h = min(30.0 * mesh_scale, L / 4 * min(mesh_scale, 1.0)) if L >= 60 \
                 else max(L / 2, 1e-3)
-            h = min(h, DEPTH_ELEMENTS * min(T, Wp) * mesh_scale / 0.75)
+            h = min(h, element_depth_cap(min(T, Wp), mesh_scale))
             n_el = max(2, int(math.ceil(L / h - 1e-9)))
             st2 = list(np.linspace(s0, s1, n_el + 1))
             st2 = np.array(st2)
@@ -1811,7 +1895,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     patch_pts3: list[tuple[int, int, np.ndarray, np.ndarray, float, np.ndarray,
                            np.ndarray]] = []
     face_of: dict[int, np.ndarray] = {}  # each patch's outline (for fit-up gaps)
-    for ia, ib, inter, oa, e1, e2, na in raw_patches:
+    # each patch's overlap and its two faces' outlines in its own basis (how far a gusset
+    # reaches past a member lapped on it: panel_factor)
+    sides_of: dict[int, tuple] = {}
+    for k_raw, (ia, ib, inter, oa, e1, e2, na) in enumerate(raw_patches):
         if shapes[ia].kind in ("ignore", "cable") or shapes[ib].kind in ("ignore", "cable"):
             continue
         lead = [b_ for b_ in (ia, ib) if shapes[b_].kind == "shell"]
@@ -1851,6 +1938,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             hull = np.asarray(inter.convex_hull.exterior.coords)
             face_of[len(patch_pts3)] = oa + np.outer(hull[:, 0], e1) + np.outer(hull[:, 1],
                                                                               e2)
+        sides_of[len(patch_pts3)] = (inter, e1, e2) + tuple(raw_outlines[k_raw])
         patch_pts3.append((ia, ib, pts3, na, inter.area, cad_c, wts))
 
     # ---------------------------------------------------------------- glue springs
@@ -1872,7 +1960,30 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     end_factor = sp.values.get("glue.end_grain_factor", 0.5)
     end_tension = sp.values.get("glue.end_grain_tension_factor", 0.0)
     t90_m = sp.values.get("wood.t90_weibull_m", 0.0)
-    wood_share = sp.values.get("glue.wood_failure_share", 0.0)
+    f_roll = float(sp.values.get("wood.f_rolling_MPa", 4.0))
+    spread_c = float(sp.values.get("wood.bearing_spread_across", 0.33))
+    g_roll = float(sp.values.get("wood.G_rolling_MPa", 150.0))
+    # each body's glued faces: (patch, outward normal, centre), to tell a member glued on
+    # both its faces (between two gussets) from one glued on one
+    faces_on: dict[int, list[tuple[int, np.ndarray, np.ndarray]]] = {}
+    for k_, (ia_, ib_, p3_, n_, *_r) in enumerate(patch_pts3):
+        c_ = np.asarray(p3_, float).reshape(-1, 3)  # its glue points (a long face: many)
+        faces_on.setdefault(ia_, []).append((k_, np.asarray(n_, float), c_))
+        faces_on.setdefault(ib_, []).append((k_, -np.asarray(n_, float), c_))
+
+    def glued_behind(k: int, bi: int, p: np.ndarray, n: np.ndarray, area: float) -> bool:
+        """Whether a part glued on a face of outward normal n at p is glued or bears on
+        its opposite face there too (a member between two gussets, a stub on its tenon,
+        a stringer under a deck): a glue point of such a face within the face's width."""
+        r = math.sqrt(max(area, 1e-9))
+        for kk, nn, cc in faces_on.get(bi, ()):
+            if kk == k or float(nn @ n) >= -0.9:
+                continue
+            d = cc - p
+            d = d - np.outer(d @ n, n)
+            if float(np.min(np.linalg.norm(d, axis=1))) < r:
+                return True
+        return False
 
     def transfer_cap(bi: int, nrm: np.ndarray) -> float:
         """The average shear a joint on body bi's ply face can pass into its laminate:
@@ -1913,13 +2024,46 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         return [math.cos(math.radians(a)) * e1 + math.sin(math.radians(a)) * w
                 for a in sh.layup.angles or [0.0]]
 
-    def bearing_at(bi: int, p: np.ndarray, n: np.ndarray) -> tuple[float, float]:
-        """grain_bearing with the grain at the point p (grain_at)."""
+    def bearing_at(bi: int, p: np.ndarray, n: np.ndarray, k: int | None = None,
+                   area: float = 0.0) -> tuple[float, float]:
+        """grain_bearing with the grain at the point p (grain_at). With the patch ``k``
+        (a glued or bearing face of outward normal n): pressed across the grain under a
+        face shorter than the part, the fibres beside it help, f_c90 x
+        sqrt(l_ef / l) at most 4 (prEN 1995-1-1:2021 8.1.5 via Aloisio et al. 2023, Eur.
+        J. Wood Wood Prod. 81:633; van der Put's model, the only one of several to
+        explain 685 tests, Leijten et al. 2010): l the face's length along the grain,
+        l_ef that spread at 45 degrees on each side over the part's depth where it is
+        borne behind the face, 0.4 x its depth where it is not, as far as the part
+        reaches (the literature review of round 24: 1.3x at Bridge_v10's knee, 1.8x at
+        the diagonal's foot)."""
         gs = grain_at(bi, p)
         if not gs:
             return ply.f_c90, 0.0
         cs = [abs(float(g @ n)) for g in gs]
-        return (float(np.mean([hankinson(ply.f_c, ply.f_c90, c) for c in cs])),
+        f90 = [ply.f_c90] * len(gs)
+        if k is not None and k in sides_of:
+            inter, e1, e2 = sides_of[k][:3]
+            outl = sides_of[k][3] if bi == patch_pts3[k][0] else sides_of[k][4]
+            hull = np.asarray(inter.convex_hull.exterior.coords) \
+                if inter.convex_hull.geom_type == "Polygon" else None
+            ring = np.asarray(outl.convex_hull.exterior.coords) \
+                if outl.convex_hull.geom_type == "Polygon" else None
+            H = part_depth(bi, n)
+            h_ef = H if glued_behind(k, bi, p, n, area) else 0.4 * H
+            for i, g in enumerate(gs):
+                gi = g - float(g @ n) * n
+                if cs[i] > 0.7 or hull is None or ring is None or \
+                        float(np.linalg.norm(gi)) < 1e-6:
+                    continue
+                gi = gi / np.linalg.norm(gi)
+                g2 = np.array([float(gi @ e1), float(gi @ e2)])
+                lo, hi = float((hull @ g2).min()), float((hull @ g2).max())
+                rlo, rhi = float((ring @ g2).min()), float((ring @ g2).max())
+                ell = max(hi - lo, 0.5)
+                l_ef = ell + min(h_ef, max(lo - rlo, 0.0)) + min(h_ef, max(rhi - hi, 0.0))
+                f90[i] = ply.f_c90 * min(math.sqrt(l_ef / ell), 4.0)
+        return (float(np.mean([hankinson(ply.f_c, f, c) for f, c in zip(f90, cs,
+                                                                         strict=True)])),
                 float(np.mean([end_grain_share(c, end_factor) for c in cs])))
 
     def tension_at(bi: int, p: np.ndarray, n: np.ndarray, solid: bool = False,
@@ -1946,20 +2090,114 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             return [gs[-1]] if side > 0 else [gs[0]]
         return gs
 
-    def crossing(i1: int, i2: int, p: np.ndarray, n: np.ndarray) -> float:
-        """Lap strength over a lap of parallel sticks for the angle at which the grains
-        of the two plies the glue lies on cross in the glue plane (lap_crossing_factor),
-        averaged over the plies a member's edge shows; 1 where either side meets the glue
-        end-on or has no grain known."""
-        ga, gb = face_grain(i1, p, n), face_grain(i2, p, n)
-        fs = []
-        for g1 in ga:
-            for g2 in gb:
-                u1, u2 = g1 - (g1 @ n) * n, g2 - (g2 @ n) * n
-                l1, l2 = float(np.linalg.norm(u1)), float(np.linalg.norm(u2))
-                fs.append(1.0 if min(l1, l2) < 0.5 else lap_crossing_factor(
-                    abs(float(u1 @ u2)) / (l1 * l2), wood_share))
-        return float(np.mean(fs)) if fs else 1.0
+    def lap_direction(i1: int, i2: int, n: np.ndarray) -> np.ndarray | None:
+        """The direction of the force a lap of normal n passes, in its plane: along the
+        member (a bar's axis, else the smaller part's long axis); None for a member glued
+        end-on."""
+        sh1, sh2 = shapes[i1], shapes[i2]
+        if (sh1.kind == "bar") != (sh2.kind == "bar"):
+            web = i1 if sh1.kind == "bar" else i2
+        else:
+            web = i1 if sh1.Lp * sh1.Wp <= sh2.Lp * sh2.Wp else i2
+        u = shapes[web].u - float(shapes[web].u @ n) * n
+        if float(np.linalg.norm(u)) < 0.5:
+            return None
+        return u / np.linalg.norm(u)
+
+    def part_depth(bi: int, n: np.ndarray) -> float:
+        """How deep a part is across a face of normal n: a member's section (its
+        thickness and width as n meets them, not its outline's projection, which reads
+        an inclined knee 115 mm deep instead of 23), a plate's thickness, a block's
+        extent."""
+        sh = shapes[bi]
+        if sh.kind == "bar":
+            nrm = np.cross(sh.u, sh.w)
+            return abs(float(n @ nrm)) * sh.T + abs(float(n @ sh.w)) * sh.Wp \
+                + abs(float(n @ sh.u)) * sh.Lp
+        if sh.kind in ("shell", "frame") and abs(float(n @ sh.n)) > 0.7:
+            return float(sh.T)
+        return float(np.ptp(bodies[bi].mesh.vertices @ n))
+
+    def shear_compliance(k: int, bi: int, p: np.ndarray, n: np.ndarray, area: float,
+                         u: np.ndarray | None) -> float:
+        """The slip per unit shear stress (mm^3/N) a part adds to a glued face of normal
+        n (its outward one) through its own thickness: the shear falls from the face to
+        nothing across the part, t / (3 G) (Tsai, Oplinger & Morton 1998), half the
+        thickness when the part is glued on its opposite face too (a member between two
+        gussets), the thickness at most the face's width; G of each ply in the plane of
+        the force u and n: G_LT with the grain along the force or along n, the rolling
+        modulus across it (wood.G_rolling_MPa), between them in series (as Hankinson).
+        Beams and plates keep their sections plane, so this is not in them. It
+        reproduces glued crossings of spruce boards (7-9.5 against 8.3 N/mm^3 measured,
+        Flaig & Meyer 2014; the literature review of round 24)."""
+        t = min(part_depth(bi, n), math.sqrt(max(area, 1e-9)))
+        if glued_behind(k, bi, p, n, area):
+            t *= 0.5
+        gs = grain_at(bi, p)
+        if not gs:
+            G = ply.G_LT
+        else:
+            inv = []
+            for g in gs:
+                if u is None:  # the force's direction unknown: both ways in the plane
+                    inv.append(0.5 / ply.G_LT + 0.5 / g_roll)
+                    continue
+                gn = abs(float(g @ n))
+                gu = abs(float(g @ u))
+                across = max(0.0, 1.0 - gn * gn - gu * gu)  # grain across the force
+                inv.append((1.0 - across) / ply.G_LT + across / g_roll)
+            G = 1.0 / float(np.mean(inv))
+        return t / (3.0 * max(G, 1e-9))
+
+    def lap_caps(k: int, i1: int, i2: int, p: np.ndarray, n: np.ndarray
+                 ) -> tuple[float, float, float]:
+        """What the wood on either side of a lap lets through in shear (MPa): the lower of
+        the plies the glue lies on, each sheared at its grain's angle to the force
+        (face_shear_strength), with each side's panel factor (panel_factor: a gusset
+        under a member wider than 8 x its thickness passes less), and the panel factors
+        of the two sides (for their laminates' transfer caps). The force runs along the
+        member: a bar's axis, else the smaller part's long axis. A side meeting the glue
+        end-on is left to the end-grain factor; a member glued end-on takes no lap cap."""
+        u = lap_direction(i1, i2, n)
+        if u is None:
+            return math.inf, 1.0, 1.0
+        v = np.cross(n, u)
+        inter, e1, e2, out1, out2 = sides_of[k]
+        v2 = np.array([float(v @ e1), float(v @ e2)])
+        hull = np.asarray(inter.convex_hull.exterior.coords) \
+            if inter.convex_hull.geom_type == "Polygon" else np.zeros((1, 2))
+        c2 = np.asarray(inter.centroid.coords[0])
+        pv = (hull - c2) @ v2
+        b_w = float(np.ptp(pv))
+        caps, pfs = [], []
+        for bi, outl in ((i1, out1), (i2, out2)):
+            # how far this side's face reaches past the lap across the force, each way
+            sides = 0
+            h_f = float(np.ptp(bodies[bi].mesh.vertices @ n))
+            try:
+                ln = LineString([c2 - 1e4 * v2, c2 + 1e4 * v2]).intersection(outl)
+                segs = list(getattr(ln, "geoms", [ln]))
+                ts = [((np.asarray(g.coords) - c2) @ v2) for g in segs
+                      if g.geom_type == "LineString" and len(g.coords) >= 2]
+                own = [t for t in ts if t.min() <= pv.max() and t.max() >= pv.min()]
+                if own:
+                    lo_, hi_ = min(t.min() for t in own), max(t.max() for t in own)
+                    reach = 2.0 * h_f  # half the 4 h_f a side spreads over
+                    sides = int(pv.min() - lo_ > reach) + int(hi_ - pv.max() > reach)
+            except Exception:  # noqa: BLE001
+                sides = 0
+            pf = panel_factor(h_f, b_w, sides)
+            pfs.append(pf)
+            fs = []
+            for g in face_grain(bi, p, n):
+                gp = g - float(g @ n) * n
+                lg = float(np.linalg.norm(gp))
+                if lg >= 0.5:
+                    fs.append(face_shear_strength(mat.f_v_MPa.value, f_roll,
+                                                  abs(float(gp @ u)) / lg))
+            if fs:
+                caps.append(float(np.mean(fs)) * pf)
+        return (min(caps) if caps else math.inf), pfs[0], pfs[1]
 
     def cross_share(bi: int, p: np.ndarray, n: np.ndarray) -> float:
         """Share of a part's fibres that cross a face inside one piece of wood (1 for a
@@ -1969,22 +2207,58 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             return 1.0
         return float(np.mean([abs(float(g @ n)) ** 2 for g in gs]))
 
-    def wood_normal_stiffness(bi: int, p: np.ndarray, n: np.ndarray, area: float) -> float:
-        """How stiff the wood under a face of normal n is when pressed or pulled normal to
-        it, per mm^2 (N/mm^3): its modulus at its grain's angle to the normal (E_L on end
-        grain, E_T on side grain, Hankinson's form between) over the depth the stress
-        reaches into it, the part's own extent along n or half the face's width
-        (BEARING_DEPTH_SHARE x sqrt(area): a punch on a half-space strains the wood to
-        about its width), whichever is less. A block whose grain is not given bears
-        across it (as its crushing strength does)."""
-        gs = grain_at(bi, p)
-        if gs:
-            E = float(np.mean([hankinson(ply.E_L, ply.E_T, abs(float(g @ n))) for g in gs]))
-        else:
-            E = ply.E_T
-        ext = float(np.ptp(bodies[bi].mesh.vertices @ n))
-        h = max(min(ext, BEARING_DEPTH_SHARE * math.sqrt(max(area, 1e-9))), 0.5)
-        return E / h
+    def wood_normal_stiffness(k: int, bi: int, p: np.ndarray, n: np.ndarray,
+                              area: float) -> float:
+        """How stiff the wood under a face of outward normal n is when pressed or pulled
+        normal to it, per mm^2 (N/mm^3): its modulus at its grain's angle to the normal
+        (E_L on end grain, E_T on side grain, Hankinson's form between) over the depth
+        the stress reaches into it. Pressed across the grain the stress spreads at 45
+        degrees along the grain and at wood.bearing_spread_across across it (none when
+        the face spans the part's width), over the part's depth across the face, or half
+        of it when the part is not borne on its opposite face there (it carries the load
+        away along itself): h_eq = l b / (2 (b - c l)) ln(b (l + 2 h) / (l (b + 2 c h)))
+        for a face l along the grain and b across (Blass & Gorlacher 2004, WCTE: all
+        their glulam tests on one E_90 with it; the literature review of round 24, an
+        orthotropic FE model: -9/+7 % on full-width faces, -6/+16 % on narrower ones,
+        where round 24's depth, min(extent, 0.5 sqrt(area)), was 0.64-2.25x off). End
+        grain: the part's depth, at most half the face's width. A block whose grain is
+        not given bears across it (as its crushing strength does)."""
+        gs = face_grain(bi, p, n) or grain_at(bi, p)
+        H = part_depth(bi, n)
+        if not glued_behind(k, bi, p, n, area):
+            H *= 0.5
+        H = max(H, 0.5)
+        inter, e1, e2 = sides_of[k][:3]
+        outl = sides_of[k][3] if bi == patch_pts3[k][0] else sides_of[k][4]
+        hull = np.asarray(inter.convex_hull.exterior.coords) \
+            if inter.convex_hull.geom_type == "Polygon" else None
+        ring = np.asarray(outl.convex_hull.exterior.coords) \
+            if outl.convex_hull.geom_type == "Polygon" else None
+        ks = []
+        for g in gs or [None]:
+            if g is None:
+                gn, gi = 0.0, None
+            else:
+                gn = abs(float(g @ n))
+                gi = g - float(g @ n) * n
+            E = ply.E_T if g is None else hankinson(ply.E_L, ply.E_T, gn)
+            if g is None or gn > 0.7 or hull is None or float(np.linalg.norm(gi)) < 1e-6:
+                if gn > 0.7:  # end grain: the stress stays in the fibres under the face
+                    h = min(part_depth(bi, n), BEARING_DEPTH_SHARE * math.sqrt(area))
+                else:  # no grain known: as across, spreading both ways
+                    sq = math.sqrt(max(area, 1e-9))
+                    h = bearing_depth(sq, sq, H, spread_c, spread_c)
+                ks.append(E / max(h, 0.5))
+                continue
+            gi = gi / np.linalg.norm(gi)
+            g2 = np.array([float(gi @ e1), float(gi @ e2)])
+            a2 = np.array([-g2[1], g2[0]])
+            ell = max(float(np.ptp(hull @ g2)), 0.5)
+            bw = max(float(np.ptp(hull @ a2)), 0.5)
+            full = ring is not None and bw >= 0.9 * float(np.ptp(ring @ a2))
+            h = bearing_depth(ell, bw, H, 1.0, 0.0 if full else spread_c)
+            ks.append(E / max(h, 0.5))
+        return float(np.mean(ks))
 
     def crush_depth(i: int, n: np.ndarray) -> float:
         ext = float(np.ptp(bodies[i].mesh.vertices @ n))
@@ -1999,17 +2273,17 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     patches: list[Patch] = []
     # the workmanship of the whole build: one factor on every joint of the bridge
     gf_bridge = scatter(sp.values.get("scatter.glue_bridge_cov", 0.0), "glue:bridge")
-    n_pair: dict[tuple[int, int], int] = {}
-    for ia, ib, *_ in patch_pts3:
-        n_pair[(min(ia, ib), max(ia, ib))] = n_pair.get((min(ia, ib), max(ia, ib)), 0) + 1
-    # several patches between the same two bodies: each by its rank along the bridge (its
-    # centre's x, then y, then z, to 1 mm), not by its centre rounded to 10 mm, whose
-    # halves round to even and moved a draw when a part moved 5 mm or was read from STL
-    # instead of SLDPRT (the adversarial review of round 23)
+    # several patches between the same two bodies: each by its rank, the largest first
+    # (to 1 mm^2), then along the bridge (its centre's x, then y, then z, to 1 mm); not by
+    # its centre rounded to 10 mm, whose halves round to even and moved a draw when a part
+    # moved 5 mm or was read from STL instead of SLDPRT (the adversarial review of round
+    # 23); the largest keeps the key of a joint alone between its bodies, so a sliver of
+    # contact gained or lost beside it does not redraw it (round 24)
     by_pair: dict[tuple[int, int], list[tuple[tuple, int]]] = {}
-    for k_, (ia_, ib_, _p, _n, _a, cad_c_, _w) in enumerate(patch_pts3):
+    for k_, (ia_, ib_, _p, _n, a_, cad_c_, _w) in enumerate(patch_pts3):
         by_pair.setdefault((min(ia_, ib_), max(ia_, ib_)), []).append(
-            (tuple(np.floor(np.asarray(cad_c_, float) + 0.5).astype(int).tolist()), k_))
+            ((-int(round(float(a_))),) + tuple(
+                np.floor(np.asarray(cad_c_, float) + 0.5).astype(int).tolist()), k_))
     pair_rank: dict[int, int] = {}
     for lst in by_pair.values():
         for r_, (_c, k_) in enumerate(sorted(lst)):
@@ -2018,10 +2292,9 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         key = "|".join(sorted((bodies[ia].name, bodies[ib].name)))
         # the stream of its random glue strength: a joint alone between its two bodies by
         # their names (an edit that moves it keeps its draw, so ab compares the design,
-        # not new luck at the joint changed); several between the same two bodies also
-        # by where they are (to 10 mm)
-        where = "" if n_pair[(min(ia, ib), max(ia, ib))] == 1 else \
-            f":{pair_rank[k_patch]}"
+        # not new luck at the joint changed); several between the same two bodies, the
+        # largest so, the others also by their rank (pair_rank)
+        where = "" if pair_rank[k_patch] == 0 else f":{pair_rank[k_patch]}"
         gf = gf_bridge * scatter(sp["scatter.glue_cov"], f"glue:{key}{where}")
         g_sc = gf  # the drawn workmanship; the overrides below are the user's own
         gf *= float(ov.for_body(bodies[ia].name).get("glue_factor", 1.0))
@@ -2051,8 +2324,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         del pc
         # the wood on either side crushes, across or along its grain (Hankinson), when
         # the joint is pressed together; glue on end grain holds poorly
-        fa, ea = bearing_at(ia, cen, na)
-        fb, eb = bearing_at(ib, cen, na)
+        fa, ea = bearing_at(ia, cen, na, k_patch, float(area))
+        fb, eb = bearing_at(ib, cen, -na, k_patch, float(area))
         f_bear = min(fa, fb)
         # the depth of wood that can crush: the weaker side's extent along the normal,
         # at most a few times its thickness (the zone a local load compacts)
@@ -2115,13 +2388,29 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         tau_p = mat.glue.tau_g_MPa.value * peak_factor(n_nodes) * lap_size_factor(
             float(area), sp.values.get("glue.size_ref_mm2", 200.0),
             sp.values.get("glue.weibull_m", 10.0), sp.values.get("glue.size_cap_mm2", 3000.0))
-        ks_line = sp_glue["K_s_N_per_mm3"]
+        # shear stiffness: the glue line and its surfaces (glue.K_s_N_per_mm3) in series
+        # with the two parts' shear through their thickness (shear_compliance; until
+        # round 24 one constant for every joint, 60, from nothing: the literature review
+        # of round 24 put a stick coupon at ~400-600 with a pressed line, a 13-ply member
+        # between two gussets at ~50-70)
+        u_lap = lap_direction(ia, ib, na)
+        c_wood = (shear_compliance(k_patch, ia, cen, na, float(area), u_lap)
+                  + shear_compliance(k_patch, ib, cen, -na, float(area), u_lap))
+        ks_line = 1.0 / (1.0 / sp_glue["K_s_N_per_mm3"] + c_wood)
         tau_peel = tau_p  # a glue line's peel does not shear the wood across its fibres
-        if not solid:
-            # the two plies the glue lies on crossing in the glue plane: one of them is
-            # sheared across its fibres (rolling shear) where the wood gives way
-            tau_p *= crossing(ia, ib, cen, na)
-        patches[pid].strength_MPa = tau_p / peak_factor(n_nodes)
+        # a lap holds the lower of its glue line and the wood beside it: the ply the glue
+        # lies on sheared at its grain's angle to the force (across its fibres: rolling
+        # shear), a gusset under a wide member passing less (panel_factor). A bonded joint
+        # holds what its weakest part holds: glued birch-plywood laps failed in the face
+        # veneer at 30-90 degrees and followed its strength at its angle (Wang et al.
+        # 2024), gusset coupons in the face veneer's rolling shear (Debertolis et al.
+        # 2025); a weak glue line fails with little regard to the angle (Rheme et al.
+        # 2016; Frolovs et al. 2017). Round 23 took 1 - w (1 - f(angle)) x the glue line,
+        # w the share failing in the wood, drawn 0-1 (the literature review of round 23)
+        tau_face, pf_a, pf_b = (math.inf, 1.0, 1.0) if solid else lap_caps(
+            k_patch, ia, ib, cen, na)
+        tau_face *= peak_factor(n_nodes)
+        patches[pid].strength_MPa = min(tau_p, tau_face) / peak_factor(n_nodes)
         # two plates glued face to face (a deck's plies drawn as separate bodies): a
         # lamination, pressed flat over its whole face, as the glue lines inside one
         # laminated body are, so it is as strong and stiff as they are (the same bond
@@ -2158,13 +2447,20 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             ga, gb = face_grain(ia, cen, na), face_grain(ib, cen, na)
             rel = [math.degrees(math.acos(min(1.0, abs(float(g1 @ g2)))))
                    for g1 in ga for g2 in gb] or [0.0]
+            # (a plate wider than 8 x the other's thickness glued inside it passes less, as
+            # a member lapped on it does: the panel factor, 1 for plates glued over each
+            # other's whole width, a deck's plies)
             tau_lam = interlaminar_strength(
                 [0.0] + rel, mat.f_v_MPa.value, sp.values.get("wood.f_rolling_MPa", 4.0),
-                sp.values.get("glue.interlaminar_MPa", 4.0)) * peak_factor(n_nodes)
-            tau_p = (1.0 - w_lam) * tau_p + w_lam * tau_lam
+                sp.values.get("glue.interlaminar_MPa", 4.0)) * peak_factor(n_nodes) * min(
+                    pf_a, pf_b)
+            # (the lap's own share holds no more than its face's wood, as above; the
+            # lamination's is its plies' crossing already)
+            tau_p = (1.0 - w_lam) * min(tau_p, tau_face) + w_lam * tau_lam
+            tau_face = math.inf
             tau_peel = (1.0 - w_lam) * tau_peel + w_lam * tau_lam
-            ks_line = (1.0 - w_lam) * ks_line + w_lam * sp.values.get(
-                "glue.lamination_K_s_N_per_mm3", ks_line)
+            ks_line = (1.0 - w_lam) * ks_line + w_lam / (1.0 / sp.values.get(
+                "glue.lamination_K_s_N_per_mm3", sp_glue["K_s_N_per_mm3"]) + c_wood)
             patches[pid].strength_MPa = tau_p / peak_factor(n_nodes)
             patches[pid].lamination = w_lam >= 0.5
         if not solid:
@@ -2175,8 +2471,11 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             # layered shells do not delaminate by themselves (the adversarial review of
             # round 20: a gusset lap drawn at 5.1 MPa on a 0/90 gusset of 2.5 MPa rolling
             # shear)
-            cap = min(transfer_cap(ia, na), transfer_cap(ib, na))
-            if cap < tau_p / peak_factor(n_nodes):
+            # (a gusset under a wide member passes less into its inner plies too: the
+            # critical rolling-shear plane is the first cross ply, APA PDS Supplement 3
+            # 3.6.1, with the same panel factor)
+            cap = min(transfer_cap(ia, na) * pf_a, transfer_cap(ib, na) * pf_b)
+            if cap < patches[pid].strength_MPa:
                 patches[pid].strength_MPa = cap
             tau_cap = cap * peak_factor(n_nodes)
         if solid:
@@ -2196,8 +2495,9 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         # round 23 the constant alone: a side-grain face as stiff as an end-grain one, the
         # bridge near-linear to its peak, the realism review of round 23)
         kn_line = 1.0 / (1.0 / sp_glue["K_n_N_per_mm3"]
-                         + 1.0 / wood_normal_stiffness(ia, cen, na, float(area))
-                         + 1.0 / wood_normal_stiffness(ib, cen, na, float(area)))
+                         + 1.0 / wood_normal_stiffness(k_patch, ia, cen, na, float(area))
+                         + 1.0 / wood_normal_stiffness(k_patch, ib, cen, -na,
+                                                       float(area)))
         for wa, a_, b_, d_, fl in zip(wts, att_a, att_b, dry, fill, strict=True):
             # glue_factor 0: not glued; past the glue's reach across a fit-up gap: dry
             springs["d0"].append(1.0 if gf <= 0 or d_ else 0.0)
@@ -2220,7 +2520,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 springs["GIc"].append(g1)
                 springs["GIIc"].append(g2)
             else:
-                tau_s = min(tau_p * gq, tau_cap * wq)
+                tau_s = min(tau_p * gq, tau_cap * wq, tau_face * wq)
                 springs["tau"].append(tau_s)
                 side = min(min(tau_peel * gq, tau_cap * wq) * sp_glue["peel_to_shear"],
                            f_peel * wq)
@@ -2637,7 +2937,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 "fc_proportional": sp.values.get("wood.fc_proportional", 1.0),
                 "friction_platform": sp["contact.friction_platform"],
                 "friction_plate": sp["contact.friction_plate"],
-                "crusher_k_N_per_mm": sp.values.get("crusher.stiffness_N_per_mm", 20000.0),
+                "crusher_k_N_per_mm": sp.values.get("crusher.stiffness_N_per_mm", 10000.0),
                 "crusher_k_lat_N_per_mm": sp.values.get("crusher.lateral_N_per_mm", 2000.0),
                 "deck_bodies": deck_bodies, "deck_y": deck_y,
                 "test_rate_mm_per_min": sp["crusher.test_rate_mm_per_min"],

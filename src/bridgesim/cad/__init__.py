@@ -187,8 +187,36 @@ def bodies_from_stl(path: Path, units_mm: float = 1.0) -> list[CadBody]:
     return out
 
 
+def _edge_components(tri: np.ndarray) -> list[np.ndarray]:
+    """Indices into ``tri`` of each set of triangles joined edge to edge."""
+    parent = list(range(len(tri)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    owner: dict[tuple[int, int], int] = {}
+    for i, t in enumerate(tri):
+        for p, q in ((t[0], t[1]), (t[1], t[2]), (t[2], t[0])):
+            e = (int(min(p, q)), int(max(p, q)))
+            j = owner.setdefault(e, i)
+            if j != i:
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[ri] = rj
+    groups: dict[int, list[int]] = {}
+    for i in range(len(tri)):
+        groups.setdefault(find(i), []).append(i)
+    return [np.asarray(g) for g in groups.values()]
+
+
 def _planar_faces(V: np.ndarray, T: np.ndarray) -> list[Face]:
-    """Group coplanar, edge-connected triangles into planar faces with boundary loops."""
+    """Group coplanar, edge-connected triangles into planar faces with boundary loops:
+    one face per connected region (two separate coplanar regions, the tops of a U-shaped
+    block's two posts, are two faces, not one whose second region is read as a hole and
+    dropped: the adversarial review of round 24)."""
     a, b, c = V[T[:, 0]], V[T[:, 1]], V[T[:, 2]]
     n = np.cross(b - a, c - a)
     nn = np.linalg.norm(n, axis=1)
@@ -196,8 +224,11 @@ def _planar_faces(V: np.ndarray, T: np.ndarray) -> list[Face]:
     d = np.einsum("ij,ij->i", n, a)
     key = np.c_[np.round(n * 1e3), np.round(d * 10)]
     faces = []
+    groups = []
     for k in np.unique(key, axis=0):
-        sel = np.where((key == k).all(axis=1))[0]
+        sel0 = np.where((key == k).all(axis=1))[0]
+        groups += [sel0[g] for g in _edge_components(T[sel0])]
+    for sel in groups:
         tri = T[sel]
         e = np.r_[tri[:, [0, 1]], tri[:, [1, 2]], tri[:, [2, 0]]]
         es = {tuple(x) for x in e}

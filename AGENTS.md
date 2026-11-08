@@ -44,12 +44,12 @@ gets both factors), ready for its `ab ... --overrides-b DIR/whatif.yaml` command
 | `bridgesim screen BRIDGE.SLDPRT [-o overrides.yaml] [--load 100] [--top 25] --json` | Linear pre-screen, no simulation (on the standard crush's mesh): the bridge's stiffness under the plate (`stiffness_kgf_per_mm`), its lowest natural frequencies on its supports with the plate on it (`modes`: what a tap test of the built bridge measures, with the parts that move most in each; the supports and the plate touch it through a numerical contact stiffness, which moves them as much as the wood does (contact 4x softer: the first mode of Bridge_v10 47 -> 27 Hz, the ambitious review of round 21), so read them as a rough guide, not a check of E or the glue; the supports hold by friction, an end sliding when the thrust there is more than friction holds) and every joint (glue and `bearing`), member (tension, compression, shear, Euler buckling over its length) and plate (per ply and mode) with its `utilisation` at `--load` and the plate load at which it reaches its limit if the bridge stayed linear (`limits`, most loaded first; `first_limit_kgf`: where damage starts, often far below F_u, since the load then finds other paths, which only crush follows). For the stiffness, the most loaded parts, and how a what-if moves them in seconds; judge F_u and design changes with crush and `ab` | seconds |
 | `bridgesim compare DIR/crush.json my_test.csv --json` | Reality gap vs a physical crush test. Given `montecarlo.json` instead of `crush.json`: where the test falls in the predicted range | seconds |
 | `bridgesim calibrate-bridge BRIDGE.SLDPRT my_test.csv [-o overrides.yaml] [--fidelity standard] [--seeds 3] [--out fitted.overrides.yaml] --json` | After a physical crush test of this bridge: a global stiffness and a global strength factor fitted so the simulated crush reproduces it (up to 4 steps; each crushes seeds 1..`--seeds` and fits their median, so the factors do not absorb one seed's imperfections; `steps[].Fu_kgf_runs`); writes your overrides plus the fitted `params`. The test is then used up for validation | 2-4 x seeds x crush / processes |
-| `bridgesim sensitivity BRIDGE.SLDPRT [--rel 0.2] [--fidelity quick] [--seeds 1] [--param KEY]... --json` | Which material values move F_u most: each one lowered and raised by `rel`; `measure_first` lists the tests that would narrow the prediction most. `--param` (repeat it) chooses the values, any key of `materials/simulation.yaml` or `material.<key>` (default: the 18 that usually matter most); `--seeds 3` averages over seeds | (1 + 2 x params) x seeds x crush / processes |
+| `bridgesim sensitivity BRIDGE.SLDPRT [--rel 0.2] [--fidelity quick] [--seeds 1] [--param KEY]... --json` | Which material values move F_u most: each one lowered and raised by `rel`; `measure_first` lists the tests that would narrow the prediction most. `--param` (repeat it) chooses the values, any key of `materials/simulation.yaml` or `material.<key>` (default: the 22 that usually matter most); `--seeds 3` averages over seeds | (1 + 2 x params) x seeds x crush / processes |
 | `bridgesim lab [--data validation/physical] --json` | Simulated coupon tests (stick bending, lap joint, stick column) and their gap to the team's coupon data | ~1 min |
 | `bridgesim calibrate validation/physical --out my_material.yaml` | Fit E, f_t/f_c and tau_g so the *simulated* coupons reproduce the measured ones (`lab --data` then shows ~0 % error); f_t, f_c, f_c90, the end-grain factor, the glue's shear stiffness and toughness and the interlaminar shear strength (short-beam shear) from the direct coupon tests; with 3+ specimens of a kind also the scatter (`my_material.overrides.yaml`, `params:`). A folder without any test results is an input error (exit 2) | ~1 min |
 | `bridgesim ab A.SLDPRT B.SLDPRT [-n 3] [--overrides-a a.yaml] [--overrides-b b.yaml] [--fidelity standard] --json` | Is B better than A? Both crushed with the same seeds: change of F_u and efficiency with a 90 % interval, `significant`, `verdict`, what governed each run (`runs_a/b[].governing`, the most frequent in `governing_a/b`) and `failure_moved`: the seeds where B failed somewhere else than A (strengthening one part often moves the failure to the next). B may be A with other overrides: a what-if (`section_scale`, `glue_factor`) before changing the CAD | 2n x crush / processes |
 | `bridgesim diagnose BRIDGE.SLDPRT [-o overrides.yaml] [-n 2] [--fidelity quick] [--candidates 3] [--out DIR] --json` | What really limits the bridge, measured: crushes it with seeds 1..n, strengthens each part that broke near the peak in turn (glue x1.5 for a joint, section x1.25 for a member or plate, on every copy) on the same seeds, and ranks them by the paired rise of F_u (`candidates`, `limiting`, `verdict`; `governing_after`: where the failure moves). The `governing` label of one crush names the first part in a cascade; diagnose says which one the load depends on, or that no single change helps (then strengthen them together). `DIR/whatif.yaml`: the what-if to confirm with `ab` | (1 + candidates) x n x crush / processes |
-| `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity standard] [--processes 4] [--sample-placeholders] [--out DIR] --json` | Spread of F_u over imperfections and material scatter (`min_kgf`, `max_kgf`, p05/p50/p95: below 20 runs read min and max); `recommended_prediction_kgf` for the Load Prediction Form (the 1/F-weighted median, which minimises the §12.7 error, over the runs times the mesh and model-form error, which pulls it below the runs' own `recommended_prediction_runs_kgf`), with `recommended_interval_kgf` (how far other runs could move it: wide with few runs, run more); untrustworthy runs are listed apart (`Fu_untrustworthy_kgf`) and left out (when fewer than half are trustworthy all are used and `note` starts with NOT RELIABLE: re-run at the crush's `quality.min_fidelity`). `note` says what the spread leaves out: the placeholder material values, unless `--sample-placeholders` (MCP `sample_placeholders`) draws them per run (lognormal, each with its own prior, 20-50 %, a Latin hypercube over the runs; `sampled_placeholders`) so the range includes them. `total_p05_kgf`/`total_p95_kgf`: that spread times the mesh error and the model-form error (`uncertainty.mesh_cov` 5 %, `uncertainty.model_cov` 40 %: the scatter of the published white-glue truss tests about the model, pooled with how far F_u moved with modelling choices tests have not settled), the range to give before any physical test | n x crush / processes |
+| `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity standard] [--processes 4] [--sample-placeholders] [--out DIR] --json` | Spread of F_u over imperfections and material scatter (`min_kgf`, `max_kgf`, p05/p50/p95: below 20 runs read min and max); `recommended_prediction_kgf` for the Load Prediction Form (the 1/F-weighted median, which minimises the §12.7 error, over the runs times the mesh and model-form error, which pulls it below the runs' own `recommended_prediction_runs_kgf`), with `recommended_interval_kgf` (how far other runs could move it: wide with few runs, run more) and `prediction_by_model_cov` (the same at a model-form error of 0.15, the shipped 0.40 and 0.76: how much that judgement moves it); a run flagged only as not quasi-static is crushed again at half the jack speed (`slowed_runs`); other untrustworthy runs are listed apart (`Fu_untrustworthy_kgf`) and left out (when fewer than half are trustworthy all are used and `note` starts with NOT RELIABLE: re-run at the crush's `quality.min_fidelity`). `note` says what the spread leaves out: the placeholder material values, unless `--sample-placeholders` (MCP `sample_placeholders`) draws them per run (lognormal, each with its own prior, 20-50 %, a Latin hypercube over the runs; `sampled_placeholders`) so the range includes them. `total_p05_kgf`/`total_p95_kgf`: that spread times the mesh error and the model-form error (`uncertainty.mesh_cov` 5 %, `uncertainty.model_cov` 40 %: the scatter of the published white-glue truss tests about the model, pooled with how far F_u moved with modelling choices tests have not settled), the range to give before any physical test | n x crush / processes |
 | `bridgesim schema inspect\|inspect_brief\|crush\|crush_brief\|screen\|reality_gap\|lab\|montecarlo\|design_comparison\|diagnosis\|sensitivity\|bridge_calibration\|question\|job_status` | JSON Schema of each report (the `_brief` forms are what `--brief` and the MCP tools return by default; every MCP tool but `get_schema` publishes its schema as its output schema) | instant |
 | `bridgesim mcp` | The same as MCP tools (`uv sync --extra mcp`) | - |
 
@@ -62,13 +62,15 @@ up again once its deflection is large, so it stays quasi-static (`quality.speed_
 `quality.fundamental_period_ms`). Mesh convergence on
 Bridge_v6 (`validation/README.md` §3.4, five seeds at 100 mm/s; a seed is the same
 imperfect bridge at every fidelity): fine is +4.6 % above standard on average (-1.1 % to
-+11 % seed by seed); on Bridge_v10, each fidelity at its own speed, round 24's model:
-quick / standard / fine 1830 / 1725 / 1701 kgf on seed 0, quick / standard 1927 / 1796
-on seed 1, all at node M (the diagonal's foot or its gusset laps; `validation/README.md`
-§3.17; round 23's model 2079 / 2021 / 2014, round 22's 1693 / 1651 / 1651; round 20's
-at one speed, 100 mm/s, 2162 / 2061 / 2093, standard at 50 mm/s -1.3 %). The meshes are not monotone: standard reads lowest, ~2 % below
-fine on average over 10 seed pairs (`montecarlo` takes that bias out of its prediction,
-`uncertainty.mesh_bias_*`) with ~5 % scatter, and quick 1-12 % above standard, sometimes
++11 % seed by seed); on Bridge_v10, each fidelity at its own speed, round 25's model:
+quick / standard / fine 1877 / 1938 / 1845 kgf on seed 0, quick / standard 2137 / 1829
+on seed 1, all at node M (the diagonal's gusset laps; `validation/README.md` §3.18;
+round 24's model 1830 / 1725 / 1701, round 23's 2079 / 2021 / 2014, round 22's 1693 /
+1651 / 1651; round 20's at one speed, 100 mm/s, 2162 / 2061 / 2093, standard at 50 mm/s
+-1.3 %). The meshes are not monotone and their order changes with the design: fine read
++2.3 % above standard on Bridge_v6's 10 seed pairs, 0 to -4.8 % on Bridge_v10 (rounds
+22-25), so `montecarlo` takes out only the jack speed's share (`uncertainty.mesh_bias_*`)
+and keeps ~5 % scatter, and quick 1-12 % above standard, sometimes
 failing at another joint: when failure sites compete, confirm a quick `diagnose` or
 `sensitivity` at standard. The spread
 *between* seeds is ~20 %: several failure sites (the hub core, the End Post joints, the
@@ -292,8 +294,9 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
   (ASSUMPTIONS-SIM.md: the load reading).
 * `governing`: the break that started the fall of the load, i.e. the first break from
   where the load last stood within 5 % of F_u (breaks before it were survived: the load
-  came back). `competing`: the other parts that broke within 10 % of F_u before the
-  failure call. A joint whose glue can carry under 2 % of F_u neither governs nor
+  came back); of the breaks within half a period of the bridge's ringing (one moment:
+  the load takes that long to fall), the joint that could carry the most. `competing`:
+  the other parts that broke within 10 % of F_u before the failure call. A joint whose glue can carry under 2 % of F_u neither governs nor
   competes (its break is a symptom). When it is not empty the failure could start at one of them on another
   seed or mesh, so run `diagnose` before redesigning around the `governing` part.
 * `failure_sequence` (text) and `failures` (structured: `kind`, `parts`, `load_kgf`,
@@ -334,23 +337,29 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
   the load rises to 95 % of its peak), F_u moved more than 5 % at half speed
   (`quality.rate_check`, with `--rate-check`), more than 5 % mass was added, the bridge
   did not fail within the jack travel, the run had to restart, the failure starts as a
-  crack in plate elements past the crack band of the mode they cracked in, or the mesh is
+  crack in plate elements past the crack band of the mode they cracked in, the mesh is
   too coarse for a light bridge (elements more than 3x the failing members' depth, 1.5x
   below 10 mm: on a light truss of 6 mm members quick read 17.9, standard 34.5 and fine
-  44.6 kgf in round 18; `quality.min_fidelity`: the coarsest fidelity fine enough);
-  `quality.reasons` says which. Re-run with `--rate-check` or a finer `--fidelity` before relying on an
+  44.6 kgf in round 18; since round 25 members get elements at most 2x their depth, 1.33x
+  below 10 mm, at quick as at standard, and still read 18.5 / 37.8 / 44.8 kgf at quick /
+  standard / fine, the plates and glued joints setting it, so a bridge whose failing
+  members are under 10 mm deep needs fine; `quality.min_fidelity`: the coarsest
+  fidelity fine enough), or bodies the CAD file names were not read
+  (`cad_unread`, until it is acknowledged: they carry no load); `quality.reasons` says
+  which. Re-run with `--rate-check` or a finer `--fidelity` before relying on an
   untrustworthy F_u.
 * `assumed_parameters`: values still not measured. With placeholders the absolute load
-  is uncertain by tens of %: on Bridge_v10 (round 24, `montecarlo -n 8
-  --sample-placeholders`) the runs spread 1079-2541 kgf around a median of ~1580, the
-  recommended prediction 1263 kgf, and the total range (with the mesh and model-form
-  error) 750-3444 kgf. Design comparisons (A vs
+  is uncertain by tens of %: on Bridge_v10 (round 25, `montecarlo -n 12
+  --sample-placeholders`) the runs spread 1085-2247 kgf around a median of ~1635, the
+  recommended prediction 1296 kgf (1501 / 859 at a model-form error of 0.15 / 0.76),
+  and the total range (with the mesh and model-form error) 772-3258 kgf. Design comparisons (A vs
   B, same seeds) cancel the scatter and most placeholder values, but not the model's
   form: a change at the part whose law is uncertain inherits that law (the adversarial
   review of round 22: glue x1.5 at node M's laps read +32 % with round 22's crossed-lap
   law and +8 % without it). Before acting on an `ab` there, run it again with the
-  uncertain law at its other end (`params`: `glue.wood_failure_share` 0 and 1,
-  `glue.rate_exponent` 0, `glue.K_s_N_per_mm3` / 4).
+  uncertain law at its other end (`params`: `wood.f_rolling_MPa` 2.5 and 5,
+  `wood.bearing_spread_across` 0.15 and 0.6, `glue.rate_exponent` 0,
+  `glue.K_s_N_per_mm3` / 4).
 * `rules`: the 2027 dimensional rules measured on the solids (penalties, bans).
 * `warnings`: overrides without effect, CAD faces that had to be closed over, etc.
 
@@ -358,12 +367,13 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
 
 Before any test of your own: `validation/published_tests.py` rebuilds three published
 craft-stick truss tests and crushes them, each at its own pace; `montecarlo` of each at
-fine (`validation/README.md` §3.14, round 24, 10 runs, placeholders drawn) puts B's and C's
-test loads inside the runs' range (median 1.18 and 0.40 of the test) and A's far above it
-(0.26). None is a blind validation (A's rebuild and B's putty stand-in were set with
-their comparisons; C chose the end-grain law). Only C fails where its test did (4 of 10
-runs, at a vertical's foot on the bottom chord); A's lateral drift and B's diagonal buckling at its butt joints are mechanisms the
-model cannot form. Small trusses, outside the range of a team's bridge: they inform
+fine (`validation/README.md` §3.14, round 25, 10 runs, placeholders drawn) puts B's and C's
+test loads inside the runs' range (median 1.21 and 0.37 of the test) and A's far above it
+(0.20; its rebuild loads the chords where the paper's wire loaded the diagonals). None is
+a blind validation (A's rebuild and B's putty stand-in were set with their comparisons;
+C chose the end-grain law, so its place is no evidence for it). Only C fails where its
+test did (3 of 9 runs, at a vertical's foot on the bottom chord); A's lateral drift and
+B's diagonal buckling at its butt joints are mechanisms the model cannot form. Small trusses, outside the range of a team's bridge: they inform
 `uncertainty.model_cov` (0.40, a judgement), not a bias.
 
 0. Decide what to measure: `bridgesim sensitivity` ranks the placeholder values by how

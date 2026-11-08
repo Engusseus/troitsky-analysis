@@ -96,8 +96,9 @@ glue:
       at the Troitsky competition (15-30 h old): ~0.85-1.0 of their cured strength (PVAc
       laps reach EN 204's 10 MPa 75-165 min after bonding, Bomba et al., BioResources 9(1)
       2014; makers ask 24 h before stressing): give them glue_factor 0.9. It is the
-      strength of a lap of parallel sticks: crossed ones hold less (simulation.yaml
-      glue.cross_grain_ratio). Superglue (cyanoacrylate) is not PVA: its maker's lap
+      strength of a lap of parallel sticks: a lap across a ply's grain holds no more than
+      that ply sheared at its angle, a wide lap on a thin gusset less (simulation.yaml
+      wood.f_rolling_MPa). Superglue (cyanoacrylate) is not PVA: its maker's lap
       shear on pine is 10-12 MPa with the wood failing (ISO 4587, Ceys Superunick data
       sheet 2020), and a published stick truss's laps held more than 5.5 MPa (Lamberti et
       al. 2025): for a superglued bridge set material.glue.tau_g_MPa ~8 and

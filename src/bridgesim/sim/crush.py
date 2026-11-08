@@ -400,6 +400,9 @@ def dt_target_for(scale: float) -> float:
 class CrushOptions:
     speed_mm_s: float = 40.0  # simulated jack speed (at the start, see auto_speed)
     max_speed_mm_s: float = 0.0  # set by run_crush: what a soft bridge's jack rises to
+    # the speed a bridge that rings slowly (period over PERIOD_REF_S) starts from at most
+    # (0: speed_mm_s): standard's at every fidelity (study.crush)
+    slow_bridge_speed_mm_s: float = 0.0
     settle_s: float = 0.03  # gravity ramp
     settle_max_s: float = 0.4
     max_travel_mm: float = 70.0
@@ -661,7 +664,7 @@ def major_breaks(events: list[Event], t_call: float, peak: float) -> list[Event]
 
 
 def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
-              speed_mm_s: float) -> tuple[Event | None, list[str]]:
+              speed_mm_s: float, period_s: float = 0.0) -> tuple[Event | None, list[str]]:
     """The governing failure and the competing ones, from the events up to the failure
     call. Governing: the break that started the fall of the load, i.e. the first break
     from ``t_c``, where the raw force (averaged over a centred period of the ringing)
@@ -672,7 +675,12 @@ def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
     its two gusset laps letting go together: the load falls because the laps go, and
     strengthening the foot alone changes nothing, the adversarial review of round 20),
     and a member split within 2 ms of a member fracture is put down to the fracture (its
-    stress wave).
+    stress wave). The same moment: within half a period of the bridge's ringing
+    (``period_s``), the time its load takes to fall (the adversarial review of round 24:
+    the laps went 2-3 ms after the foot, outside the load cell's window of 0.75-3 ms, and
+    the foot, 5 % of F_u, kept the label); a plate that had cracked before (it was
+    cracking and the load came back) does not keep its place before joints letting go
+    with it.
     Without a break from ``t_c``: the last survived break within 10 % of F_u; else one
     within 3 mm of jack travel of the peak. Competing: the other breaks
     within 10 % of F_u that were survived, or that came at the same moment as the
@@ -686,13 +694,20 @@ def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
     falling = [e for e in before if e.kind in BREAKS and e.t >= t_c - tol]
     survived = [e for e in before if e.kind in BREAKS and e.t < t_c - tol
                 and e.force_N >= 0.9 * peak]
+    win = max(2 * tol, 0.5 * period_s)
     if falling:
-        same = clean([e for e in falling if e.t <= falling[0].t + 2 * tol])
+        same = clean([e for e in falling if e.t <= falling[0].t + win])
         joints = [e for e in same if e.kind.startswith("joint")]
         # joints letting go together: the strongest of them; a member or plate breaking
-        # first (it has no glue capacity to compare) keeps its place in time
+        # first (it has no glue capacity to compare) keeps its place in time, unless it
+        # is a plate that was already cracking before (more of the same crack)
+        lead = same[0]
+        if lead.kind == "plate_crack" and joints and any(
+                e.kind == "plate_crack" and e.what == lead.what and e.t < lead.t
+                for e in before):
+            lead = joints[0]
         first = max(joints, key=lambda e: e.capacity_N) \
-            if joints and same[0].kind.startswith("joint") else same[0]
+            if joints and lead.kind.startswith("joint") else lead
     elif survived:
         first = clean(survived)[-1]
     else:
@@ -711,7 +726,8 @@ def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
     gov_what = first.what if first is not None else ""
     competing = list(dict.fromkeys(
         f"{e.kind.replace('_', ' ')}: {e.what}"
-        for e in clean(survived + [e for e in falling if e.t <= t_gov + tol])
+        for e in clean(survived + [e for e in falling if e.t <= max(
+            t_gov + tol, falling[0].t + 0.5 * period_s)])
         if e.what != gov_what))[:8]
     return first, competing
 
@@ -726,9 +742,16 @@ def run_crush(m: Model, opt: CrushOptions | None = None) -> CrushResult:
     T1 = fundamental_period(m)
     m.params["period_s"] = T1
     if opt.auto_speed:
-        # a slower jack needs as many more steps for the same travel
-        v = jack_speed(opt.speed_mm_s, T1)
-        opt = dataclasses.replace(opt, speed_mm_s=v, max_speed_mm_s=opt.speed_mm_s,
+        # a slower jack needs as many more steps for the same travel. A bridge that rings
+        # slowly (a light truss) is crushed from standard's speed at most at every
+        # fidelity: quick's 200 mm/s, slowed by its period, still left a light truss
+        # dynamic (kinetic/work 0.10) and read half of standard (the realism review of
+        # round 24); such a bridge is small and quick to crush anyway
+        base = opt.speed_mm_s
+        if T1 > PERIOD_REF_S and opt.slow_bridge_speed_mm_s > 0:
+            base = min(base, opt.slow_bridge_speed_mm_s)
+        v = jack_speed(base, T1)
+        opt = dataclasses.replace(opt, speed_mm_s=v, max_speed_mm_s=base,
                                   max_steps=int(opt.max_steps * opt.speed_mm_s / v))
     X0, m0, r0 = m.X.copy(), m.mass.copy(), m.rot_inertia.copy()
     att0 = (m.a_node.copy(), m.a_r0.copy())
@@ -753,8 +776,8 @@ def run_crush(m: Model, opt: CrushOptions | None = None) -> CrushResult:
 
 def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResult:
     s = S.Settings(dt=1e-5, alpha=opt.alpha,
-                   mu_platform=m.params.get("friction_platform", 0.35),
-                   mu_plate=m.params.get("friction_plate", 0.3),
+                   mu_platform=m.params.get("friction_platform", 0.2),
+                   mu_plate=m.params.get("friction_plate", 0.2),
                    k_jack=m.params.get("crusher_k_N_per_mm", 20000.0),
                    k_jack_lat=m.params.get("crusher_k_lat_N_per_mm", 2000.0))
     if opt.progress:
@@ -1330,9 +1353,21 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         curve["force"] = [float(f) for f in fz]
         # each event's load: the reading at the last sample at or before it (not an
         # interpolation across a break, which would mix the load before the drop with
-        # the load after it)
+        # the load after it); while the jack is held, at least the raw force averaged
+        # over a centred period of the ringing (the reading there looks back to where the
+        # hold began and read 10-13 % below the jack force as node A let go in a
+        # Monte Carlo run of round 24, the adversarial review)
+        fcz_ev = centred_mean(tt, np.asarray(curve["force_raw"]),
+                              float(m.params.get("period_s", 0.0))
+                              or 3 * LOAD_CELL_MM / max(opt.speed_mm_s, 1e-9))
+        h_ev = curve.get("hold")
+        held_ev = np.asarray(h_ev if h_ev is not None else np.zeros(len(tt)), bool)
+        if len(held_ev) != len(tt):
+            held_ev = np.zeros(len(tt), bool)
+
         def load_at(ts: float) -> float:
-            return float(fz[max(0, int(np.searchsorted(tt, ts, side="right")) - 1)])
+            i = max(0, int(np.searchsorted(tt, ts, side="right")) - 1)
+            return float(max(fz[i], fcz_ev[i]) if held_ev[i] else fz[i])
 
         for e in events:
             e.force_N = load_at(e.t)
@@ -1365,7 +1400,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     # a break of a part that carries a negligible share of the load (a small glued joint,
     # under MINOR_SHARE of F_u) is a symptom, not the cause: it neither governs nor competes
     before = major_breaks(events, t_call, peak)
-    first_major, competing = attribute(before, t_c, peak, peak_travel, opt.speed_mm_s)
+    first_major, competing = attribute(before, t_c, peak, peak_travel, opt.speed_mm_s,
+                                       float(m.params.get("period_s", 0.0)))
     # no part broke before the call: the joint whose glue let go during the fall (it is
     # the cause even before 30 % of it has let go; one that lets go after the call is
     # the collapse)

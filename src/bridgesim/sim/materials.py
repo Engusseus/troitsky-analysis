@@ -94,7 +94,7 @@ PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("glue.end_grain_factor", 0.0, 1.0, True),
     ("glue.end_grain_tension_factor", 0.0, 1.0, True),
     ("wood.t90_weibull_m", 0.0, 50.0, True),
-    ("glue.wood_failure_share", 0.0, 1.0, True),
+    ("wood.bearing_spread_across", 0.0, 2.0, True),
     ("glue.tau_peak_over_avg", 1.0, 2.0, True),
     ("glue.prepeak_onset", 0.0, 1.0, False),
     ("*.rate_exponent", 0.0, 1.0, True),

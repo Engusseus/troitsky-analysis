@@ -372,11 +372,20 @@ class MonteCarloReport(BaseModel):
                     "error (uncertainty.*), which pulls it below the runs' own value "
                     "(recommended_prediction_runs_kgf)")
     mesh_bias: float = Field(0.0, description=(
-        "The mesh's bias at this fidelity, taken out of the prediction and the total "
-        "range (uncertainty.mesh_bias_*: standard reads ~2 % below fine, quick ~4 % "
-        "above); the runs are listed as they came"))
+        "The mesh's and the simulated jack speed's bias at this fidelity against fine "
+        "with a jack at rest, taken out of the prediction and the total range "
+        "(uncertainty.mesh_bias_*); the runs are listed as they came"))
     recommended_prediction_runs_kgf: float | None = Field(
         None, description="The same over the runs alone (no mesh or model-form error)")
+    prediction_by_model_cov: dict[str, float] = Field({}, description=(
+        "recommended_prediction_kgf with other model-form errors (uncertainty.model_cov, "
+        "a judgement until a test of your own): 0.15 a model calibrated on a test, the "
+        "shipped value, and 0.76 the scatter of the published white-glue tests about the "
+        "model (validation README 3.14). The wider the error, the lower the value that "
+        "minimises the expected §12.7 error"))
+    slowed_runs: int = Field(0, description=(
+        "Runs flagged as not quasi-static that were crushed again at half the jack speed "
+        "(their first F_u in each run's slowed_from_kgf)"))
     recommended_interval_kgf: list[float] = Field([], description=(
         "5 % and 95 % points of recommended_prediction_kgf over bootstrap resamples of "
         "the runs: how far other runs could move it (wide with few runs or two clusters "

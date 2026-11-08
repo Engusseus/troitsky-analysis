@@ -137,7 +137,15 @@ def lamberti_2025():
     # bottom chords there over 40 mm, dry (until round 21 glued, which stiffened the
     # chords over the laps that fail; an 8 mm foot glued rocked over as an inverted
     # pendulum at ~24 kgf in round 22, which dead weights hanging below never do), its
-    # stem between the trusses, its cap 20 mm above the cross sticks
+    # stem between the trusses, its cap 20 mm above the cross sticks. The paper (p. 7,
+    # fig. 4) passes a 6 mm^2 copper wire through the central node of both trusses, where
+    # the diagonals' feet fill the V 4.9 mm above the chords: the load entered the
+    # diagonals there, not only the chords, which this foot forces through the 36 mm^2
+    # laps of the diagonals' feet (the published-test check of round 25). A seat in the
+    # diagonals' crotch was tried in round 25: wedged in the V it spread the diagonals'
+    # tips and slipped out of its dry contacts at ~24 kgf, and a wire through a drilled
+    # node, a pin through every part there, needs bodies that overlap: A keeps this foot,
+    # its load path a known mismatch that reads low
     bodies.append(hanger("Load hanger", _i_profile(33, 10, 45, 8, 14, 130, 140), 280, 320))
     ov = _merge(COMMON_OVERRIDES, {
         "glue": {"Load hanger | *": 0},
@@ -148,7 +156,10 @@ def lamberti_2025():
         # on pine 10-12 MPa by ISO 4587 with the wood failing (Ceys Superunick data sheet
         # 2020), less for laps glued by hand (A: 8); a glassy adhesive, not PVA: no rate
         # law (A); dead weights in 20 kgf steps (S), so the pace does not matter then
-        "material.glue.tau_g_MPa": 8.0, "glue.rate_exponent": 0.0}})
+        "material.glue.tau_g_MPa": 8.0, "glue.rate_exponent": 0.0,
+        # dead weights (S): a crack lets the load drive on (the press stiffness's low
+        # end, round 25)
+        "crusher.stiffness_N_per_mm": 2000.0}})
     ref = {"case": "A", "source": "Lamberti et al. 2025, JESTA 3 e86766",
            "Fu_kgf": 160.0, "Fu_range_kgf": [140.0, 160.0],
            "failure": "top chord panel next to the centre and a compression diagonal, "
@@ -207,7 +218,10 @@ def silva_2026(width: float = 150.0):
         # stands for that, x5 (its four sides, ~4 x 9 x 10 mm against the 85 mm^2 end)
         "glue": {"Diag* | Putty*": 5.0},
         "params": {"material.E_MPa": 13000.0, "material.f_c_MPa": 31.5,
-                   "material.density_kg_m3": 500.0}})
+                   "material.density_kg_m3": 500.0,
+                   # a load hung from the nodes: the softest loading there is (a crack
+                   # lets the load drive on), the press stiffness's low end (round 25)
+                   "crusher.stiffness_N_per_mm": 2000.0}})
     ref = {"case": "B", "source": "Silva et al. 2026, Rev. Ensino Eng. 45:389",
            "Fu_kgf": 710.0 / 9.80665, "failure": "compression diagonal D3 buckling out "
            "of plane where its outer plies were butted at mid-length",
@@ -251,7 +265,9 @@ def moraes_2019(width: float = 85.0):
         "material.E_MPa": 7350.0, "material.density_kg_m3": 500.0,
         # a 30 t universal press (S), its rate not stated: at a usual 1-2 mm/min the
         # record's 3.8 mm to the peak took 2-4 min; the model's ~1 mm at 0.5 mm/min ~2
-        "crusher.test_rate_mm_per_min": 0.5}})
+        "crusher.test_rate_mm_per_min": 0.5,
+        # a universal testing machine's frame: stiff (round 25)
+        "crusher.stiffness_N_per_mm": 20000.0}})
     ref = {"case": "C", "source": "Moraes et al. 2019, Atena Editora ch. 31",
            "Fu_kgf": 490.0 / 9.80665, "Fu_range_kgf": [421.0 / 9.80665, 490.0 / 9.80665],
            "calibration": "round 21 chose the end-grain glue law after seeing this test",
@@ -274,14 +290,26 @@ def summarize(out: Path, case: str, mc: str = "mc10") -> dict:
     among the runs (the share of runs below it), and the share of runs failing at the
     test's place (``place``: words every governing label must hold; 'member' for a
     member's own failure). A distribution, not seed 0 (the realism review of round 22:
-    one seed misrepresented trusses whose seeds spread 2x)."""
+    one seed misrepresented trusses whose seeds spread 2x). The runs are those montecarlo
+    keeps (since round 25): a run crushed again at half the jack speed (``seed_N_slow``)
+    in place of its first, untrustworthy runs left out while at least half remain (until
+    round 24 the table counted them all while the text said they were left out: the
+    adversarial review of round 24); with the montecarlo's own report, its recommended
+    prediction and total range against the test."""
     ref = CASES[case]()[2]
-    runs = []
-    for f in sorted((out / f"{case}_{mc}").glob("seed_*/crush.json")):
-        d = json.loads(f.read_text())
-        runs.append((d["Fu_kgf"], d.get("governing", ""), d["quality"]["trustworthy"]))
-    if not runs:
+    base = out / f"{case}_{mc}"
+    found: dict[str, tuple] = {}
+    for f in sorted(base.glob("seed_*/crush.json")):
+        name = f.parent.name
+        seed = name.removesuffix("_slow")
+        if name.endswith("_slow") or seed not in found:
+            d = json.loads(f.read_text())
+            found[seed] = (d["Fu_kgf"], d.get("governing", ""), d["quality"]["trustworthy"])
+    every = list(found.values())
+    if not every:
         return {"case": case, "runs": 0}
+    ok = [r for r in every if r[2]]
+    runs = ok if len(ok) >= max(3, (len(every) + 1) // 2) else every
     F = np.array([r[0] for r in runs])
     lo, hi = ref.get("Fu_range_kgf", [ref["Fu_kgf"]] * 2)
     place = ref.get("place", [])
@@ -297,7 +325,23 @@ def summarize(out: Path, case: str, mc: str = "mc10") -> dict:
             "share_below_test": round(float(np.mean(F < lo)), 2),
             "share_above_test": round(float(np.mean(F > hi)), 2),
             "share_at_test_place": round(float(np.mean([at_place(r[1]) for r in runs])), 2),
-            "untrustworthy": int(sum(not r[2] for r in runs))}
+            "untrustworthy": int(sum(not r[2] for r in every)), **_mc_summary(base, lo, hi)}
+
+
+def _mc_summary(base: Path, lo: float, hi: float) -> dict:
+    """The montecarlo report's recommended prediction over the test and whether the test
+    falls inside its total range (the realism review of round 24: A's did not)."""
+    f = base.parent / f"{base.name}.json"
+    try:
+        d = json.loads(f.read_text())
+    except (OSError, ValueError):
+        return {}
+    out = {"recommended_over_test": round(d["recommended_prediction_kgf"] / hi, 2)}
+    if d.get("total_p05_kgf") is not None:
+        out["total_range_kgf"] = [d["total_p05_kgf"], d["total_p95_kgf"]]
+        out["test_in_total_range"] = bool(d["total_p05_kgf"] <= hi
+                                          and lo <= d["total_p95_kgf"])
+    return out
 
 
 def main() -> None:

@@ -17,6 +17,7 @@ Typical agent loop::
 from __future__ import annotations
 
 import csv
+import dataclasses
 import fnmatch
 import hashlib
 import json
@@ -373,24 +374,45 @@ def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: Sim
             answer_with={"params": {"crusher.test_rate_mm_per_min": "<measured, mm/min>"},
                          "measured": ["crusher.test_rate_mm_per_min"]},
             severity="check"))
+    if sp.sources.get("crusher.stiffness_N_per_mm", "assumed") == "assumed":
+        # the ambitious review of round 24: the press's stiffness moved Bridge_v10's F_u by
+        # 10 % over 2,000-20,000 N/mm, and its note said it showed in the stroke alone
+        qs.append(Question(
+            id="crusher:stiffness", topic="material",
+            question="How stiff is the competition's press? When a joint cracks, the "
+                     "energy stored in the press (its oil, hose and frame) drives on into "
+                     "the bridge: a soft press turns cracks a stiff one lets the bridge "
+                     "survive into the collapse (Bridge_v10: -10 % from 20,000 to 2,000 "
+                     "N/mm). Ask the organisers for the ram's stroke against the load on a "
+                     "steel block, or its ram size, pump and hose.",
+            assumed=f"{sp['crusher.stiffness_N_per_mm']:g} N/mm (estimated from Appendix "
+                    "B's press; drawn 60 % by montecarlo)",
+            answer_with={"params": {"crusher.stiffness_N_per_mm": "<measured, N/mm>"},
+                         "measured": ["crusher.stiffness_N_per_mm"]},
+            severity="check"))
     return qs
 
 
 # ----------------------------------------------------------------------------- inspect
 
 
-def _open_questions(qs: list[Question], ov: Overrides, model: Model
+def _open_questions(qs: list[Question], ov: Overrides, model: Model, strict: bool = False
                     ) -> tuple[list[Question], list[str]]:
     """Questions still open, and the ids the overrides acknowledged (``acknowledge:``).
-    Acknowledge patterns that match no question become warnings."""
+    Acknowledge patterns that match no question become warnings (with ``strict``, an
+    input error, as every other override problem: the adversarial review of round 24)."""
     open_, acked = [], []
     for q in qs:
         (acked if ov.acknowledged(q.id) else open_).append(q)
     ids = [q.id for q in qs]
+    bad = []
     for a in ov.acknowledge:
         if not any(i == a or fnmatch.fnmatchcase(i, a) for i in ids):
-            model.notes.append(f"overrides: acknowledge {a!r} matches no question (ids: "
-                               f"{', '.join(sorted(ids)[:8])}{' ...' if len(ids) > 8 else ''})")
+            bad.append(f"overrides: acknowledge {a!r} matches no question (ids: "
+                       f"{', '.join(sorted(ids)[:8])}{' ...' if len(ids) > 8 else ''})")
+    if bad and strict:
+        raise ValueError("; ".join(bad))
+    model.notes += bad
     return open_, [q.id for q in acked]
 
 
@@ -413,16 +435,24 @@ def _body_reports(model: Model) -> list[BodyReport]:
     return out
 
 
-def _time_at_peak(curve, sp: SimParams, fallback: float) -> float:
-    """When the real test reaches the reported F_u: the jack's travel at the reported
-    peak at the real jack speed (crusher.test_rate_mm_per_min); the time the glue's
-    strength was taken at moment by moment (solver.glue_rate)."""
+def _time_at_peak(curve, sp: SimParams, fallback: float, Fu_kgf: float | None = None
+                  ) -> float:
+    """When the real test reaches the reported F_u: the jack's travel where the reported
+    curve first reaches F_u (``Fu_kgf``; its highest point without it: a load climbing
+    again after the failure call, on the platform, is not F_u) at the real jack speed
+    (crusher.test_rate_mm_per_min); the time the glue's strength was taken at moment by
+    moment (solver.glue_rate)."""
     try:
         L = np.asarray(curve.load_kgf, float)
         x = np.asarray(curve.jack_travel_mm, float)
         rate = float(sp.values.get("crusher.test_rate_mm_per_min", 0.0)) / 60.0
         if len(L) and rate > 0:
-            return float(x[int(np.argmax(L))]) / rate
+            i = int(np.argmax(L))
+            if Fu_kgf:
+                hit = np.where(L >= 0.995 * Fu_kgf)[0]
+                if len(hit):
+                    i = int(hit[0])
+            return float(x[i]) / rate
     except (AttributeError, TypeError, ValueError):
         pass
     return float(fallback)
@@ -469,7 +499,8 @@ def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
     model = _build(bodies, mat, sp, ov, seed, 1.0, strict)
     rules = _rules(bodies, mat, rs, model)
     qs, acked = _open_questions([Question(**q) for q in model.questions]
-                                + design_questions(bodies, model, mat, sp, rules), ov, model)
+                                + design_questions(bodies, model, mat, sp, rules), ov, model,
+                                strict)
     rep = InspectReport(
         file=path.name, sha256=_sha(path), n_bodies=len(bodies),
         mass_kg=round(rules.measurements.get("mass_kg", model.bridge_mass_kg), 3),
@@ -676,7 +707,8 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
                            "damage; ASSUMPTIONS-SIM.md)")
     rules = _rules(bodies, mat, rs, model)
     # the fine mesh needs a smaller time step, or too much mass scaling would be added
-    opt = options or CrushOptions(speed_mm_s=speed, dt_target=dt_target_for(scale))
+    opt = options or CrushOptions(speed_mm_s=speed, dt_target=dt_target_for(scale),
+                                  slow_bridge_speed_mm_s=min(speed, STANDARD_SPEED))
     if stop_at_failure:
         import dataclasses
 
@@ -688,7 +720,8 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
     if rate_check:
         import dataclasses
 
-        slow = dataclasses.replace(opt, speed_mm_s=opt.speed_mm_s / 2)
+        slow = dataclasses.replace(opt, speed_mm_s=opt.speed_mm_s / 2,
+                                   slow_bridge_speed_mm_s=opt.slow_bridge_speed_mm_s / 2)
         if progress is not None:
             slow.progress = lambda f, msg: progress(f, "rate check (half speed): " + msg)
         res2 = run_crush(_build(bodies, mat, sp, ov, seed, scale, False), slow)
@@ -700,7 +733,8 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
               "Fu_extrapolated_kgf": round(max(0.0, (4 * res2.Fu_kgf - res.Fu_kgf) / 3),
                                            2)}
     qs, acked = _open_questions([Question(**q) for q in model.questions]
-                                + design_questions(bodies, model, mat, sp, rules), ov, model)
+                                + design_questions(bodies, model, mat, sp, rules), ov, model,
+                                strict)
     c = res.curve
     step = max(1, len(c["t"]) // 400)
     keep = set(range(0, len(c["t"]), step))
@@ -725,7 +759,7 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         competing=list(getattr(res, "competing", [])),
         deflection_at_Fu_mm=round(res.deflection_at_Fu_mm, 2),
         test_time_at_Fu_s=round(_time_at_peak(curve, sp, getattr(res, "test_time_at_Fu_s",
-                                                                   0.0)), 1),
+                                                                   0.0), res.Fu_kgf), 1),
         mass_kg=round(mass, 3), efficiency_kgf_per_kg=round(res.Fu_kgf / mass, 2),
         criteria=_criteria(res.criteria),
         failures=_failures(res.events, _fail_time(res)),
@@ -736,6 +770,12 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         assumed_parameters=_assumed(mat, sp),
         fidelity=fidelity, Fu_first_joint_failure_kgf=_first_joint(res),
         warnings=list(model.notes))
+    if any(q.id == "cad_unread" for q in qs):
+        # bodies missing from the model: the F_u is of another bridge until the designer
+        # says they carry no load (the adversarial review of round 24: a missing chord
+        # would still have read trustworthy)
+        rep.quality.trustworthy = False
+        rep.quality.reasons.append(CAD_UNREAD_REASON)
     rep.next_steps = _with_context(
         _next_crush(rep, path, _ov_ref(overrides, ov_raw), out_dir),
         _context(material, sim_params, ruleset, units, up, span, seed=seed,
@@ -1017,6 +1057,14 @@ def _whatif(gov: list[EventOut], crushed: set | frozenset = frozenset()) -> dict
     return {k: v for k, v in (("bodies", bodies), ("glue", glue)) if v}
 
 
+STANDARD_SPEED = 100.0  # mm/s, crush.FIDELITY["standard"]: a slowly ringing bridge's cap
+
+
+CAD_UNREAD_REASON = ("bodies the CAD file names are missing from the model (cad_unread): "
+                     "export the part again so that every body is read, or acknowledge "
+                     "cad_unread if they carry no load")
+
+
 def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextStep]:
     f, ov = shlex.quote(str(path.resolve())), _ov_arg(overrides)
     out = _results_dir(path, out_dir)
@@ -1030,10 +1078,16 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
     # diagnose (and standard for montecarlo) unless the bridge needs finer
     need = order.index(q.min_fidelity) if q.min_fidelity in order else 0
     dfid, mfid = order[need], order[max(need, 1)]
-    if not q.trustworthy:
+    if not q.trustworthy and any(r != CAD_UNREAD_REASON for r in q.reasons):
+        # a mesh too coarse for the failing members is cured by a finer one, not by the
+        # rate check (the adversarial review of round 24: the step looped at quick)
+        rfid = rep.fidelity
+        if rfid in order and need > order.index(rfid):
+            rfid = order[need]
         steps.append(NextStep(
-            action="rerun", why="not trustworthy: " + "; ".join(q.reasons),
-            cli=f"bridgesim crush {f}{ov} --fidelity {rep.fidelity} --rate-check "
+            action="rerun", why="not trustworthy: " + "; ".join(
+                r for r in q.reasons if r != CAD_UNREAD_REASON),
+            cli=f"bridgesim crush {f}{ov} --fidelity {rfid} --rate-check "
                 f"--out {out}_check --json --brief"))
     broke = [e for e in rep.failures if e.kind != "joint_cracking"]
     # the governing failure first (the break that started the fall of the load), then
@@ -1291,6 +1345,11 @@ LIGHT_MESH_RATIO = 3.0  # elements longer than this x the failing members' depth
 # round 18's 22 mm elements 34.5 against fine's 44.6
 LIGHT_DEPTH_MM = 10.0
 LIGHT_MESH_RATIO_THIN = 1.5
+# ... and, since round 25, a mesh no coarser than fine (LIGHT_MESH_SCALE) whatever their
+# elements: with them at most 1.33x their depth at quick and standard alike, the light
+# truss read 18.5 / 37.8 / 44.8 kgf at quick / standard / fine (its plates and glued
+# joints, sampled at the plates' element size, set it)
+LIGHT_MESH_SCALE = 0.5
 
 
 def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = None
@@ -1324,25 +1383,26 @@ def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = N
     in_path = [bars[g] for g in gov_parts if g in bars]
     depth = (min(in_path) if in_path else
              float(np.median(list(bars.values()))) if bars else 0.0)
-    # the members' elements: 30 mm at x1, but no longer than DEPTH_ELEMENTS x their depth
-    # at standard (in proportion at the other fidelities)
-    from bridgesim.sim.idealize import DEPTH_ELEMENTS
+    # the members' elements: 30 mm at x1, but no longer than element_depth_cap
+    from bridgesim.sim.idealize import element_depth_cap
 
     def coarse(sc: float) -> bool:
-        el = min(30.0 * sc, DEPTH_ELEMENTS * depth * sc / 0.75)
+        el = min(30.0 * sc, element_depth_cap(depth, sc))
         return depth > 0 and (el > LIGHT_MESH_RATIO * depth or (
-            depth < LIGHT_DEPTH_MM and el > LIGHT_MESH_RATIO_THIN * depth))
+            depth < LIGHT_DEPTH_MM and (el > LIGHT_MESH_RATIO_THIN * depth
+                                        or sc > LIGHT_MESH_SCALE + 1e-9)))
 
     from bridgesim.sim.crush import FIDELITY
 
     # the coarsest fidelity whose mesh is fine enough for these members: what diagnose,
     # montecarlo and the other studies of this bridge need
     min_fid = next((k for k, (sc, _) in FIDELITY.items() if not coarse(sc)), "fine")
-    elem = min(30.0 * scale, DEPTH_ELEMENTS * depth * scale / 0.75)
+    elem = min(30.0 * scale, element_depth_cap(depth, scale))
     if coarse(scale):
         reasons.append(f"the mesh is too coarse for the members that fail (elements ~"
                        f"{elem:.0f} mm, members {depth:.0f} mm deep): F_u is not "
-                       "converged on such a light bridge; use a finer --fidelity (fine)")
+                       "converged on such a light bridge (its plates and glued joints "
+                       "too); use a finer --fidelity (fine)")
     # a plate cracking where its elements are larger than the crack band its fracture
     # energy allows, in the mode they cracked in: when such a crack starts depends on the
     # mesh (their strength is lowered to dissipate G_f)
@@ -1678,11 +1738,28 @@ def _wood_law(sp: SimParams) -> dict:
             "crush_softening": sp["wood.crush_softening"]}
 
 
+def coupon_K_s(sp: SimParams, t: float, G: float) -> float:
+    """Shear stiffness of a lap of two sticks ``t`` thick along each other's grain: the
+    glue line (glue.K_s_N_per_mm3) in series with each stick's shear through its
+    thickness, t / (3 G) (as idealize.shear_compliance gives every joint of the bridge)."""
+    return 1.0 / (1.0 / sp["glue.K_s_N_per_mm3"] + 2.0 * t / (3.0 * max(G, 1e-9)))
+
+
+def glue_line_K_s(sp: SimParams, k_lap: float, t: float, G: float) -> float:
+    """The glue line's shear stiffness from a lap coupon's (``k_lap``, per mm^2): the two
+    sticks' shear through their thickness taken out (coupon_K_s inverted); the coupon's
+    own value if the sticks alone are softer than it (a record too stiff to separate)."""
+    rest = 1.0 / max(k_lap, 1e-12) - 2.0 * t / (3.0 * max(G, 1e-9))
+    return 1.0 / rest if rest > 0.1 / max(k_lap, 1e-12) else k_lap
+
+
 def _lap(sp: SimParams, tau_peak: float, overlap: float, width: float, E: float,
-         t: float = 2.0):
+         t: float = 2.0, G: float | None = None):
     """The simulated single-lap joint with the bridge model's glue: its peel strength the
     lower of peel_to_shear x the shear strength and the sticks' tension across the grain
-    (as every glue line of the bridge)."""
+    (as every glue line of the bridge); its shear stiffness the glue line's in series with
+    the sticks' shear through their thickness (coupon_K_s; G: E / 16 unless given)."""
+    G = E / 16.0 if G is None else G
     from bridgesim.sim.idealize import lap_size_factor
 
     tau_peak = tau_peak * lap_size_factor(overlap * width,
@@ -1692,7 +1769,7 @@ def _lap(sp: SimParams, tau_peak: float, overlap: float, width: float, E: float,
     peel = min(sp["glue.peel_to_shear"] * tau_peak, sp["wood.f_t90_MPa"]) / max(tau_peak,
                                                                                 1e-12)
     return labmod.lap_shear(tau_peak, peel, sp["glue.K_n_N_per_mm3"],
-                            sp["glue.K_s_N_per_mm3"], sp["glue.G_Ic_N_per_mm"],
+                            coupon_K_s(sp, t, G), sp["glue.G_Ic_N_per_mm"],
                             sp["glue.G_IIc_N_per_mm"], overlap=overlap, width=width, t=t,
                             E=E, **glue_law(sp))
 
@@ -2114,10 +2191,17 @@ def _direct_coupons(d: Path, mat: Material, sp: SimParams, changes: dict, notes:
                        "the peak (at least one reading between the peak and 20 % of it): "
                        "its toughness is not taken")
     if ks:
-        params["glue.K_s_N_per_mm3"] = float(np.mean(ks))
+        # the records' slope is the whole lap's: the glue line is what is left once the
+        # two sticks' shear through their thickness is taken out (the crush adds each
+        # joint's own wood back, idealize.shear_compliance)
+        t_st = mat.stick.thickness_mm
+        params["glue.K_s_N_per_mm3"] = float(np.mean(
+            [glue_line_K_s(sp, k, t_st, mat.G_MPa.value) for k in ks]))
         log.append(f"glue.K_s_N_per_mm3 = {params['glue.K_s_N_per_mm3']:.1f} from {len(ks)} "
-                   "lap load-slip records (secant 10-40 % of the peak / glued area; it "
-                   "includes the sticks' own stretching over the overlap)")
+                   f"lap load-slip records (secant 10-40 % of the peak / glued area, "
+                   f"{float(np.mean(ks)):.1f} N/mm^3 on average, with the sticks' shear "
+                   "through their thickness taken out; it includes their stretching over "
+                   "the overlap)")
     if gs:
         params["glue.G_IIc_N_per_mm"] = float(np.mean(gs))
         log.append(f"glue.G_IIc_N_per_mm = {params['glue.G_IIc_N_per_mm']:.2f} from "
@@ -2171,6 +2255,26 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
             res.append(fu.result())
             if progress:
                 progress((k + 1) / n, f"run {k + 1}/{n}: F_u {res[-1]['Fu_kgf']:.1f} kgf")
+        # a run flagged only because its loading was not quasi-static is crushed again
+        # at half the jack speed, as the flag advises, not left out: such runs are those
+        # where a weak joint snaps (the adversarial review of round 24: B's three flagged
+        # runs were its three lowest, and leaving them out lifted its median 20 %)
+        slow = [r for r in res if not r["trustworthy"] and r.get("reasons") and all(
+            x.startswith("loading not quasi-static") for x in r["reasons"])]
+        if slow:
+            base = options or _screening(fidelity)
+            sargs = []
+            for r in slow:
+                a = list(args[r["seed"] - 1])
+                a[6] = dataclasses.replace(
+                    base, speed_mm_s=base.speed_mm_s / 2,
+                    slow_bridge_speed_mm_s=base.slow_bridge_speed_mm_s / 2)
+                a[8] = str(Path(out_dir) / f"seed_{r['seed']}_slow") if out_dir else None
+                sargs.append(tuple(a))
+            again = {x["seed"]: x for x in ex.map(_mc_one, sargs)}
+            for i, r in enumerate(res):
+                if r["seed"] in again:
+                    res[i] = {**again[r["seed"]], "slowed_from_kgf": r["Fu_kgf"]}
     # untrustworthy runs (not quasi-static, a crack in elements past the crack band,
     # ...) are listed but left out of the range and the prediction, while enough remain
     ok = [r for r in res if r["trustworthy"]]
@@ -2189,9 +2293,9 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
     # F_u weighs the low side more in the §12.7 error |F - p| / F)
     s_tot = math.hypot(sp_.values.get("uncertainty.mesh_cov", 0.0),
                        sp_.values.get("uncertainty.model_cov", 0.0))
-    # the mesh's bias, not noise: standard reads ~2 % below fine on average, quick ~4 %
-    # above (uncertainty.mesh_bias_*): the prediction and the total range are taken
-    # toward fine, the runs listed as they came
+    # the mesh's and the jack speed's bias, not noise (uncertainty.mesh_bias_*: against
+    # fine with a jack at rest): the prediction and the total range are taken toward
+    # it, the runs listed as they came
     bias = float(sp_.values.get(f"uncertainty.mesh_bias_{fidelity}", 0.0))
     Fr = F
     F = [x * (1.0 + bias) for x in Fr]
@@ -2205,6 +2309,14 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
                            untrustworthy_runs=sum(1 for r in res if not r["trustworthy"]))
     rep.mesh_bias = bias
     rep.recommended_prediction_runs_kgf = round(best_prediction(Fr), 1)
+    # how much the judgement of the model-form error moves it (the adversarial review of
+    # round 24: from 1443 to 848 kgf on Bridge_v10 over 0.15-0.76)
+    mcov = sp_.values.get("uncertainty.model_cov", 0.0)
+    rep.prediction_by_model_cov = {
+        f"{c:.2f}": round(best_prediction(F, math.hypot(
+            sp_.values.get("uncertainty.mesh_cov", 0.0), c)), 1)
+        for c in sorted({0.15, round(float(mcov), 2), 0.76})}
+    rep.slowed_runs = sum(1 for r in res if "slowed_from_kgf" in r)
     rep.recommended_interval_kgf = prediction_interval(F, s_tot)
     if len(use) < len(res):
         rep.Fu_untrustworthy_kgf = sorted(round(r["Fu_kgf"], 2) for r in res
@@ -2239,6 +2351,9 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
                        "of % (bridgesim sensitivity shows which); measure them, or add "
                        "--sample-placeholders to include them in the range."
                        if assumed else "they are all measured.") + small)
+    if rep.slowed_runs:
+        rep.note += (f" {rep.slowed_runs} run(s) flagged as not quasi-static were crushed "
+                     "again at half the jack speed (slowed_runs).")
     if len(use) < len(res):
         rep.note += (f" {len(res) - len(use)} untrustworthy run(s) (Fu_untrustworthy_kgf) "
                      "are left out of the range and the prediction.")
@@ -2365,7 +2480,9 @@ def _screening(fidelity: str) -> CrushOptions:
         raise ValueError(f"fidelity must be one of {', '.join(FIDELITY)}")
     return CrushOptions(speed_mm_s=FIDELITY[fidelity][1],
                         dt_target=dt_target_for(FIDELITY[fidelity][0]),
-                        after_failure_mm=2.0)
+                        after_failure_mm=2.0,
+                        slow_bridge_speed_mm_s=min(FIDELITY[fidelity][1],
+                                                   FIDELITY["standard"][1]))
 
 
 def _mc_one(a):
@@ -2626,9 +2743,11 @@ PLACEHOLDER_PRIORS = {
     # above the bond line's strength change nothing in members): the sticks' tension
     # across the grain (veneer 1.1-2.0 MPa), the pressed bond line (6-12), the plies'
     # shear and across-grain fracture energies (0.5-2, 0.2-0.5 N/mm), peel (0.5-0.8 x
-    # shear), rolling shear (2-4 MPa), the fit-up of cut ends (0.1-0.6 mm)
+    # shear), rolling shear (birch 3.5-4.6 MPa, birch plywood's means ~2.5-4: 30 % since
+    # round 25, when it began to cap every lap across a gusset's face), the fit-up of cut
+    # ends (0.1-0.6 mm)
     "wood.f_t90_MPa": 0.25, "glue.interlaminar_MPa": 0.25, "wood.G_v_N_per_mm": 0.45,
-    "wood.G_f90_N_per_mm": 0.35, "glue.peel_to_shear": 0.25, "wood.f_rolling_MPa": 0.25,
+    "wood.G_f90_N_per_mm": 0.35, "glue.peel_to_shear": 0.25, "wood.f_rolling_MPa": 0.30,
     "scatter.bearing_gap_mm": 0.50,
     # round 19 (the ambitious and realism reviews): the glue lines' stiffness decides where
     # Bridge_v10 fails (halved, its failure moved from node A to node M at -1.7 % F_u);
@@ -2653,21 +2772,28 @@ PLACEHOLDER_PRIORS = {
     "scatter.glue_cov": 0.35,
     # round 22 (the reviews of round 21): the end-grain glue line's share of the wood's
     # tension (nothing measures it: 0.05-0.25), the size effect across the grain (m 5-11,
-    # Kruger et al. 2025, Barrett 1974); the wood's moisture and a lap's wood-failure
-    # share (how much a crossed lap loses) are drawn additively (ADDITIVE_PRIORS)
+    # Kruger et al. 2025, Barrett 1974); the wood's moisture is drawn additively
+    # (ADDITIVE_PRIORS)
     "glue.end_grain_tension_factor": 0.50, "wood.t90_weibull_m": 0.30,
     # round 24: the modulus across the grain sets every bearing face's stiffness (veneer
     # 214-273 MPa pulled across, Kruger et al. 2025; solid birch radially ~600-900)
     "wood.E_T_MPa": 0.35,
+    # round 25 (the realism review of round 24: the judgement constants were never drawn):
+    # how steeply a face's stress spreads across the grain (0.23-0.42 with the rolling
+    # modulus), how far the bearing faces bed in, the supports out of level, the lean,
+    # friction on the plates
+    "wood.bearing_spread_across": 0.35, "wood.G_rolling_MPa": 0.40,
+    "contact.seating_mm": 0.50,
+    "scatter.support_level_mm": 0.50, "scatter.lean_rad": 0.50,
+    "contact.friction_plate": 0.30, "contact.friction_platform": 0.30,
+    # the press's stiffness (the ambitious review of round 24: 2,000-20,000 N/mm moved
+    # Bridge_v10's F_u by 10 %, the energy it lets go into the bridge at a crack)
+    "crusher.stiffness_N_per_mm": 0.60,
 }
 # placeholders drawn additively, value + sd x z within (low, high): the wood's moisture
 # above its coupons' (percentage points; members laminated in the last days before the
-# test hold several points more, half the runs at 0, a sixth above 2) and the share of a
-# hand-made lap that fails in the wood (0: the glue line gives way and a crossed lap holds
-# as a parallel one; 1: the face ply's strength at its angle sets it; the round-22
-# reviews: every case between them is drawn, 5 % of the runs at either end)
-ADDITIVE_PRIORS = {"wood.moisture_excess_pct": (2.0, 0.0, math.inf),
-                   "glue.wood_failure_share": (0.3, 0.0, 1.0)}
+# test hold several points more, half the runs at 0, a sixth above 2)
+ADDITIVE_PRIORS = {"wood.moisture_excess_pct": (2.0, 0.0, math.inf)}
 
 SENSITIVITY = {  # key: (meaning, how to measure)
     "material.E_MPa": ("stiffness of a stick along the grain",
@@ -2701,17 +2827,23 @@ SENSITIVITY = {  # key: (meaning, how to measure)
                               "short-beam shear of a 3-5 ply laminate "
                               "(short_beam_shear_template.csv)"),
     # round 22 (the adversarial review: these moved F_u most and were never ranked)
-    "glue.wood_failure_share": ("how much of a hand-made lap fails in the wood (it sets "
-                                "how much a lap whose sticks cross is weakened)",
-                                "laps glued at 0, 45 and 90 degrees (glue_joint_template."
-                                "csv, grain_angle_deg): their ratio and each face's wood "
-                                "failure"),
+    # round 25: a lap on a gusset holds no more than the gusset's face sheared across
+    # its fibres (it replaced round 23's wood-failure share)
+    "wood.f_rolling_MPa": ("rolling shear: a stick sheared across its fibres (what a "
+                           "gusset's face passes under a member lapped across it)",
+                           "laps of a stick glued across another at 90 degrees "
+                           "(glue_joint_template.csv, grain_angle_deg 90): where the wood "
+                           "fails, the load over the area"),
     "glue.rate_exponent": ("how much stronger the glue is when it fails faster",
                            "laps failing in ~10 s, ~60 s and ~600 s "
                            "(glue_joint_template.csv, time_to_failure_s)"),
     "crusher.test_rate_mm_per_min": ("how fast the competition's jack moves (the glue's "
                                      "time to failure)",
                                      "time the press head in a video of the competition"),
+    "crusher.stiffness_N_per_mm": ("how stiff the competition's press is (the energy "
+                                   "it lets go into the bridge when a joint cracks)",
+                                   "the jack stroke against the load on a steel block, or "
+                                   "the press's ram size and pump from the organisers"),
     "glue.weibull_m": ("how much weaker a large lap is than the coupon",
                        "laps of 200 and ~2000 mm^2 glued the same way"),
     "wood.t90_weibull_m": ("how much more a small joint's wood holds across the grain",
@@ -2720,13 +2852,25 @@ SENSITIVITY = {  # key: (meaning, how to measure)
     "glue.end_grain_tension_factor": ("an end-grain glue line pulled apart",
                                       "two sticks glued end to end and pulled "
                                       "(end_grain_template.csv)"),
+    # round 25 (the adversarial review of round 24: what sets how stiff a face is, never
+    # ranked, so measure_first never asked for the test that pins it)
+    "wood.E_T_MPa": ("stiffness of a stick across its grain (how stiff a glued or bearing "
+                     "face pressed across the grain is)",
+                     "press a stack of sticks flat (crush_across_template.csv): the slope "
+                     "below 1 % strain"),
+    "wood.bearing_spread_across": ("how the stress under a face pressed across the grain "
+                                   "spreads into the wood (how stiff the faces of a node "
+                                   "are)",
+                                   "a block pressed onto a member's side, the indentation "
+                                   "read beside it (crush_across_template.csv)"),
+    "glue.K_n_N_per_mm3": ("stiffness of a glue line pressed or pulled across it",
+                           "the slope of a T-pull of two glued sticks"),
 }
 # other values worth a --param (meaning, how to measure); any key of
 # materials/simulation.yaml or material.<key> works
 SENSITIVITY_MORE = {
     "glue.peel_to_shear": ("peel strength of a glue line / its shear strength",
                            "T-peel test of two glued sticks"),
-    "glue.K_n_N_per_mm3": ("stiffness of a glue line", "the slope of a lap test's curve"),
     "glue.G_Ic_N_per_mm": ("toughness of a glue line in peel", "T-peel test"),
     "wood.G_f_N_per_mm": ("fracture energy of a stick in tension",
                           "an edge-notched stick pulled apart (K_Ic, G = K^2 / E)"),

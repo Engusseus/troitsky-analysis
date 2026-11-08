@@ -150,23 +150,48 @@ of Berard et al., which the round-19 literature review corrected).
   on end grain): on 2 mm sticks the wood next to the glue parts first, so a stronger
   glue does not raise a lap's peel strength past its sticks'.
 * **A joint's random draw** follows its two bodies' names and, where they share several
-  faces, the face's rank along the bridge (since round 24; its centre rounded to 10 mm
-  before, which redrew 15 joints when a part moved 5 mm, the adversarial review of round
-  23): a seed is the same imperfect bridge whatever the CAD's origin or file format.
-* **How stiff a face is** (since round 24): a glue line's normal stiffness (peel, and
-  bearing when it is pressed) is the line and the surfaces it bonds
-  (`glue.K_n_N_per_mm3`, 150 N/mm^3) in series with the wood on either side, its modulus
-  at its grain's angle to the face (`wood.E_T_MPa` across the grain, E_L along it,
-  Hankinson's form between) over the depth the stress reaches, the part's extent along
-  the normal or half the face's width (`BEARING_DEPTH_SHARE` x sqrt(area): a punch on a
-  half-space strains the wood to about its width): ~16 N/mm^3 for a 13-ply member's lap
-  on a 0/90 gusset, ~28 for a 780 mm^2 knee face, ~110-140 end grain to end grain. Until
-  round 23 the constant alone made a side-grain face as stiff as end grain: Bridge_v10
-  read near-linear to its peak (secant at the peak 0.94-0.98 of the 10-40 % secant;
-  glued trusses tested to failure 0.84-0.92, Debertolis et al. 2025) and ~25 % stiffer
-  (the realism review of round 23); now 0.85-0.89, and its first glue limit and failure
-  moved from the gusset laps to the knee and the diagonal's foot, whose faces pressed
-  across the grain now pass more of their load through the glue in shear.
+  faces, the face's rank between them, the largest first, then along the bridge (since
+  round 25; by position alone in round 24, so a 16 mm^2 sliver of contact gained or lost
+  beside a joint redrew it, and its centre rounded to 10 mm before that, which redrew 15
+  joints when a part moved 5 mm; the adversarial reviews of rounds 23-24): a seed is the
+  same imperfect bridge whatever the CAD's origin or file format. A plate lying flat lists
+  its plies from the bottom up whatever its height (a deck above or below the bridge's
+  mid-height listed them from opposite faces until round 24).
+* **How stiff a face is** (since round 24, its depth since round 25): a glue line's
+  normal stiffness (peel, and bearing when it is pressed) is the line and the surfaces
+  it bonds (`glue.K_n_N_per_mm3`, 150 N/mm^3) in series with the wood on either side,
+  its modulus at its grain's angle to the face (`wood.E_T_MPa` across the grain, E_L
+  along it, Hankinson's form between) over the depth that deforms as much: pressed
+  across the grain the stress spreads at 45 degrees along the grain and at
+  `wood.bearing_spread_across` (0.33) across it (none for a face spanning the part's
+  width) over the part's depth across the face, half of it where the part is not borne
+  on its opposite face there (`idealize.bearing_depth`; Blass & Gorlacher 2004, WCTE,
+  whose glulam tests at three depths collapse onto one E_90 with it; an orthotropic FE
+  model of the literature review of round 24: -9/+7 % on full-width faces, -6/+16 % on
+  narrower ones, where round 24's depth, the part's outline extent or half the face's
+  width, was 0.64-2.25x off). End grain to end grain: the part's depth, at most half the
+  face's width (the line dominates). Until round 23 the constant alone made a side-grain
+  face as stiff as end grain: Bridge_v10 read near-linear to its peak (secant at the peak
+  0.94-0.98 of the 10-40 % secant; glued trusses tested to failure 0.84-0.92, Debertolis
+  et al. 2025).
+* **How stiff a lap is in shear** (since round 25): the glue line and its surfaces
+  (`glue.K_s_N_per_mm3`, 200 N/mm^3; `glue.lamination_K_s_N_per_mm3`, 350, for plates
+  pressed face to face) in series with each part's shear through its own thickness,
+  t / (3 G), half the thickness where the part is glued on both faces (a member between
+  two gussets), the thickness at most the face's width, G_LT with the grain along the
+  force or the normal and the rolling modulus (`wood.G_rolling_MPa`, 150) with it across
+  the force (`idealize.shear_compliance`; Tsai, Oplinger & Morton 1998; it reproduces
+  glued crossings of spruce boards, 7-9.5 against 8.3 N/mm^3 measured, Flaig & Meyer
+  2014). Beams and plates keep their sections plane, so this compliance is not in them.
+  A stick-on-stick lap coupon is ~140 N/mm^3, a 13-ply member between two 0/90 gussets
+  ~57, two 2-ply 0/90 plates laminated ~70. Until round 24 one constant, 60, for every
+  joint (and 200 for laminations), from no source (the literature review of round 24).
+  A face pressed across the grain crushes at f_c90 x sqrt(l_ef / l), at most 4: the
+  fibres beside a face shorter than the part help, l_ef the face's length along the
+  grain spread at 45 degrees on each side over the part's depth where it is borne behind
+  the face, 0.4 x its depth where not, as far as the part reaches (prEN 1995-1-1:2021 via
+  Aloisio et al. 2023; van der Put's model, the one of several to explain 685 tests,
+  Leijten et al. 2010): ~1.3x at Bridge_v10's knee, ~1.8x at the diagonal's foot.
 * **Workmanship**: each joint's glue strength scatters (`scatter.glue_cov`, 30 %, and a
   bridge-wide factor), and so does its shear stiffness, in proportion: a joint glued
   over less of its face (starved edges, gaps) is softer as well as weaker. Bearing in
@@ -177,28 +202,33 @@ of Berard et al., which the round-19 literature review corrected).
   until then a joint drawn 1.5x peeled at 1.5 x f_t90, the adversarial review of round
   21). A user's `glue_factor` (a badly glued part, or a what-if's bigger glued area)
   scales both.
-* **Laps whose grains cross** (since round 22, reworked in round 23): a lap between two
-  plies whose grains cross in the glue plane holds 1 - w (1 - f(theta)) of a lap of
-  parallel sticks (what tau_g's coupon is), f the face ply's shear strength at that angle
-  over that along it (birch veneer: 0.89 / 0.69 / 0.62 / 0.66 / 0.59 / 0.72 at 15-90
-  degrees, Wang et al. 2024, Eur. J. Wood Wood Prod. 82:1407) and w the share of the lap
-  that fails in the wood (`glue.wood_failure_share`, 0.5, drawn 0-1 by montecarlo): a
-  bonded joint holds what its weakest component holds, so the angle matters where the
-  wood next to the glue gives way (glued birch-plywood laps failed in the face veneer at
-  30-90 degrees and followed its strength at its angle, Wang et al. 2024; gusset coupons
-  in the face veneer's rolling shear, Debertolis et al. 2025) and little where the glue
-  line itself does (Rheme et al. 2016; Frolovs et al. 2017). The plies are the two the
-  glue lies on: a plate's face ply (plies listed from the face toward the bridge's
-  middle: `2-ply 0-90` has its 0 ply there and its 90 ply outside, `2-ply 90-0` the other
-  way round; since round 24 the bridge's middle, not the CAD origin, which made moving a
-  bridge 300 mm change 37 joints, the adversarial review of round 23), every ply of a
-  member's edge. Peel is not weakened by it. Round 22 took Padilha et al.'s pine blocks (0.38 at
-  90 degrees, a strong adhesive failing in the wood) on every ply pair of both sides,
-  which made a lap at 45 degrees 0.62: the literature review of round 22 found that the
-  extreme case (pine's rolling shear is lower than birch's, and a hand-made lap is not
-  all wood failure), and the adversarial review that it set Bridge_v10's answer alone
-  (-27 %). Measure w on the team's own laps: 10 each at 0, 45 and 90 degrees, each broken
-  face's wood failure judged to 10 % (glue_joint_template.csv, grain_angle_deg).
+* **What a lap holds** (since round 25): the lower of its glue line (tau_g x the size
+  effect x the scatter) and the wood beside it: the ply the glue lies on sheared at its
+  grain's angle to the force, the lower of birch veneer's ratio at that angle x f_v
+  (0.89 / 0.69 / 0.62 / 0.66 / 0.59 / 0.72 at 15-90 degrees, Wang et al. 2024, Eur. J.
+  Wood Wood Prod. 82:1407) and Hankinson's form from f_v to the rolling shear
+  (`wood.f_rolling_MPa`, 4 MPa) (`idealize.face_shear_strength`), times the panel factor
+  of a gusset under a member wider than 8x its thickness, (8 h_f / b_w)^0.8 inside it and
+  (4 h_f / b_w)^0.8 at its edge (`idealize.panel_factor`; EN 1995-1-1 9.1.2 eq. 9.14 for
+  glued thin-flanged beams; APA PDS Supplement 3 3.6.4: half the rolling shear at edge
+  stringers), which caps its laminate's transfer to the inner plies too (the critical
+  rolling-shear plane is the first cross ply, APA 3.6.1). The force runs along the member
+  (a bar's axis, else the smaller part's long axis). A bonded joint holds what its weakest
+  part holds: glued birch-plywood laps failed in the face veneer at 30-90 degrees and
+  followed its strength at its angle (Wang et al. 2024), gusset coupons in the face
+  veneer's rolling shear (Debertolis et al. 2025), and a weak glue line fails with little
+  regard to the angle (Rheme et al. 2016; Frolovs et al. 2017): with tau_g ~2 MPa the
+  glue line governs every lap of Bridge_v10 (its node M laps +20 % against round 24),
+  with superglue (test A) the wood does. Round 23 took 1 - w (1 - f(theta)) x the glue
+  line, w the share failing in the wood drawn 0-1, a factor with no test behind its form
+  (the literature review of round 23); round 22 Padilha et al.'s pine blocks (0.38 at 90
+  degrees) on every ply pair (-27 % on Bridge_v10 alone). The plies are the two the glue
+  lies on: a plate's face ply (plies listed from the face toward the bridge's middle:
+  `2-ply 0-90` has its 0 ply there and its 90 ply outside, `2-ply 90-0` the other way
+  round; a plate lying flat from the bottom up), every ply of a member's edge. Peel is
+  not weakened by it. Measure on the team's own laps: 10 each at 0, 45 and 90 degrees
+  with a strong, clamped glue line (glue_joint_template.csv, grain_angle_deg): where the
+  wood fails, the load over the area is the face's strength at that angle.
 * **Creep**: PVA is a thermoplastic and creeps. Each glue line's shear slip has a Kelvin
   element in series with its spring (`glue.creep_factor` phi = 1: under a steady load
   the slip grows toward (1 + phi) x the elastic slip, retardation `glue.creep_time_s` =
@@ -306,9 +336,11 @@ of Berard et al., which the round-19 literature review corrected).
   inputs, not measurements; coupons cut from the gussets held 5.1 MPa, CoV 0.27.)
 * **Laminations.** Two plates glued face to face (a deck's plies drawn as separate
   bodies, a gusset flat on a plate) are glued as the plies inside one laminated body:
-  at `glue.interlaminar_MPa` (3.5 MPa) with no size effect and a pressed line's shear
-  stiffness (`glue.lamination_K_s_N_per_mm3`, 200 N/mm^3: a pressed PVAc line ~150
-  secant, 300-400 initially, Serrano 2000, in series with two 2 mm sticks in shear), as
+  at `glue.interlaminar_MPa` (3.5 MPa, x the panel factor where one is a gusset wider
+  than the other by more than its own width, since round 25) with no size effect and a
+  pressed line's shear stiffness (`glue.lamination_K_s_N_per_mm3`, 350 N/mm^3: a pressed
+  PVAc line ~150 secant, 300-400 initially, Serrano 2000; the plates' own shear through
+  their thickness added by geometry, ~70 N/mm^3 in all for two 2-ply 0/90 plates), as
   strong as the glue lines inside one laminated member (where those split); the layered
   shells themselves do not delaminate, so a bond line drawn inside one plate never fails
   (below). A lamination covers most of the smaller plate: a short overlap of two plates
@@ -493,7 +525,8 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
 ## 5. The test
 
 * The bridge stands on the crusher's flat steel base platform: unilateral contact with
-  Coulomb friction (mu = 0.35), no anchorage (§8.3). Every vertex of every body, and a
+  Coulomb friction (mu = 0.2, wood on steel: 0.17-0.19, Villar-Garcia et al. 2022; 0.35
+  until round 24; drawn by montecarlo), no anchorage (§8.3). Every vertex of every body, and a
   grid on downward faces at table level, can touch it.
 * Gravity acts on everything. The bridge first settles under its own weight; a bridge
   that sags more than 20 mm fails by *instability* ("failure under self-weight") and
@@ -501,7 +534,7 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
 * The 200 x 90 mm loading plate (§12.5; two 15 mm steel plates, 4.2 kg, Appendix B) is a
   rigid body resting on the deck at mid-span and the deck centreline. The jack pushes on
   its hemispherical seat, so the plate tilts freely; plate-bridge contact is unilateral
-  with friction (mu = 0.3) on any part of the bridge that reaches the plate.
+  with friction (mu = 0.2; 0.3 until round 24) on any part of the bridge that reaches the plate.
 * **Seating and an out-of-level bridge.** A bearing face beds in on the steel: its contact
   stiffness grows from 0 to full over the first `contact.seating_mm` (0.3 mm: roughness,
   glue beads, fibres crushing at the first touch), which gives the soft start ("toe") of
@@ -528,9 +561,17 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   the glue breaks; a broken glue pair whose two points have moved apart (3 mm), turned
   (74 degrees) or passed through each other stops acting.
 * The jack moves down at constant speed (displacement control); its force is the
-  load-cell reading. The crusher + load cell stiffness is 20 kN/mm, its sideways
-  stiffness at the plate 2 kN/mm (`crusher.stiffness_N_per_mm`,
-  `crusher.lateral_N_per_mm`: measure them on your press).
+  load-cell reading. The crusher + load cell stiffness is 10 kN/mm (estimated from
+  Appendix B's press: oil column ~19, crossbeam ~35, load cell ~100 kN/mm in series; 20
+  until round 24), its sideways stiffness at the plate 2 kN/mm (`crusher.stiffness_N_per_mm`,
+  `crusher.lateral_N_per_mm`: measure them on your press). The press's stiffness is not
+  only in the stroke: when a joint cracks the press lets the energy it stores drive on
+  into the bridge, and a soft one turns cracks a stiff one lets the bridge survive into
+  the collapse (Bridge_v10 -6 % at 5 kN/mm, -10 % at 2 kN/mm against 20, the ambitious
+  review of round 24): drawn by montecarlo (60 %), and asked (`crusher:stiffness`).
+  A bridge that rings slowly (period over 10 ms: a light truss) starts from standard's
+  jack speed at most at every fidelity (since round 25: at quick's 200 mm/s, slowed by
+  its period, a light truss stayed dynamic, kinetic/work 0.10, and read half of standard).
 * **The load reading.** The jack force rings with stress waves that a real test at
   mm/min never shows (time is compressed). Two filters of it: *online*, a one-pole
   low-pass over 0.3 mm of jack travel, which decides when to hold the jack and when the
@@ -565,8 +606,11 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   later back at the break (`test_the_reading_stays_within_the_force_the_jack_applied`).
   The curve, F_u, the
   deflection at F_u and the load of every event (the last reading at or before it) are
-  the reported one; `curve.csv` and the report's curve also give the raw force
-  (`load_raw_kgf`). (Until round 10
+  the reported one, except that an event while the jack is held reads at least the raw
+  force averaged over a centred period of the ringing (the reading there looks back to
+  where the hold began: node A's laps read 10-13 % below the jack force in a Monte Carlo
+  run of round 24, the adversarial review); `curve.csv` and the report's curve also give
+  the raw force (`load_raw_kgf`). (Until round 10
   the online reading was reported: the same F_u within 0.2 % on Bridge_v6, but its lag
   put the rising branch 0.3 mm late, the secant stiffness 7 % low.)
 * **Failures run their course at constant load**, as in the real test where the jack
@@ -608,7 +652,12 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   clean break comes before a joint that only cracked or a member crushing, and of the
   breaks in the same instant the one that could carry the most (a diagonal's end-grain
   foot and its two gusset laps letting go together: the laps; strengthening the foot alone
-  moved Bridge_v10's F_u 1 %, the laps 9 %, the adversarial review of round 20; the
+  moved Bridge_v10's F_u 1 %, the laps 9 %, the adversarial review of round 20). The same
+  instant is half a period of the bridge's ringing since round 25 (the load cell's 0.75-3
+  ms before: the laps went 2-3 ms after the foot and the foot, under 5 % of F_u, kept the
+  label, while strengthening the laps x1.5 raised F_u 22 %, the adversarial review of
+  round 24), and a plate that was cracking before (more of the same crack) does not keep
+  its place before joints letting go with it (the
   strengthen what-if covers every joint of the governing part that broke with it). Only what
   happened up to the failure call counts: what breaks after it is the collapse. When
   nothing broke, the joint whose glue let go during the fall (at least 20 % of its area
@@ -677,12 +726,16 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   (200 / 100 / 50 mm/s, rounds 22-24: quick at 100 mm/s reads ~1.5 % below quick at 200,
   the adversarial review of round 23) 1693 / 1651 / 1651 (seed 0) and 1803 / 1638
   (quick, standard, seed 1) in round 22 (§3.15), 2079 / 2021 / 2014 and 2142 / 1944 in
-  round 23 (§3.16), 1830 / 1725 / 1701 and 1927 / 1796 in round 24 (§3.17), standard and
-  fine at node M (the diagonal's foot or its gusset laps, one truss's or its mirror's). The meshes are not monotone (standard the lowest of the
-  three in rounds 19-20), so there is no Richardson estimate: over 10 seed pairs fine
-  reads +2.3 % above standard on average (-1.1 to +11 %), which `montecarlo` takes out
-  of its prediction (`uncertainty.mesh_bias_standard`, 0.02; quick, 1-12 % above
-  standard, `mesh_bias_quick` -0.04), leaving ~5 % scatter (`uncertainty.mesh_cov`). Fine
+  round 23 (§3.16), 1830 / 1725 / 1701 and 1927 / 1796 in round 24 (§3.17), 1877 / 1938
+  / 1845 and 2137 / 1829 in round 25 (§3.18), standard and fine at node M (the
+  diagonal's gusset laps, one truss's or its mirror's). The meshes are not monotone (standard the lowest of the
+  three in rounds 19-20), so there is no Richardson estimate: over 10 seed pairs of
+  Bridge_v6 fine read +2.3 % above standard on average (-1.1 to +11 %), but on
+  Bridge_v10 0.0, -0.4 and -1.4 % in rounds 22-24: no consistent sign across designs, so
+  since round 25 `montecarlo` takes out only the jack speed's share
+  (`uncertainty.mesh_bias_standard` -0.007: -0.5 % from 100 to 50 mm/s, extrapolated to
+  a jack at rest; quick, 2.5-7.6 % above fine on Bridge_v10, `mesh_bias_quick` -0.05),
+  leaving ~5 % scatter (`uncertainty.mesh_cov`). Fine
   is not shown converged either (the adversarial review of round 20). Until round 16 the
   quick mesh was 4.6x too soft (plates on plates, below), and the round-16 spread was
   mostly the jack speed, which each fidelity changes with the mesh. A seed whose failure starts as a plate crack converges less
@@ -695,9 +748,16 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   depth at standard (12 mm on the light truss, in proportion at the other fidelities;
   members 20 mm deep and more unchanged), and the light truss read 46.2 kgf at standard
   (a deck-to-vertical joint) against 35.8 at fine (a floor beam splitting in shear):
-  still not converged at standard, so read such a bridge's F_u at fine. A crush whose
-  elements are more than 3x the depth of the members that fail, or 1.5x for members
-  shallower than 10 mm, is flagged untrustworthy. A perfect bridge is symmetric, so which side gives way first is
+  still not converged at standard. Since round 25 a member shallower than 10 mm gets
+  elements at most 1.33x its depth at quick and standard alike (2x for deeper members;
+  quick no coarser than standard for them), and a bridge that rings slowly (period over
+  10 ms) starts from standard's jack speed at every fidelity: the light truss still read
+  18.5 kgf at quick (dynamic, kinetic/work 0.11, a deck-to-vertical joint), 37.8 at
+  standard and 44.8 at fine (the bottom chord splitting), its plates and glued joints,
+  sampled at the plates' element size, setting it (the realism review of round 24 asked
+  quick within 10 % of fine: not reached). A crush whose elements are more than 3x the
+  depth of the members that fail is flagged untrustworthy, and one whose failing members
+  are shallower than 10 mm at any fidelity coarser than fine: read such a bridge at fine. A perfect bridge is symmetric, so which side gives way first is
   a bifurcation round-off decides; `--amplitude 0.1` keeps the seed's asymmetry at a
   tenth of its imperfections for a mesh study.
 * **Uncertainty** (`montecarlo -n 20 --sample-placeholders`, standard): with the build
@@ -707,7 +767,7 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   sticks' shear strength first. Each placeholder is drawn with its own prior, about the
   half-width of the literature or craft-stick range at 90 %: the stick modulus 30 % (dry
   craft sticks 11-15 GPa by vibration; until round 18 the draws were centred on the
-  material file's 10 GPa while each crush used 7.1, now on the crush's own 11), f_t 30 %,
+  material file's 10 GPa while each crush used 7.1, now on the crush's own 10.5), f_t 30 %,
   f_c, f_v, f_c90, f_t90, rolling shear (4 MPa since round 23: birch veneer 4.6, Wang
   et al. 2024; silver birch 3.5) and peel 25 %, the pressed bond line 30 %, the
   glue's shear toughness, the plies' shear fracture energy and the end-grain factor
@@ -723,7 +783,9 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   draws seeds 1-8 all drew the glue's strength below its placeholder, a 1-in-256 chance
   that pulled the median down). The values F_u is most sensitive to are the least known. `montecarlo` also gives a **total range**
   (`total_p05_kgf`, `total_p95_kgf`): the runs' F_u, corrected for the mesh's bias
-  (`uncertainty.mesh_bias_*`: +2 % at standard, -4 % at quick, toward fine), each times a
+  (`uncertainty.mesh_bias_*`, toward fine with a jack at rest: -0.7 % at standard, -0.2 %
+  at fine, -5 % at quick, since round 25; +2 % at standard before, a sign Bridge_v10's
+  own meshes did not share, the adversarial review of round 24), each times a
   lognormal mesh error (`uncertainty.mesh_cov`, 5 %, the scatter of fine against
   standard) and a model-form error, both median-centred as the placeholders are (until
   round 21 mean-centred, which put the prediction 4.5 % lower for a convention: the
@@ -741,9 +803,19 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   §12.7 error) is taken over the runs times that same error, which pulls it below the
   runs' own (`recommended_prediction_runs_kgf`), and comes with a bootstrap interval
   over the runs (`recommended_interval_kgf`: wide with 8 runs in two clusters, as on
-  Bridge_v10). Runs flagged untrustworthy are listed apart and left out while at least
-  half the runs are trustworthy, and a rigid block under the loading plate is named in
-  the note (it cannot fail in any run).
+  Bridge_v10). How much the judgement of the model-form error moves it is given next to
+  it (`prediction_by_model_cov`: 0.15, the shipped 0.40 and 0.76, the published tests'
+  scatter about the model; on Bridge_v10's round-25 runs 1501 / 1296 / 859 kgf, its
+  round-24 runs 1443 / 1263 / 848, the adversarial review of round 24). The published tests read on average about half their
+  loads (the mean of ln(median / test) over A, B and C -0.70 in round 24, -0.80 in round
+  25): they are small
+  trusses outside a team's bridge's range whose rebuilds were set with their comparisons,
+  so they inform the error's width, not a correction (validation README 3.14). A run
+  flagged only as not quasi-static is crushed again at half the jack speed, not left out
+  (since round 25: such runs were where a weak joint snapped, the three lowest of test B's
+  ten, the adversarial review of round 24); other untrustworthy runs are listed apart and
+  left out while at least half the runs are trustworthy, and a rigid block under the
+  loading plate is named in the note (it cannot fail in any run).
 * **Crack onset is local.** A plate left as a shell cracks where its strain first
   reaches the strength in one element; the crack band makes the energy of the crack
   independent of the mesh, not its onset at a sharp stress raiser (the end of a glued
@@ -832,11 +904,12 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   points to a 2 mm ply, evened out only after a week), lowering E and G 2 %, f_c 5.7 %,
   f_c90 5 % and f_v 2.4 % per point (USDA Wood Handbook eq. 5-3, paper birch); make the
   coupons alongside the members, or weigh a member daily after gluing until its mass is
-  steady. The simulated curve shows the toe from seating, then is near-linear: on
-  Bridge_v10 (round 20) its secant at the peak is 0.98-1.00 of the 10-40 % secant
-  against the jack's travel and 0.94-0.98 against the deflection, though 70-100 glue lines
-  pass their own peak locally (the ends of laps) before F_u: their share of the bridge's
-  compliance is small. Glued timber trusses tested to failure were "mostly linear elastic
+  steady. The simulated curve shows the toe from seating, then bends before its peak:
+  on Bridge_v10 (rounds 24-25) its secant at the peak is 0.89-0.92 of the 10-40 % secant
+  against the jack's travel and 0.82-0.89 against the deflection (0.98-1.00 and 0.94-0.98
+  in round 20, before the faces pressed across the grain were given the wood's stiffness
+  in series), 70-100 glue lines passing their own peak locally (the ends of laps) before
+  F_u. Glued timber trusses tested to failure were "mostly linear elastic
   until failure, which occurred in a brittle manner", their secant at the peak 0.84-0.92
   of the 10-40 % secant (Debertolis et al. 2025, 7 m span): the model is stiffer to its
   peak than that, and a real stick bridge (creep under a pumped jack, joints that seat,
@@ -844,10 +917,10 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   model of those trusses with rigid glued joints read 0.82-0.96 of their stiffness
   measured with LVDTs on the bridge (Debertolis et al. 2025), and glued joints' slip is
   negligible in a truss's deflection (Hansen 1965, NRC DBR RP-334): the model's joints
-  are not the reason it reads 3.6x stiffer than published test C's record (validation
+  are not the reason it reads 2-4x stiffer than published test C's record (validation
   README 3.14), which measured the crosshead of a 30 t press over 0.05-0.2 kN (0.02-0.07
-  % of its range) and grows stiffer toward its peak (13.2 kgf/mm at it against 9.6 over
-  10-40 %): seating, which a record of the crosshead is dominated by. A team that wants
+  % of its range), starting at 0.2 kN (its tangent 9.3 kgf/mm there, 5.8 near the peak;
+  digitised in round 25: the 9.6 kgf/mm over 10-40 % quoted before is not on it). A team that wants
   the stiffness compares deflection measured on the bridge (a dial gauge or a ruler in a
   video at mid-span), or the EN 26891 cycle (to 0.4 of the expected peak and back to 0.1,
   then to failure: the reloading branch leaves seating out). Stick coupons loaded at the test's own pace (failure in
