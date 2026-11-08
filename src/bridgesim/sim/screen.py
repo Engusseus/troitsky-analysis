@@ -198,16 +198,23 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
                       for i in sup]) if len(sup) else np.zeros(0)
     mu = float(m.params.get("friction_platform", 0.35))
     # faces that touch but are not glued (glue_factor 0: a cut end, a part only resting
-    # on another) bear across their faces, and open freely
+    # on another) bear across their faces while pressed, and hold along them as friction
+    # sticks (as the platform's contacts do: a loading bar resting on two chords is held
+    # in place, not left free to slide, which left the linear system all but singular
+    # and a published truss's period at 5.7 s: the realism review of round 21), and
+    # open freely
     for i in np.where(unglued)[0]:
         na, Ta = _att_T(m, int(m.c_a[i]))
         nb, Tb = _att_T(m, int(m.c_b[i]))
         if na == nb:
             continue
         nrm = m.c_n0[i] / max(np.linalg.norm(m.c_n0[i]), 1e-12)
-        B = nrm @ np.hstack([-Ta, Tb])  # opening: B . u > 0
+        T = np.hstack([-Ta, Tb])
+        B = nrm @ T  # opening: B . u > 0
+        P = np.outer(nrm, nrm)
+        k3 = m.c_area[i] * (m.c_Kn[i] * P + m.c_Ks[i] * (np.eye(3) - P))
         dofs = np.r_[6 * na + np.arange(6), 6 * nb + np.arange(6)]
-        contacts.append((dofs, m.c_area[i] * m.c_Kn[i] * np.outer(B, B), B, 1.0))
+        contacts.append((dofs, T.T @ k3 @ T, B, 1.0))
     P_ = m.plate_node
     q_on = []
     if P_ >= 0 and len(m.q_att):
@@ -271,9 +278,23 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
         end = max(over, key=over.get)  # that end slides; the other keeps the bridge
         slide |= (sup_x >= mid) if end == "hi" else (sup_x < mid)
     u = u.reshape(n, 6)
+    # how far the points the plate rests on went down (the bridge under the plate): the
+    # plate's own drop is that, unless it rests on a line (a loading bar across two
+    # chords), where it pivots freely in a linear solve and its drop means nothing
+    deck_dy = 0.0
+    if len(q_on):
+        ys = []
+        for i in q_on:
+            att = int(m.q_att[i])
+            nd, Ta = _att_T(m, att)
+            ys.append(-(Ta @ u[nd])[1])
+        deck_dy = float(np.mean(ys))
+    plate_dy = float(-u[P_, 1]) if P_ >= 0 else 0.0
+    if deck_dy > 0 and plate_dy > 3.0 * deck_dy:
+        plate_dy = deck_dy
     return {"u": u, "beamT": beamT, "Kb": Kb, "q_on": q_on, "K": K,
             "n_contact": int(active.sum()), "sliding_supports": int(slide.sum()),
-            "plate_dy": float(-u[P_, 1]) if P_ >= 0 else 0.0}
+            "plate_dy": plate_dy, "deck_dy": deck_dy}
 
 
 def _solve_contacts(K0, f, contacts, active):

@@ -34,9 +34,10 @@ report.
 
 The simulation is dynamic but slow compared with the bridge's vibrations: quasi-static.
 The kinetic energy is recorded and reported against the work done, so it can be checked.
-Time is compressed (the real jack moves at ~mm/min, the simulated one at ~mm/s); since
-the material laws have no rate effect, this does not change the result, and the replay
-maps simulated time back to real test time.
+Time is compressed (the real jack moves at ~mm/min, the simulated one at ~mm/s); the
+glue's creep and its rate-dependent strength run on the physical test time (the jack's
+travel at crusher.test_rate_mm_per_min), so this does not change the result as long as
+the run is quasi-static, and the replay maps simulated time back to real test time.
 """
 
 from __future__ import annotations
@@ -534,12 +535,32 @@ def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
     return out
 
 
+def reading_window(raw, travel, speed_mm_s: float, period_s: float = 0.0) -> float:
+    """The reading's smoothing window (in jack-time, travel / speed): 0.9 mm of travel
+    (three load-cell time constants), or for a bridge that peaks within a few mm a
+    quarter of its travel to the raw peak, but never less than one period of its ringing
+    (the travel the jack makes in one) nor 0.05 mm: a 0.9 mm window was longer than a
+    stiff little truss's whole rise and read 3-7 kgf before the jack had touched it (the
+    realism review of round 21)."""
+    W0 = 3 * LOAD_CELL_MM
+    v = max(speed_mm_s, 1e-9)
+    if travel is None or len(raw) < 3:
+        return W0 / v
+    x = np.asarray(travel, float)
+    rise = float(x[int(np.argmax(raw))] - x[0])
+    ring = period_s * speed_mm_s if period_s > 0 else 0.0
+    return min(W0, max(0.25 * rise, ring, 0.05)) / v
+
+
 def _reported(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
               travel: np.ndarray | None = None, breaks=(), hold=None,
-              period_s: float = 0.0, _start: bool = True) -> np.ndarray:
+              period_s: float = 0.0, _start: bool = True,
+              _W: float | None = None) -> np.ndarray:
     """The load reported for a crush: the raw jack force smoothed by a centred Hann
     window 0.9 mm of jack travel wide (three online load-cell time constants at full
-    speed), along the jack travel: the load against travel, as a test record plots it.
+    speed; for a bridge that peaks within a few mm, a quarter of its travel to the peak,
+    no less than a period of its ringing: :func:`reading_window`), along the jack
+    travel: the load against travel, as a test record plots it.
     Centred, so it has no lag (the rising branch, the stiffness and F_u are where they
     are), while it removes the stress waves ringing through the bridge. The fit is
     local linear (:func:`_local_linear`), so near an end it follows the trend instead
@@ -557,8 +578,10 @@ def _reported(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
     odd reflection there. Without ``travel``: along time at full speed."""
     raw = np.asarray(raw, float)
     t = np.asarray(t, float)
+    if _W is None:
+        _W = reading_window(raw, travel, speed_mm_s, period_s)
     if hold is not None and period_s > 0:
-        out = _reported(t, raw, speed_mm_s, travel, breaks)
+        out = _reported(t, raw, speed_mm_s, travel, breaks, _W=_W)
         held = np.asarray(hold, float) > 0.5
         # from each break through the jack's slowing and the hold that follows, the
         # travel stands (nearly) still while the load changes in time: there the load
@@ -589,14 +612,14 @@ def _reported(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
         trv = None if travel is None else np.asarray(travel, float)
         for a, b in zip([0] + cuts, cuts + [len(raw)], strict=True):
             out[a:b] = _reported(t[a:b], raw[a:b], speed_mm_s,
-                                 None if trv is None else trv[a:b], _start=a == 0)
+                                 None if trv is None else trv[a:b], _start=a == 0, _W=_W)
         return out
     if len(raw) < 3:
         return raw.copy()
     u = (np.asarray(travel, float) / max(speed_mm_s, 1e-9) if travel is not None
          else t)  # the time the jack needs at full speed
     u = np.maximum.accumulate(u)
-    W = 3 * LOAD_CELL_MM / max(speed_mm_s, 1e-9)
+    W = _W
     du = np.gradient(u)
     du = np.maximum(du, 1e-6 * (float(np.median(du[du > 0])) if (du > 0).any() else 1.0))
     if _start:  # odd reflection before the start: the record starts from rest
@@ -644,11 +667,12 @@ def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
     from ``t_c``, where the raw force (averaged over a centred period of the ringing)
     last stood within 5 % of F_u (``peak``); a break before it was survived (the load
     came back). A quarter of the load-cell time constant of slack before ``t_c``. Among
-    breaks at the same moment a clean break comes before a joint that only cracked, the
-    one that could carry the most comes first (a diagonal's foot and its two gusset laps
-    letting go together: the load falls because the laps go, and strengthening the foot
-    alone changes nothing, the adversarial review of round 20), and a member split
-    within 2 ms of a member fracture is put down to the fracture (its stress wave).
+    breaks at the same moment a clean break comes before a joint that only cracked and,
+    when a joint goes first, the joint that could carry the most (a diagonal's foot and
+    its two gusset laps letting go together: the load falls because the laps go, and
+    strengthening the foot alone changes nothing, the adversarial review of round 20),
+    and a member split within 2 ms of a member fracture is put down to the fracture (its
+    stress wave).
     Without a break from ``t_c``: the last survived break within 10 % of F_u; else one
     within 3 mm of jack travel of the peak. Competing: the other breaks
     within 10 % of F_u that were survived, or that came at the same moment as the
@@ -664,7 +688,11 @@ def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
                 and e.force_N >= 0.9 * peak]
     if falling:
         same = clean([e for e in falling if e.t <= falling[0].t + 2 * tol])
-        first = max(same, key=lambda e: e.capacity_N)  # the first of the strongest
+        joints = [e for e in same if e.kind.startswith("joint")]
+        # joints letting go together: the strongest of them; a member or plate breaking
+        # first (it has no glue capacity to compare) keeps its place in time
+        first = max(joints, key=lambda e: e.capacity_N) \
+            if joints and same[0].kind.startswith("joint") else same[0]
     elif survived:
         first = clean(survived)[-1]
     else:

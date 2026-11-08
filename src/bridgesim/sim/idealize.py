@@ -768,6 +768,43 @@ def lap_size_factor(area_mm2: float, ref_mm2: float = 200.0, m: float = 10.0,
     return float((min(area_mm2, max(cap_mm2, ref_mm2)) / ref_mm2) ** (-1.0 / m))
 
 
+T90_REF_VOLUME_MM3 = 4800.0  # Kruger et al. 2025's coupons: an 80 x 30 mm field, 2 mm
+T90_DEPTH_MM = 2.0  # how deep into the wood a glue line's peel stresses it (a ply)
+T90_FACTOR_MAX = 2.5
+
+
+def t90_size_factor(area_mm2: float, m: float = 8.0) -> float:
+    """The tension strength across the grain of the small volume of wood a glued joint
+    pulls on, over that of the coupons wood.f_t90_MPa comes from: a weakest-link size
+    effect (V_ref / V)^(1/m), V = the joint's area x T90_DEPTH_MM, V_ref = 4800 mm^3,
+    at least 1 (a big joint's peel stays at its edges) and at most T90_FACTOR_MAX. Birch
+    veneer pulled across the grain scatters with CoV 25 / 12.6 / 10.8 % at 1 / 2 / 3 mm
+    (m ~ 5 / 9.5 / 11, Kruger et al. 2025, doi:10.5281/zenodo.17201843); Douglas fir
+    ~5 (Barrett 1974, Wood Fiber 6:126, the basis of Eurocode 5's (V0/V)^0.2). A
+    vertical's end grain glued on a chord's side (47 mm^2) held 2.6 MPa in a published
+    truss test (Moraes et al. 2019): 1.7 x f_t90, where m = 8 gives 1.64. Caps
+    the peel of a glue line and the end-grain joints (wood.t90_weibull_m)."""
+    if m <= 0 or area_mm2 <= 0:
+        return 1.0
+    v = area_mm2 * T90_DEPTH_MM
+    return float(min(max((T90_REF_VOLUME_MM3 / v) ** (1.0 / m), 1.0), T90_FACTOR_MAX))
+
+
+def lap_crossing_factor(cos_t: float, ratio: float = 0.38, n: float = 2.35) -> float:
+    """Shear strength of a glued lap whose two parts' grains cross at an angle (cos_t
+    between them, in the glue plane) over that of a lap of parallel sticks: Hankinson's
+    form ratio / (sin^n + ratio cos^n). Pine blocks bonded at 0 / 30 / 45 / 60 / 90
+    degrees held 10.5 / 8.4 / 6.4 / 5.1 / 3.9 MPa: ratio 0.38, n 2.35 (2.00-2.71)
+    (Padilha et al. 2023, Rev. Arvore 47, doi:10.1590/1806-908820230000027): the part
+    loaded across its fibres fails in rolling shear (wood.f_rolling_MPa / f_v ~ the same
+    ratio). 0.81 at 30 degrees, 0.62 at 45, 0.48 at 60 (glue.cross_grain_ratio)."""
+    c = min(abs(cos_t), 1.0)
+    sn = math.sqrt(max(1.0 - c * c, 0.0))
+    if ratio >= 1.0:
+        return 1.0
+    return float(ratio / (sn**n + ratio * c**n))
+
+
 def gap_strength(gap: float, fill: float = 0.15) -> float:
     """Strength of a white-glue line filling a gap ``gap`` mm wide, as a share of a thin
     one: full up to ``fill`` (glue.gap_fill_mm), then falling as the thick line shrinks
@@ -978,6 +1015,8 @@ def moisture_adjusted(mat: Material, sp: SimParams) -> tuple[Material, SimParams
 
 
 LAMINATION_COVER = 0.5  # share of the smaller plate two plates glued face to face cover
+# to be taken as a lamination (the middle of the ramp from a hand-made lap to one)
+LAMINATION_RAMP = (0.3, 0.7)
 DEPTH_ELEMENTS = 2.0  # a member's beam elements at most this x its depth at standard
 
 
@@ -1790,6 +1829,9 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
 
     end_factor = sp.values.get("glue.end_grain_factor", 0.5)
     end_tension = sp.values.get("glue.end_grain_tension_factor", 0.0)
+    t90_m = sp.values.get("wood.t90_weibull_m", 0.0)
+    cross_ratio = sp.values.get("glue.cross_grain_ratio", 1.0)
+    cross_n = sp.values.get("glue.cross_grain_exponent", 2.35)
 
     def transfer_cap(bi: int, nrm: np.ndarray) -> float:
         """The average shear a joint on body bi's ply face can pass into its laminate:
@@ -1839,16 +1881,32 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         return (float(np.mean([hankinson(ply.f_c, ply.f_c90, c) for c in cs])),
                 float(np.mean([end_grain_share(c, end_factor) for c in cs])))
 
-    def tension_at(bi: int, p: np.ndarray, n: np.ndarray, solid: bool = False) -> float:
+    def tension_at(bi: int, p: np.ndarray, n: np.ndarray, solid: bool = False,
+                   vf: float = 1.0) -> float:
         """The wood's tension strength across a face of normal n at the point p (along
         its grain on end grain, f_t90 on side grain; Hankinson in between): what a glue
         line's peel pulls on. ``solid``: a face inside one piece of wood, where a part
-        with no grain known (a block) has its fibres across it (a tenon's root)."""
+        with no grain known (a block) has its fibres across it (a tenon's root). ``vf``:
+        the size factor on f_t90 of the small volume a joint stresses (t90_size_factor)."""
         gs = grain_at(bi, p)
         if not gs:
-            return ply.f_t if solid else ply.f_t90
-        return float(np.mean([hankinson(ply.f_t, ply.f_t90, abs(float(g @ n)))
+            return ply.f_t if solid else ply.f_t90 * vf
+        return float(np.mean([hankinson(ply.f_t, ply.f_t90 * vf, abs(float(g @ n)))
                               for g in gs]))
+
+    def crossing(i1: int, i2: int, p: np.ndarray, n: np.ndarray) -> float:
+        """Lap strength over a lap of parallel sticks for the angle at which the two
+        parts' grains cross in the glue plane (lap_crossing_factor), averaged over their
+        plies; 1 where either side meets the glue end-on or has no grain known."""
+        ga, gb = grain_at(i1, p), grain_at(i2, p)
+        fs = []
+        for g1 in ga:
+            for g2 in gb:
+                u1, u2 = g1 - (g1 @ n) * n, g2 - (g2 @ n) * n
+                l1, l2 = float(np.linalg.norm(u1)), float(np.linalg.norm(u2))
+                fs.append(1.0 if min(l1, l2) < 0.5 else lap_crossing_factor(
+                    abs(float(u1 @ u2)) / (l1 * l2), cross_ratio, cross_n))
+        return float(np.mean(fs)) if fs else 1.0
 
     def cross_share(bi: int, p: np.ndarray, n: np.ndarray) -> float:
         """Share of a part's fibres that cross a face inside one piece of wood (1 for a
@@ -1883,12 +1941,15 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         where = "" if n_pair[(min(ia, ib), max(ia, ib))] == 1 else \
             f":{np.round(cad_c / 10.0).astype(int).tolist()}"
         gf = gf_bridge * scatter(sp["scatter.glue_cov"], f"glue:{key}{where}")
+        g_sc = gf  # the drawn workmanship; the overrides below are the user's own
         gf *= float(ov.for_body(bodies[ia].name).get("glue_factor", 1.0))
         gf *= float(ov.for_body(bodies[ib].name).get("glue_factor", 1.0))
         for key, val in ov.glue.items():
             if _joint_matches(key, bodies[ia].name, bodies[ib].name):
                 gf *= val
                 ov.used.add(key)
+        # the user's factor (a part glued badly, or a what-if's bigger glued area)
+        g_user = gf / g_sc if g_sc > 0 else gf
         # two bodies drawn apart but one piece of wood (a tenon and its beam, a seat
         # laminated with its chord): the face between them breaks at the wood's own
         # strength, not a glue line's
@@ -1918,7 +1979,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         e_end = max(ea, eb)  # share of the plies on a side meeting the glue end-on
         # peel pulls the wood on either side apart across the face: a glue line holds in
         # peel no more than its weaker side's tension across the face
-        f_peel = min(tension_at(ia, cen, na), tension_at(ib, cen, na))
+        vf = t90_size_factor(float(area), t90_m)
+        f_peel = min(tension_at(ia, cen, na, vf=vf), tension_at(ib, cen, na, vf=vf))
         if solid:  # one piece: no glue line, no fit-up, the wood's strength across it
             gf, e_end, k_cov = 1.0, 0.0, 1.0
             f_peel = min(tension_at(ia, cen, na, solid=True),
@@ -1934,8 +1996,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         # until round 21, a tenth of that: validation README 3.14)
         # (capped by the other side pulled apart across its face: a vertical's end glued
         # on a chord's side lifts the chord's surface at its tension across the grain)
-        sig_end = min(end_tension * max(tension_at(ia, cen, na), tension_at(ib, cen, na)),
-                      f_peel)
+        sig_end_glue = end_tension * max(tension_at(ia, cen, na), tension_at(ib, cen, na))
         if e_end > 0.5 and not solid:
             end_grain_joints.append((bodies[ia].name, bodies[ib].name, float(area)))
         # fit-up: a member's end cut to bear on another part is not square. It touches
@@ -1973,23 +2034,35 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             float(area), sp.values.get("glue.size_ref_mm2", 200.0),
             sp.values.get("glue.weibull_m", 10.0), sp.values.get("glue.size_cap_mm2", 3000.0))
         ks_line = sp_glue["K_s_N_per_mm3"]
+        if not solid:
+            # the two parts' grains crossing in the glue plane: one of them is sheared
+            # across its fibres (rolling shear), weaker than a lap of parallel sticks
+            tau_p *= crossing(ia, ib, cen, na)
         patches[pid].strength_MPa = tau_p / peak_factor(n_nodes)
         # two plates glued face to face (a deck's plies drawn as separate bodies): a
         # lamination, pressed flat over its whole face, as the glue lines inside one
         # laminated body are, so it is as strong and stiff as they are (the same bond
         # line drawn as one body or two gives the same bridge), with no size effect
         # (a lamination covers most of the smaller plate: a short overlap of two plates,
-        # a deck's tongue slid into its groove on build day, is a hand-made lap)
-        lamination = (not solid and shapes[ia].kind == "shell" and shapes[ib].kind == "shell"
-                      and abs(float(na @ shapes[ia].n)) > 0.99
-                      and abs(float(na @ shapes[ib].n)) > 0.99  # as ``stacked``
-                      and float(area) >= LAMINATION_COVER * min(
-                          shapes[ia].poly.area, shapes[ib].poly.area))
-        if lamination:
-            tau_p = sp.values.get("glue.interlaminar_MPa", 4.0) * peak_factor(n_nodes)
-            ks_line = sp.values.get("glue.lamination_K_s_N_per_mm3", ks_line)
+        # a deck's tongue slid into its groove on build day, is a hand-made lap; in
+        # between, from LAMINATION_RAMP[0] to [1] of the smaller plate covered, the joint
+        # goes over from one to the other: a gusset covering 45 % or 55 % of itself is
+        # glued much the same way, and its strength does not jump 2.5x at half, the
+        # adversarial review of round 21)
+        parallel = (not solid and shapes[ia].kind == "shell" and shapes[ib].kind == "shell"
+                    and abs(float(na @ shapes[ia].n)) > 0.99
+                    and abs(float(na @ shapes[ib].n)) > 0.99)  # as ``stacked``
+        cover = float(area) / max(min(shapes[ia].poly.area, shapes[ib].poly.area), 1e-9) \
+            if parallel else 0.0
+        lo, hi = LAMINATION_RAMP
+        w_lam = min(max((cover - lo) / (hi - lo), 0.0), 1.0)
+        if w_lam > 0:
+            tau_lam = sp.values.get("glue.interlaminar_MPa", 4.0) * peak_factor(n_nodes)
+            tau_p = (1.0 - w_lam) * tau_p + w_lam * tau_lam
+            ks_line = (1.0 - w_lam) * ks_line + w_lam * sp.values.get(
+                "glue.lamination_K_s_N_per_mm3", ks_line)
             patches[pid].strength_MPa = tau_p / peak_factor(n_nodes)
-            patches[pid].lamination = True
+            patches[pid].lamination = w_lam >= 0.5
         if not solid:
             # what the laminates on either side pass on to their inner plies: the ply the
             # glue is on hands (n - 1) / n of the joint's load across its first glue
@@ -2000,8 +2073,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             # shear)
             cap = min(transfer_cap(ia, na), transfer_cap(ib, na))
             if cap < tau_p / peak_factor(n_nodes):
-                tau_p = cap * peak_factor(n_nodes)
                 patches[pid].strength_MPa = cap
+            tau_cap = cap * peak_factor(n_nodes)
         if solid:
             # the wood's shear on the section, averaged as a code check does (EN 1995
             # 6.1.7 and 6.5.2: 1.5 V / A <= f_v at a notched end), and its fracture
@@ -2023,14 +2096,23 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             springs["Kn"].append(sp_glue["K_n_N_per_mm3"])
             springs["Ks"].append(ks_line * k_cov)
             gq = max(gf * fl, 1e-3)  # glue_factor 0: handled as "already broken" (d0 = 1)
-            springs["tau"].append(tau_p * gq)
+            # the glue's drawn scatter (workmanship, how much of the face is glued)
+            # scales the glue line; the wood's caps (laminate transfer, tension across
+            # the face) only shrink with it (a starved face), never grow past the wood;
+            # the user's glue_factor scales both (a what-if's bigger glued area passes
+            # more into the wood, a badly glued part less)
+            wq = max(min(g_sc * fl, 1.0) * g_user, 1e-3)
             if solid:
+                springs["tau"].append(tau_p * gq)
                 springs["sig"].append(f_peel)
                 springs["GIc"].append(g1)
                 springs["GIIc"].append(g2)
             else:
-                side = min(tau_p * sp_glue["peel_to_shear"], f_peel) * gq
-                end = sig_end * max(gf_side * fl, 1e-3)
+                tau_s = min(tau_p * gq, tau_cap * wq)
+                springs["tau"].append(tau_s)
+                side = min(tau_s * sp_glue["peel_to_shear"], f_peel * wq)
+                gqs = max(gf_side * fl, 1e-3)
+                end = min(sig_end_glue * gqs, f_peel * wq)
                 springs["sig"].append(side + e_end * max(end - side, 0.0))
                 springs["GIc"].append(sp_glue["G_Ic_N_per_mm"] * gq)
                 springs["GIIc"].append(sp_glue["G_IIc_N_per_mm"] * gq)
@@ -2050,15 +2132,19 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             "question": f"{len(names)} glued joint(s) are mostly end grain (a member's "
                         "end glued flat to another part): " + "; ".join(groups[:12])
                         + (" ..." if len(groups) > 12 else "") + ". Glue on end grain "
-                        "holds about half as well as on side grain. Are these butt joints "
+                        "holds about half as well in shear as on side grain; pulled apart "
+                        "it holds a share of the wood's tension along the grain, no more "
+                        "than the other part takes across its face. Are these butt joints "
                         "as drawn, or are they reinforced (gussets, laps, sized end grain)?",
-            "assumed": f"glue strength x {end_factor:g} on the end-grain share of these "
-                       "joints (glue.end_grain_factor; a 0/90 plate's edge, half end "
-                       "grain, gets the mean); each cut end out of square, standing off "
-                       f"its seat by up to {gap_max:g} mm at one edge (seeded per face, "
-                       "scatter.bearing_gap_mm), dry where that is wider than "
-                       f"{gap_fill:g} mm (glue.gap_fill_mm) and bearing there only once "
-                       "the gap has closed",
+            "assumed": f"glue strength in shear x {end_factor:g} on the end-grain share "
+                       "of these joints (glue.end_grain_factor; a 0/90 plate's edge, half "
+                       f"end grain, gets the mean), in tension {end_tension:g} x the "
+                       "wood's tension along the grain (glue.end_grain_tension_factor) "
+                       "capped by the other part's across its face; each cut end out "
+                       f"of square, standing off its seat by up to {gap_max:g} mm at one "
+                       "edge (seeded per face, scatter.bearing_gap_mm), dry where that "
+                       f"is wider than {gap_fill:g} mm (glue.gap_fill_mm) and bearing "
+                       "there only once the gap has closed",
             "answer_with": {"params": {"glue.end_grain_factor":
                                        "<0.5 for plain end-grain joints, 1 if sized or "
                                        "measured as strong as side grain>",

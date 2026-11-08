@@ -235,6 +235,10 @@ class Quality(BaseModel):
     holds: int = Field(0, description="Times the jack was slowed to 2 % while something "
                                       "was breaking, until it stopped (quasi-static failure)")
     hold_time_s: float = 0.0
+    min_fidelity: str = Field("quick", description=(
+        "The coarsest fidelity whose mesh is fine enough for the members that fail "
+        "(elements at most 3x their depth, 1.5x below 10 mm): run diagnose, montecarlo, "
+        "sensitivity and ab of this bridge at least there"))
     rate_check: dict | None = Field(None, description=(
         "With --rate-check: the same crush at half the jack speed (speed_mm_s, Fu_kgf, "
         "change = relative change of F_u, governing). |change| < 0.05 shows the simulated "
@@ -447,6 +451,9 @@ class DesignComparison(BaseModel):
         "Seeds where B failed somewhere else than A ('seed 2: A <failure> -> B <failure>'): "
         "the change moved the failure to another part, which then sets F_u"))
     untrustworthy_runs: int = 0
+    note: str = Field("", description=(
+        "Caveats: bodies of B with no namesake in A (renamed), whose seeded scatter is "
+        "drawn afresh, so part of the difference may be luck"))
 
 
 class SensitivityItem(BaseModel):

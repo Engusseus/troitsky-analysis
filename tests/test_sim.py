@@ -1632,6 +1632,16 @@ def test_members_split_on_their_shear_over_a_section_depth():
     st.b_rat3[els] = 1.2  # the whole member
     S_.split_members(m, st)
     assert st.b_shear[els].all() and (st.b_s3[els] < 1).all()
+    # it splits along one glue line into halves (lever arms x 1/2), and again only while
+    # the shear still reaches the strength, never past its separate plies (1/14)
+    assert np.allclose(st.b_s3[els], 0.5)
+    st.b_rat3[els] = 0.9
+    S_.split_members(m, st)
+    assert np.allclose(st.b_s3[els], 0.5)
+    st.b_rat3[els] = 1.2
+    for _ in range(6):
+        S_.split_members(m, st)
+    assert np.allclose(st.b_s3[els], 1.0 / 14)
 
 
 def test_frame_plate_bends_like_a_beam(tmp_path):
@@ -3146,9 +3156,10 @@ def test_plates_glued_face_to_face_are_laminations():
     assert laps and not any(p.lamination for p in laps)
     for p in laps:
         assert p.area_mm2 > SP["glue.size_cap_mm2"]
+        # a stringer along the span on a 0/90 deck: half its plies cross it at 90
         assert p.strength_MPa == pytest.approx(MAT.glue.tau_g_MPa.value * lap_size_factor(
             p.area_mm2, SP["glue.size_ref_mm2"], SP["glue.weibull_m"],
-            SP["glue.size_cap_mm2"]))
+            SP["glue.size_cap_mm2"]) * (1 + SP["glue.cross_grain_ratio"]) / 2)
         assert np.allclose(m.c_Ks[np.array(p.springs)], SP["glue.K_s_N_per_mm3"])
     from bridgesim.sim.study import _joint_reports
 
@@ -3266,6 +3277,16 @@ def test_of_joints_breaking_together_the_strongest_governs():
     gov, competing = attribute(ev, 0.0699, peak, 2.0, 100.0)
     assert gov.what == "Diag R | Gusset Inner"
     assert "joint failure: Diag R | Stub" in competing
+    # a plate cracking in the same instant, after the joints let go, does not take
+    # over (it has no glue capacity: round-21 adversarial review), and one cracking
+    # first keeps its place
+    late = ev + [Event(0.0702, 2.0, 0.99 * peak, "plate_crack", "Deck")]
+    gov, _ = attribute(late, 0.0699, peak, 2.0, 100.0)
+    assert gov.what == "Diag R | Gusset Inner"
+    early = [Event(0.06995, 2.0, peak, "plate_crack", "Deck")] + ev
+    gov, competing = attribute(early, 0.0699, peak, 2.0, 100.0)
+    assert gov.what == "Deck"
+    assert "joint failure: Diag R | Gusset Inner" in competing
 
 
 def test_laps_are_capped_by_what_the_laminate_passes_on_and_short_overlaps_are_laps():
@@ -3369,5 +3390,152 @@ def test_an_end_grain_glue_line_pulled_apart_holds_a_share_of_the_wood_along_its
         sig[g] = m.c_sig[np.array(p.springs)]
     assert np.allclose(sig["y"], SP["glue.end_grain_tension_factor"] * MAT.f_t_MPa.value,
                        rtol=0.05)
-    # on a face pulled across its grain, that face lifts first (f_t90)
-    assert np.allclose(sig[None], SP["wood.f_t90_MPa"], rtol=0.05)
+    # on a face pulled across its grain, that face lifts first (f_t90, raised for the
+    # small volume a 100 mm^2 joint pulls on: t90_size_factor)
+    from bridgesim.sim.idealize import t90_size_factor
+
+    assert np.allclose(sig[None], SP["wood.f_t90_MPa"] * t90_size_factor(
+        100.0, SP["wood.t90_weibull_m"]), rtol=0.05)
+
+
+def _two_sticks(cross: bool):
+    """Two 10 mm wide sticks glued face to face over 10 x 10 mm, along each other or
+    crossing at 90 degrees, beside the simple bridge."""
+    a = box("Stick A (1-ply UD)", (600, 0, 100), (720, 2, 110))
+    b = (box("Stick B (1-ply UD)", (650, 2, 50), (660, 4, 170)) if cross else
+         box("Stick B (1-ply UD)", (710, 2, 100), (830, 4, 110)))
+    return [a, b]
+
+
+def test_small_joints_hold_more_across_the_grain_and_crossed_laps_less():
+    """The round-21 literature review: the wood's tension across the grain where a small
+    joint pulls on it follows a weakest-link size effect (birch veneer m ~5-11, Kruger et
+    al. 2025; Barrett 1974), 1.64 x f_t90 for a 47 mm^2 vertical's foot at m 8 (one held
+    2.6 MPa, Moraes et al. 2019), never below f_t90; and a lap whose two sticks' grains
+    cross holds less than one of parallel sticks, Hankinson's form with 0.38 at 90
+    degrees and exponent 2.35 (Padilha et al. 2023): 0.81 / 0.62 / 0.48 at 30 / 45 / 60."""
+    from bridgesim.sim.idealize import Overrides, build_model, lap_crossing_factor, t90_size_factor
+
+    assert t90_size_factor(47.0, 8.0) == pytest.approx(1.635, abs=0.01)
+    assert t90_size_factor(2400.0, 8.0) == 1.0 and t90_size_factor(1e5, 8.0) == 1.0
+    assert t90_size_factor(0.5, 8.0) == 2.5 and t90_size_factor(47.0, 0.0) == 1.0
+    for deg, f in ((0, 1.0), (30, 0.813), (45, 0.622), (60, 0.482), (90, 0.38)):
+        assert lap_crossing_factor(math.cos(math.radians(deg))) == pytest.approx(f, abs=0.01)
+    st = {}
+    for cross in (False, True):
+        m = build_model(simple_beam_bridge() + _two_sticks(cross), MAT, SP, Overrides(),
+                        seed=None)
+        names = [b.name for b in m.bodies]
+        p = next(p for p in m.patches if {names[p.body_a], names[p.body_b]}
+                 == {"Stick A (1-ply UD)", "Stick B (1-ply UD)"})
+        assert p.area_mm2 == pytest.approx(100.0, rel=0.05)
+        st[cross] = p.strength_MPa
+    assert st[True] / st[False] == pytest.approx(SP["glue.cross_grain_ratio"], rel=0.03)
+
+
+def test_the_glue_scatter_never_lifts_the_wood_past_its_strength():
+    """The joint-to-joint scatter is the glue's (workmanship): a joint drawn 1.5x strong
+    has a stronger glue line, but the wood it pulls on across the grain is no stronger
+    for it (the adversarial review of round 21: peel drawn at 1.5 x f_t90); a user's
+    glue factor above 1 (a what-if's bigger glued area) scales both."""
+    from bridgesim.sim.idealize import Overrides, build_model, t90_size_factor
+
+    post = box("Post (3-ply UD)", (-530, 150, -5), (-520, 262, 5))
+    cap = SP["wood.f_t90_MPa"] * t90_size_factor(100.0, SP["wood.t90_weibull_m"])
+    noisy = SP.updated({"scatter.glue_cov": 0.8})
+    tops = []
+    for seed in range(1, 9):
+        m = build_model(simple_beam_bridge() + [post], MAT, noisy, Overrides(), seed=seed)
+        names = [b.name for b in m.bodies]
+        p = next(p for p in m.patches if {names[p.body_a], names[p.body_b]}
+                 == {"Pier L (block)", "Post (3-ply UD)"})
+        tops.append(float(m.c_sig[np.array(p.springs)].max()))
+    assert max(tops) <= cap * 1.0001 and min(tops) < 0.9 * cap
+    m = build_model(simple_beam_bridge() + [post], MAT, SP,
+                    Overrides.from_dict({"glue": {"Pier L* | Post*": 2.0}}), seed=None)
+    names = [b.name for b in m.bodies]
+    p = next(p for p in m.patches if {names[p.body_a], names[p.body_b]}
+             == {"Pier L (block)", "Post (3-ply UD)"})
+    assert float(m.c_sig[np.array(p.springs)].max()) == pytest.approx(2 * cap, rel=0.05)
+
+
+def test_studies_of_a_light_bridge_are_suggested_on_a_fine_enough_mesh():
+    """The adversarial review of round 21: the next steps sent a light bridge's diagnose
+    to quick and its montecarlo to standard, meshes its own crush flags. The quality
+    names the coarsest fidelity fine enough for the members that fail (min_fidelity)."""
+    from bridgesim.cad.synthetic import layered_truss
+    from bridgesim.sim import study
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    m = build_model(layered_truss(), MAT, SP, Overrides(), seed=None, mesh_scale=0.5)
+    assert study._quality(_stub_result(m), MAT, SP).min_fidelity == "fine"
+    deep = [box("Pier L (block)", (-550, 0, -40), (-500, 150, 40)),
+            box("Pier R (block)", (500, 0, -40), (550, 150, 40)),
+            box("Beam (13-ply UD)", (-550, 150, -13), (550, 180, 13))]
+    m = build_model(deep, MAT, SP, Overrides(), seed=None, mesh_scale=1.6)
+    assert study._quality(_stub_result(m), MAT, SP).min_fidelity == "quick"
+
+
+def test_the_woods_moisture_is_drawn_additively():
+    """A placeholder whose value is 0 (the wood's moisture above its coupons') cannot be
+    drawn lognormally around it: it is drawn as max(0, sd x z), about half the runs dry
+    and the others a few points wetter (members laminated in the days before the test)."""
+    from bridgesim.sim.study import draw_placeholders
+
+    v = [draw_placeholders({}, {"wood.moisture_excess_pct": 0.0}, s, 8)["params"][
+        "wood.moisture_excess_pct"] for s in range(1, 9)]
+    assert min(v) == 0.0 and 3 <= sum(x == 0.0 for x in v) <= 5
+    assert 1.0 < max(v) < 6.0
+
+
+def test_the_reading_window_fits_a_short_rise():
+    """The realism review of round 21: a 0.9 mm smoothing window was longer than a
+    stiff little truss's whole rise (0.4-1.1 mm) and read 3-7 kgf before the jack had
+    touched it. The window is a quarter of the travel to the raw peak there, never less
+    than a period of the ringing, and 0.9 mm on a bridge that rises over several mm."""
+    from bridgesim.sim.crush import LOAD_CELL_MM, reading_window
+
+    x = np.linspace(0.0, 1.2, 241)
+    raw = np.clip(x - 0.4, 0.0, None) * 1000.0
+    raw[x > 1.1] = 0.0
+    W = reading_window(raw, x, 100.0, period_s=0.0) * 100.0
+    assert W == pytest.approx(0.25 * 1.1, rel=0.03)
+    assert reading_window(raw, x, 100.0, period_s=0.004) * 100.0 == pytest.approx(0.4)
+    xl = np.linspace(0.0, 12.0, 241)
+    rl = xl * 100.0
+    assert reading_window(rl, xl, 100.0) * 100.0 == pytest.approx(3 * LOAD_CELL_MM)
+
+
+def test_a_partial_lamination_goes_over_from_a_lap_smoothly():
+    """Two plates glued face to face are a lamination when one covers most of the other
+    and a hand-made lap when it covers little; in between the joint goes over gradually
+    (LAMINATION_RAMP), so a gusset covering 45 % or 55 % of itself does not jump 2.5x
+    (the adversarial review of round 21)."""
+    from bridgesim.sim.idealize import LAMINATION_RAMP, Overrides, build_model
+
+    h = 150.0
+    st = []
+    for x1 in (-330, -110, 0, 110, 330, 550):
+        bodies = simple_beam_bridge() + [box("Over (2-ply 0-90)", (-550, h + 23.1, -75),
+                                             (x1, h + 27.2, 75))]
+        m = build_model(bodies, MAT, SP, Overrides(), seed=None)
+        names = [b.name for b in m.bodies]
+        p = next(p for p in m.patches if {names[p.body_a], names[p.body_b]}
+                 == {"Deck (2-ply 0-90)", "Over (2-ply 0-90)"})
+        st.append(p.strength_MPa)
+    assert st[-1] == pytest.approx(SP["glue.interlaminar_MPa"])
+    assert all(b >= a - 1e-9 for a, b in zip(st, st[1:], strict=False))
+    # neighbouring covers (a tenth to a fifth of the deck apart) never 2.5x apart
+    assert max(b / a for a, b in zip(st, st[1:], strict=False)) < 1.75
+    assert LAMINATION_RAMP[0] < 0.5 < LAMINATION_RAMP[1]
+
+
+def test_ab_names_the_bodies_whose_scatter_is_drawn_afresh():
+    """Each body's and joint's scatter is seeded by its bodies' names, so a body renamed
+    between two versions (SolidWorks renames unnamed bodies after a feature edit) draws
+    new luck: ab says which (the adversarial review of round 21); bodies only added
+    change nothing of A's draws and are not listed."""
+    from bridgesim.sim.study import renamed_bodies
+
+    assert renamed_bodies(["A", "B", "C"], ["A", "B", "C", "D"]) == []
+    assert renamed_bodies(["A", "B", "C"], ["A", "B", "Body 7"]) == ["Body 7"]

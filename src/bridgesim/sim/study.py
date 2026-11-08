@@ -990,6 +990,11 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
           else "whatif.yaml")
     steps: list[NextStep] = []
     q = rep.quality
+    order = ("quick", "standard", "fine")
+    # the studies run on a mesh fine enough for the members that fail: quick for
+    # diagnose (and standard for montecarlo) unless the bridge needs finer
+    need = order.index(q.min_fidelity) if q.min_fidelity in order else 0
+    dfid, mfid = order[need], order[max(need, 1)]
     if not q.trustworthy:
         steps.append(NextStep(
             action="rerun", why="not trustworthy: " + "; ".join(q.reasons),
@@ -1088,7 +1093,7 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
                 "within a few % of each other, and the label names the first in a "
                 "cascade): diagnose strengthens each in turn on the same seeds and ranks "
                 "them by the rise of F_u",
-            cli=f"bridgesim diagnose {f}{ov} -n 2 --fidelity quick --out {out}_diagnose "
+            cli=f"bridgesim diagnose {f}{ov} -n 2 --fidelity {dfid} --out {out}_diagnose "
                 "--json"))
         close = {e.what for e in gov if e.load_kgf <= 1.03 * gov[0].load_kgf}
         if rep.fidelity == "quick":
@@ -1121,8 +1126,9 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
                                   + f"; after the real test, `bridgesim compare "
                                     f"{out}_montecarlo/montecarlo.json my_test.csv` says "
                                     "whether it fell inside the predicted range",
-            cli=f"bridgesim montecarlo {f}{ov} -n 8{sample} --out {out}_montecarlo "
-                "--json"))
+            cli=f"bridgesim montecarlo {f}{ov} -n 8{sample}"
+                + (f" --fidelity {mfid}" if mfid != "standard" else "")
+                + f" --out {out}_montecarlo --json"))
     steps.append(NextStep(
         action="compare", why="after a real crush test (a prototype or the competition): "
                               "the reality gap and what to measure next",
@@ -1287,9 +1293,18 @@ def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = N
     # at standard (in proportion at the other fidelities)
     from bridgesim.sim.idealize import DEPTH_ELEMENTS
 
+    def coarse(sc: float) -> bool:
+        el = min(30.0 * sc, DEPTH_ELEMENTS * depth * sc / 0.75)
+        return depth > 0 and (el > LIGHT_MESH_RATIO * depth or (
+            depth < LIGHT_DEPTH_MM and el > LIGHT_MESH_RATIO_THIN * depth))
+
+    from bridgesim.sim.crush import FIDELITY
+
+    # the coarsest fidelity whose mesh is fine enough for these members: what diagnose,
+    # montecarlo and the other studies of this bridge need
+    min_fid = next((k for k, (sc, _) in FIDELITY.items() if not coarse(sc)), "fine")
     elem = min(30.0 * scale, DEPTH_ELEMENTS * depth * scale / 0.75)
-    if depth > 0 and (elem > LIGHT_MESH_RATIO * depth or (
-            depth < LIGHT_DEPTH_MM and elem > LIGHT_MESH_RATIO_THIN * depth)):
+    if coarse(scale):
         reasons.append(f"the mesh is too coarse for the members that fail (elements ~"
                        f"{elem:.0f} mm, members {depth:.0f} mm deep): F_u is not "
                        "converged on such a light bridge; use a finer --fidelity (fine)")
@@ -1326,7 +1341,8 @@ def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = N
                    fundamental_period_ms=round(1000 * float(
                        res.model.params.get("period_s", 0.0)), 2),
                    holds=getattr(res, "holds", 0),
-                   hold_time_s=round(getattr(res, "hold_time_s", 0.0), 4))
+                   hold_time_s=round(getattr(res, "hold_time_s", 0.0), 4),
+                   min_fidelity=min_fid)
 
 
 # ----------------------------------------------------------------------------- compare
@@ -2191,6 +2207,13 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
     if len(use) < len(res):
         rep.note += (f" {len(res) - len(use)} untrustworthy run(s) (Fu_untrustworthy_kgf) "
                      "are left out of the range and the prediction.")
+    elif len(ok) < len(res):
+        why = sorted({x.split(":")[0].split(" (")[0] for r in res if not r["trustworthy"]
+                      for x in r.get("reasons", [])})
+        rep.note = (f"NOT RELIABLE: only {len(ok)} of {len(res)} runs are trustworthy "
+                    "(" + "; ".join(why) + "), too few to leave the others out: the range "
+                    "and the prediction use them all. Re-run at the fidelity the crush "
+                    "report's quality.min_fidelity names (or slower). " + rep.note)
     rigid = sorted({b for r in res for b in r.get("rigid_under_plate", [])})
     if rigid:
         rep.note += (" The part(s) under the loading plate " + ", ".join(rigid)
@@ -2222,7 +2245,7 @@ def placeholders(mat: Material, sp: SimParams) -> dict[str, float]:
     assumed = set(_assumed(mat, sp))
     crush_mat = _crush_material(mat, sp)  # the E the crush uses while E is a placeholder
     out = {}
-    for k in PLACEHOLDER_PRIORS:
+    for k in (*PLACEHOLDER_PRIORS, *ADDITIVE_PRIORS):
         if k.startswith("material.") and k in assumed:
             out[k] = crush_mat.props()[k[len("material."):]].value
         elif not k.startswith("material.") and f"sim.{k}" in assumed:
@@ -2268,6 +2291,9 @@ def draw_placeholders(overrides: dict | None, drawn: dict[str, float], seed: int
             z[k] = E_STRENGTH_CORR * zE + math.sqrt(1 - E_STRENGTH_CORR**2) * z[k]
     for k in keys:
         v = drawn[k]
+        if k in ADDITIVE_PRIORS:
+            prm[k] = round(max(v + ADDITIVE_PRIORS[k] * z[k], 0.0), 6)
+            continue
         x = v * float(np.exp(z[k] * PLACEHOLDER_PRIORS.get(k, PLACEHOLDER_COV)))
         if k in ("glue.end_grain_factor", "glue.prepeak_onset") or k.endswith("_efficiency"):
             x = min(x, 1.0)  # end grain never glues better than side grain; shares
@@ -2320,7 +2346,8 @@ def _mc_one(a):
             "secant_deflection": _rising_secant(rep, False),
             "secant_travel": _rising_secant(rep, True),
             "Fu_strict_kgf": min(strict, rep.Fu_kgf) if strict else rep.Fu_kgf,
-            "trustworthy": rep.quality.trustworthy, "mass_kg": rep.mass_kg,
+            "trustworthy": rep.quality.trustworthy, "reasons": rep.quality.reasons,
+            "mass_kg": rep.mass_kg,
             "efficiency_kgf_per_kg": rep.efficiency_kgf_per_kg,
             "rigid_under_plate": sorted(
                 {q.id.split(":", 1)[1] for q in rep.questions
@@ -2424,6 +2451,16 @@ def _pool_runs(args, n_runs, processes, progress, label):
                 progress((k + 1) / n_runs, f"{label} {k + 1}/{n_runs}: {r['tag']} seed "
                                            f"{r['seed']} F_u {r['Fu_kgf']:.1f} kgf")
     return out
+
+
+def renamed_bodies(names_a: list[str], names_b: list[str]) -> list[str]:
+    """The bodies of design B with no namesake in design A when B also lost some of A's
+    (bodies renamed, not only added): their seeded scatter is drawn afresh (the adversarial
+    review of round 21: renaming one diagonal moved its joints from 1.69 to 2.66 MPa)."""
+    a, b = set(names_a), set(names_b)
+    if not (a - b):
+        return []
+    return sorted(b - a)
 
 
 def summarize_pairs(ra: list[dict], rb: list[dict], name_a: str, name_b: str,
@@ -2571,7 +2608,18 @@ PLACEHOLDER_PRIORS = {
     # clamped gusset coupons 27 %, Debertolis et al. 2025; a node's weakest joint lets go
     # first, so it moves F_u 6-16 %, the adversarial review of round 20)
     "scatter.glue_cov": 0.35,
+    # round 22 (the reviews of round 21): the end-grain glue line's share of the wood's
+    # tension (nothing measures it: 0.05-0.25), the size effect across the grain (m 5-11,
+    # Kruger et al. 2025, Barrett 1974) and the strength of laps whose grains cross (0.3-
+    # 0.5 at 90 degrees, Padilha et al. 2023); the wood's moisture is drawn additively
+    # (ADDITIVE_PRIORS)
+    "glue.end_grain_tension_factor": 0.50, "wood.t90_weibull_m": 0.30,
+    "glue.cross_grain_ratio": 0.25,
 }
+# placeholders whose value is 0 by default, drawn as max(0, value + sd x z): the wood's
+# moisture above its coupons' (percentage points; members laminated in the last days
+# before the test hold several points more, half the runs at 0, a sixth above 2)
+ADDITIVE_PRIORS = {"wood.moisture_excess_pct": 2.0}
 
 SENSITIVITY = {  # key: (meaning, how to measure)
     "material.E_MPa": ("stiffness of a stick along the grain",
@@ -2837,8 +2885,9 @@ def compare_designs(cad_a: str | Path, cad_b: str | Path, n: int = 3, overrides_
         if not Path(c).exists():
             raise FileNotFoundError(f"no such file: {c}")
     # check both inputs before spending minutes on them
-    _inputs(cad_a, overrides_a, material, sim_params, ruleset, units, up, span)
-    _inputs(cad_b, overrides_b, material, sim_params, ruleset, units, up, span)
+    ba = _inputs(cad_a, overrides_a, material, sim_params, ruleset, units, up, span)[1]
+    bb = _inputs(cad_b, overrides_b, material, sim_params, ruleset, units, up, span)[1]
+    renamed = renamed_bodies([b.name for b in ba], [b.name for b in bb])
     args = []
     for tag, cad, ov in (("A", cad_a, overrides_a), ("B", cad_b, overrides_b)):
         for sd in range(1, n + 1):
@@ -2851,6 +2900,14 @@ def compare_designs(cad_a: str | Path, cad_b: str | Path, n: int = 3, overrides_
                           Path(cad_a).name + (" (overrides)" if overrides_a else ""),
                           Path(cad_b).name + (" (overrides)" if overrides_b else ""),
                           fidelity)
+    if renamed:
+        rep.note = (f"{len(renamed)} bodies of B have no namesake in A ({', '.join(renamed[:4])}"
+                    + (", ..." if len(renamed) > 4 else "") + "): each body's and each "
+                    "joint's random scatter is drawn from a stream named after its bodies, "
+                    "so theirs is drawn afresh and part of the difference may be that luck "
+                    "(a joint's glue +-30 %). Keep the body names from one version to the "
+                    "next (SolidWorks renames unnamed bodies after a feature edit). "
+                    + rep.note).strip()
     if out_dir:
         Path(out_dir).mkdir(parents=True, exist_ok=True)
         (Path(out_dir) / "comparison.json").write_text(rep.model_dump_json(indent=2),

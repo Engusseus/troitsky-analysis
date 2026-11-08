@@ -481,10 +481,11 @@ def trilinear_damage(dmx, dm0, keff, Gc, ga: float, gp: float) -> np.ndarray:
 def glue_rate(m: Model, st: State) -> tuple[np.ndarray, float]:
     """The glue points' rate exponents and log(t / t_ref) for the physical test time so
     far: a glue line's strength depends on its time to failure, tau(t) = tau(t_ref) (t /
-    t_ref)^-n (PVAc: +16 % per decade faster, Wernersson 1994; -40 % at a tenth of the
-    rate, Serrano 2000), t_ref the time to failure of the lap tests tau_g describes
-    (glue.coupon_time_s). At each moment of the crush the glue holds what a test failing
-    then would show; before any physical time has passed (coupons, the screen) tau_g."""
+    t_ref)^-n (n 0.1: +26 % per decade faster; PVAc +20 % at 16x the rate, Wernersson 1994;
+    -40 % at a tenth of the rate, Serrano 2000), t_ref the time to failure of the lap
+    tests tau_g describes (glue.coupon_time_s). At each moment of the crush the glue holds
+    what a test failing then would show; before any physical time has passed (coupons, the
+    screen) tau_g."""
     nc = len(m.c_a)
     rate = m.c_rate if len(m.c_rate) == nc else np.zeros(nc)
     tref = float(m.params.get("glue_coupon_time_s", 60.0))
@@ -764,15 +765,20 @@ def split_averaging(m: Model):
 
 def split_members(m: Model, st: State) -> None:
     """Members split in shear where their averaged shear (``split_averaging``) reaches
-    the strength: through the plies the member delaminates into its plies (1/n), across
-    the width the wood splits in two. Either way it keeps its axial strength."""
+    the strength: through the plies the member splits along its most stressed glue line
+    into two halves (lever arms x 1/2, bending stiffness x 1/4), and again in each half
+    while the shear, which falls with the stiffness, still reaches the strength, down to
+    its separate plies (1/n: until round 22 at once, which left a 13-ply member 1/169 of
+    its stiffness at the first split, the adversarial review of round 21); across the
+    width the wood splits in two. Either way it keeps its axial strength."""
     W = split_averaging(m)
     r3, r2 = W @ st.b_rat3, W @ st.b_rat2
     alive = st.b_alive
-    f3 = alive & (st.b_s3 == 1.0) & (r3 > 1.0)
+    last = 1.0 / m.b_nply
+    f3 = alive & (st.b_s3 > last * (1.0 + 1e-9)) & (r3 > 1.0)
     f2 = alive & (st.b_s2 == 1.0) & (r2 > 1.0)
     if f3.any() or f2.any():
-        st.b_s3 = np.where(f3, 1.0 / m.b_nply, st.b_s3)
+        st.b_s3 = np.where(f3, np.maximum(0.5 * st.b_s3, last), st.b_s3)
         st.b_s2 = np.where(f2, 0.5, st.b_s2)
         st.b_shear |= f2 | f3
 

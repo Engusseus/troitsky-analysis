@@ -93,9 +93,15 @@ glue:
       simulation.yaml glue.weibull_m). Joints glued on build day are crushed the next day
       at the Troitsky competition (15-30 h old): ~0.85-1.0 of their cured strength (PVAc
       laps reach EN 204's 10 MPa 75-165 min after bonding, Bomba et al., BioResources 9(1)
-      2014; makers ask 24 h before stressing): give them glue_factor 0.9. Test 10
-      single laps 20 x 10 mm glued and clamped as on the bridge, loaded to fail in about
-      a minute (a bucket filled with sand).
+      2014; makers ask 24 h before stressing): give them glue_factor 0.9. It is the
+      strength of a lap of parallel sticks: crossed ones hold less (simulation.yaml
+      glue.cross_grain_ratio). Superglue (cyanoacrylate) is not PVA: its maker's lap
+      shear on pine is 10-12 MPa with the wood failing (ISO 4587, Ceys Superunick data
+      sheet 2020), and a published stick truss's laps held more than 5.5 MPa (Lamberti et
+      al. 2025): for a superglued bridge set material.glue.tau_g_MPa ~8 and
+      glue.rate_exponent 0 until laps of your own say more (validation/published_tests.py,
+      case A). Test 10 single laps 20 x 10 mm glued and clamped as on the bridge, loaded
+      to fail in about a minute (a bucket filled with sand).
   mass_fraction:
     value: 0.10
     source: assumed

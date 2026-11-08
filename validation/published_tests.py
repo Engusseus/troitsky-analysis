@@ -17,19 +17,26 @@ C  Moraes, Freitas, Moraes, Freire Jr, Silva & Goncalves Filho (2019), "Procedim
    analise experimental e numerico de uma ponte executada com palitos de picole",
    Atena Editora, doi:10.22533/at.ed.30619250631. Howe, 6 panels of 80 mm, 80 mm deep,
    3-ply members (120 x 7.8 x 2 mm sticks, wood glue), a rebar across the top chords at
-   mid-span pressed by a test machine: 0.49 kN peak at 3.8 mm (a measured curve), broken
-   at the bottom chord and the foot of a vertical.
+   mid-span pressed by a test machine: 0.49 kN peak at 3.8 mm on the measured curve (the
+   text also gives 0.421 kN for the rupture), broken at the bottom chord and the foot of
+   a vertical.
 
 Geometry from the papers' drawings and photos (tags in the comments: S stated, D from a
 drawing, P from a photo, A assumed), as extracted for this repository (round 21). The
 loads were hung from a node or pressed on a bar, not on a 200 x 90 mm plate: a rigid
-hanger (an I-shaped block) rests on the loaded node and stands clear above the bridge,
-and the plate pushes on its top. The ends rest on support blocks (bearing, no glue).
-Material: the papers' stick sizes and the pine values they quote (E, f_c); everything
-else the shipped placeholders (craft-stick birch, PVA), so these are blind predictions.
+hanger (an I-shaped block) rests on the loaded node (dry on A's chords, glued to B's
+putty lumps) and stands clear above the bridge, and the plate pushes on its top; C's
+rebar is a 10 mm bar resting dry on the top chords. The ends rest on support blocks
+(bearing, no glue).
+Material: the papers' stick sizes and the pine values they quote (E, f_c), A's glue
+(cyanoacrylate) from its maker's data; everything else the shipped placeholders
+(craft-stick birch, PVA). Each test is loaded at its own pace (crusher.test_rate_mm_per_min,
+the glue's rate law). A and B are predictions made without their results; C is a
+calibration case: round 21 chose its end-grain glue law after seeing C (validation
+README 3.14), so its agreement does not validate the model.
 
     uv run python validation/published_tests.py --case A --out DIR [--fidelity standard]
-        [--seeds 0,1,2] [--write-only]
+        [--seeds 0,1,2] [--threads 2] [--write-only]
 
 writes DIR/<case>.stl and DIR/<case>.overrides.yaml and crushes it (study.crush), then
 prints F_u against the test.
@@ -69,8 +76,9 @@ def _i_profile(foot: float, stem: float, cap: float, y0: float, y1: float, y2: f
 
 
 COMMON_OVERRIDES = {
-    # the supports bear only; the hanger is pinned to the node it loads (the wire or bar
-    # passes through it), so it cannot topple; the press's 4.2 kg plate is not there
+    # the supports bear only; the hanger is glued to the node it loads (the bar passes
+    # through B's putty lumps) unless the case says it bears dry (A, C); the press's
+    # 4.2 kg plate is not there
     "glue": {"Support* | *": 0},
     "params": {"crusher.plate_mass_kg": 0.05},
     "bodies": {"Support*": {"kind": "block"}, "Load hanger*": {"kind": "block"}},
@@ -122,19 +130,29 @@ def lamberti_2025():
         bodies.append(box(f"BotX {xn} (1-ply UD)", (x0, 8, -34), (x1, 10, 34)))
     bodies += [box("Support L", (-20, -10, -60), (50, 0, 60)),
                box("Support R", (550, -10, -60), (620, 0, 60))]
-    # the wire through the centre bottom node (x 300): the hanger's foot glued 40 mm along
-    # the two bottom chords (so the plate on its cap cannot tip it: dead weights pull
-    # straight down), its stem between the trusses, its cap 20 mm above the cross sticks
+    # the wire through the centre bottom node (x 300): the hanger's foot bears on the two
+    # bottom chords there over 40 mm, dry (until round 21 glued, which stiffened the
+    # chords over the laps that fail; an 8 mm foot glued rocked over as an inverted
+    # pendulum at ~24 kgf in round 22, which dead weights hanging below never do), its
+    # stem between the trusses, its cap 20 mm above the cross sticks
     bodies.append(hanger("Load hanger", _i_profile(33, 10, 45, 8, 14, 130, 140), 280, 320))
-    ov = _merge(COMMON_OVERRIDES, {"params": {
+    ov = _merge(COMMON_OVERRIDES, {
+        "glue": {"Load hanger | *": 0},
+        "params": {
         "material.E_MPa": 8846.0, "material.f_c_MPa": 31.5,  # pine, IPT values (S)
-        "material.density_kg_m3": 500.0}})
+        "material.density_kg_m3": 500.0,
+        # cyanoacrylate (S: "Almasuper Ultrarrapido", held with clothes pegs): lap shear
+        # on pine 10-12 MPa by ISO 4587 with the wood failing (Ceys Superunick data sheet
+        # 2020), less for laps glued by hand (A: 8); a glassy adhesive, not PVA: no rate
+        # law (A); dead weights in 20 kgf steps (S), so the pace does not matter then
+        "material.glue.tau_g_MPa": 8.0, "glue.rate_exponent": 0.0}})
     ref = {"case": "A", "source": "Lamberti et al. 2025, JESTA 3 e86766",
            "Fu_kgf": 160.0, "Fu_range_kgf": [140.0, 160.0],
            "failure": "top chord panel next to the centre and a compression diagonal, "
                       "after a lateral drift from 100 kgf",
            "parts": ["TopChord", "Diag"], "mass_g": 180.0,
-           "load": "dead weights hung from the centre bottom node, 20 kgf steps"}
+           "load": "dead weights hung from the centre bottom node, 20 kgf steps",
+           "glue": "cyanoacrylate"}
     return bodies, ov, ref
 
 
@@ -226,9 +244,14 @@ def moraes_2019(width: float = 85.0):
     # bar 10 mm deep on the top chords, the plate on it
     bodies.append(box("Load hanger", (235, 87.8, -zo - 5), (245, 97.8, zo + 5)))
     ov = _merge(COMMON_OVERRIDES, {"glue": {"Load hanger | *": 0}, "params": {
-        "material.E_MPa": 7350.0, "material.density_kg_m3": 500.0}})
+        "material.E_MPa": 7350.0, "material.density_kg_m3": 500.0,
+        # a 30 t universal press (S), its rate not stated: at a usual 1-2 mm/min the
+        # record's 3.8 mm to the peak took 2-4 min; the model's ~1 mm at 0.5 mm/min ~2
+        "crusher.test_rate_mm_per_min": 0.5}})
     ref = {"case": "C", "source": "Moraes et al. 2019, Atena Editora ch. 31",
-           "Fu_kgf": 490.0 / 9.80665, "failure": "the bottom chord and the foot of a "
+           "Fu_kgf": 490.0 / 9.80665, "Fu_range_kgf": [421.0 / 9.80665, 490.0 / 9.80665],
+           "calibration": "round 21 chose the end-grain glue law after seeing this test",
+           "failure": "the bottom chord and the foot of a "
            "vertical", "parts": ["BotChord", "Vertical"],
            "stiffness_kgf_per_mm": 9.6, "deflection_at_Fu_mm": 3.8,
            "load": "test machine platen on a rebar across the top chords at mid-span"}
@@ -245,7 +268,13 @@ def main() -> None:
     ap.add_argument("--fidelity", default="standard")
     ap.add_argument("--seeds", default="0")
     ap.add_argument("--write-only", action="store_true")
+    ap.add_argument("--threads", type=int, default=0,
+                    help="CPU threads for each crush (default: all cores)")
     a = ap.parse_args()
+    if a.threads:
+        import numba
+
+        numba.set_num_threads(max(1, min(a.threads, numba.config.NUMBA_NUM_THREADS)))
     import yaml
 
     out = Path(a.out)
