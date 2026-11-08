@@ -56,7 +56,7 @@ import numpy as np
 from bridgesim.cad import CadBody
 from bridgesim.cad.mesh import tessellate
 from bridgesim.cad.parasolid import Body, Face
-from bridgesim.cad.synthetic import box, upright, write_stl
+from bridgesim.cad.synthetic import box, prism, upright, write_stl
 
 
 def hanger(name: str, outline_zy, x0: float, x1: float) -> CadBody:
@@ -281,7 +281,103 @@ def moraes_2019(width: float = 85.0):
     return bodies, ov, ref
 
 
-CASES = {"A": lamberti_2025, "B": silva_2026, "C": moraes_2019}
+def boon_2025():
+    """D: Boon, "Basic Warren Truss Popsicle Bridge (Short)", garrettsbridges.com, last
+    modified 13 Feb 2025 (https://garrettsbridges.com/photos/popsicle-bridges/
+    basic-warren-popsicle-bridge/): 10 bridges of 44 uncut craft sticks and Elmer's Glue-
+    All, built in jigs, 13.5 in long, 12 in span, 4 in high, 3.5 in wide (S), loaded on top
+    by the author's machine without the card deck (S): 40.9-53.6 kg, mean 45.5, CoV 0.10
+    (S); where they broke is not given. A semi-blind case (round 27): the geometry was set
+    from the page's three photos before any run. Each side a Warren of single sticks, three
+    bottom panels of one stick's length, apexes over their middles (P); the bottom chord
+    in two layers, three sticks full length and two inside them from the first to the last
+    apex, so each layer's butt joints are spliced by the other (P: web2); the top chord two
+    sticks between the end apexes (P), doubled (A: a single stick would buckle out of
+    plane at about half the chord force at the test's load; 40 sticks placed against the
+    44 stated); diagonals on the chords' outer face (P), mitred where two meet at a node
+    (A, as A's); cross sticks under the four bottom nodes and on top at the end apexes and
+    either side of the middle one (P), two lateral braces on top in the end panels (P);
+    the end portals' braces left out (A). Sticks 114.3 x 9.5 x 2.0 mm (S: standard 4.5 in;
+    width and thickness A). The load: a 76 x 102 mm block on the middle top cross sticks
+    (A: the author loads 'the top of the bridge', his top-loading page stacks weights on
+    the middle of the top); the ends rest on blocks under the end cross sticks, 12 in
+    between their inner edges (S, A)."""
+    s, w, t = 114.3, 9.5, 2.0
+    H, W = 101.6, 88.9
+    from shapely.geometry import Polygon
+    from shapely.geometry import box as sbox
+
+    def strip(p, q, x0, x1):
+        """A stick of length s centred between nodes p and q, clipped to x0..x1 and to
+        the truss's height."""
+        p, q = np.asarray(p, float), np.asarray(q, float)
+        c, d = 0.5 * (p + q), (q - p) / np.linalg.norm(q - p)
+        a, b = c - d * s / 2, c + d * s / 2
+        n = np.array([-d[1], d[0]]) * w / 2
+        poly = Polygon([a - n, b - n, b + n, a + n]).intersection(sbox(x0, 0.0, x1, H))
+        return [tuple(v) for v in np.asarray(poly.exterior.coords)[:-1]]
+
+    bodies = []
+    zd, zm, zi = (W / 2 - t, W / 2), (W / 2 - 2 * t, W / 2 - t), (W / 2 - 3 * t, W / 2 - 2 * t)
+    bot = [(k * s, w / 2) for k in range(4)]
+    top = [((k + 0.5) * s, H - w / 2) for k in range(3)]
+    nodes = [bot[0], top[0], bot[1], top[1], bot[2], top[2], bot[3]]
+    for side, sg in (("N", 1.0), ("F", -1.0)):
+        def zr(z, sg=sg):
+            return (min(sg * z[0], sg * z[1]), max(sg * z[0], sg * z[1]))
+        z0, z1 = zr(zm)
+        for k in range(3):
+            bodies.append(box(f"BotChord {side} {k + 1} (1-ply UD)", (k * s, 0, z0),
+                              ((k + 1) * s, w, z1)))
+        for k in range(2):
+            bodies.append(box(f"TopChord {side} {k + 1} (1-ply UD)", ((k + 0.5) * s, H - w, z0),
+                              ((k + 1.5) * s, H, z1)))
+        z0, z1 = zr(zi)
+        for k in range(2):
+            bodies.append(box(f"BotSplice {side} {k + 1} (1-ply UD)", ((k + 0.5) * s, 0, z0),
+                              ((k + 1.5) * s, w, z1)))
+            bodies.append(box(f"TopChord {side} {k + 1} inner (1-ply UD)",
+                              ((k + 0.5) * s, H - w, z0), ((k + 1.5) * s, H, z1)))
+        z0, z1 = zr(zd)
+        for k in range(6):
+            p, q = nodes[k], nodes[k + 1]
+            bodies.append(upright(f"Diag {side} {k + 1} (1-ply UD)",
+                                  strip(p, q, p[0], q[0]), z0, z1))
+    for k, xc in enumerate((w / 2, s, 2 * s, 3 * s - w / 2)):
+        bodies.append(box(f"BotX {k + 1} (1-ply UD)", (xc - w / 2, -t, -s / 2),
+                          (xc + w / 2, 0, s / 2)))
+    for k, xc in enumerate((s / 2, 1.5 * s - 27, 1.5 * s + 27, 2.5 * s)):
+        bodies.append(box(f"TopX {k + 1} (1-ply UD)", (xc - w / 2, H, -s / 2),
+                          (xc + w / 2, H + t, s / 2)))
+    za = W / 2 - 2.0
+    for k, (xa, xb) in enumerate(((s / 2 + w / 2 + 4, 1.5 * s - 27 - w / 2 - 4),
+                                  (2.5 * s - w / 2 - 4, 1.5 * s + 27 + w / 2 + 4))):
+        L = np.hypot(xb - xa, 2 * za)
+        d = np.array([xb - xa, -2 * za]) / L
+        n = np.array([-d[1], d[0]]) * w / 2
+        a, b = np.array([xa, za]), np.array([xb, -za])
+        bodies.append(prism(f"TopBrace {k + 1} (1-ply UD)",
+                            [tuple(a - n), tuple(b - n), tuple(b + n), tuple(a + n)],
+                            H, H + t))
+    bodies += [box("Support L", (-25, -t - 10, -60), (19.05, -t, 60)),
+               box("Support R", (3 * s - 19.05, -t - 10, -60), (3 * s + 25, -t, 60))]
+    bodies.append(box("Load hanger", (1.5 * s - 38.1, H + t, -50.8),
+                      (1.5 * s + 38.1, H + t + 20, 50.8)))
+    ov = _merge(COMMON_OVERRIDES, {"glue": {"Load hanger | *": 0}, "params": {
+        # 44 sticks, 54.56 g with the glue (S): ~1.24 g a stick of 2172 mm^3
+        "material.density_kg_m3": 570.0}})
+    held = [40.9, 53.6, 46.4, 50.5, 37.7, 47.7, 42.7, 46.4, 44.1, 44.5]
+    ref = {"case": "D", "source": "Boon 2025, garrettsbridges.com, Basic Warren (Short)",
+           "Fu_kgf": float(np.mean(held)), "Fu_range_kgf": [float(np.mean(held))] * 2,
+           "replicates_kgf": held,
+           "replicate_cov": round(float(np.std(held, ddof=1) / np.mean(held)), 3),
+           "failure": "not given", "parts": [], "place": None, "mass_g": 54.56,
+           "load": "the author's machine on the top of the bridge (block assumed)",
+           "glue": "Elmer's Glue-All (PVAc)", "semi_blind": True}
+    return bodies, ov, ref
+
+
+CASES = {"A": lamberti_2025, "B": silva_2026, "C": moraes_2019, "D": boon_2025}
 
 
 def summarize(out: Path, case: str, mc: str = "mc10") -> dict:
