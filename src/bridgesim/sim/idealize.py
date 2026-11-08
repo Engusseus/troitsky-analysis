@@ -53,6 +53,14 @@ from bridgesim.sim.materials import fibre_spread as _exact
 from bridgesim.sim.model import G_MM_S2, TONNE_PER_KG, BodyInfo, Model, Patch
 
 CONTACT_TOL_MM = 0.3
+#: faces drawn this close but not touching (a gap, or one face inside the other part) are
+#: glued as if they touched, and asked about (near_miss): a member drawn 0.4 mm thinner
+#: than its gussets' gap lost its eight 27,770 mm^2 of laps and read 37-49 % low, with no
+#: question (the adversarial review of round 26); closer than this (a glue line fills
+#: nothing at 1 mm: glue.gap_fill_mm, gap_strength)
+NEAR_GLUE_MM = 0.8
+#: up to this far apart they are asked about, not glued
+NEAR_ASK_MM = 3.0
 MIN_PATCH_MM2 = 2.0
 
 
@@ -85,7 +93,7 @@ class Overrides:
 
     KINDS = ("bar", "shell", "frame", "block", "cable", "ignore")
     FIELDS = ("kind", "layup", "grain", "glue_factor", "strength_factor", "butt_stagger_mm",
-              "butt_gap_mm", "section_scale", "axis")
+              "butt_gap_mm", "butt_at", "section_scale", "axis")
 
     def for_body(self, name: str) -> dict:
         out: dict = {}
@@ -119,6 +127,11 @@ class Overrides:
                 if k not in self.FIELDS:
                     out.append(f"overrides: unknown field {k!r} for {pat!r} "
                                f"(known: {', '.join(self.FIELDS)})")
+                elif k == "butt_at" and butt_at_of(v) is None:
+                    out.append(f"overrides: butt_at {v!r} for {pat!r} must be a list of "
+                               "[fraction of the member's length (0-1), [ply indices from "
+                               "0]], e.g. [[0.5, [0, 4]]]: the outer plies of a 5-ply member "
+                               "butted at mid-length")
                 elif k == "kind" and v not in self.KINDS:
                     out.append(f"overrides: kind {v!r} for {pat!r} is not one of "
                                f"{', '.join(self.KINDS)}")
@@ -374,14 +387,20 @@ def _pca_shape(b: CadBody, layup: Layup, forced: str | None) -> Shape:
 # ------------------------------------------------------------------------------ contacts
 
 
-def find_patches(bodies: list[CadBody], outlines: list | None = None
+def find_patches(bodies: list[CadBody], outlines: list | None = None,
+                 near: list | None = None
                  ) -> list[tuple[int, int, Polygon, np.ndarray, np.ndarray, np.ndarray,
                                  np.ndarray]]:
     """(body a, body b, overlap polygon in a's face basis, origin, e1, e2, normal a->b).
     ``outlines``: if given, the two faces' own outlines in that basis are appended to it,
-    one (a's, b's) pair per patch (how far a gusset reaches past a member lapped on it)."""
-    lo = np.array([b.mesh.bbox[0] for b in bodies]) - CONTACT_TOL_MM
-    hi = np.array([b.mesh.bbox[1] for b in bodies]) + CONTACT_TOL_MM
+    one (a's, b's) pair per patch (how far a gusset reaches past a member lapped on it).
+    ``near``: if given, faces that face each other over an overlap but are drawn apart
+    (a gap, + mm) or one inside the other part (-, mm) by more than CONTACT_TOL_MM are
+    listed in it as (a, b, area, offset, index of its patch or None, a's normal); up to
+    NEAR_GLUE_MM they are patches too."""
+    reach = NEAR_ASK_MM if near is not None else CONTACT_TOL_MM
+    lo = np.array([b.mesh.bbox[0] for b in bodies]) - reach
+    hi = np.array([b.mesh.bbox[1] for b in bodies]) + reach
     faces = []
     for bi, b in enumerate(bodies):
         for f in b.faces:
@@ -404,17 +423,25 @@ def find_patches(bodies: list[CadBody], outlines: list | None = None
                 for _b, nb, ob, _e1b, _e2b, _pb, fbf in fb:
                     if float(np.dot(na, nb)) > -0.995:
                         continue
-                    if abs(float(np.dot(ob - oa, na))) > CONTACT_TOL_MM:
+                    off = float(np.dot(ob - oa, na))
+                    if abs(off) > reach:
                         continue
                     ring = [np.c_[(lp - oa) @ e1, (lp - oa) @ e2] for lp in fbf.loops]
                     k = int(np.argmax([Polygon(r).area for r in ring]))
                     pbp = Polygon(ring[k], [r for i, r in enumerate(ring) if i != k]
                                   ).buffer(0)
                     inter = pa.intersection(pbp)
-                    if inter.area >= MIN_PATCH_MM2:
-                        out.append((ia, ib, inter, oa, e1, e2, na))
-                        if outlines is not None:
-                            outlines.append((pa, pbp))
+                    if inter.area < MIN_PATCH_MM2:
+                        continue
+                    if abs(off) > CONTACT_TOL_MM:
+                        glued = abs(off) < NEAR_GLUE_MM
+                        near.append((ia, ib, float(inter.area), off,
+                                     len(out) if glued else None, na))
+                        if not glued:
+                            continue
+                    out.append((ia, ib, inter, oa, e1, e2, na))
+                    if outlines is not None:
+                        outlines.append((pa, pbp))
     return out
 
 
@@ -988,6 +1015,69 @@ def butt_stiffness_factor(n: int, L: float, Ls: float, stagger: float | None, E:
     return 1.0 / (1.0 + 2.0 * n / ((n - 1) * lam * Ls))
 
 
+def butt_at_of(v) -> list[tuple[float, list[int]]] | None:
+    """The ``butt_at`` override as [(fraction along the member, [plies]), ...], or None
+    if it cannot be read."""
+    try:
+        out = []
+        for f, plies in v:
+            f = float(f)
+            ks = [int(k) for k in plies]
+            if not 0.0 < f < 1.0 or not ks or min(ks) < 0:
+                return None
+            out.append((f, ks))
+        return out or None
+    except (TypeError, ValueError):
+        return None
+
+
+def butt_zones(n: int, L: float, Ls: float, stagger: float, offset: float, lz: float,
+               at: list[tuple[float, list[int]]] | None = None
+               ) -> list[tuple[float, frozenset[int]]]:
+    """Where a laminated member's butt joints are, as zones (centre along the member from
+    its start, the plies cut there): ply k's joints at offset + k x stagger, every stick
+    length ``Ls`` (or the designer's ``at``: fractions of the length and the plies cut
+    there), joints of different plies closer than half a zone ``lz`` merged into one;
+    none within half a zone of the member's ends (a joint there is the node's)."""
+    pts: list[tuple[float, int]] = []
+    if at:
+        for f, ks in at:
+            pts += [(f * L, k) for k in ks if k < n]
+    else:
+        for k in range(n):
+            x = (offset + k * stagger) % Ls
+            while x < L:
+                pts.append((x, k))
+                x += Ls
+    pts = sorted(p for p in pts if lz / 2 < p[0] < L - lz / 2)
+    zones: list[list] = []
+    for x, k in pts:
+        if zones and x - zones[-1][0][0] < lz / 2:
+            zones[-1][0].append(x)
+            zones[-1][1].add(k)
+        else:
+            zones.append([[x], {k}])
+    return [(float(np.mean(xs)), frozenset(ks)) for xs, ks in zones]
+
+
+def zone_layers(n: int, cut: frozenset[int], nz: int, T: float, open_frac: float
+                ) -> tuple[np.ndarray, np.ndarray]:
+    """For a fibre section of ``nz`` layers through a laminate's thickness ``T`` (``n``
+    plies stacked from -T/2): the share of each layer left where the plies ``cut`` are
+    butted (times ``open_frac``: 1 for a joint that stays open) and how far each layer's
+    remaining area's centroid lies from the layer's centre (the net section's shift)."""
+    keep = np.ones(nz)
+    shift = np.zeros(nz)
+    for m in range(nz):
+        z = -T / 2 + (m + (np.arange(64) + 0.5) / 64) * T / nz
+        ply = np.minimum((z + T / 2) / (T / n), n - 1).astype(int)
+        w = 1.0 - open_frac * np.isin(ply, list(cut))
+        keep[m] = float(w.mean())
+        if w.sum() > 1e-9:
+            shift[m] = float((w * z).sum() / w.sum() - z.mean())
+    return keep, shift
+
+
 def _butt_question(g: str, name: str, L: float, Ls: float, s: float, kt: float,
                    what: str = "member") -> dict:
     return {
@@ -1174,6 +1264,15 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                  float(sp.values.get("wood.butt_bear_gap_mm", 0.5)),
                  float(sp.values.get("wood.butt_open_gap_mm", 1.0)))
 
+    def butt_gap(name: str, o: dict) -> float:
+        """The gap at a member's butted ply ends: the designer's ``butt_gap_mm``, else
+        seeded per member from 0 to scatter.bearing_gap_mm (hand-cut); the perfect
+        bridge's ends are tight."""
+        if o.get("butt_gap_mm") is not None:
+            return float(o["butt_gap_mm"])
+        r = rng_for(f"buttgap:{name}")
+        return 0.0 if r is None else amp * float(r.uniform(0.0, butt_gap_max))
+
     def butt_compression(name: str, kt: float, o: dict, n: int = 0,
                          L: float = 0.0) -> float:
         """Compression-strength factor of a laminated member or plate with butt joints:
@@ -1309,7 +1408,66 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
 
     # ---------------------------------------------------------------- contacts
     raw_outlines: list[tuple[Polygon, Polygon]] = []
-    raw_patches = find_patches(bodies, raw_outlines)
+    near_faces: list = []
+    raw_patches = find_patches(bodies, raw_outlines, near_faces)
+
+    def unglued(ia_: int, ib_: int) -> bool:
+        """The designer says these two are not glued (a glue override of 0: a load
+        hanger resting on a bridge, a part that only bears)."""
+        return any(_joint_matches(k_, bodies[ia_].name, bodies[ib_].name) and not v_
+                   for k_, v_ in ov.glue.items())
+
+    # near pairs the overrides already leave unglued are not near misses: their extra
+    # patches (drawn apart) go, and no question (a load hanger 0.5 mm off a node)
+    gone = {x[4] for x in near_faces if x[4] is not None and unglued(x[0], x[1])}
+    if gone:
+        keep_k = [k_ for k_ in range(len(raw_patches)) if k_ not in gone]
+        raw_patches = [raw_patches[k_] for k_ in keep_k]
+        raw_outlines[:] = [raw_outlines[k_] for k_ in keep_k]
+    near_faces = [x for x in near_faces if not unglued(x[0], x[1])]
+    # nor a gap another part fills (a chord between a splice and a diagonal laid over
+    # it): a third part touching both on faces parallel to theirs
+    touch: dict[int, list] = {}
+    for r_ in raw_patches:
+        touch.setdefault(r_[0], []).append((r_[1], r_[6]))
+        touch.setdefault(r_[1], []).append((r_[0], r_[6]))
+
+    def filled(a_: int, b_: int, n_) -> bool:
+        ca = {c for c, nn in touch.get(a_, []) if abs(float(np.dot(nn, n_))) > 0.99}
+        cb = {c for c, nn in touch.get(b_, []) if abs(float(np.dot(nn, n_))) > 0.99}
+        return bool((ca & cb) - {a_, b_})
+
+    near_faces = [x for x in near_faces if not filled(x[0], x[1], x[5])]
+    # faces drawn close but apart, or one inside the other: glued as if they touched up
+    # to NEAR_GLUE_MM, asked about one pair at a time (an acknowledgement covers that
+    # pair only), the largest first
+    by_pair: dict[tuple[int, int], list] = {}
+    for ia_, ib_, ar_, off_, _k, _n in near_faces:
+        by_pair.setdefault((ia_, ib_), []).append((ar_, off_))
+    for (ia_, ib_), lst in sorted(by_pair.items(), key=lambda kv: -sum(a for a, _ in kv[1])):
+        ar_ = sum(a for a, _ in lst)
+        off_ = max((o for _, o in lst), key=abs)
+        if ar_ < 20.0:
+            continue
+        na_, nb_ = bodies[ia_].name, bodies[ib_].name
+        glued = abs(off_) < NEAR_GLUE_MM
+        how = (f"{off_:.2f} mm apart" if off_ > 0
+               else f"one {-off_:.2f} mm inside the other")
+        questions.append({
+            "id": f"near_miss:{na_} | {nb_}", "topic": "geometry",
+            "severity": "important" if glued or ar_ >= 100.0 else "check",
+            "body": na_,
+            "question": f"'{na_}' and '{nb_}' face each other over {ar_:.0f} mm^2 but are "
+                        f"drawn {how} (parts closer than {CONTACT_TOL_MM} mm are glued). "
+                        "Are they glued together in the bridge? (A member drawn at a "
+                        "slightly different thickness than the gap it sits in, or plates "
+                        "offset for the glue line, leave such gaps.)",
+            "assumed": ("glued as if they touched" if glued else
+                        f"not glued (more than {NEAR_GLUE_MM} mm apart)"),
+            "answer_with": ({"glue": {f"{na_} | {nb_}": 0},
+                             "cad": "close the gap (or the overlap) in SolidWorks"}
+                            if glued else
+                            {"cad": "close the gap in SolidWorks if they are glued"})})
     # plates of narrow arms become frames (where their arms carry what is glued to them)
     for bi, sh in enumerate(shapes):
         forced = ov.for_body(bodies[bi].name).get("kind")
@@ -1660,6 +1818,36 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 sp.values.get("glue.lamination_K_s_N_per_mm3", 200.0))
             fv_in = inplane_split_strength(lam.angles, mat.f_v_MPa.value,
                                            0.5 * min(ply.f_t, ply.f_c))
+            # butt joints that stay open (their gap does not close: rounded stick ends)
+            # at their places: a short element of the net section at each, its cut plies'
+            # fibres removed and the rest shifted to their centroid, over the gap and the
+            # shear-lag length 2 / lambda where the cut ply hands its force on (the
+            # literature review of round 26: USDA TB 1069 fig. 61, ~13-24 mm for 2 mm
+            # sticks), in place of the factors over the whole member: a member can then
+            # buckle where its outer plies are butted (published test B; the realism
+            # reviews of rounds 21-26). Joints that bear keep the factors (a fibre's
+            # strength is its element's, so a ply cannot be cut in tension alone)
+            n_ply = len(lam.angles) if sh.layup.kind == "laminate" else 1
+            Ls = mat.stick.length_mm
+            zones: list[tuple[float, frozenset[int]]] = []
+            open_frac = 0.0
+            lz = 0.0
+            if n_ply >= 2 and L > 1.02 * Ls and o.get("butt_stagger_mm") != 0:
+                g_b = butt_gap(b.name, o)
+                _eff, g0_b, g1_b = butt_bear
+                open_frac = float(np.clip((g_b - g0_b) / max(g1_b - g0_b, 1e-9), 0.0, 1.0))
+                if open_frac > 0:
+                    t_p = T / n_ply
+                    K_l = sp.values.get("glue.lamination_K_s_N_per_mm3", 200.0)
+                    lam_s = math.sqrt(2.0 * K_l / (ply.E_L * t_p))
+                    lz = 2.0 / lam_s + g_b
+                    r_off = rng_for(f"buttpos:{b.name}")
+                    off_b = Ls / 2 if r_off is None else float(r_off.uniform(0.0, Ls))
+                    zones = butt_zones(n_ply, L, Ls,
+                                       float(o.get("butt_stagger_mm") or Ls / 2), off_b,
+                                       lz, butt_at_of(o.get("butt_at")))
+            if zones:
+                kE = 1.0  # the shear lag is in the zones now
             # uniform elements; joints attach to the nearest node through a rigid arm. No
             # longer than element_depth_cap: a light bridge's 6 mm members had 22 mm
             # elements at standard and read 13 % below fine (the realism review of round
@@ -1669,6 +1857,12 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             h = min(h, element_depth_cap(min(T, Wp), mesh_scale))
             n_el = max(2, int(math.ceil(L / h - 1e-9)))
             st2 = list(np.linspace(s0, s1, n_el + 1))
+            if zones:
+                edges = [s0 + xc + d * lz / 2 for xc, _c in zones for d in (-1, 1)]
+                keep_ = [x for x in st2[1:-1] if all(abs(x - e) > 0.3 * min(h, lz)
+                                                    for e in edges)
+                         and not any(abs(x - s0 - xc) < lz / 2 for xc, _c in zones)]
+                st2 = sorted({s0, s1, *keep_, *edges})
             st2 = np.array(st2)
             ratio = sp["scatter.bow_L_over"]
             bow_a = 0.0
@@ -1686,7 +1880,9 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             body_nodes[bi] = ids
             bar_axis[bi] = (c, u, st2)
             A_true = vol / L
-            ny, nz = (5, 3) if Wp >= T else (3, 5)
+            # (a member with butt joints at their places: five layers through its plies,
+            # so the plies cut at a joint are resolved; the same 15 fibres)
+            ny, nz = (5, 3) if Wp >= T and not zones else (3, 5)
             # section width (along w) and its centre offset at each element: constant for
             # a straight member, cut from the profile for a tapered one
             n_e = len(ids) - 1
@@ -1709,12 +1905,31 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             gz = ((np.arange(nz) + 0.5) / nz - 0.5) * T * _exact(nz)
             Wm = float(np.mean(wid))
             E0 = np.stack([u, w, nrm], axis=1)
+            # each zone's net section, and the factors its elements' strengths keep: the
+            # member's butt-joint factors over the net share of its weakest zone (the
+            # glue-line paths round the joints are in them), 1 elsewhere
+            z_sec = [zone_layers(n_ply, cut, nz, T, open_frac) for _x, cut in zones]
+            net_min = min((float(kp.mean()) for kp, _sh in z_sec), default=1.0)
+            kt_z = min(1.0, kt / max(net_min, 1e-9))
+            kc_z = min(1.0, kc / max(net_min, 1e-9))
+            if zones:
+                info.butt_zones = [round(float(xc), 1) for xc, _c in zones]
             for k_e, (a_, b_) in enumerate(zip(ids[:-1], ids[1:], strict=True)):
                 We = float(wid[k_e])
                 A_e = We * T if sh.fill < 0.75 else A_true
                 gy = off[k_e] + ((np.arange(ny) + 0.5) / ny - 0.5) * We * _exact(ny)
-                FY, FZ = np.meshgrid(gy, gz, indexing="ij")
-                fA = np.full(ny * nz, A_e / (ny * nz))
+                sm_e = 0.5 * (st2[k_e] + st2[k_e + 1]) - s0
+                zi = next((i for i, (xc, _c) in enumerate(zones)
+                           if abs(sm_e - xc) < lz / 2), None)
+                kt_e, kc_e = (kt, kc) if not zones else (1.0, 1.0)
+                if zi is None:
+                    FY, FZ = np.meshgrid(gy, gz, indexing="ij")
+                    fA = np.full(ny * nz, A_e / (ny * nz))
+                else:
+                    kp, shz = z_sec[zi]
+                    FY, FZ = np.meshgrid(gy, gz + shz, indexing="ij")
+                    fA = (np.ones((ny, nz)) * kp[None, :]).ravel() * A_e / (ny * nz)
+                    kt_e, kc_e = kt_z, kc_z
                 J, Wt2, Wt3 = rect_torsion(We, T)
                 L0 = float(np.linalg.norm(bld.X[b_] - bld.X[a_]))
                 e1v = (bld.X[b_] - bld.X[a_]) / L0
@@ -1730,8 +1945,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 beams["fz"].append(FZ.ravel())
                 beams["fA"].append(fA)
                 beams["E"].append(lam.E_x * Ef * kE)
-                beams["ft"].append(lam.f_t * Ef * Sf * kt)
-                beams["fc"].append(lam.f_c * Ef * Sf * kc)
+                beams["ft"].append(lam.f_t * Ef * Sf * kt_e)
+                beams["fc"].append(lam.f_c * Ef * Sf * kc_e)
                 beams["Gf"].append(G_f * Sf)
                 beams["GJ"].append(lam.G_xy * Ef * J)
                 beams["A"].append(A_e)
@@ -1948,7 +2163,14 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             # about both axes in its plane), plates node on node three; fewer: own grid
             # (Bridge_v10's 2100 mm^2 diagonal laps had 3 of the gusset's nodes at quick)
             n_min = 3 if both_plates else int(sp.values.get("glue.points_per_side", 3)) ** 2
-            if sel.sum() >= n_min:
+            # and at least two rows of them across the patch's narrow width: nine nodes in
+            # one row are a hinge about it (the realism review of round 26: the count
+            # alone let a long, narrow patch on one row of a plate's nodes pass)
+            rows_ok = True
+            if not both_plates and sel.sum() >= n_min and p_min > 0:
+                wq = np.round(q2[sel] @ np.asarray(_w2, float) / max(0.25 * hl, 1e-6))
+                rows_ok = len(np.unique(wq)) >= 2
+            if sel.sum() >= n_min and rows_ok:
                 pts3 = proj[sel]
                 wts = w[sel] / w[sel].sum() * inter.area
         if pts3 is None:
@@ -1990,7 +2212,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     def peak_factor(n_nodes: int) -> float:
         return 1.0 + (peak_over_avg - 1.0) * (1.0 - math.exp(-2.2 * (n_nodes - 1)))
 
-    end_factor = sp.values.get("glue.end_grain_factor", 0.5)
+    end_factor = sp.values.get("glue.end_grain_factor", 0.75)
     end_tension = sp.values.get("glue.end_grain_tension_factor", 0.0)
     t90_m = sp.values.get("wood.t90_weibull_m", 0.0)
     f_roll = float(sp.values.get("wood.f_rolling_MPa", 4.0))

@@ -1449,7 +1449,15 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             glue_fall = (f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
                          float(lost[k]))
     governing = fail_mode
-    if fail_mode == "collapse" and first_major:
+    if fail_mode in ("contact", "deflection") and first_major is not None \
+            and first_major.force_N >= 0.9 * peak:
+        # the run was called when the collapsing bridge touched the platform or passed
+        # the deflection limit, but a part broke at the peak: that started it (a light
+        # Warren's end diagonals crushing at 1.9 mm of travel, the call at 6.2 mm, round
+        # 27's published test D)
+        governing = f"{first_major.kind.replace('_', ' ')}: {first_major.what}"
+        fail_detail = f"{governing}; the test was called at {fail_mode} ({fail_detail})"
+    elif fail_mode == "collapse" and first_major:
         governing = f"{first_major.kind.replace('_', ' ')}: {first_major.what}"
         fail_detail = f"{governing}. " + fail_detail
     elif fail_mode == "collapse" and glue_fall:

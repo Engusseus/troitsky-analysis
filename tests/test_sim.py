@@ -1237,6 +1237,7 @@ def test_agent_docs_match_the_code():
                                                                         "cli", "centroid_mm",
                                                                         "bbox_min_mm",
                                                                         "bbox_max_mm", "axis",
+                                                                        "butt_zones_mm",
                                                                         "where_mm"}
     assert ids, "no question ids found in AGENTS.md"
     for qid in ids:
@@ -1996,11 +1997,16 @@ def test_bridge_calibration_fits_the_median_over_seeds(tmp_path, monkeypatch):
     assert cal.steps[0].Fu_kgf == 1000.0 and cal.steps[0].Fu_kgf_runs == [900, 1000, 1300]
     assert cal.converged and cal.strength_factor == pytest.approx(1.2, rel=0.01)
     assert cal.steps[-1].first_failure == "joint failure: A | B"
-    # the fitted values are measured from then on (montecarlo no longer redraws them),
-    # and the model-form error left is a calibrated model's
-    assert "material.f_b_MPa" in cal.overrides["measured"]
+    # what the test can tell is measured from then on (montecarlo no longer redraws it):
+    # a joint governed, so the glue's strength, not the members' (the adversarial review
+    # of round 26); the model-form error stays until another test checks the fit
+    assert "material.glue.tau_g_MPa" in cal.overrides["measured"]
+    assert "material.f_b_MPa" not in cal.overrides["measured"]
+    assert "material.f_c_MPa" not in cal.overrides["measured"]
     assert set(cal.overrides["measured"]) <= set(cal.overrides["params"])
-    assert cal.overrides["params"]["uncertainty.model_cov"] == study.CALIBRATED_MODEL_COV
+    assert "uncertainty.model_cov" not in cal.overrides["params"]
+    assert study._mechanism("member fracture: Chord") == "member"
+    assert study._mechanism("bearing crushing: Post | Seat") == "bearing"
 
 
 def test_coupon_files_are_found_by_name_or_columns(tmp_path):
@@ -3075,6 +3081,85 @@ def test_butt_joints_with_a_gap_are_out_in_compression_too():
         info = {b.name: b for b in m.bodies}["Chord (13-ply UD)"]
         assert info.f_c_eff_MPa == pytest.approx(factor * fc, rel=0.02), gap
         assert info.f_t_eff_MPa == pytest.approx(kt * MAT.f_t_MPa.value, rel=0.02)
+
+
+def test_open_butt_joints_sit_at_their_places_as_net_sections():
+    """A butt joint that stays open (rounded stick ends) is a short element of the net
+    section at its place, its cut plies' fibres removed and the rest at their centroid,
+    over the gap and the shear-lag length 2 / lambda (USDA TB 1069; the literature review
+    of round 26): ply k's joints at a seeded offset plus k x the stagger, every stick
+    length, or where the designer puts them (butt_at); the rest of the member keeps its
+    full section and strength, the zones its butt-joint factors over their net share.
+    Joints that bear keep the factors over the whole member."""
+    from bridgesim.sim.idealize import Overrides, build_model, butt_zones, zone_layers
+
+    z = butt_zones(13, 600.0, 115.0, 57.5, 57.5, 13.0)
+    assert [round(x, 1) for x, _c in z] == [57.5, 115.0, 172.5, 230.0, 287.5, 345.0,
+                                             402.5, 460.0, 517.5, 575.0][: len(z)]
+    assert z[0][1] == frozenset(range(0, 13, 2)) and z[1][1] == frozenset(range(1, 13, 2))
+    at = butt_zones(5, 260.0, 115.0, 57.5, 0.0, 13.0, [(0.5, [0, 4])])
+    assert at == [(130.0, frozenset({0, 4}))]
+    keep, shift = zone_layers(5, frozenset({0, 4}), 5, 10.0, 1.0)
+    assert keep.tolist() == pytest.approx([0, 1, 1, 1, 0]) and abs(shift).max() < 1e-9
+    keep, shift = zone_layers(5, frozenset({0}), 5, 10.0, 0.5)
+    assert keep[0] == pytest.approx(0.5) and keep[1:].tolist() == pytest.approx([1] * 4)
+    keep, shift = zone_layers(13, frozenset(range(0, 13, 2)), 5, 26.0, 1.0)
+    assert keep.mean() == pytest.approx(6 / 13, abs=0.02)
+    bodies = simple_beam_bridge() + [box("Chord (13-ply UD)", (-300, 200, -13),
+                                         (300, 210, 13))]
+    for gap, n_zones in ((2.0, 5), (0.3, 0)):
+        m = build_model(bodies, MAT, SP, Overrides.from_dict(
+            {"bodies": {"Chord*": {"butt_gap_mm": gap}}}), seed=1)
+        info = {b.name: b for b in m.bodies}["Chord (13-ply UD)"]
+        assert len(info.butt_zones) >= n_zones and (n_zones or not info.butt_zones)
+        A = np.array([m.b_fA[e].sum() for e in info.beams])
+        ft = np.array([m.b_ft[e] for e in info.beams])
+        if n_zones:
+            assert A.min() < 0.6 * A.max()  # a net section at each joint
+            assert ft.max() == pytest.approx(MAT.f_t_MPa.value, rel=0.02)  # full outside
+            assert ((A < 0.99 * A.max()) == (ft < 0.99 * ft.max())).all()
+        else:
+            assert A.min() == pytest.approx(A.max()) and ft.max() < MAT.f_t_MPa.value
+    m = build_model(bodies, MAT, SP, Overrides.from_dict({"bodies": {"Chord*": {
+        "butt_gap_mm": 2.0, "butt_at": [[0.5, [0, 12]]]}}}), seed=1)
+    info = {b.name: b for b in m.bodies}["Chord (13-ply UD)"]
+    assert info.butt_zones == [pytest.approx(300.0, abs=0.5)]
+
+
+def test_faces_drawn_a_little_apart_are_glued_and_asked_about():
+    """Two parts that face each other over an overlap but are drawn a few tenths apart (a
+    member drawn thinner than the gap it sits in) or one a little inside the other are
+    glued as if they touched, up to NEAR_GLUE_MM, and asked about pair by pair
+    (near_miss, important); further apart, up to NEAR_ASK_MM, only asked about; not when
+    the overrides already leave them unglued, nor when a third part fills the gap (the
+    adversarial review of round 26: a 0.4 mm gap silently lost a diagonal's laps and read
+    37-49 % low)."""
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    def model(gap: float, ov=None):
+        bodies = simple_beam_bridge() + [box("Post (4-ply UD)", (300, 173.1 + gap, -4),
+                                             (310, 233.1, 4))]
+        return build_model(bodies, MAT, SP, Overrides.from_dict(ov or {}), seed=None)
+
+    def post(m):
+        names = [b.name for b in m.bodies]
+        return [p for p in m.patches if "Post" in names[p.body_a] + names[p.body_b]
+                and p.kind == "glue"]  # (a part touching nothing is tied on: 'tie')
+
+    def asked(m):
+        return [q for q in m.questions if q["id"].startswith("near_miss")]
+
+    assert post(model(0.0)) and not asked(model(0.0))
+    for gap in (0.4, -0.5):  # drawn apart, or one inside the other
+        m = model(gap)
+        assert post(m), gap
+        q = asked(m)
+        assert len(q) == 1 and q[0]["severity"] == "important" and "Post" in q[0]["id"]
+        assert "glued as if they touched" in q[0]["assumed"]
+    m = model(2.0)
+    assert not post(m) and asked(m) and "not glued" in asked(m)[0]["assumed"]
+    m = model(0.4, {"glue": {"Post* | *": 0}})
+    assert not asked(m)
 
 
 def test_large_hand_made_laps_are_weaker_on_average():

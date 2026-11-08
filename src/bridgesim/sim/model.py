@@ -40,6 +40,7 @@ class BodyInfo:
     bbox_mm: tuple | None = None
     axis: tuple | None = None
     chains: list = field(default_factory=list)  # a frame's beams, arm by arm
+    butt_zones: list = field(default_factory=list)  # open butt joints at their places
 
 
 @dataclass

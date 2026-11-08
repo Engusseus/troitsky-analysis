@@ -105,10 +105,38 @@ tight, ~2 for rounded stick ends; else seeded per member from 0 to
 were assumed tight in compression; round 19 let them bear only up to 0.15 mm (a misread
 of Berard et al., which the round-19 literature review corrected).
 
+Since round 27 a laminated member's butt joints that stay open (their gap past
+`wood.butt_bear_gap_mm`, as rounded stick ends leave) are **at their places**, not
+spread over the member: each is a short element of the net section, its cut plies'
+fibres taken out (the shared fibres scaled between 0.5 and 1 mm of gap) and the rest at
+their centroid, so it is weaker and bends off-centre there; over the gap plus the
+shear-lag length 2 / lambda in which the cut ply hands its force on (lambda^2 = 2 K /
+(E t), K the lamination's shear stiffness: ~11 mm for 2 mm sticks; USDA TB 1069 fig. 61
+gives the same Euler load as a ~15 mm net zone, the literature review of round 26). Ply
+k's joints lie at a seeded offset plus k times the stagger, every stick length, or where
+the designer puts them (`butt_at`: [[fraction of the length, [plies]], ...]); joints of
+different plies closer than half a zone are one. The zones keep the member's butt-joint
+factors over their net share (so the glue-line paths round the joints still cap them)
+and the rest of the member its full section and strength; the stiffness factor above is
+not applied (the zones are the shear lag). A member's five fibre layers then lie through
+its plies. Joints that bear keep the factors over the whole member: an element's fibres
+share its strength, so a ply cannot be cut in tension alone. With published test B's
+diagonal's outer plies open at mid-length its seed 0 still fails at a putty joint first
+(112.97 kgf against 112.94 with the factors), which the literature review of round 26
+expected: its buckling needs a kink at the joint or unglued outer plies as well.
+
 ## 3. Joints
 
-* Every pair of coplanar touching faces of two bodies is a **glued patch** of the exact
-  overlap shape. The glue is a grid of cohesive springs (one per node of the finer mesh,
+* Every pair of coplanar touching faces of two bodies (facing each other within
+  `CONTACT_TOL_MM`, 0.3 mm) is a **glued patch** of the exact overlap shape. Since round
+  27 faces that face each other over an overlap but are drawn up to `NEAR_GLUE_MM` (0.8
+  mm) apart, or one that far inside the other part, are glued as if they touched, and
+  each such pair is asked about (`near_miss:A | B`, important); 0.8-3 mm apart they are
+  asked about and not glued; not when the overrides leave the pair unglued (a load
+  hanger) or a third part, touching both on parallel faces, fills the gap (a chord between
+  a splice and a diagonal). A member drawn 0.4 mm thinner than the gap between its
+  gussets lost its laps until then, silently (Bridge_v10 37-49 % low, the adversarial
+  review of round 26). The glue is a grid of cohesive springs (one per node of the finer mesh,
   or between two members a grid at their element size with at least two points across
   each side of the patch, `glue.points_per_side`, spaced so that their equal shares of
   the area have the patch's own second moment: two at the Gauss points) attached to
@@ -123,11 +151,13 @@ of Berard et al., which the round-19 literature review corrected).
   2 mm sticks: Turon et al. 2007; with two rows a small joint's first peel crack under a
   moment came 1.7x too late), and a plate's own nodes carry the glue only where the patch
   lies on the plate's face with a 3x3 grid of them on it or within half the patch's
-  width of its edge (or joins two plates, meshed node on node): a joint on a plate's
+  width of its edge, in at least two rows across its narrow width (since round 27: nine
+  nodes in one row are a hinge about it, the realism review of round 26; Bridge_v10's
+  laps and decks unchanged) (or joins two plates, meshed node on node): a joint on a plate's
   edge, or one the plate's elements are too coarse for, gets its own grid (until round
   25 a 40 mm^2 deck edge glued on a light truss's vertical was one row of the deck's
   mid-surface nodes, a hinge, or nodes half an element beyond it, as the mesh fell: a
-  10 mm truss read 14.7 kgf at quick against 48 at standard, now 46.4 against 44.7;
+  10 mm truss read 14.7 kgf at quick against 48 at standard, now 46.4 against 46.4;
   Bridge_v10's 2100 mm^2 diagonal laps had 3 of the gusset's nodes at quick; the
   literature and adversarial reviews of round 25). The points still hang on the nearest plate node by a rigid arm, so a joint
   much narrower than the plate's elements (`Patch.mesh_ratio` over 3) that fails is
@@ -302,8 +332,11 @@ of Berard et al., which the round-19 literature review corrected).
   UD"`, kind block).
 * **End grain** holds glue poorly: the glue strength of a joint is multiplied by
   1 - e (1 - `glue.end_grain_factor`), e being the share of a side's plies meeting the
-  joint end-on (0.5 placeholder: a member's end glued flat gets half, a 0/90 plate's edge
-  three quarters). Joints that are mostly end grain are listed in a question.
+  joint end-on (0.75 since round 26, a placeholder, 0.5 before: a member's end glued
+  flat gets three quarters, a 0/90 plate's edge seven eighths; drawn by montecarlo, 35 %;
+  the source, Frolovs et al. 2017's plywood edges with about half their plies side grain
+  failing in the wood, bounds a pure end-grain factor only to 0.4-1.0, the adversarial
+  review of round 26). Joints that are mostly end grain are listed in a question.
 * **End grain pulled apart** (since round 21): a glue line on end grain loaded normal to
   the end holds `glue.end_grain_tension_factor` (0.1) x the wood's tension strength along
   the grain (~4 MPa for craft sticks; end-grain butt joints reach ~25 % of it with special
@@ -825,9 +858,11 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   leave out for a real bridge, until a physical test measures it; the JCSS Probabilistic
   Model Code (3.09) gives steel connection formulas a CoV of 0.15 with a 15-25 %
   conservative bias and nothing for glued timber, and a corrected timber connection model
-  keeps ~15 % (Jockwer et al. 2018), so not less before tests; `calibrate-bridge` sets it
-  to 15 % once a test of the bridge has been fitted, and lists the fitted values as
-  measured, so montecarlo stops redrawing them): the range to give a team
+  keeps ~15 % (Jockwer et al. 2018), so not less before tests; `calibrate-bridge` leaves
+  it (since round 27; 15 % before) until another test, compared blind, shows the fitted
+  model within it, and lists as measured, when its fit converged, only what the test can
+  tell: the strengths of the mechanism that governed and the wood's moduli when there was
+  a curve, the adversarial review of round 26): the range to give a team
   before any test, the runs' range being what the model knows it does not know. The
   **recommended prediction** (the 1/F-weighted median, which minimises the expected
   §12.7 error) is taken over the runs times that same error, which pulls it below the

@@ -490,7 +490,8 @@ def glue_rate(m: Model, st: State) -> tuple[np.ndarray, float, float, np.ndarray
     tau(t_ref) (t / t_ref)^-n (n 0.1: +26 % per decade faster; PVAc +20 % at 16x the rate,
     Wernersson 1994; -40 % at a tenth of the rate, Serrano 2000), t_ref the time to failure
     of the lap tests tau_g describes (glue.coupon_time_s), t the line's own time under
-    load: from when it first took RATE_LOAD of its strength (at least 1 s), so a line that
+    load: from when it first took RATE_LOAD of its strength (at least t_ref / RATE_RANGE,
+    3.75 s: no faster than 16x its coupons, the law's data), so a line that
     picks up load when its neighbour breaks is loaded fast, not as old as the test (the
     realism and adversarial reviews of round 21-22). Before any physical time has passed
     (the screen) tau_g; a coupon (lab) has every line loaded from its start."""

@@ -4,7 +4,8 @@ and trustworthiness, and whether its ``code_sha`` is the code checked out now.
 
     uv run python validation/check_runs.py DIR [--sha SHA] [--json]
 
-Exit code 1 when a run was made on other code (the realism review of round 25: two of
+Each run's ``values_sha`` (the material and simulation values it had, since round 27)
+is listed too. Exit code 1 when a run was made on other code (the realism review of round 25: two of
 round 25's light-truss runs were made before the code was frozen, while the docs said
 they were on it). Quote evidence only from a folder this passes on.
 """
@@ -31,6 +32,7 @@ def runs(root: Path) -> list[dict]:
         q = d.get("quality") or {}
         out.append({"path": str(f.parent.relative_to(root)),
                     "code_sha": d.get("code_sha", ""),
+                    "values_sha": d.get("values_sha", ""),
                     "Fu_kgf": d.get("Fu_kgf"),
                     "governing": d.get("governing", ""),
                     "trustworthy": q.get("trustworthy"),
@@ -58,10 +60,15 @@ def main() -> int:
     else:
         for r in rs:
             mark = "  " if r.get("code_sha") == sha else "!!"
-            print(f"{mark} {r['path']}: {r.get('code_sha', '?')} F_u {r.get('Fu_kgf')} "
+            print(f"{mark} {r['path']}: {r.get('code_sha', '?')} values "
+                  f"{r.get('values_sha') or '?'} F_u {r.get('Fu_kgf')} "
                   f"({r.get('fidelity')}, seed {r.get('seed')}, trustworthy "
                   f"{r.get('trustworthy')}) {r.get('governing', '')[:70]}")
-        print(f"{len(rs)} runs, {len(bad)} on other code than {sha}")
+        vals = {r.get("values_sha") for r in rs if r.get("values_sha")}
+        print(f"{len(rs)} runs, {len(bad)} on other code than {sha}; {len(vals)} sets of "
+              "material and simulation values (values_sha: a Monte Carlo drawing "
+              "placeholders has one per run, a folder of single crushes of one bridge "
+              "should have one)")
     return 1 if bad else 0
 
 

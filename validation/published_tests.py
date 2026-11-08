@@ -408,20 +408,40 @@ def summarize(out: Path, case: str, mc: str = "mc10") -> dict:
     runs = ok if len(ok) >= max(3, (len(every) + 1) // 2) else every
     F = np.array([r[0] for r in runs])
     lo, hi = ref.get("Fu_range_kgf", [ref["Fu_kgf"]] * 2)
-    place = ref.get("place", [])
+    place = ref.get("place") or []
 
     def at_place(g: str) -> bool:
         kind, _, what = g.partition(": ")
         return all((w in kind) if w == "member" else (w in what) for w in place)
 
-    return {"case": case, "runs": len(runs), "test_Fu_kgf": [round(lo, 1), round(hi, 1)],
-            "Fu_kgf": [round(float(x), 1) for x in sorted(F)],
-            "ratio_median": round(float(np.median(F)) / hi, 2),
-            "ratio_range": [round(float(F.min()) / hi, 2), round(float(F.max()) / lo, 2)],
-            "share_below_test": round(float(np.mean(F < lo)), 2),
-            "share_above_test": round(float(np.mean(F > hi)), 2),
-            "share_at_test_place": round(float(np.mean([at_place(r[1]) for r in runs])), 2),
-            "untrustworthy": int(sum(not r[2] for r in every)), **_mc_summary(base, lo, hi)}
+    out = {"case": case, "runs": len(runs), "test_Fu_kgf": [round(lo, 1), round(hi, 1)],
+           "Fu_kgf": [round(float(x), 1) for x in sorted(F)],
+           "ratio_median": round(float(np.median(F)) / hi, 2),
+           "ratio_range": [round(float(F.min()) / hi, 2), round(float(F.max()) / lo, 2)],
+           "share_below_test": round(float(np.mean(F < lo)), 2),
+           "share_above_test": round(float(np.mean(F > hi)), 2),
+           "share_at_test_place": (round(float(np.mean([at_place(r[1]) for r in runs])), 2)
+                                   if place else None),
+           "untrustworthy": int(sum(not r[2] for r in every)), **_mc_summary(base, lo, hi)}
+    reps = ref.get("replicates_kgf")
+    if reps:
+        # a test built several times (D): its scatter build to build against the model's
+        # over seeds alone (<case>_<mc>_seeds: the imperfections and joint-to-joint glue,
+        # the placeholders fixed), and the share of the runs inside the builds' range
+        out["test_cov"] = ref.get("replicate_cov")
+        out["share_in_test_range"] = round(float(np.mean(
+            (F >= min(reps)) & (F <= max(reps)))), 2)
+        seeds = sorted(base.parent.glob(f"{base.name}_seeds/seed_*/crush.json"))
+        Fs = []
+        for f in seeds:
+            d = json.loads(f.read_text())
+            if d["quality"]["trustworthy"]:
+                Fs.append(d["Fu_kgf"])
+        if len(Fs) >= 3:
+            out["seeds_only_kgf"] = [round(float(x), 1) for x in sorted(Fs)]
+            out["seeds_only_cov"] = round(float(np.std(Fs, ddof=1) / np.mean(Fs)), 3)
+            out["seeds_only_median_over_test"] = round(float(np.median(Fs)) / hi, 2)
+    return out
 
 
 def _mc_summary(base: Path, lo: float, hi: float) -> dict:

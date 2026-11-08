@@ -338,7 +338,7 @@ set `source: measured`. Templates for your test data are in
 
 ## Validation status
 
-Automated in CI (`uv run pytest`, ~6 min on 4 cores; `uv run pytest -m "not slow"` skips
+Automated in CI (`uv run pytest`, ~15-25 min on 4 cores, over an hour on a busy machine; `uv run pytest -m "not slow"` skips
 the dozen tests that run crush simulations, ~2 min, for quick checks while you work), see
 [validation/README.md](validation/README.md):
 

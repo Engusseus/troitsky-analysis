@@ -51,6 +51,12 @@ class BodyReport(BaseModel):
     E_eff_MPa: float = 0.0
     f_t_eff_MPa: float = 0.0
     f_c_eff_MPa: float = 0.0
+    butt_zones_mm: list[float] = Field([], description=(
+        "A laminated member's butt joints that stay open (their gap does not close: "
+        "rounded stick ends, butt_gap_mm), at their places: each a short element of the "
+        "net section, centred this far from the member's end (butt_stagger_mm and a "
+        "seeded offset, or the designer's butt_at). Empty: joints that bear, the member's "
+        "factors (E_eff, f_t_eff, f_c_eff) over its length"))
     why: str = ""
 
 
@@ -263,6 +269,10 @@ class CrushReport(BaseModel):
     code_sha: str = Field("", description=(
         "Fingerprint of the bridgesim code alone (every module): two runs with the same "
         "code_sha ran the same code, whatever else changed"))
+    values_sha: str = Field("", description=(
+        "Fingerprint of the material and simulation values as resolved (the yaml files "
+        "and the overrides' params): with code_sha, what physics the run had (the "
+        "adversarial review of round 26: code_sha alone left the yaml out)"))
     Fu_kgf: float = Field(description="Predicted ultimate load (rulebook §12.5), kgf.")
     Fu_N: float
     failure_mode: FailureMode = Field(description="collapse (the load fell 30 % below "
@@ -355,6 +365,13 @@ class MonteCarloReport(BaseModel):
     kind: Literal["montecarlo"] = "montecarlo"
     file: str
     n: int
+    provenance: dict[str, str] = Field({}, description=(
+        "What the prediction was made from, to show later that it was made before a "
+        "test (keep montecarlo.json, or these hashes, with a date the test cannot have "
+        "influenced: a commit, an e-mail to the organisers, a timestamping service): "
+        "the CAD file's sha256, the overrides' and the material and simulation values' "
+        "sha256 (canonical JSON), the code (code_sha), the fidelity and the UTC time the "
+        "report was made (the ambitious review of round 26)."))
     Fu_kgf: list[float]
     p05_kgf: float
     p50_kgf: float
@@ -394,7 +411,13 @@ class MonteCarloReport(BaseModel):
     recommended_interval_kgf: list[float] = Field([], description=(
         "5 % and 95 % points of recommended_prediction_kgf over bootstrap resamples of "
         "the runs: how far other runs could move it (wide with few runs or two clusters "
-        "of failure loads: run more)"))
+        "of failure loads: run more). Not the uncertainty of F_u: that is the total "
+        "range (total_p05_kgf, total_p95_kgf)"))
+    published_check: str = Field("", description=(
+        "How far this model's recommended prediction was from the published white-glue "
+        "truss tests it was rebuilt for (the §12.7 error |F - p| / F, validation README "
+        "3.14): what a prediction like this one missed by, on small trusses outside a "
+        "team's bridge's range (the adversarial review of round 26)"))
     Fu_untrustworthy_kgf: list[float] = Field([], description=(
         "F_u of the runs whose quality.trustworthy is false, left out of Fu_kgf, the "
         "percentiles and the prediction (unless fewer than half the runs are "
