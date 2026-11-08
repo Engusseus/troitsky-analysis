@@ -124,6 +124,8 @@ class CrushResult:
     competing: list[str] = field(default_factory=list)  # other breaks within 10 % of F_u
     test_time_at_Fu_s: float = 0.0  # physical test time at the peak (s): the jack's
     # travel at crusher.test_rate_mm_per_min, the time the glue's strength is taken at
+    reload_kgf: float = 0.0  # the highest reported load after the failure call (0: none
+    # recorded): a bridge that carries more after its first fall (a minor joint let go)
 
 
 def _quat(R: np.ndarray) -> np.ndarray:
@@ -601,8 +603,21 @@ def _reported(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
                 k += 1
             if k >= len(t) or not held[k]:
                 continue
-            while k < len(t) and held[k]:
-                k += 1
+            # through the hold, and through a gap in it shorter than a period (a hold
+            # that ended and was extended again while the bridge still rang: the travel
+            # stood still across it, and a window in travel would reach into the
+            # collapse after it)
+            while k < len(t):
+                if held[k]:
+                    k += 1
+                    continue
+                g = k
+                while g < len(t) and not held[g] and t[g] - t[k] < period_s:
+                    g += 1
+                if g < len(t) and held[g]:
+                    k = g
+                    continue
+                break
             region[c:k] = True
             ref[c:k] = out[c - 1]
         if region.any():
@@ -698,16 +713,24 @@ def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
     if falling:
         same = clean([e for e in falling if e.t <= falling[0].t + win])
         joints = [e for e in same if e.kind.startswith("joint")]
-        # joints letting go together: the strongest of them; a member or plate breaking
-        # first (it has no glue capacity to compare) keeps its place in time, unless it
-        # is a plate that was already cracking before (more of the same crack)
+        # joints letting go together at one node: the strongest of them (those sharing a
+        # part with the first: a joint elsewhere, on the other truss, that let go within
+        # the same moment is the cascade, not the cause: the adversarial review of round
+        # 25 found the label naming the other truss's laps 1.4 ms later); a member or
+        # plate breaking first (it has no glue capacity to compare) keeps its place in
+        # time, unless it is a plate that was already cracking before (more of the same
+        # crack)
         lead = same[0]
         if lead.kind == "plate_crack" and joints and any(
                 e.kind == "plate_crack" and e.what == lead.what and e.t < lead.t
                 for e in before):
             lead = joints[0]
-        first = max(joints, key=lambda e: e.capacity_N) \
-            if joints and lead.kind.startswith("joint") else lead
+        if joints and lead.kind.startswith("joint"):
+            near = set(lead.what.split(" | "))
+            node = [e for e in joints if near & set(e.what.split(" | "))]
+            first = max(node or [lead], key=lambda e: e.capacity_N)
+        else:
+            first = lead
     elif survived:
         first = clean(survived)[-1]
     else:
@@ -1229,6 +1252,11 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                     if st.t >= hold_until:
                         holds += 1
                         hold_start = st.t
+                    # every major break cuts the reading, inside a running hold too (the
+                    # adversarial and realism reviews of round 25: a diagonal's laps let
+                    # go inside a hold, no cut, and the reported load rose through the
+                    # fall while the raw force halved)
+                    if not hold_starts or st.t > hold_starts[-1]:
                         hold_starts.append(st.t)
                     hold_until = min(st.t + hold_settle, hold_start + hold_max)
                 n_seen = len(events)
@@ -1343,6 +1371,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     # online reading above only decided when to hold the jack and when the bridge was
     # judged failed; F_u, the curve and the load of each event come from this one.
     t_c = np.inf  # where the load last stood within 5 % of F_u before the failure call
+    reload_N = 0.0
     if curve["t"] and not unstable:
         tt = np.asarray(curve["t"])
         fz = reported_load(tt, np.asarray(curve["force_raw"]), opt.speed_mm_s,
@@ -1375,6 +1404,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             if c and "t_s" in c and "load_N" in c and c["t_s"] >= tt[0]:
                 c["load_N"] = load_at(c["t_s"])
         n_ok = len(tt) if i_fail is None else i_fail + 1
+        reload_N = float(np.max(fz[n_ok:])) if n_ok < len(fz) else 0.0
         i_pk = int(np.argmax(fz[:n_ok]))
         peak, peak_travel = float(fz[i_pk]), float(curve["travel"][i_pk])
         peak_defl = float(curve["deflection"][i_pk])
@@ -1461,7 +1491,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         added_mass_kg=added * 1000, added_mass_frac=added / phys_mass.sum(),
         settle_sag_mm=sag, kinetic_ratio_max=max_ke_ratio, model=m,
         speed_mm_s=float(opt.speed_mm_s), holds=holds, hold_time_s=hold_time,
-        test_time_at_Fu_s=float(peak_test_t))
+        test_time_at_Fu_s=float(peak_test_t), reload_kgf=reload_N / KGF)
     del ke
     return res
 

@@ -60,6 +60,10 @@ class Patch:
     # lamination, f_v / 1.5 of a solid face
     lamination: bool = False  # two plates glued face to face
     peak_factor: float = 1.0  # the glue points' local strength over the face's average
+    # the largest element of a plate it is glued to over its own width (its glue points
+    # hang on that plate's nodes by rigid arms: above ~3 the joint is coarser than the
+    # plate's mesh can follow; 0: no plate)
+    mesh_ratio: float = 0.0
 
 
 @dataclass

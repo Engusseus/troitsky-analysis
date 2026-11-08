@@ -11,6 +11,11 @@ import math
 
 import numpy as np
 
+# the glue's rate law is taken no further than its data: a line failing at most this many
+# times faster than its coupons (PVAc 16x the rate, Wernersson 1994; the adversarial
+# review of round 25: a line picked up in a cascade 1 s before it failed read 1.51x)
+RATE_RANGE = 16.0
+
 try:
     from numba import njit, prange
 
@@ -694,7 +699,8 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
                 t0[i] = tnow
             if crate[i] != 0.0 and tnow > 0.0 and tref > 0.0:
                 tl = tnow - t0[i] if t0[i] >= 0.0 else 0.0
-                rs = math.exp(-crate[i] * math.log((tl if tl > 1.0 else 1.0) / tref))
+                tmin = tref / RATE_RANGE
+                rs = math.exp(-crate[i] * math.log((tl if tl > tmin else tmin) / tref))
                 dn0 *= rs
                 ds0 *= rs
                 dm0 *= rs

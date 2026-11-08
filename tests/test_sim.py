@@ -1688,9 +1688,10 @@ def test_frame_plate_bends_like_a_beam(tmp_path):
             assert lim["compression"] == pytest.approx(
                 MAT.f_c_MPa.value * S / (0.5 * a) / 9.80665, rel=0.03)
     assert k["frame"] == pytest.approx(1.0, rel=0.03)
-    # in-plane bending locks with ~2.5 elements across: 1.11-1.2 (the knife edges' bearing
-    # faces softer since round 25, Blass & Gorlacher's spread)
-    assert k["shell"] > 1.10
+    # in-plane bending locks with ~2.5 elements across: 1.09-1.2 (the knife edges' bearing
+    # faces softer since round 25, Blass & Gorlacher's spread; three glue points a side
+    # since round 26)
+    assert k["shell"] > 1.08
     # a semicircular rib 30 mm wide: one chain along its mid-line
     th = np.linspace(0, np.pi, 60)
     outer = np.c_[500 * np.cos(th), 300 * np.sin(th)]
@@ -3740,7 +3741,9 @@ def test_each_glue_line_keeps_its_own_clock():
 
     rate = np.full(3, 0.1)
     f = S_.glue_rate_factor(rate, 600.0, 60.0, np.array([0.0, 540.0, 599.5]))
-    assert f == pytest.approx([10 ** -0.1, 1.0, 60 ** 0.1], rel=1e-6)
+    # (a line loaded 0.5 s before is taken no faster than 16x its coupons, the law's data,
+    # since round 26: the adversarial review of round 25)
+    assert f == pytest.approx([10 ** -0.1, 1.0, 16 ** 0.1], rel=1e-6)
     m = build_model(simple_beam_bridge(), MAT, SP, Overrides(), seed=None)
     st = S_.initial_state(m, 1e12)
     st.t_test = 540.0
@@ -3911,3 +3914,102 @@ def test_an_stl_keeps_separate_coplanar_faces_apart(tmp_path):
     back = load_cad(tmp_path / "u.stl")
     assert pats([u, chord]) == [450.0, 450.0]
     assert pats(back) == pats([u, chord])
+
+
+def test_the_reading_follows_a_fall_inside_a_hold_extended_by_ringing():
+    """The realism and adversarial reviews of round 25: a hold that ended and was
+    extended again while the bridge rang was no longer read in time, so a window in
+    travel (which stood still) reached into the collapse after it, and the reported load
+    rose through a fall while the raw force halved. The held stretch now runs through a
+    gap shorter than a period, and every major break cuts the reading."""
+    from bridgesim.sim.crush import reported_load
+
+    v, T = 100.0, 1 / 150.0
+    t = np.arange(0, 0.08, 3e-5)
+    tb = 0.040
+    x = v * np.minimum(t, tb) + 0.02 * v * np.maximum(t - tb, 0)  # the jack slows at tb
+    hold = (t >= tb) & ~((t > tb + 0.010) & (t < tb + 0.0105))  # a 0.5 ms gap
+    tf = tb + 0.020  # the collapse, inside the extended hold
+    true = np.where(t < tb, 500.0 * x, 500.0 * v * tb)
+    true = np.where(t >= tf, true * np.clip(1 - (t - tf) / 0.002, 0.35, 1), true)
+    raw = true + 5.0 * np.sin(2 * np.pi * t / T)
+    rep = reported_load(t, raw, v, x, breaks=[tb], hold=hold, period_s=T)
+    late = t > tf + 0.002 + T
+    assert np.all(np.abs(rep[late] - true[late]) < 0.1 * true[late])
+    before = (t > tb + 0.0105) & (t < tf - T)
+    assert np.all(np.abs(rep[before] - true[before]) < 0.03 * true[before])
+
+
+def test_the_strongest_joint_governs_only_at_the_node_where_the_fall_began():
+    """The adversarial review of round 25: of the joints letting go within half a period,
+    the strongest was named even on the other truss, 1.4 ms after the first: the label
+    is now the strongest of those sharing a part with the first joint that let go."""
+    from bridgesim.sim.crush import Event, attribute
+
+    peak = 19000.0
+    ev = [Event(0.13412, 5.5, 0.99 * peak, "joint_cracking", "Diag R Far | Stub Far",
+                capacity_N=673.0),
+          Event(0.13434, 5.5, 0.98 * peak, "joint_failure", "Diag R Far | plate_M Far Outer",
+                capacity_N=3143.0),
+          Event(0.13451, 5.5, 0.97 * peak, "joint_failure", "Diag R Far | plate_M Far Inner",
+                capacity_N=2383.0),
+          Event(0.13587, 5.5, 0.9 * peak, "joint_failure",
+                "Diag L Near | plate_M Near Outer", capacity_N=3410.0)]
+    gov, competing = attribute(ev, 0.1340, peak, 5.5, 100.0, period_s=0.007)
+    assert gov.what == "Diag R Far | plate_M Far Outer"
+
+
+def test_a_load_rising_past_f_u_after_the_failure_call_is_flagged():
+    """The adversarial review of round 25: a 10 mm truss read 14.7 kgf at its first 30 %
+    dip (a deck edge touching a vertical let go) and then carried 39.7, with no warning."""
+    from bridgesim.sim import study
+
+    m = build_model_simple()
+    res = _stub_result(m)
+    res.Fu_kgf, res.reload_kgf = 14.7, 39.7
+    q = study._quality(res, MAT, SP)
+    assert not q.trustworthy and any("rose again" in r for r in q.reasons)
+    res.reload_kgf = 15.0
+    assert not any("rose again" in r for r in study._quality(res, MAT, SP).reasons)
+
+
+def build_model_simple():
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    return build_model(simple_beam_bridge(), MAT, SP, Overrides(), seed=None)
+
+
+def test_a_small_joint_on_a_plate_gets_its_own_grid_and_a_coarse_plate_is_flagged():
+    """The literature and adversarial reviews of round 25: a joint on a plate's edge, or
+    one narrower than the plate's elements, took the plate's nodes as its glue points (one
+    row along the mid-surface: a hinge) or a 2x2 grid, depending on the mesh; a 10 mm truss
+    read 14.7 kgf at quick against 48 at standard, unflagged. Such a joint is sampled on
+    its own grid, three points a side, and a failing joint narrower than a third of its
+    plate's elements is flagged at any member depth."""
+    from bridgesim.sim import study
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    edge = box("Post (3-ply UD)", (-200, 173.1, -3), (-190, 260, 3))  # on the deck's top
+    side = box("Tab (2-ply 0-90)", (-200, 150, 75), (-190, 173.1, 79.1))  # on its edge
+    for scale in (1.6, 0.5):
+        m = build_model(simple_beam_bridge() + [edge, side], MAT, SP, Overrides(),
+                        seed=None, mesh_scale=scale)
+        names = [b.name for b in m.bodies]
+        p = next(p for p in m.patches if {names[p.body_a], names[p.body_b]}
+                 == {"Deck (2-ply 0-90)", "Tab (2-ply 0-90)"})
+        assert len(p.springs) >= 9  # its own grid, 3 x 3 at least
+        q = next(p for p in m.patches if {names[p.body_a], names[p.body_b]}
+                 == {"Deck (2-ply 0-90)", "Post (3-ply UD)"})
+        assert len(q.springs) >= 9 and q.mesh_ratio > 0
+    m = build_model(simple_beam_bridge() + [edge], MAT, SP, Overrides(), seed=None,
+                    mesh_scale=1.6)
+    res = _stub_result(m, "joint failure: Deck (2-ply 0-90) | Post (3-ply UD)")
+    pq = next(p for p in m.patches if "Post" in m.bodies[p.body_a].name
+              + m.bodies[p.body_b].name)
+    q = study._quality(res, MAT, SP)
+    if pq.mesh_ratio > study.JOINT_MESH_RATIO:
+        assert any("narrower than the elements" in r for r in q.reasons)
+    pq.mesh_ratio = 10.0
+    q = study._quality(res, MAT, SP)
+    assert any("narrower than the elements" in r for r in q.reasons)
+    assert q.min_fidelity == "fine"

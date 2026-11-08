@@ -503,11 +503,14 @@ def glue_rate(m: Model, st: State) -> tuple[np.ndarray, float, float, np.ndarray
 
 
 def glue_rate_factor(rate, tnow: float, tref: float, t0: np.ndarray) -> np.ndarray:
-    """Each glue point's strength factor at its own time under load (glue_rate)."""
+    """Each glue point's strength factor at its own time under load (glue_rate), taken
+    no faster than kernels.RATE_RANGE x the coupons' time (the law's data)."""
+    from bridgesim.sim.kernels import RATE_RANGE
+
     if tnow <= 0.0 or tref <= 0.0:
         return np.ones(len(t0))
     tl = np.where(t0 >= 0.0, tnow - t0, 0.0)
-    return np.exp(-rate * np.log(np.maximum(tl, 1.0) / tref))
+    return np.exp(-rate * np.log(np.maximum(tl, tref / RATE_RANGE) / tref))
 
 
 def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,

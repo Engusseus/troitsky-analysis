@@ -7,6 +7,7 @@ the SolidWorks coordinate system (X along the bridge, Y up, Z across).
 
 from __future__ import annotations
 
+import re
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,28 +32,64 @@ class CadBody:
     file_unread: tuple[str, ...] = ()
 
 
+_SIDE_SWAPS = {2: (("Near", "Far"),), 0: (("L", "R"), ("Left", "Right"))}
+
+
+def _swap_side(name: str, axes: tuple[int, ...]) -> str:
+    """``name`` with its side words swapped across the mirror planes of ``axes`` (z: Near
+    and Far; x: L and R, Left and Right), as whole words."""
+    for ax in axes:
+        for a, b in _SIDE_SWAPS.get(ax, ()):
+            name = re.sub(rf"\b({a}|{b})\b", lambda m, a=a, b=b: b if m.group(1) == a
+                          else a, name)
+    return name
+
+
 def _mirror_names(bodies: list[CadBody]) -> None:
     """Name unnamed bodies after a named body with the same volume and shape (SolidWorks
-    mirror features copy bodies without copying their names)."""
+    mirror features copy bodies without copying their names): the one whose mirror image,
+    across the bridge's middle plane along its span or across it, lies where the copy
+    is, with its side words swapped to the copy's side (the adversarial review of round
+    25: 'Pier Leg L Far (mirror copy)' stood on the near side)."""
     named = [b for b in bodies if b.named_in_cad]
+    if bodies:
+        lo = np.min([b.mesh.bbox[0] for b in bodies], axis=0)
+        hi = np.max([b.mesh.bbox[1] for b in bodies], axis=0)
+        mid = 0.5 * (lo + hi)
+    else:
+        mid = np.zeros(3)
 
     def sig(b: CadBody):
         lo, hi = b.mesh.bbox
         return b.mesh.volume, sorted(hi - lo)
 
+    def centre(b: CadBody) -> np.ndarray:
+        return 0.5 * (b.mesh.bbox[0] + b.mesh.bbox[1])
+
+    mirrors = ((), (2,), (0,), (0, 2))
     used: dict[str, int] = {}
     for b in bodies:
         if b.named_in_cad:
             continue
         v, dims = sig(b)
-        best = None
+        cb = centre(b)
+        best, best_d, best_ax = None, np.inf, ()
         for c in named:
             vc, dc = sig(c)
-            if abs(vc - v) <= 0.005 * max(v, 1) and np.allclose(sorted(dc), sorted(dims),
-                                                                  atol=0.2):
-                best = c
-                break
-        base = f"{best.name} (mirror copy)" if best else f"Body {b.index}"
+            if not (abs(vc - v) <= 0.005 * max(v, 1) and np.allclose(sorted(dc), sorted(dims),
+                                                                     atol=0.2)):
+                continue
+            for axes in mirrors:
+                pc = centre(c).copy()
+                for ax in axes:
+                    pc[ax] = 2 * mid[ax] - pc[ax]
+                d = float(np.linalg.norm(pc - cb))
+                if d < best_d - 1e-6:
+                    best, best_d, best_ax = c, d, axes
+        if best is None:
+            base = f"Body {b.index}"
+        else:
+            base = f"{_swap_side(best.name, best_ax)} (mirror copy)"
         used[base] = used.get(base, 0) + 1
         b.name = base if used[base] == 1 else f"{base} #{used[base]}"
 

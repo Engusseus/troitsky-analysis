@@ -830,7 +830,8 @@ What they say:
   at their butt joints near mid-length, which the model's butt joints (a factor over the
   whole member) cannot do: Silva et al.'s own back-analysis with 3 of the 5 plies over
   the length reproduces the test within 3.5-15 % (the literature review of round 22).
-  C fails at a vertical's foot on the bottom chord, where its test did, in 4 of 10 runs.
+  C fails at a vertical's foot on the bottom chord, where its test did, in 3 of 9 runs
+  (round 25; 4 of 10 in round 24).
 * **A is far below its test**. Its laps are 36 mm^2 of superglue on members crossing at
   ~62 degrees; to carry the test's load they would hold ~12 MPa, above what the maker
   gives for pine with the wood failing (10-12 MPa, parallel laps) and above the face

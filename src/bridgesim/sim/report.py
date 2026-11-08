@@ -383,6 +383,11 @@ class MonteCarloReport(BaseModel):
         "shipped value, and 0.76 the scatter of the published white-glue tests about the "
         "model (validation README 3.14). The wider the error, the lower the value that "
         "minimises the expected §12.7 error"))
+    prediction_if_biased_kgf: float | None = Field(None, description=(
+        "recommended_prediction_kgf if the model reads this bridge as low as it reads the "
+        "published white-glue tests on average (uncertainty.published_bias: their runs' "
+        "median over the test), the runs divided by it: what the only external evidence "
+        "would suggest, not applied (small trusses, outside a team's bridge's range)"))
     slowed_runs: int = Field(0, description=(
         "Runs flagged as not quasi-static that were crushed again at half the jack speed "
         "(their first F_u in each run's slowed_from_kgf)"))

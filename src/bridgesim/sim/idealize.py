@@ -573,12 +573,14 @@ class _Builder:
         self.att_node: list[int] = []
         self.att_r0: list[np.ndarray] = []
         self.imperf = None  # a global imperfection field applied to every point
+        self.X_cad: list[np.ndarray] = []  # each node where the CAD puts it (no lean)
 
     def _at(self, p) -> np.ndarray:
         p = np.asarray(p, float)
         return p if self.imperf is None else self.imperf(p)
 
     def node(self, p, body: int) -> int:
+        self.X_cad.append(np.asarray(p, float))
         self.X.append(self._at(p))
         self.mass.append(0.0)
         self.rot.append(0.0)
@@ -1898,19 +1900,43 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     # each patch's overlap and its two faces' outlines in its own basis (how far a gusset
     # reaches past a member lapped on it: panel_factor)
     sides_of: dict[int, tuple] = {}
+    mesh_ratio_of: dict[int, float] = {}
     for k_raw, (ia, ib, inter, oa, e1, e2, na) in enumerate(raw_patches):
         if shapes[ia].kind in ("ignore", "cable") or shapes[ib].kind in ("ignore", "cable"):
             continue
-        lead = [b_ for b_ in (ia, ib) if shapes[b_].kind == "shell"]
+        # the shell's own nodes carry the glue where the patch lies on its face, or joins
+        # two plates (stacked face to face, meshed node on node over their overlap, or
+        # edge to edge): a plate's edge glued to a member or a block gets its own grid
+        # (the literature review of round 25: a 40 mm^2 deck edge glued on a light
+        # truss's vertical was one row of the deck's mid-surface nodes, a hinge, or a
+        # 2x2 grid, depending on the mesh)
+        try:
+            _u2, _w2, _Lu, _Lw = _mrr(inter if isinstance(inter, Polygon)
+                                      else inter.convex_hull)
+            p_min = float(_Lw)
+        except Exception:  # noqa: BLE001
+            p_min = 0.0
+        both_plates = shapes[ia].kind == "shell" and shapes[ib].kind == "shell"
+        lead = [b_ for b_ in (ia, ib) if shapes[b_].kind == "shell"
+                and (abs(float(na @ shapes[b_].n)) > 0.9 or both_plates)]
         pts3 = None
         if lead:
             bl = min(lead, key=lambda b_: shell_mesh[b_][2])
             ids, trib, hl = shell_mesh[bl]
-            X3 = np.array([bld.X[i] for i in ids])
+            # where the CAD puts the plate's nodes: the glue points are placed in the
+            # CAD (attach adds the lean once), and which nodes carry the glue does not
+            # change with the seed's lean (it moved a node row out of a narrow band)
+            X3 = np.array([bld.X_cad[i] for i in ids])
             proj = X3 - np.outer((X3 - oa) @ na, na)
             q2 = np.c_[(proj - oa) @ e1, (proj - oa) @ e2]
             inside = shapely.contains_xy(inter, q2[:, 0], q2[:, 1])
-            band = shapely.contains_xy(inter.buffer(0.5 * hl), q2[:, 0], q2[:, 1]) & ~inside
+            # nodes within half an element of its edge carry half their share, but never
+            # more than half the patch's width away: a joint narrower than the plate's
+            # elements would spread onto nodes far beyond it (a wide, stiff foot that
+            # peels at its far nodes: the 10 mm truss's deck joints read 17 kgf at quick
+            # against 46 at standard), so it gets its own grid instead
+            band = shapely.contains_xy(inter.buffer(min(0.5 * hl, 0.5 * p_min)),
+                                       q2[:, 0], q2[:, 1]) & ~inside
             if ib in stacked.get(ia, ()):
                 # plates meshed node on node: the overlap's edge has nodes on both, so
                 # the glue is at the nodes on or inside it (none hangs beyond the edge)
@@ -1918,7 +1944,11 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 band = np.zeros_like(inside)
             w = np.where(inside, trib, np.where(band, 0.5 * trib, 0.0))
             sel = w > 0
-            if sel.sum() >= 3:
+            # a face patch needs points_per_side^2 nodes (a grid that resists turning
+            # about both axes in its plane), plates node on node three; fewer: own grid
+            # (Bridge_v10's 2100 mm^2 diagonal laps had 3 of the gusset's nodes at quick)
+            n_min = 3 if both_plates else int(sp.values.get("glue.points_per_side", 3)) ** 2
+            if sel.sum() >= n_min:
                 pts3 = proj[sel]
                 wts = w[sel] / w[sel].sum() * inter.area
         if pts3 is None:
@@ -1927,7 +1957,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             # about any axis in its plane (its glue is pulled at one edge and pressed
             # at the other), which one point, or one row, would make a hinge
             pts2 = _sample_polygon(inter, sp_, max_pts=400, min_per_side=int(
-                sp.values.get("glue.points_per_side", 2)), exact_moment=True)
+                sp.values.get("glue.points_per_side", 3)), exact_moment=True)
             pts3 = oa + np.outer(pts2[:, 0], e1) + np.outer(pts2[:, 1], e2)
             wts = np.full(len(pts3), inter.area / len(pts3))
         # where the joint is, from the CAD overlap alone (not from the mesh): the key of
@@ -1939,6 +1969,9 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             face_of[len(patch_pts3)] = oa + np.outer(hull[:, 0], e1) + np.outer(hull[:, 1],
                                                                               e2)
         sides_of[len(patch_pts3)] = (inter, e1, e2) + tuple(raw_outlines[k_raw])
+        mesh_ratio_of[len(patch_pts3)] = max(
+            [shell_mesh[b_][2] / max(p_min, 1e-6) for b_ in (ia, ib)
+             if shapes[b_].kind == "shell"] or [0.0])
         patch_pts3.append((ia, ib, pts3, na, inter.area, cad_c, wts))
 
     # ---------------------------------------------------------------- glue springs
@@ -2490,6 +2523,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             g2 = sp["wood.G_v_N_per_mm"]
             patches[pid].kind = "solid"
         patches[pid].peak_factor = peak_factor(n_nodes)
+        patches[pid].mesh_ratio = float(mesh_ratio_of.get(k_patch, 0.0))
         # normal stiffness: the glue line and the surfaces it bonds (glue.K_n_N_per_mm3)
         # in series with the wood on either side, pressed across or along its grain (until
         # round 23 the constant alone: a side-grain face as stiff as an end-grain one, the

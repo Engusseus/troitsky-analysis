@@ -118,7 +118,20 @@ of Berard et al., which the round-19 literature review corrected).
   team's Rev N) seed 0 then gave F_u 1397 kgf; with the glued diagonal feet at its
   centre node resisting turning, 1769 kgf with two points per side and 1778 with three:
   converged (two points at the cell midpoints, 75 % of the turning stiffness, gave
-  1534; validation README §3.7).
+  1534; validation README §3.7). Since round 26 a joint gets three points a side at
+  least (a cohesive zone needs ~3 points in its process zone, ~5 mm in peel for PVAc on
+  2 mm sticks: Turon et al. 2007; with two rows a small joint's first peel crack under a
+  moment came 1.7x too late), and a plate's own nodes carry the glue only where the patch
+  lies on the plate's face with a 3x3 grid of them on it or within half the patch's
+  width of its edge (or joins two plates, meshed node on node): a joint on a plate's
+  edge, or one the plate's elements are too coarse for, gets its own grid (until round
+  25 a 40 mm^2 deck edge glued on a light truss's vertical was one row of the deck's
+  mid-surface nodes, a hinge, or nodes half an element beyond it, as the mesh fell: a
+  10 mm truss read 14.7 kgf at quick against 48 at standard, now 46.4 against 44.7;
+  Bridge_v10's 2100 mm^2 diagonal laps had 3 of the gusset's nodes at quick; the
+  literature and adversarial reviews of round 25). The points still hang on the nearest plate node by a rigid arm, so a joint
+  much narrower than the plate's elements (`Patch.mesh_ratio` over 3) that fails is
+  flagged and sent to a finer fidelity, whatever the members' depth.
 * **Plates glued face to face are meshed node on node** over their overlap (a deck
   laminated from separate ply bodies, tongue and groove included; a gusset on a plate):
   finest first, each takes the nodes of those meshed before it, then each its partners'
@@ -246,7 +259,10 @@ of Berard et al., which the round-19 literature review corrected).
   describes (`glue.coupon_time_s`, 60 s). The crush runs on physical test time (the
   jack's travel at `crusher.test_rate_mm_per_min`, 10 mm/min, a placeholder nobody has
   timed, drawn 50 %), each glue line on its own clock (since round 23): its time under
-  load runs from when it first took a tenth of its strength (at least 1 s), so a line
+  load runs from when it first took a tenth of its strength (at least a sixteenth of
+  the coupons' time since round 26, 3.75 s: the law's data reach 16x the rate,
+  Wernersson 1994; at least 1 s before, which let a line picked up in a cascade read
+  1.51x, the adversarial review of round 25), so a line
   loaded since the start of a test that peaks 17 s in (Bridge_v10 in round 22, 2.9 mm of
   travel) is ~13 % stronger than 60 s coupons, one that takes 3 min ~10 % weaker, and a
   line that picks up load when its neighbour breaks is loaded fast, as strong as a lap
@@ -567,8 +583,9 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   `crusher.lateral_N_per_mm`: measure them on your press). The press's stiffness is not
   only in the stroke: when a joint cracks the press lets the energy it stores drive on
   into the bridge, and a soft one turns cracks a stiff one lets the bridge survive into
-  the collapse (Bridge_v10 -6 % at 5 kN/mm, -10 % at 2 kN/mm against 20, the ambitious
-  review of round 24): drawn by montecarlo (60 %), and asked (`crusher:stiffness`).
+  the collapse (Bridge_v10 -6 % at 5 kN/mm, -10 % at 2 kN/mm against 20 on round 24's
+  model, the ambitious review of round 24; -2.7 % at 2 kN/mm on round 25's, quick seed 0,
+  the adversarial review of round 25): drawn by montecarlo (60 %), and asked (`crusher:stiffness`).
   A bridge that rings slowly (period over 10 ms: a light truss) starts from standard's
   jack speed at most at every fidelity (since round 25: at quick's 200 mm/s, slowed by
   its period, a light truss stayed dynamic, kinetic/work 0.10, and read half of standard).
@@ -624,7 +641,7 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   depend on the jack speed.
 * The **deflection** reported is that of the deck points the plate rests on when the
   jack starts, followed as material points (not the jack stroke, which also includes the
-  20 kN/mm machine compliance).
+  machine's compliance, `crusher.stiffness_N_per_mm`, 10 kN/mm).
 * **F_u** = peak jack force up to the moment the bridge is judged failed: the load falling
   30 % below its peak (collapse: a fracture the judges see and the load cell shows, even
   if the bridge then picks up some load again; §12.5 takes the load "at the moment of
@@ -657,8 +674,18 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   ms before: the laps went 2-3 ms after the foot and the foot, under 5 % of F_u, kept the
   label, while strengthening the laps x1.5 raised F_u 22 %, the adversarial review of
   round 24), and a plate that was cracking before (more of the same crack) does not keep
-  its place before joints letting go with it (the
-  strengthen what-if covers every joint of the governing part that broke with it). Only what
+  its place before joints letting go with it. Since round 26 the strongest is taken only
+  among the joints sharing a part with the first to let go (one node): a joint on the
+  other truss letting go within the same half period is the cascade (the adversarial
+  review of round 25: the label named the other truss's laps, 1.4 ms later). Every major
+  break cuts the reading, inside a running hold too, and a hold extended while the bridge
+  still rang is read in time across its gap (Bridge_v10 seed 1 at standard: the reported
+  load rose through a fall to 655 kgf of raw force and F_u was dated after it, the
+  realism review of round 25; now read at the peak, at the near truss's diagonal laps).
+  A load rising more than 10 % past F_u after the failure call (a first break of a small
+  joint or contact, the bridge then carrying more) is flagged (the adversarial review of
+  round 25: a 10 mm truss read 14.7 kgf at its first dip and then carried 39.7). The
+  strengthen what-if covers every joint of the governing part that broke with it. Only what
   happened up to the failure call counts: what breaks after it is the collapse. When
   nothing broke, the joint whose glue let go during the fall (at least 20 % of its area
   between the load leaving its peak and the call) governs, although it has not reached
@@ -794,8 +821,10 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   B and C scatter about the model with a log-sd of 0.42-0.52, pooled with the 30 % used
   since round 18 as a prior (Bridge_v10's F_u moved 14-30 % per release over rounds
   15-17); A, superglue, at 0.21 of its load, left out as another glue; what the equations
-  leave out for a real bridge, until a physical test measures it; JCSS Probabilistic Model Code part 3.9 gives 10-15 % for
-  mature, tested connection models, so not less before tests; `calibrate-bridge` sets it
+  leave out for a real bridge, until a physical test measures it; the JCSS Probabilistic
+  Model Code (3.09) gives steel connection formulas a CoV of 0.15 with a 15-25 %
+  conservative bias and nothing for glued timber, and a corrected timber connection model
+  keeps ~15 % (Jockwer et al. 2018), so not less before tests; `calibrate-bridge` sets it
   to 15 % once a test of the bridge has been fitted, and lists the fitted values as
   measured, so montecarlo stops redrawing them): the range to give a team
   before any test, the runs' range being what the model knows it does not know. The
