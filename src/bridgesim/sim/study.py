@@ -355,6 +355,24 @@ def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: Sim
                                 "measured simulation values and scatter; merge it with "
                                 "your own overrides)"},
             severity="important"))
+    if sp.sources.get("crusher.test_rate_mm_per_min", "assumed") == "assumed" and \
+            sp.values.get("glue.rate_exponent", 0.0) > 0:
+        # the glue's strength follows its time to failure, which the crusher's pace sets:
+        # nobody has timed it (the adversarial review of round 23: a pace 3.8x slower read
+        # -10 % on Bridge_v10)
+        qs.append(Question(
+            id="crusher:pace", topic="material",
+            question="How fast does the competition's jack move? Nobody has timed the "
+                     "Troitsky crusher, and the glue (white glue holds ~26 % more when it "
+                     "fails ten times faster) is taken at the time the test would reach "
+                     f"the peak at {sp['crusher.test_rate_mm_per_min']:g} mm/min. Time "
+                     "the press head over a few seconds of a video of the competition "
+                     "against something of known size, or ask the organisers.",
+            assumed=f"{sp['crusher.test_rate_mm_per_min']:g} mm/min (a placeholder, "
+                    "drawn 50 % by montecarlo)",
+            answer_with={"params": {"crusher.test_rate_mm_per_min": "<measured, mm/min>"},
+                         "measured": ["crusher.test_rate_mm_per_min"]},
+            severity="check"))
     return qs
 
 
@@ -2231,12 +2249,18 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
                     "(" + "; ".join(why) + "), too few to leave the others out: the range "
                     "and the prediction use them all. Re-run at the fidelity the crush "
                     "report's quality.min_fidelity names (or slower). " + rep.note)
+    yours = sorted(k for k in (ov_raw.get("params") or {}) if k in drawn)
+    if yours:
+        # a value typed under params stays a placeholder unless listed as measured (the
+        # adversarial review of round 23: a team's own number was redrawn 50 %)
+        rep.note += (" Drawn although you set them under params (list them under "
+                     "measured: if you measured them): " + ", ".join(yours) + ".")
     rigid = sorted({b for r in res for b in r.get("rigid_under_plate", [])})
     if rigid:
         rep.note += (" The part(s) under the loading plate " + ", ".join(rigid)
                      + " are rigid blocks in the model: they cannot bend, shear or crush, "
                      "so a failure there is missing from every run (check them by hand, "
-                     "or model them as members: kind: bar).")
+                     "or model them as members: kind: bar, with axis: the direction each spans).")
     if out_dir:
         (Path(out_dir) / "montecarlo.json").write_text(rep.model_dump_json(indent=2),
                                                       encoding="utf-8")
@@ -2632,6 +2656,9 @@ PLACEHOLDER_PRIORS = {
     # Kruger et al. 2025, Barrett 1974); the wood's moisture and a lap's wood-failure
     # share (how much a crossed lap loses) are drawn additively (ADDITIVE_PRIORS)
     "glue.end_grain_tension_factor": 0.50, "wood.t90_weibull_m": 0.30,
+    # round 24: the modulus across the grain sets every bearing face's stiffness (veneer
+    # 214-273 MPa pulled across, Kruger et al. 2025; solid birch radially ~600-900)
+    "wood.E_T_MPa": 0.35,
 }
 # placeholders drawn additively, value + sd x z within (low, high): the wood's moisture
 # above its coupons' (percentage points; members laminated in the last days before the

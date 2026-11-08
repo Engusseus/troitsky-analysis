@@ -256,7 +256,10 @@ def moraes_2019(width: float = 85.0):
            "Fu_kgf": 490.0 / 9.80665, "Fu_range_kgf": [421.0 / 9.80665, 490.0 / 9.80665],
            "calibration": "round 21 chose the end-grain glue law after seeing this test",
            "failure": "the bottom chord and the foot of a "
-           "vertical", "parts": ["BotChord", "Vertical"], "place": ["BotChord"],
+           "vertical", "parts": ["BotChord", "Vertical"],
+           # the foot of a vertical on the bottom chord: both in the label (a diagonal's
+           # joint on the chord is not it, the adversarial review of round 23)
+           "place": ["BotChord", "Vertical"],
            "stiffness_kgf_per_mm": 9.6, "deflection_at_Fu_mm": 3.8,
            "load": "test machine platen on a rebar across the top chords at mid-span"}
     return bodies, ov, ref

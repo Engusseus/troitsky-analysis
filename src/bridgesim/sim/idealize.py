@@ -85,8 +85,7 @@ class Overrides:
 
     KINDS = ("bar", "shell", "frame", "block", "cable", "ignore")
     FIELDS = ("kind", "layup", "grain", "glue_factor", "strength_factor", "butt_stagger_mm",
-              "butt_gap_mm",
-              "section_scale")
+              "butt_gap_mm", "section_scale", "axis")
 
     def for_body(self, name: str) -> dict:
         out: dict = {}
@@ -132,6 +131,10 @@ class Overrides:
                                "arm (a frame's plies laid along each of its arms), or a "
                                "block's fibres: x, y, z, a direction [x, y, z], or one per "
                                "layer [[x, y, z], ...]")
+                elif k == "axis" and (grain_vectors_of(v) is None
+                                      or len(grain_vectors_of(v)) != 1):
+                    out.append(f"overrides: axis {v!r} for {pat!r} must be x, y, z or a "
+                               "direction [x, y, z]: the direction a member spans")
                 elif k in ("section_scale", "glue_factor", "strength_factor") and not (
                         isinstance(v, (int, float)) and 0 <= v <= 10
                         and (k != "section_scale" or v > 0)):
@@ -231,8 +234,10 @@ class Shape:
 
 
 def _outward(n: np.ndarray, c: np.ndarray) -> float:
-    """How far the normal n of a body centred at c faces away from the CAD origin (its
-    largest component's sign, for a body centred on the origin's plane)."""
+    """How far the normal n of a body centred at c (from the bridge's centre) faces away
+    from the bridge's centre (its largest component's sign, for a body centred on the
+    centre's plane): a gusset's outer face, whatever the CAD origin (the adversarial
+    review of round 23: moving a bridge 300 mm changed which ply its gussets glue on)."""
     d = float(np.dot(n, c))
     if abs(d) > 1e-6 * max(float(np.linalg.norm(c)), 1.0):
         return d
@@ -256,8 +261,13 @@ def _mrr(poly: Polygon) -> tuple[np.ndarray, np.ndarray, float, float]:
 BAR_MIN_ASPECT = 2.0
 
 
-def analyse_shape(b: CadBody, layup: Layup, forced: str | None) -> Shape:
+def analyse_shape(b: CadBody, layup: Layup, forced: str | None,
+                  center: np.ndarray | None = None) -> Shape:
+    """How a body is modelled (bar, shell, block, ...) and its geometry; ``center``: the
+    bridge's centre, which a plate's normal faces away from (so its plies are listed from
+    the face toward the bridge's middle, whatever the CAD origin)."""
     m = b.mesh
+    cm = m.centroid - (np.zeros(3) if center is None else np.asarray(center, float))
     planes = []
     for _i, f in enumerate(b.faces):
         if f.kind != "plane":
@@ -292,7 +302,7 @@ def analyse_shape(b: CadBody, layup: Layup, forced: str | None) -> Shape:
             # their unsymmetric 0/90 plies in opposite orders)
             if best is None or poly.area > best[0].area * (1 + 1e-6) or (
                     poly.area >= best[0].area * (1 - 1e-6)
-                    and _outward(n, m.centroid) > _outward(best[4].normal, m.centroid)):
+                    and _outward(n, cm) > _outward(best[4].normal, cm)):
                 best = (poly, o, e1, e2, f, T)
     extr = best is not None
     if best is None:  # fall back to the biggest face and its farthest opposite face
@@ -1033,6 +1043,7 @@ def moisture_adjusted(mat: Material, sp: SimParams) -> tuple[Material, SimParams
 LAMINATION_COVER = 0.5  # share of the smaller plate two plates glued face to face cover
 # to be taken as a lamination (the middle of the ramp from a hand-made lap to one)
 LAMINATION_RAMP = (0.3, 0.7)
+BEARING_DEPTH_SHARE = 0.5  # depth a face's normal stress reaches, over sqrt(its area)
 DEPTH_ELEMENTS = 2.0  # a member's beam elements at most this x its depth at standard
 
 
@@ -1116,6 +1127,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
 
     # ---------------------------------------------------------------- body analysis
     shapes: list[Shape] = []
+    # the bridge's centre (of its bounding box): plates' normals face away from it
+    _lo = np.min([b.mesh.vertices.min(0) for b in bodies], axis=0) if bodies else np.zeros(3)
+    _hi = np.max([b.mesh.vertices.max(0) for b in bodies], axis=0) if bodies else np.zeros(3)
+    center = 0.5 * (_lo + _hi)
     for b in bodies:
         o = ov.for_body(b.name)
         lay = None
@@ -1160,7 +1175,18 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         if forced in ("block", "ignore") and questions and \
                 questions[-1].get("id") == f"layup:{b.name}":
             questions.pop()  # set rigid or left out: what it is made of changes nothing
-        sh = analyse_shape(b, lay, forced)
+        sh = analyse_shape(b, lay, forced, center)
+        if o.get("axis") is not None and sh.kind == "bar":
+            gv = grain_vectors_of(o["axis"])
+            if gv and len(gv) == 1:
+                ax = np.asarray(gv[0], float)
+                if abs(float(ax @ sh.w)) > abs(float(ax @ sh.u)) and \
+                        abs(float(ax @ sh.w)) >= abs(float(ax @ sh.n)):
+                    # it spans across what its outline makes its length (a floor beam
+                    # wider than it is long between its trusses, the adversarial review
+                    # of round 23): its axis the other way in the plane of its profile
+                    sh.u, sh.w, sh.Lp, sh.Wp = sh.w.copy(), sh.u.copy(), sh.Wp, sh.Lp
+                    sh.why += f"; spanning along {o['axis']} (overrides)"
         if lay.plies_assumed and lay.kind == "laminate" and sh.kind in ("bar", "shell"):
             # a part of a stick bridge is built of sticks: plies of a stick's thickness
             # glued together (glue lines that can split), never one solid piece of wood
@@ -1943,6 +1969,23 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             return 1.0
         return float(np.mean([abs(float(g @ n)) ** 2 for g in gs]))
 
+    def wood_normal_stiffness(bi: int, p: np.ndarray, n: np.ndarray, area: float) -> float:
+        """How stiff the wood under a face of normal n is when pressed or pulled normal to
+        it, per mm^2 (N/mm^3): its modulus at its grain's angle to the normal (E_L on end
+        grain, E_T on side grain, Hankinson's form between) over the depth the stress
+        reaches into it, the part's own extent along n or half the face's width
+        (BEARING_DEPTH_SHARE x sqrt(area): a punch on a half-space strains the wood to
+        about its width), whichever is less. A block whose grain is not given bears
+        across it (as its crushing strength does)."""
+        gs = grain_at(bi, p)
+        if gs:
+            E = float(np.mean([hankinson(ply.E_L, ply.E_T, abs(float(g @ n))) for g in gs]))
+        else:
+            E = ply.E_T
+        ext = float(np.ptp(bodies[bi].mesh.vertices @ n))
+        h = max(min(ext, BEARING_DEPTH_SHARE * math.sqrt(max(area, 1e-9))), 0.5)
+        return E / h
+
     def crush_depth(i: int, n: np.ndarray) -> float:
         ext = float(np.ptp(bodies[i].mesh.vertices @ n))
         sh = shapes[i]
@@ -1959,14 +2002,26 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     n_pair: dict[tuple[int, int], int] = {}
     for ia, ib, *_ in patch_pts3:
         n_pair[(min(ia, ib), max(ia, ib))] = n_pair.get((min(ia, ib), max(ia, ib)), 0) + 1
-    for k_patch, (ia, ib, pts3, na, area, cad_c, wts) in enumerate(patch_pts3):
+    # several patches between the same two bodies: each by its rank along the bridge (its
+    # centre's x, then y, then z, to 1 mm), not by its centre rounded to 10 mm, whose
+    # halves round to even and moved a draw when a part moved 5 mm or was read from STL
+    # instead of SLDPRT (the adversarial review of round 23)
+    by_pair: dict[tuple[int, int], list[tuple[tuple, int]]] = {}
+    for k_, (ia_, ib_, _p, _n, _a, cad_c_, _w) in enumerate(patch_pts3):
+        by_pair.setdefault((min(ia_, ib_), max(ia_, ib_)), []).append(
+            (tuple(np.floor(np.asarray(cad_c_, float) + 0.5).astype(int).tolist()), k_))
+    pair_rank: dict[int, int] = {}
+    for lst in by_pair.values():
+        for r_, (_c, k_) in enumerate(sorted(lst)):
+            pair_rank[k_] = r_
+    for k_patch, (ia, ib, pts3, na, area, _cad_c, wts) in enumerate(patch_pts3):
         key = "|".join(sorted((bodies[ia].name, bodies[ib].name)))
         # the stream of its random glue strength: a joint alone between its two bodies by
         # their names (an edit that moves it keeps its draw, so ab compares the design,
         # not new luck at the joint changed); several between the same two bodies also
         # by where they are (to 10 mm)
         where = "" if n_pair[(min(ia, ib), max(ia, ib))] == 1 else \
-            f":{np.round(cad_c / 10.0).astype(int).tolist()}"
+            f":{pair_rank[k_patch]}"
         gf = gf_bridge * scatter(sp["scatter.glue_cov"], f"glue:{key}{where}")
         g_sc = gf  # the drawn workmanship; the overrides below are the user's own
         gf *= float(ov.for_body(bodies[ia].name).get("glue_factor", 1.0))
@@ -2136,6 +2191,13 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             g2 = sp["wood.G_v_N_per_mm"]
             patches[pid].kind = "solid"
         patches[pid].peak_factor = peak_factor(n_nodes)
+        # normal stiffness: the glue line and the surfaces it bonds (glue.K_n_N_per_mm3)
+        # in series with the wood on either side, pressed across or along its grain (until
+        # round 23 the constant alone: a side-grain face as stiff as an end-grain one, the
+        # bridge near-linear to its peak, the realism review of round 23)
+        kn_line = 1.0 / (1.0 / sp_glue["K_n_N_per_mm3"]
+                         + 1.0 / wood_normal_stiffness(ia, cen, na, float(area))
+                         + 1.0 / wood_normal_stiffness(ib, cen, na, float(area)))
         for wa, a_, b_, d_, fl in zip(wts, att_a, att_b, dry, fill, strict=True):
             # glue_factor 0: not glued; past the glue's reach across a fit-up gap: dry
             springs["d0"].append(1.0 if gf <= 0 or d_ else 0.0)
@@ -2143,7 +2205,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             springs["b"].append(b_)
             springs["area"].append(float(wa))
             springs["n0"].append(na)
-            springs["Kn"].append(sp_glue["K_n_N_per_mm3"])
+            springs["Kn"].append(kn_line)
             springs["Ks"].append(ks_line * k_cov)
             gq = max(gf * fl, 1e-3)  # glue_factor 0: handled as "already broken" (d0 = 1)
             # the glue's drawn scatter (workmanship, how much of the face is glued)
@@ -2632,7 +2694,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 "assumed": "rigid, unbreakable (bearing under the plate is limited to the "
                            "wood's crushing strength across the grain)",
                 "answer_with": {"bodies": {bodies[bi].name: {
-                    "kind": "<block to confirm it | bar if it is a member>"}}}})
+                    "kind": "<block to confirm it | bar if it is a member>",
+                    "axis": "<x | y | z: the direction it spans between its supports, "
+                            "for a bar (a floor beam wider than it is long)>",
+                    "layup": "<N-ply UD: its sticks, for a bar>"}}}})
     if rigid_path:
         groups = sorted({_group(n) for n in rigid_path})
         model.questions.append({

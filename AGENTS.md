@@ -62,10 +62,11 @@ up again once its deflection is large, so it stays quasi-static (`quality.speed_
 `quality.fundamental_period_ms`). Mesh convergence on
 Bridge_v6 (`validation/README.md` §3.4, five seeds at 100 mm/s; a seed is the same
 imperfect bridge at every fidelity): fine is +4.6 % above standard on average (-1.1 % to
-+11 % seed by seed); on Bridge_v10 at one jack speed (100 mm/s), round 23's model:
-quick / standard / fine 2079 / 2021 / 2014 kgf on seed 0, quick / standard 2142 / 1944
-on seed 1, all at node M's gusset laps (`validation/README.md` §3.16; round 22's model
-1693 / 1651 / 1651, round 20's 2162 / 2061 / 2093, standard at 50 mm/s -1.3 %). The meshes are not monotone: standard reads lowest, ~2 % below
++11 % seed by seed); on Bridge_v10, each fidelity at its own speed, round 24's model:
+quick / standard / fine 1830 / 1725 / 1701 kgf on seed 0, quick / standard 1927 / 1796
+on seed 1, all at node M (the diagonal's foot or its gusset laps; `validation/README.md`
+§3.17; round 23's model 2079 / 2021 / 2014, round 22's 1693 / 1651 / 1651; round 20's
+at one speed, 100 mm/s, 2162 / 2061 / 2093, standard at 50 mm/s -1.3 %). The meshes are not monotone: standard reads lowest, ~2 % below
 fine on average over 10 seed pairs (`montecarlo` takes that bias out of its prediction,
 `uncertainty.mesh_bias_*`) with ~5 % scatter, and quick 1-12 % above standard, sometimes
 failing at another joint: when failure sites compete, confirm a quick `diagnose` or
@@ -239,6 +240,8 @@ bodies:                     # by exact body name or glob pattern
   "Deck Stringer*": {butt_stagger_mm: 30}       # joints of neighbouring plies 30 mm apart
   "Bottom Chord*": {butt_stagger_mm: 0}         # plies without butt joints (long strips)
   "Top Chord*": {butt_gap_mm: 0}                # ply ends sanded tight: joints bear
+  "Floor Beam*": {kind: bar, axis: z}            # a member spanning along z (its outline
+                                                 # may be longer the other way)
   "Deck Stringer*": {section_scale: 1.25}       # what-if: section x1.25 (area x1.56)
 glue:
   "Top Chord (10-ply UD 20.9x47.5) - Far | T-Node (10-ply) - R Far": 0.5   # one joint
@@ -249,6 +252,8 @@ params:                     # any key of materials/simulation.yaml, or material.
   material.density_kg_m3: 590
   material.glue.tau_g_MPa: 2.6
   glue.end_grain_factor: 0.8                     # end-grain joints sized before gluing
+measured:                   # params you measured: montecarlo stops redrawing them (a value
+  - material.glue.tau_g_MPa # under params alone stays a placeholder, drawn around it)
 acknowledge:                # questions the designer has answered "as drawn"
   - weak_joints
   - rigid_blocks
@@ -336,10 +341,10 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
   `quality.reasons` says which. Re-run with `--rate-check` or a finer `--fidelity` before relying on an
   untrustworthy F_u.
 * `assumed_parameters`: values still not measured. With placeholders the absolute load
-  is uncertain by tens of %: on Bridge_v10 (round 23, `montecarlo -n 8
-  --sample-placeholders`) the runs spread 1061-2796 kgf around a median of ~1760, the
-  recommended prediction 1387 kgf, and the total range (with the mesh and model-form
-  error) 795-3865 kgf. Design comparisons (A vs
+  is uncertain by tens of %: on Bridge_v10 (round 24, `montecarlo -n 8
+  --sample-placeholders`) the runs spread 1079-2541 kgf around a median of ~1580, the
+  recommended prediction 1263 kgf, and the total range (with the mesh and model-form
+  error) 750-3444 kgf. Design comparisons (A vs
   B, same seeds) cancel the scatter and most placeholder values, but not the model's
   form: a change at the part whose law is uncertain inherits that law (the adversarial
   review of round 22: glue x1.5 at node M's laps read +32 % with round 22's crossed-lap
@@ -353,11 +358,11 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
 
 Before any test of your own: `validation/published_tests.py` rebuilds three published
 craft-stick truss tests and crushes them, each at its own pace; `montecarlo` of each at
-fine (`validation/README.md` §3.14, round 23, 10 runs, placeholders drawn) puts B's and C's
-test loads inside the runs' range (median 1.24 and 0.40 of the test) and A's far above it
-(0.24). None is a blind validation (A's rebuild and B's putty stand-in were set with
-their comparisons; C chose the end-grain law). Only C fails where its test did (7 of 10
-runs); A's lateral drift and B's diagonal buckling at its butt joints are mechanisms the
+fine (`validation/README.md` §3.14, round 24, 10 runs, placeholders drawn) puts B's and C's
+test loads inside the runs' range (median 1.18 and 0.40 of the test) and A's far above it
+(0.26). None is a blind validation (A's rebuild and B's putty stand-in were set with
+their comparisons; C chose the end-grain law). Only C fails where its test did (4 of 10
+runs, at a vertical's foot on the bottom chord); A's lateral drift and B's diagonal buckling at its butt joints are mechanisms the
 model cannot form. Small trusses, outside the range of a team's bridge: they inform
 `uncertainty.model_cov` (0.40, a judgement), not a bias.
 

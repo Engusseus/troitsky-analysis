@@ -149,6 +149,24 @@ of Berard et al., which the round-19 literature review corrected).
   tension across the face on its weaker side (f_t90 on side grain, Hankinson towards f_t
   on end grain): on 2 mm sticks the wood next to the glue parts first, so a stronger
   glue does not raise a lap's peel strength past its sticks'.
+* **A joint's random draw** follows its two bodies' names and, where they share several
+  faces, the face's rank along the bridge (since round 24; its centre rounded to 10 mm
+  before, which redrew 15 joints when a part moved 5 mm, the adversarial review of round
+  23): a seed is the same imperfect bridge whatever the CAD's origin or file format.
+* **How stiff a face is** (since round 24): a glue line's normal stiffness (peel, and
+  bearing when it is pressed) is the line and the surfaces it bonds
+  (`glue.K_n_N_per_mm3`, 150 N/mm^3) in series with the wood on either side, its modulus
+  at its grain's angle to the face (`wood.E_T_MPa` across the grain, E_L along it,
+  Hankinson's form between) over the depth the stress reaches, the part's extent along
+  the normal or half the face's width (`BEARING_DEPTH_SHARE` x sqrt(area): a punch on a
+  half-space strains the wood to about its width): ~16 N/mm^3 for a 13-ply member's lap
+  on a 0/90 gusset, ~28 for a 780 mm^2 knee face, ~110-140 end grain to end grain. Until
+  round 23 the constant alone made a side-grain face as stiff as end grain: Bridge_v10
+  read near-linear to its peak (secant at the peak 0.94-0.98 of the 10-40 % secant;
+  glued trusses tested to failure 0.84-0.92, Debertolis et al. 2025) and ~25 % stiffer
+  (the realism review of round 23); now 0.85-0.89, and its first glue limit and failure
+  moved from the gusset laps to the knee and the diagonal's foot, whose faces pressed
+  across the grain now pass more of their load through the glue in shear.
 * **Workmanship**: each joint's glue strength scatters (`scatter.glue_cov`, 30 %, and a
   bridge-wide factor), and so does its shear stiffness, in proportion: a joint glued
   over less of its face (starved edges, gaps) is softer as well as weaker. Bearing in
@@ -170,9 +188,11 @@ of Berard et al., which the round-19 literature review corrected).
   30-90 degrees and followed its strength at its angle, Wang et al. 2024; gusset coupons
   in the face veneer's rolling shear, Debertolis et al. 2025) and little where the glue
   line itself does (Rheme et al. 2016; Frolovs et al. 2017). The plies are the two the
-  glue lies on: a plate's face ply (plies listed from the face its normal points away
-  from: `2-ply 0-90` has a 0 ply there, `2-ply 90-0` a 90 ply), every ply of a member's
-  edge. Peel is not weakened by it. Round 22 took Padilha et al.'s pine blocks (0.38 at
+  glue lies on: a plate's face ply (plies listed from the face toward the bridge's
+  middle: `2-ply 0-90` has its 0 ply there and its 90 ply outside, `2-ply 90-0` the other
+  way round; since round 24 the bridge's middle, not the CAD origin, which made moving a
+  bridge 300 mm change 37 joints, the adversarial review of round 23), every ply of a
+  member's edge. Peel is not weakened by it. Round 22 took Padilha et al.'s pine blocks (0.38 at
   90 degrees, a strong adhesive failing in the wood) on every ply pair of both sides,
   which made a lap at 45 degrees 0.62: the literature review of round 22 found that the
   extreme case (pine's rolling shear is lower than birch's, and a hand-made lap is not
@@ -227,8 +247,9 @@ of Berard et al., which the round-19 literature review corrected).
   (`test_glue_line_crushing_densifies`). A crushed pair keeps bearing; the crushed part's
   own section is not reduced. A face whose wood has crushed 0.1 mm deep on average is
   reported (`bearing_crushing`, with the load then): the first non-linearity of a node
-  that bears, often before any glue lets go (on Bridge_v10 standard seed 0 the End
-  Post's face on the knee at 99.6 % of F_u, just before its gussets' glue lets go). A strengthen step then does not offer more glue on that face (it
+  that bears, often before any glue lets go (on Bridge_v10 standard seed 0 in round 20
+  the End Post's face on the knee at 99.6 % of F_u; in round 23's runs no face crushes
+  before the peak, the glue at node M going first). A strengthen step then does not offer more glue on that face (it
   changes nothing the grain takes): a bigger bearing face or the grain along the force.
   `screen` lists each face's `bearing` utilisation (glued or dry). A compact block bears
   across its grain (f_c90) unless a layup override gives it a grain (`layup: "13-ply
@@ -311,7 +332,7 @@ of Berard et al., which the round-19 literature review corrected).
   member or plate puts its load into that ply, which hands (n - 1) / n of it to the
   others across its first glue line: the joint is no stronger than the laminate's
   interlaminar strength x n / (n - 1) (2 x the rolling shear of a 2-ply 0/90 gusset,
-  3 MPa: 6 MPa; 13/12 x 3.5 MPa for a 13-ply member). The layered shells do not
+  4 MPa since round 23: 8 MPa; 13/12 x 3.5 MPa for a 13-ply member). The layered shells do not
   delaminate by themselves (no interlaminar failure in a shell element), so without this
   a gusset lap drawn at 5.1 MPa held on a 0/90 gusset of 2.5 MPa rolling shear (the
   adversarial review of round 20) (`test_laps_are_capped_by_what_the_laminate_passes_on`).
@@ -350,8 +371,8 @@ its size in 3-point bending (Karplus 1996, ASEE, "Craft Stick Beams"), so the st
 are about half of clear birch: f_b 50, f_t 40, f_c 30 MPa. The across-grain values
 follow 2 mm birch veneer data (Krüger et al. 2025, doi:10.5281/zenodo.17201843) and the
 Wood Handbook: f_v 8 MPa (veneer 9.2), f_t90 1.5 MPa (veneer 1.1-2.0), f_c90 6 MPa
-(veneer 6.9, clear birch 4.1-7.4), rolling shear 3 MPa (silver birch ~3.5, Collins & Fink
-2025). The stick modulus is about as high as clear birch's: dry craft sticks are 11-15 GPa
+(veneer 6.9, clear birch 4.1-7.4), rolling shear 4 MPa since round 23 (birch veneer 4.6,
+Wang et al. 2024; silver birch ~3.5, Collins & Fink 2025). The stick modulus is about as high as clear birch's: dry craft sticks are 11-15 GPa
 (the wave speed of 2.2 mm birch sticks measured by vibration, 4600 m/s, Sautel et al.,
 Am. J. Phys. 85, 783 (2017), Table I: E = rho c0^2 = 11.6-14.8 GPa at 550-700 kg/m^3;
 2 mm veneer 14.6 GPa). The crush uses 10.5 GPa (the low end, less 5 % for a modulus from vibration against a static one) and G = E/16, while the
@@ -391,7 +412,7 @@ lap joint between parts (tau_g, an average over the lap): they split at the lowe
 bond line's strength (`glue.interlaminar_MPa`, 3.5 MPa since round 21: craft-stick laminates glued with Elmer's and pressed over their whole length split at 3.7 MPa, an upper bound, and hand clamps or weights press less evenly; PVA bond lines in pressed wood
 laminates fail in the wood next to them) and what the weakest ply takes there, the
 interlaminar shear running along its grain (f_v) and across it (rolling shear,
-`wood.f_rolling_MPa`, 3 MPa) in proportion to its angle: f_v for a UD stack, the
+`wood.f_rolling_MPa`, 4 MPa) in proportion to its angle: f_v for a UD stack, the
 rolling shear for a ply across the member (0-90), in between for +-45. A short-beam
 shear test of a laminate measures it (`short_beam_shear_template.csv`, `calibrate`).
 (Until round 12 it was the hand-made lap joint's average strength, 1.155 tau_g = 2.3
@@ -649,12 +670,15 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   standard one (x0.75) on average, -1.1 % to +11 % seed by seed, and the same part
   governs on 2 of 5 seeds; on the others another of the sites competing within a few %
   (`competing`: the hub core, the End Post joints, the cross-beam's joints to the deck
-  stringers) goes first. On Bridge_v10 at one jack speed (100 mm/s) quick / standard /
-  fine gave 2506 / 2483 / 2479 kgf in round 18, and 2162 / 2061 / 2093 (seed 0) and
-  2232 / 2000 / 2069 (seed 1) in round 20 (`validation/README.md` §3.10, §3.12), 2300 /
-  2276 / 2271 and 2281 / 2165 / 2235 in round 21, and 1693 / 1651 / 1651 (seed 0) and
-  1803 / 1638 (quick, standard, seed 1) in round 22 (§3.15), and 2079 / 2021 / 2014 and
-  2142 / 1944 in round 23 (§3.16), standard and fine at the same joint. The meshes are not monotone (standard the lowest of the
+  stringers) goes first. On Bridge_v10 at one jack speed (100 mm/s, rounds 18-21) quick /
+  standard / fine gave 2506 / 2483 / 2479 kgf in round 18, and 2162 / 2061 / 2093 (seed
+  0) and 2232 / 2000 / 2069 (seed 1) in round 20 (`validation/README.md` §3.10, §3.12),
+  2300 / 2276 / 2271 and 2281 / 2165 / 2235 in round 21; at each fidelity's own speed
+  (200 / 100 / 50 mm/s, rounds 22-24: quick at 100 mm/s reads ~1.5 % below quick at 200,
+  the adversarial review of round 23) 1693 / 1651 / 1651 (seed 0) and 1803 / 1638
+  (quick, standard, seed 1) in round 22 (§3.15), 2079 / 2021 / 2014 and 2142 / 1944 in
+  round 23 (§3.16), 1830 / 1725 / 1701 and 1927 / 1796 in round 24 (§3.17), standard and
+  fine at node M (the diagonal's foot or its gusset laps, one truss's or its mirror's). The meshes are not monotone (standard the lowest of the
   three in rounds 19-20), so there is no Richardson estimate: over 10 seed pairs fine
   reads +2.3 % above standard on average (-1.1 to +11 %), which `montecarlo` takes out
   of its prediction (`uncertainty.mesh_bias_standard`, 0.02; quick, 1-12 % above

@@ -551,7 +551,12 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     rate, tnow, tref, t0 = glue_rate(m, st)
     dm = np.sqrt(dnp**2 + s**2)
     if update and tnow > 0.0:
-        on = (t0 < 0.0) & (dm > RATE_LOAD * np.minimum(m.c_sig / Kn, m.c_tau / Ks))
+        # each line's clock starts at RATE_LOAD of its mixed-mode onset
+        dn0b, ds0b = m.c_sig / Kn, m.c_tau / Ks
+        mixb = s / np.maximum(dnp, 1e-12)
+        dm0b = np.where(dnp > 1e-12, dn0b * ds0b * np.sqrt(
+            (1 + mixb**2) / (ds0b**2 + (mixb * dn0b) ** 2)), ds0b)
+        on = (t0 < 0.0) & (dm > RATE_LOAD * dm0b)
         st.c_t0 = t0 = np.where(on, tnow, t0)
     rs = glue_rate_factor(rate, tnow, tref, t0)
     dn0 = m.c_sig * rs / Kn

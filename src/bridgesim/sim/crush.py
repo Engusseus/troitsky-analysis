@@ -1567,8 +1567,17 @@ def stable_dt(m: Model, s: S.Settings, dt_target: float = 5e-6, max_added: float
             rot_only |= hot & (en[:, 1, j] > en[:, 0, j])
         rot_only &= rot * f < rot_cap
         hot_any = f > 1.0
+        trial = mass.copy()
+        trial[hot_any & ~rot_only] *= f[hot_any & ~rot_only]
+        if (trial - m.mass).sum() / total > max_added:
+            # a round that would pass the limit is not taken: the time step comes down
+            # instead (a light truss's runs were all flagged at 5.0-5.6 % added mass, the
+            # adversarial review of round 23)
+            log.append(f"round {r}: scaling would add {(trial - m.mass).sum() / total:.2%}"
+                       f" > {max_added:.0%}: a smaller time step instead")
+            break
         rot[hot_any] *= f[hot_any]
-        mass[hot_any & ~rot_only] *= f[hot_any & ~rot_only]
+        mass = trial
         log.append(f"round {r}: omega_max {np.sqrt(lam):.0f} rad/s, scaled {hot_any.sum()} "
                    f"nodes ({(hot_any & rot_only).sum()} rotation only), "
                    f"added mass {added:.2%}")

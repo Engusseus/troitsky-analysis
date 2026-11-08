@@ -2815,9 +2815,10 @@ def test_bridge_v10_regression():
     of round 18 (validation/README.md section 3.10): 227 glued joints, 7.9 kg, ~1010
     kgf/mm under the plate with sticks of 10.5 GPa and butt joints that cost stiffness
     (~1130 in round 18, ~820 at 7.1 GPa in rounds 16-17), the
-    End Post to knee joints the first glue limits at ~430 kgf, and their faces the first
-    to bear past the wood's crushing strength (~2000 kgf if linear); end-grain and
-    butt-joint questions asked; its lowest tap-test frequency ~48 Hz."""
+    End Post to knee joints the first glue limits at ~430 kgf (~265 since round 24), and
+    their faces or the outer floor beams' on the pier legs the first to bear past the
+    wood's crushing strength (~2000-2400 kgf if linear); end-grain and butt-joint
+    questions asked; its lowest tap-test frequency ~48 Hz (~39 since round 24)."""
     from bridgesim.sim import study
 
     rep = study.inspect(V10, overrides_data=V10_OVERRIDES)
@@ -2826,18 +2827,22 @@ def test_bridge_v10_regression():
     ids = {q.id for q in rep.questions}
     assert {"end_grain_joints", "butt_joints"} <= ids
     sc = study.screen(V10, overrides_data=V10_OVERRIDES, load_kgf=1000.0, n_limits=400)
-    # ~1010 since round 21 (butt joints cost stiffness: ~0.88 of E for 13 plies)
-    assert 950 < sc.stiffness_kgf_per_mm < 1150
+    # ~1010 in rounds 21-23 (butt joints cost stiffness: ~0.88 of E for 13 plies); ~750
+    # since round 24 (the wood under a face pressed across the grain is compliant)
+    assert 680 < sc.stiffness_kgf_per_mm < 830
     glue = [lm for lm in sc.limits if lm.mode == "glue"]
     # node A (the End Post on the knee) or node M (the diagonal feet on the stub): the
     # size effect weakens node A's large laps more (round 19)
     assert ("End Post" in glue[0].part or "Stub" in glue[0].part) \
         and "Knee-Diagonal" in glue[0].part
-    assert 300 < glue[0].load_kgf < 500
+    # ~265 since round 24 (~420 before): the knee face, softer across the grain, passes
+    # more of the End Post's load through its glue in shear
+    assert 200 < glue[0].load_kgf < 500
     bear = [lm for lm in sc.limits if lm.mode == "bearing"]
-    assert "End Post" in bear[0].part and "Knee-Diagonal" in bear[0].part
-    assert 1700 < bear[0].load_kgf < 2400
-    assert 40 < sc.modes[0]["frequency_hz"] < 56
+    assert ("End Post" in bear[0].part and "Knee-Diagonal" in bear[0].part) or (
+        "Floor Beam" in bear[0].part and "Pier Leg" in bear[0].part)
+    assert 1700 < bear[0].load_kgf < 3000
+    assert 34 < sc.modes[0]["frequency_hz"] < 56
 
 
 def test_long_laps_lose_strength_by_shear_lag_as_generalised_volkersen():
@@ -3619,3 +3624,115 @@ def test_each_glue_line_keeps_its_own_clock():
     S_.glue_forces(m, st, F, Mo)
     on = st.c_t0 >= 0.0
     assert on.any() and np.all(st.c_t0[on] == 540.0)
+
+
+def _boxes(specs, d=(0.0, 0.0, 0.0)):
+    """Boxes (name, lo, hi), all moved by d (mm)."""
+    d = np.asarray(d, float)
+    return [box(n, tuple(np.asarray(lo, float) + d), tuple(np.asarray(hi, float) + d))
+            for n, lo, hi in specs]
+
+
+_SIMPLE = [("Pier L (block)", (-550, 0, -75), (-500, 150, 75)),
+           ("Pier R (block)", (500, 0, -75), (550, 150, 75)),
+           ("Stringer Near (3-ply UD)", (-550, 150, 55), (550, 169, 61)),
+           ("Stringer Far (3-ply UD)", (-550, 150, -61), (550, 169, -55)),
+           ("Deck (2-ply 0-90)", (-550, 169, -75), (550, 173.1, 75))]
+
+
+def test_a_face_pressed_across_the_grain_is_softer_than_end_grain():
+    """The realism review of round 23: every glue face had one normal stiffness, a side-
+    grain face as stiff as end grain. The wood on either side is added in series, its
+    modulus at its grain's angle to the face (E_T across, E_L along) over the depth the
+    stress reaches (its extent, or half the face's width): a stringer's side-grain face
+    on a pier block is far softer than the constant, a post's end grain on a block whose
+    fibres run along it nearly as stiff."""
+    from bridgesim.sim.idealize import BEARING_DEPTH_SHARE, Overrides, build_model
+
+    post = box("Post (3-ply UD)", (-530, 150, -5), (-520, 262, 5))
+    m = build_model(simple_beam_bridge() + [post], MAT, SP, Overrides.from_dict(
+        {"bodies": {"Pier L*": {"grain": "y"}}}), seed=None)
+    names = [b.name for b in m.bodies]
+
+    def kn(a, b):
+        p = next(p for p in m.patches if {names[p.body_a], names[p.body_b]} == {a, b})
+        return float(np.median(m.c_Kn[np.array(p.springs)])), p
+
+    k_end, p_end = kn("Pier L (block)", "Post (3-ply UD)")
+    k_side, p_side = kn("Pier R (block)", "Stringer Near (3-ply UD)")
+    K = SP["glue.K_n_N_per_mm3"]
+    assert k_side < 0.4 * K < k_end <= K
+    # the stringer's side grain: its 6 mm extent, E_T; the pier (no grain: across)
+    h_s = min(6.0, BEARING_DEPTH_SHARE * math.sqrt(p_side.area_mm2))
+    h_p = BEARING_DEPTH_SHARE * math.sqrt(p_side.area_mm2)
+    E_T = SP["wood.E_T_MPa"]
+    assert k_side == pytest.approx(1 / (1 / K + h_s / E_T + h_p / E_T), rel=0.15)
+
+
+def test_a_bar_can_be_told_which_way_it_spans():
+    """The adversarial review of round 23: a floor beam wider (200 mm) than it is long
+    between its trusses (162 mm) was laid along its outline's length, the wrong way, and no
+    override set a bar's axis: `axis` does."""
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    beam = box("Floor Beam (block)", (300, 150, -81), (500, 180, 81))
+    for ax, want in ((None, 0), ("z", 2)):
+        o = {"bodies": {"Floor Beam*": {"kind": "bar", "layup": "1-ply UD",
+                                        **({"axis": ax} if ax else {})}}}
+        m = build_model(simple_beam_bridge() + [beam], MAT, SP, Overrides.from_dict(o),
+                        seed=None)
+        info = next(b for b in m.bodies if b.name == "Floor Beam (block)")
+        assert info.kind == "bar" and int(np.argmax(np.abs(info.axis))) == want
+    assert Overrides.from_dict({"bodies": {"Floor Beam*": {"axis": "q"}}}).problems(
+        ["Floor Beam (block)"])
+
+
+def test_where_the_bridge_sits_in_the_cad_changes_no_joint():
+    """The adversarial review of round 23: which ply of a 0/90 gusset a member is glued on
+    followed the CAD origin (moving a bridge 300 mm changed 37 joints by up to 16 %), and a
+    joint's random draw followed its centre rounded to 10 mm (halves round to even: a 5 mm
+    shift redrew 15 joints). A plate's plies are listed from the face toward the bridge's
+    middle, and a draw follows the joint's rank between its two bodies."""
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    specs = _SIMPLE + [("Gusset (2-ply 0-90)", (600, 10, 50), (700, 14, 110)),
+                       ("Stick T (1-ply UD)", (610, 14, 75), (690, 16, 85)),
+                       ("Stick B (1-ply UD)", (610, 8, 75), (690, 10, 85)),
+                       ("Pad A (1-ply UD)", (-300, 173.1, -20), (-250, 175.1, 20)),
+                       ("Pad B (1-ply UD)", (250, 173.1, -20), (300, 175.1, 20))]
+    caps = []
+    for d in ((0, 0, 0), (0, 0, 300.0), (5.0, 5.0, 5.0)):
+        m = build_model(_boxes(specs, d), MAT, SP, Overrides(), seed=1)
+        names = [b.name for b in m.bodies]
+        caps.append(sorted((names[p.body_a], names[p.body_b], round(p.area_mm2),
+                            round(float(m.c_tau[np.array(p.springs)].mean()), 6))
+                           for p in m.patches))
+    assert caps[0] == caps[1] == caps[2]
+
+
+def test_a_light_truss_is_never_given_more_mass_than_the_limit():
+    """The adversarial review of round 23: every run of a light truss was flagged at
+    5.0-5.6 % added mass, the last scaling round passing the 5 % limit; a round that would
+    pass it is not taken and the time step comes down instead."""
+    from bridgesim.cad.synthetic import layered_truss
+    from bridgesim.sim import solver as S_
+    from bridgesim.sim.crush import stable_dt
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    m = build_model(layered_truss(), MAT, SP, Overrides(), seed=None, mesh_scale=0.5)
+    s = S_.Settings(dt=1e-6)
+    dt, mass, _rot, _log = stable_dt(m, s, dt_target=4e-6, max_added=0.01)
+    assert (mass - m.mass).sum() / m.mass.sum() <= 0.01 + 1e-9
+    assert dt > 0
+
+
+def test_the_crusher_pace_is_asked_for(tmp_path):
+    """The adversarial review of round 23: the glue's rate law runs on a crusher pace
+    nobody has timed, and no question asked for it."""
+    from bridgesim.sim import study
+
+    cad = tmp_path / "b.stl"
+    write_stl(simple_beam_bridge(), cad, names=True)
+    rep = study.inspect(cad)
+    q = next(q for q in rep.questions if q.id == "crusher:pace")
+    assert "crusher.test_rate_mm_per_min" in q.answer_with["params"]

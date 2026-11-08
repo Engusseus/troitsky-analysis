@@ -679,24 +679,25 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
         ks = Ks[i]
         d = 0.0
         if breakable[i]:
-            # the strength at the line's own time under load (glue_rate in solver.py)
+            # the strength at the line's own time under load (glue_rate in solver.py): its
+            # clock starts when it reaches RATE_LOAD of its mixed-mode onset
             dm = math.sqrt(dnp * dnp + s2)
-            if update and tnow > 0.0 and t0[i] < 0.0:
-                lim = sig[i] / kn if sig[i] / kn < tau[i] / ks else tau[i] / ks
-                if dm > 0.1 * lim:  # RATE_LOAD
-                    t0[i] = tnow
-            rs = 1.0
-            if crate[i] != 0.0 and tnow > 0.0 and tref > 0.0:
-                tl = tnow - t0[i] if t0[i] >= 0.0 else 0.0
-                rs = math.exp(-crate[i] * math.log((tl if tl > 1.0 else 1.0) / tref))
-            dn0 = sig[i] * rs / kn
-            ds0 = tau[i] * rs / ks
+            dn0 = sig[i] / kn
+            ds0 = tau[i] / ks
             if dnp > 1e-12:
                 mix = s / dnp
                 dm0 = dn0 * ds0 * math.sqrt((1.0 + mix * mix)
                                             / (ds0 * ds0 + (mix * dn0) ** 2))
             else:
                 dm0 = ds0
+            if update and tnow > 0.0 and t0[i] < 0.0 and dm > 0.1 * dm0:  # RATE_LOAD
+                t0[i] = tnow
+            if crate[i] != 0.0 and tnow > 0.0 and tref > 0.0:
+                tl = tnow - t0[i] if t0[i] >= 0.0 else 0.0
+                rs = math.exp(-crate[i] * math.log((tl if tl > 1.0 else 1.0) / tref))
+                dn0 *= rs
+                ds0 *= rs
+                dm0 *= rs
             Gs = ks * s2
             Gn = kn * dnp * dnp
             B = Gs / (Gs + Gn) if Gs + Gn > 1e-30 else 0.0
