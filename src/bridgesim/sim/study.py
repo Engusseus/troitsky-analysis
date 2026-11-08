@@ -274,7 +274,6 @@ def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: Sim
                             "faces touch",
                     severity="important"))
     # weak joints: a bar whose joints are much weaker in shear than the bar in tension
-    tau = mat.glue.tau_g_MPa.value
     by_body: dict[int, list] = {}
     for p in model.patches:
         by_body.setdefault(p.body_a, []).append(p)
@@ -291,8 +290,9 @@ def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: Sim
         for p in by_body.get(bi, []):
             if p.kind == "glue":
                 s_ = float((np.asarray(p.centroid) - np.asarray(info.centroid_mm)) @ ax)
-                ends[int(s_ >= 0)] += p.area_mm2
-        glue = min(e for e in ends if e > 0) * tau if any(ends) else 0.0
+                # what its glue points hold (end grain, crossing, size, fit-up)
+                ends[int(s_ >= 0)] += patch_capacity_N(model, p, mat)
+        glue = min(e for e in ends if e > 0) if any(ends) else 0.0
         if glue and glue < 0.5 * cap_member and _group(info.name) not in weak_seen:
             weak_seen.add(_group(info.name))
             weak.append((glue / cap_member, info.name, glue, cap_member))
@@ -410,14 +410,30 @@ def _time_at_peak(curve, sp: SimParams, fallback: float) -> float:
     return float(fallback)
 
 
-def _joint_reports(model: Model, mat: Material) -> list[JointReport]:
+def patch_capacity_N(model: Model, p, mat: Material) -> float:
+    """What a glued face carries in shear, as the crush's glue points hold it: the sum of
+    their areas x their shear strengths (with the end-grain share, the fit-up gaps, the
+    seed's scatter and the glue factors), over the local peak factor, dry points left
+    out (the adversarial review of round 22: the face's average strength alone read the
+    diagonal's end-grain foot at 872 N where its points hold 520). The face's average
+    strength x its area where it has no glue points."""
+    idx = np.asarray(p.springs, int)
+    d0 = model.params.get("c_d0")
+    if len(idx) and len(model.c_tau) > int(idx.max()):
+        ok = np.ones(len(idx), bool) if d0 is None or len(d0) != len(model.c_tau) \
+            else np.asarray(d0)[idx] < 0.5
+        return float((model.c_area[idx] * model.c_tau[idx] * ok).sum()
+                     / max(p.peak_factor, 1e-9))
     tau = mat.glue.tau_g_MPa.value
+    return p.area_mm2 * (p.strength_MPa if p.strength_MPa > 0 else
+                         mat.f_v_MPa.value / 1.5 if p.kind == "solid" else tau)
+
+
+def _joint_reports(model: Model, mat: Material) -> list[JointReport]:
     return [JointReport(a=model.bodies[p.body_a].name, b=model.bodies[p.body_b].name,
                         kind=p.kind, area_mm2=round(p.area_mm2, 1),
                         lamination=p.lamination,
-                        shear_capacity_N=round(p.area_mm2 * (
-                            p.strength_MPa if p.strength_MPa > 0 else
-                            mat.f_v_MPa.value / 1.5 if p.kind == "solid" else tau), 1))
+                        shear_capacity_N=round(patch_capacity_N(model, p, mat), 1))
             for p in model.patches]
 
 
@@ -685,7 +701,8 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
     rep = CrushReport(
         file=path.name, sha256=_sha(path), seed=seed, overrides=ov_raw,
         inputs_sha256=_inputs_sha(path, ov_raw, mat, sp, seed, fidelity, mesh_scale),
-        Fu_kgf=round(res.Fu_kgf, 2), Fu_N=round(res.Fu_N, 1), failure_mode=res.failure_mode,
+        code_sha=_code_sha(), Fu_kgf=round(res.Fu_kgf, 2), Fu_N=round(res.Fu_N, 1),
+        failure_mode=res.failure_mode,
         failure_detail=res.failure_detail, governing=res.governing,
         competing=list(getattr(res, "competing", [])),
         deflection_at_Fu_mm=round(res.deflection_at_Fu_mm, 2),
@@ -2292,7 +2309,8 @@ def draw_placeholders(overrides: dict | None, drawn: dict[str, float], seed: int
     for k in keys:
         v = drawn[k]
         if k in ADDITIVE_PRIORS:
-            prm[k] = round(max(v + ADDITIVE_PRIORS[k] * z[k], 0.0), 6)
+            sd, lo, hi = ADDITIVE_PRIORS[k]
+            prm[k] = round(min(max(v + sd * z[k], lo), hi), 6)
             continue
         x = v * float(np.exp(z[k] * PLACEHOLDER_PRIORS.get(k, PLACEHOLDER_COV)))
         if k in ("glue.end_grain_factor", "glue.prepeak_onset") or k.endswith("_efficiency"):
@@ -2568,8 +2586,9 @@ WOOD_STRENGTHS = ("material.f_t_MPa", "material.f_c_MPa", "material.f_v_MPa",
 E_STRENGTH_CORR = 0.7
 # how far each placeholder may be from the truth for a team's own sticks and glue
 # (lognormal sigma around the placeholder, ~ the half-width of the literature or
-# craft-stick range at 90 %): hand-made PVA laps on birch sticks 1-6 MPa (nothing
-# published; materials/popsicle_birch.yaml), glue toughness 0.5-2.5 N/mm, craft-stick E
+# craft-stick range at 90 %): hand-made PVA laps on birch sticks ~0.9-4.5 MPa (nothing
+# published; ~2.3 from pressed craft-stick laminates' 3.7 less hand pressure and unsanded
+# faces; materials/popsicle_birch.yaml), glue toughness 0.5-2.5 N/mm, craft-stick E
 # 7-16 GPa (dry sticks by vibration 11.6-14.8, veneer 14.6, a table-edge test 7.1), f_t
 # 25-80 MPa, f_v 5-12 MPa, f_c90
 # 4-7.5 MPa, the end-grain factor 0.2-0.6 (USDA Wood Handbook ch. 10: end-grain butt
@@ -2610,16 +2629,18 @@ PLACEHOLDER_PRIORS = {
     "scatter.glue_cov": 0.35,
     # round 22 (the reviews of round 21): the end-grain glue line's share of the wood's
     # tension (nothing measures it: 0.05-0.25), the size effect across the grain (m 5-11,
-    # Kruger et al. 2025, Barrett 1974) and the strength of laps whose grains cross (0.3-
-    # 0.5 at 90 degrees, Padilha et al. 2023); the wood's moisture is drawn additively
-    # (ADDITIVE_PRIORS)
+    # Kruger et al. 2025, Barrett 1974); the wood's moisture and a lap's wood-failure
+    # share (how much a crossed lap loses) are drawn additively (ADDITIVE_PRIORS)
     "glue.end_grain_tension_factor": 0.50, "wood.t90_weibull_m": 0.30,
-    "glue.cross_grain_ratio": 0.25,
 }
-# placeholders whose value is 0 by default, drawn as max(0, value + sd x z): the wood's
-# moisture above its coupons' (percentage points; members laminated in the last days
-# before the test hold several points more, half the runs at 0, a sixth above 2)
-ADDITIVE_PRIORS = {"wood.moisture_excess_pct": 2.0}
+# placeholders drawn additively, value + sd x z within (low, high): the wood's moisture
+# above its coupons' (percentage points; members laminated in the last days before the
+# test hold several points more, half the runs at 0, a sixth above 2) and the share of a
+# hand-made lap that fails in the wood (0: the glue line gives way and a crossed lap holds
+# as a parallel one; 1: the face ply's strength at its angle sets it; the round-22
+# reviews: every case between them is drawn, 5 % of the runs at either end)
+ADDITIVE_PRIORS = {"wood.moisture_excess_pct": (2.0, 0.0, math.inf),
+                   "glue.wood_failure_share": (0.3, 0.0, 1.0)}
 
 SENSITIVITY = {  # key: (meaning, how to measure)
     "material.E_MPa": ("stiffness of a stick along the grain",
@@ -2652,6 +2673,26 @@ SENSITIVITY = {  # key: (meaning, how to measure)
                               "(where members split, and how load passes a butt joint)",
                               "short-beam shear of a 3-5 ply laminate "
                               "(short_beam_shear_template.csv)"),
+    # round 22 (the adversarial review: these moved F_u most and were never ranked)
+    "glue.wood_failure_share": ("how much of a hand-made lap fails in the wood (it sets "
+                                "how much a lap whose sticks cross is weakened)",
+                                "laps glued at 0, 45 and 90 degrees (glue_joint_template."
+                                "csv, grain_angle_deg): their ratio and each face's wood "
+                                "failure"),
+    "glue.rate_exponent": ("how much stronger the glue is when it fails faster",
+                           "laps failing in ~10 s, ~60 s and ~600 s "
+                           "(glue_joint_template.csv, time_to_failure_s)"),
+    "crusher.test_rate_mm_per_min": ("how fast the competition's jack moves (the glue's "
+                                     "time to failure)",
+                                     "time the press head in a video of the competition"),
+    "glue.weibull_m": ("how much weaker a large lap is than the coupon",
+                       "laps of 200 and ~2000 mm^2 glued the same way"),
+    "wood.t90_weibull_m": ("how much more a small joint's wood holds across the grain",
+                           "T-pulls of a stick's end on another's face against a stick "
+                           "pulled across its width"),
+    "glue.end_grain_tension_factor": ("an end-grain glue line pulled apart",
+                                      "two sticks glued end to end and pulled "
+                                      "(end_grain_template.csv)"),
 }
 # other values worth a --param (meaning, how to measure); any key of
 # materials/simulation.yaml or material.<key> works

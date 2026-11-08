@@ -159,6 +159,7 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
         s.dt = dt
     st = S.initial_state(m, jack_y=1e12)
     st.t_test = float(test_time_s)
+    st.c_t0 = np.zeros(len(m.c_a))  # every line loaded from the coupon's start
     F = np.zeros((m.n_nodes, 3))
     Mo = np.zeros((m.n_nodes, 3))
     fix_t = np.zeros((m.n_nodes, 3), bool)

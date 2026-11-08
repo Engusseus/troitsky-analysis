@@ -159,18 +159,26 @@ of Berard et al., which the round-19 literature review corrected).
   until then a joint drawn 1.5x peeled at 1.5 x f_t90, the adversarial review of round
   21). A user's `glue_factor` (a badly glued part, or a what-if's bigger glued area)
   scales both.
-* **Laps whose grains cross** (since round 22): a lap between two parts whose grains
-  cross in the glue plane holds less than a lap of parallel sticks (what tau_g's coupon
-  is), the part loaded across its fibres failing in rolling shear: Hankinson's form
-  `glue.cross_grain_ratio` / (sin^n + ratio cos^n), ratio 0.38 at 90 degrees and n 2.35:
-  0.81 at 30 degrees, 0.62 at 45, 0.48 at 60 (pine blocks bonded at 0-90 degrees held
-  10.5 / 8.4 / 6.4 / 5.1 / 3.9 MPa, Padilha et al. 2023, Rev. Arvore 47; the sticks' own
-  rolling shear / f_v, 3 / 8, is about the same), averaged over the plies of each side
-  (a member on a 0/90 gusset at 45 degrees: 0.62; along a 0/90 deck: 0.69). Laminations
-  keep `glue.interlaminar_MPa`, whose plies' angles `interlaminar_strength` already
-  takes. It lowered Bridge_v10 quick seed 0 from 2300 to 1693 kgf (its diagonals' laps
-  on the 0/90 gussets at node M). Drawn by montecarlo (25 %); measure it with laps glued
-  at 0, 45 and 90 degrees.
+* **Laps whose grains cross** (since round 22, reworked in round 23): a lap between two
+  plies whose grains cross in the glue plane holds 1 - w (1 - f(theta)) of a lap of
+  parallel sticks (what tau_g's coupon is), f the face ply's shear strength at that angle
+  over that along it (birch veneer: 0.89 / 0.69 / 0.62 / 0.66 / 0.59 / 0.72 at 15-90
+  degrees, Wang et al. 2024, Eur. J. Wood Wood Prod. 82:1407) and w the share of the lap
+  that fails in the wood (`glue.wood_failure_share`, 0.5, drawn 0-1 by montecarlo): a
+  bonded joint holds what its weakest component holds, so the angle matters where the
+  wood next to the glue gives way (glued birch-plywood laps failed in the face veneer at
+  30-90 degrees and followed its strength at its angle, Wang et al. 2024; gusset coupons
+  in the face veneer's rolling shear, Debertolis et al. 2025) and little where the glue
+  line itself does (Rheme et al. 2016; Frolovs et al. 2017). The plies are the two the
+  glue lies on: a plate's face ply (plies listed from the face its normal points away
+  from: `2-ply 0-90` has a 0 ply there, `2-ply 90-0` a 90 ply), every ply of a member's
+  edge. Peel is not weakened by it. Round 22 took Padilha et al.'s pine blocks (0.38 at
+  90 degrees, a strong adhesive failing in the wood) on every ply pair of both sides,
+  which made a lap at 45 degrees 0.62: the literature review of round 22 found that the
+  extreme case (pine's rolling shear is lower than birch's, and a hand-made lap is not
+  all wood failure), and the adversarial review that it set Bridge_v10's answer alone
+  (-27 %). Measure w on the team's own laps: 10 each at 0, 45 and 90 degrees, each broken
+  face's wood failure judged to 10 % (glue_joint_template.csv, grain_angle_deg).
 * **Creep**: PVA is a thermoplastic and creeps. Each glue line's shear slip has a Kelvin
   element in series with its spring (`glue.creep_factor` phi = 1: under a steady load
   the slip grows toward (1 + phi) x the elastic slip, retardation `glue.creep_time_s` =
@@ -187,12 +195,18 @@ of Berard et al., which the round-19 literature review corrected).
   Serrano 2000, -40 % at a tenth of the rate, n ~0.22: drawn by montecarlo), t_ref the time to failure of the lap tests tau_g
   describes (`glue.coupon_time_s`, 60 s). The crush runs on physical test time (the
   jack's travel at `crusher.test_rate_mm_per_min`, 10 mm/min, a placeholder nobody has
-  timed, drawn 50 %): at each moment the glue holds what a lap failing then would show,
-  so a bridge that peaks 17 s into the test (Bridge_v10 in round 22, 2.9 mm of travel)
-  is ~13 % stronger at its glue than 60 s coupons, one that takes 3 min ~10 % weaker. While tau_g
-  is a placeholder its 60 s is a convention (the placeholder is not from timed coupons):
-  on Bridge_v10 the law adds ~5 % to F_u against n = 0 (the adversarial review of round
-  21), inside the drawn range of n and of the crusher's pace. A face through one piece of wood
+  timed, drawn 50 %), each glue line on its own clock (since round 23): its time under
+  load runs from when it first took a tenth of its strength (at least 1 s), so a line
+  loaded since the start of a test that peaks 17 s in (Bridge_v10 in round 22, 2.9 mm of
+  travel) is ~13 % stronger than 60 s coupons, one that takes 3 min ~10 % weaker, and a
+  line that picks up load when its neighbour breaks is loaded fast, as strong as a lap
+  failing in seconds (until round 22 every line took the test's elapsed time: the
+  realism and adversarial reviews of rounds 21-22). While tau_g is a placeholder its 60 s
+  is a convention (the placeholder is not from timed coupons): on Bridge_v10 the law
+  added ~11 % to F_u against n = 0 in round 22 (quick seed 0: 1693 against 1530 kgf, the
+  adversarial review of round 22), inside the drawn range of n and of the crusher's pace;
+  a bridge the model makes too stiff peaks too soon, which makes its glue too strong by
+  the same law (2.5x more compliant: ~45 s instead of 18, -9 %). A face through one piece of wood
   follows the wood's own exponent (`wood.rate_exponent`, 0.02: ~4 % per decade, USDA Wood
   Handbook ch. 5). The coupons and the screen take tau_g (no physical time); the crush
   reports when the real test would reach F_u (`test_time_at_Fu_s`). Give each glue test
@@ -281,7 +295,14 @@ of Berard et al., which the round-19 literature review corrected).
   adversarial review of round 20), and in between, from 30 % to 70 % of the smaller
   plate covered (`LAMINATION_RAMP`), the joint's strength and stiffness go over linearly
   from the one to the other (since round 22: until then a gusset covering 45 % of itself
-  held 1.6 MPa and one covering 50 % 3.7, the adversarial review of round 21). Round 19 gave
+  held 1.6 MPa and one covering 50 % 3.7, the adversarial review of round 21). A
+  lamination is a plate on a plate, decided by geometry whatever they are meshed as
+  (since round 23: a strap narrow enough to be a frame of members was always a lap, 4.8x
+  weaker than one 10 mm wider, the adversarial review of round 22): one stick wide it is
+  a hand-made lap like tau_g's own coupon, from one to three sticks wide (2 x area /
+  perimeter of the smaller plate) it goes over to a lamination; and it holds no more
+  than the two plies it lies on take at the angle they cross at (rolling shear), as the
+  same line inside one laminated body. Round 19 gave
   Bridge_v10's 71,370 mm^2 deck plies 0.375 x tau_g = 0.75 MPa as hand-made laps, a
   fifth of the same line inside one body (the literature review).
   `test_plates_glued_face_to_face_are_laminations`; inspect marks them `lamination`, and
@@ -632,8 +653,8 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   fine gave 2506 / 2483 / 2479 kgf in round 18, and 2162 / 2061 / 2093 (seed 0) and
   2232 / 2000 / 2069 (seed 1) in round 20 (`validation/README.md` §3.10, §3.12), 2300 /
   2276 / 2271 and 2281 / 2165 / 2235 in round 21, and 1693 / 1651 / 1651 (seed 0) and
-  1803 / 1638 (quick, standard, seed 1) in round 22 (§3.15), standard and fine at the
-  same joint. The meshes are not monotone (standard the lowest of the
+  1803 / 1638 (quick, standard, seed 1) in round 22 (§3.15), and 2079 / 2021 / 2014 and
+  2142 / 1944 in round 23 (§3.16), standard and fine at the same joint. The meshes are not monotone (standard the lowest of the
   three in rounds 19-20), so there is no Richardson estimate: over 10 seed pairs fine
   reads +2.3 % above standard on average (-1.1 to +11 %), which `montecarlo` takes out
   of its prediction (`uncertainty.mesh_bias_standard`, 0.02; quick, 1-12 % above
@@ -663,12 +684,14 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   half-width of the literature or craft-stick range at 90 %: the stick modulus 30 % (dry
   craft sticks 11-15 GPa by vibration; until round 18 the draws were centred on the
   material file's 10 GPa while each crush used 7.1, now on the crush's own 11), f_t 30 %,
-  f_c, f_v, f_c90, f_t90, rolling shear and peel 25 %, the pressed bond line 30 %, the
+  f_c, f_v, f_c90, f_t90, rolling shear (4 MPa since round 23: birch veneer 4.6, Wang
+  et al. 2024; silver birch 3.5) and peel 25 %, the pressed bond line 30 %, the
   glue's shear toughness, the plies' shear fracture energy and the end-grain factor
   45 %, the across-grain fracture energy 35 %, the wood's fracture energy 40 %, the
   fit-up gap 50 %, the lap joints' glue strength 50 % (hand-made PVA laps on craft
-  sticks: nothing published, bounded at 2-6 MPa by the bond line's, the stick surface's
-  and the peel strengths). Since round 18 the draws include the values that set where a
+  sticks: nothing published; pressed craft-stick laminates failed at 3.7 MPa (Karplus
+  1996), hand pressure costs 5-10 % and unsanded faces ~30 % (Boon 2024): ~2.3 MPa; the
+  placeholder 2.0 with its 90 % range 0.9-4.5 MPa). Since round 18 the draws include the values that set where a
   bridge fails (f_t90, the bond line, G_v, peel, the fit-up gap: the adversarial review
   found f_v draws inert in members, whose glue lines split first). Since round 19 the
   draws are a Latin hypercube over the runs: each value falls once in each of n
@@ -793,7 +816,17 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   until failure, which occurred in a brittle manner", their secant at the peak 0.84-0.92
   of the 10-40 % secant (Debertolis et al. 2025, 7 m span): the model is stiffer to its
   peak than that, and a real stick bridge (creep under a pumped jack, joints that seat,
-  members bowing) may bend more before its peak. Stick coupons loaded at the test's own pace (failure in
+  members bowing) may bend more before its peak. How stiff it is to start with: a 2D
+  model of those trusses with rigid glued joints read 0.82-0.96 of their stiffness
+  measured with LVDTs on the bridge (Debertolis et al. 2025), and glued joints' slip is
+  negligible in a truss's deflection (Hansen 1965, NRC DBR RP-334): the model's joints
+  are not the reason it reads 3.6x stiffer than published test C's record (validation
+  README 3.14), which measured the crosshead of a 30 t press over 0.05-0.2 kN (0.02-0.07
+  % of its range) and grows stiffer toward its peak (13.2 kgf/mm at it against 9.6 over
+  10-40 %): seating, which a record of the crosshead is dominated by. A team that wants
+  the stiffness compares deflection measured on the bridge (a dial gauge or a ruler in a
+  video at mid-span), or the EN 26891 cycle (to 0.4 of the expected peak and back to 0.1,
+  then to failure: the reloading branch leaves seating out). Stick coupons loaded at the test's own pace (failure in
   about the same minutes as the crush test; EN 408 asks 300 +- 120 s) carry the wood's
   creep of that duration in the E that `calibrate` fits, so a calibrated model includes
   it to first order; what is left out is how creep grows with the stress near the peak.

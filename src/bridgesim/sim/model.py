@@ -59,6 +59,7 @@ class Patch:
     # glue factors): tau_g x the lap size factor, the interlaminar strength of a
     # lamination, f_v / 1.5 of a solid face
     lamination: bool = False  # two plates glued face to face
+    peak_factor: float = 1.0  # the glue points' local strength over the face's average
 
 
 @dataclass

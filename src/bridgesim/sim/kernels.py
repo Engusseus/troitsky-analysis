@@ -610,7 +610,8 @@ def _trilinear_damage(dmx, dm0, keff, Gc, ga, gp):
 @njit(cache=True, fastmath=True, error_model="numpy")
 def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GIIc, mu,
                 breakable, dmax, dd, slip, F, Mo, update, beta, dt, prev, alive, crush,
-                fc90, cdep, eps_d, E_d, fcap, creep, cfac, cdec, ga, gp, crate, lr):
+                fc90, cdep, eps_d, E_d, fcap, creep, cfac, cdec, ga, gp, crate, tnow,
+                tref, t0):
     nc = ca.shape[0]
     pa = np.empty(3)
     pb = np.empty(3)
@@ -678,11 +679,18 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
         ks = Ks[i]
         d = 0.0
         if breakable[i]:
-            # the strength at the physical test time so far (glue_rate in solver.py)
-            rs = math.exp(-crate[i] * lr) if lr != 0.0 else 1.0
+            # the strength at the line's own time under load (glue_rate in solver.py)
+            dm = math.sqrt(dnp * dnp + s2)
+            if update and tnow > 0.0 and t0[i] < 0.0:
+                lim = sig[i] / kn if sig[i] / kn < tau[i] / ks else tau[i] / ks
+                if dm > 0.1 * lim:  # RATE_LOAD
+                    t0[i] = tnow
+            rs = 1.0
+            if crate[i] != 0.0 and tnow > 0.0 and tref > 0.0:
+                tl = tnow - t0[i] if t0[i] >= 0.0 else 0.0
+                rs = math.exp(-crate[i] * math.log((tl if tl > 1.0 else 1.0) / tref))
             dn0 = sig[i] * rs / kn
             ds0 = tau[i] * rs / ks
-            dm = math.sqrt(dnp * dnp + s2)
             if dnp > 1e-12:
                 mix = s / dnp
                 dm0 = dn0 * ds0 * math.sqrt((1.0 + mix * mix)

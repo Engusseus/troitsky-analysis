@@ -790,19 +790,35 @@ def t90_size_factor(area_mm2: float, m: float = 8.0) -> float:
     return float(min(max((T90_REF_VOLUME_MM3 / v) ** (1.0 / m), 1.0), T90_FACTOR_MAX))
 
 
-def lap_crossing_factor(cos_t: float, ratio: float = 0.38, n: float = 2.35) -> float:
+# shear strength of 1.4 mm birch veneer loaded at 0, 15, ..., 90 degrees to its grain over
+# that along it, on 40 x 40 mm (Wang, Wang, Debertolis, Crocetti, Walinder & Blomqvist
+# 2024, Eur. J. Wood Wood Prod. 82:1407, doi:10.1007/s00107-024-02097-9: 6.4 / 5.7 / 4.4 /
+# 4.0 / 4.2 / 3.8 / 4.6 MPa; a dip at 45-75 degrees Hankinson's form does not follow)
+VENEER_ANGLE_DEG = (0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0)
+VENEER_SHEAR_RATIO = (1.0, 0.89, 0.69, 0.625, 0.656, 0.594, 0.719)
+
+
+def lap_crossing_factor(cos_t: float, wood_share: float = 0.5) -> float:
     """Shear strength of a glued lap whose two parts' grains cross at an angle (cos_t
-    between them, in the glue plane) over that of a lap of parallel sticks: Hankinson's
-    form ratio / (sin^n + ratio cos^n). Pine blocks bonded at 0 / 30 / 45 / 60 / 90
-    degrees held 10.5 / 8.4 / 6.4 / 5.1 / 3.9 MPa: ratio 0.38, n 2.35 (2.00-2.71)
-    (Padilha et al. 2023, Rev. Arvore 47, doi:10.1590/1806-908820230000027): the part
-    loaded across its fibres fails in rolling shear (wood.f_rolling_MPa / f_v ~ the same
-    ratio). 0.81 at 30 degrees, 0.62 at 45, 0.48 at 60 (glue.cross_grain_ratio)."""
+    between them, in the glue plane) over that of a lap of parallel sticks (what tau_g's
+    coupon is): 1 - w (1 - f(theta)), f the face ply's shear strength at that angle to
+    its grain over that along it (birch veneer, VENEER_SHEAR_RATIO: 0.62 at 45 degrees,
+    0.72 at 90) and w the share of the lap that fails in the wood (glue.wood_failure_share).
+    A bonded joint holds what its weakest component holds: where the wood next to the
+    glue gives way, the face ply's angle sets the strength (glued birch-plywood laps on
+    glulam failed 80 % in the face veneer at 30-90 degrees and followed 0.88 x the
+    veneer's strength at its angle + 1.3 MPa, Wang et al. 2024; gusset coupons failed in
+    the face veneer's rolling shear, Debertolis et al. 2025); where the glue line itself
+    gives way (a starved hand-made lap), the angle matters little (welded wood, Rheme et al.
+    2016; plywood edges glued at 0 or 90 degrees, Frolovs et al. 2017). Pine blocks with a
+    strong adhesive, failing in the wood, went down to 0.38 at 90 degrees (Padilha et al.
+    2023): pine's rolling shear is lower than birch's. A lap's wood-failure share is what
+    its broken faces show (estimate it to 10 % on each broken coupon)."""
     c = min(abs(cos_t), 1.0)
-    sn = math.sqrt(max(1.0 - c * c, 0.0))
-    if ratio >= 1.0:
-        return 1.0
-    return float(ratio / (sn**n + ratio * c**n))
+    w = min(max(wood_share, 0.0), 1.0)
+    deg = math.degrees(math.acos(c))
+    f = float(np.interp(deg, VENEER_ANGLE_DEG, VENEER_SHEAR_RATIO))
+    return 1.0 - w * (1.0 - f)
 
 
 def gap_strength(gap: float, fill: float = 0.15) -> float:
@@ -1830,8 +1846,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     end_factor = sp.values.get("glue.end_grain_factor", 0.5)
     end_tension = sp.values.get("glue.end_grain_tension_factor", 0.0)
     t90_m = sp.values.get("wood.t90_weibull_m", 0.0)
-    cross_ratio = sp.values.get("glue.cross_grain_ratio", 1.0)
-    cross_n = sp.values.get("glue.cross_grain_exponent", 2.35)
+    wood_share = sp.values.get("glue.wood_failure_share", 0.0)
 
     def transfer_cap(bi: int, nrm: np.ndarray) -> float:
         """The average shear a joint on body bi's ply face can pass into its laminate:
@@ -1894,18 +1909,30 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         return float(np.mean([hankinson(ply.f_t, ply.f_t90 * vf, abs(float(g @ n)))
                               for g in gs]))
 
+    def face_grain(bi: int, p: np.ndarray, n: np.ndarray) -> list[np.ndarray]:
+        """The grain of the ply a glue line of normal n at p lies on: a plate glued on
+        its face, the ply on that face (plies run from the -n face to the +n one); a
+        member, or a plate glued on its edge, every ply."""
+        gs = grain_at(bi, p)
+        sh = shapes[bi]
+        if len(gs) > 1 and sh.kind in ("shell", "frame") and abs(float(n @ sh.n)) > 0.9:
+            side = float((p - sh.centroid) @ sh.n)
+            return [gs[-1]] if side > 0 else [gs[0]]
+        return gs
+
     def crossing(i1: int, i2: int, p: np.ndarray, n: np.ndarray) -> float:
-        """Lap strength over a lap of parallel sticks for the angle at which the two
-        parts' grains cross in the glue plane (lap_crossing_factor), averaged over their
-        plies; 1 where either side meets the glue end-on or has no grain known."""
-        ga, gb = grain_at(i1, p), grain_at(i2, p)
+        """Lap strength over a lap of parallel sticks for the angle at which the grains
+        of the two plies the glue lies on cross in the glue plane (lap_crossing_factor),
+        averaged over the plies a member's edge shows; 1 where either side meets the glue
+        end-on or has no grain known."""
+        ga, gb = face_grain(i1, p, n), face_grain(i2, p, n)
         fs = []
         for g1 in ga:
             for g2 in gb:
                 u1, u2 = g1 - (g1 @ n) * n, g2 - (g2 @ n) * n
                 l1, l2 = float(np.linalg.norm(u1)), float(np.linalg.norm(u2))
                 fs.append(1.0 if min(l1, l2) < 0.5 else lap_crossing_factor(
-                    abs(float(u1 @ u2)) / (l1 * l2), cross_ratio, cross_n))
+                    abs(float(u1 @ u2)) / (l1 * l2), wood_share))
         return float(np.mean(fs)) if fs else 1.0
 
     def cross_share(bi: int, p: np.ndarray, n: np.ndarray) -> float:
@@ -2034,9 +2061,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             float(area), sp.values.get("glue.size_ref_mm2", 200.0),
             sp.values.get("glue.weibull_m", 10.0), sp.values.get("glue.size_cap_mm2", 3000.0))
         ks_line = sp_glue["K_s_N_per_mm3"]
+        tau_peel = tau_p  # a glue line's peel does not shear the wood across its fibres
         if not solid:
-            # the two parts' grains crossing in the glue plane: one of them is sheared
-            # across its fibres (rolling shear), weaker than a lap of parallel sticks
+            # the two plies the glue lies on crossing in the glue plane: one of them is
+            # sheared across its fibres (rolling shear) where the wood gives way
             tau_p *= crossing(ia, ib, cen, na)
         patches[pid].strength_MPa = tau_p / peak_factor(n_nodes)
         # two plates glued face to face (a deck's plies drawn as separate bodies): a
@@ -2049,7 +2077,11 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         # goes over from one to the other: a gusset covering 45 % or 55 % of itself is
         # glued much the same way, and its strength does not jump 2.5x at half, the
         # adversarial review of round 21)
-        parallel = (not solid and shapes[ia].kind == "shell" and shapes[ib].kind == "shell"
+        # by geometry, whatever the plates are meshed as (a strap narrow enough to be a
+        # frame of members is glued as flat as a wide one: the adversarial review of round
+        # 22 found its joint 4.8x weaker as a frame)
+        parallel = (not solid and shapes[ia].kind in ("shell", "frame")
+                    and shapes[ib].kind in ("shell", "frame")
                     and abs(float(na @ shapes[ia].n)) > 0.99
                     and abs(float(na @ shapes[ib].n)) > 0.99)  # as ``stacked``
         cover = float(area) / max(min(shapes[ia].poly.area, shapes[ib].poly.area), 1e-9) \
@@ -2057,8 +2089,25 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         lo, hi = LAMINATION_RAMP
         w_lam = min(max((cover - lo) / (hi - lo), 0.0), 1.0)
         if w_lam > 0:
-            tau_lam = sp.values.get("glue.interlaminar_MPa", 4.0) * peak_factor(n_nodes)
+            # and is a plate, not a stick: a single stick glued flat along a gusset is a
+            # hand-made lap like tau_g's coupon (two sticks face to face); from one stick
+            # wide to three the joint goes over to a lamination
+            small = shapes[ia] if shapes[ia].poly.area <= shapes[ib].poly.area \
+                else shapes[ib]
+            w_eff = 2.0 * small.poly.area / max(small.poly.length, 1e-9)
+            ws = float(mat.stick.width_mm)
+            w_lam *= min(max((w_eff - ws) / (2.0 * ws), 0.0), 1.0)
+        if w_lam > 0:
+            # as the same line inside one laminated body: the bond line's strength, or what
+            # the two plies it lies on take at the angle they cross at (rolling shear)
+            ga, gb = face_grain(ia, cen, na), face_grain(ib, cen, na)
+            rel = [math.degrees(math.acos(min(1.0, abs(float(g1 @ g2)))))
+                   for g1 in ga for g2 in gb] or [0.0]
+            tau_lam = interlaminar_strength(
+                [0.0] + rel, mat.f_v_MPa.value, sp.values.get("wood.f_rolling_MPa", 4.0),
+                sp.values.get("glue.interlaminar_MPa", 4.0)) * peak_factor(n_nodes)
             tau_p = (1.0 - w_lam) * tau_p + w_lam * tau_lam
+            tau_peel = (1.0 - w_lam) * tau_peel + w_lam * tau_lam
             ks_line = (1.0 - w_lam) * ks_line + w_lam * sp.values.get(
                 "glue.lamination_K_s_N_per_mm3", ks_line)
             patches[pid].strength_MPa = tau_p / peak_factor(n_nodes)
@@ -2086,6 +2135,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                                                       - sp["wood.G_f90_N_per_mm"])
             g2 = sp["wood.G_v_N_per_mm"]
             patches[pid].kind = "solid"
+        patches[pid].peak_factor = peak_factor(n_nodes)
         for wa, a_, b_, d_, fl in zip(wts, att_a, att_b, dry, fill, strict=True):
             # glue_factor 0: not glued; past the glue's reach across a fit-up gap: dry
             springs["d0"].append(1.0 if gf <= 0 or d_ else 0.0)
@@ -2110,7 +2160,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             else:
                 tau_s = min(tau_p * gq, tau_cap * wq)
                 springs["tau"].append(tau_s)
-                side = min(tau_s * sp_glue["peel_to_shear"], f_peel * wq)
+                side = min(min(tau_peel * gq, tau_cap * wq) * sp_glue["peel_to_shear"],
+                           f_peel * wq)
                 gqs = max(gf_side * fl, 1e-3)
                 end = min(sig_end_glue * gqs, f_peel * wq)
                 springs["sig"].append(side + e_end * max(end - side, 0.0))

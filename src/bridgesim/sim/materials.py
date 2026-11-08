@@ -94,8 +94,7 @@ PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("glue.end_grain_factor", 0.0, 1.0, True),
     ("glue.end_grain_tension_factor", 0.0, 1.0, True),
     ("wood.t90_weibull_m", 0.0, 50.0, True),
-    ("glue.cross_grain_ratio", 0.05, 1.0, True),
-    ("glue.cross_grain_exponent", 0.5, 5.0, True),
+    ("glue.wood_failure_share", 0.0, 1.0, True),
     ("glue.tau_peak_over_avg", 1.0, 2.0, True),
     ("glue.prepeak_onset", 0.0, 1.0, False),
     ("*.rate_exponent", 0.0, 1.0, True),
@@ -224,12 +223,26 @@ class Layup:
             return self.kind
         n = len(self.angles)
         a = sorted({abs(round(x)) for x in self.angles})
-        name = ("UD" if a == [0] else "0/90" if a == [0, 90] else "+-45" if a == [45]
+        name = ("UD" if a == [0] else ("90/0" if self.angles[0] == 90 else "0/90")
+                if a == [0, 90] else "+-45" if a == [45]
                 else "/".join(str(int(x)) for x in self.angles))
         return f"{n}-ply {name}"
 
 
 _PLY = re.compile(r"(\d+)\s*-?\s*ply", re.I)
+_X0 = re.compile(r"(?<![0-9])0\s*[-/]\s*90")
+_X90 = re.compile(r"(?<![0-9])90\s*[-/]\s*0(?![0-9])")
+
+
+def _cross_first(t: str) -> float | None:
+    """The first ply of a cross-ply layup named '0-90' (0) or '90-0' (90), whichever comes
+    first in the name ('0-90-0' is 0 first), or None."""
+    m0, m9 = _X0.search(t), _X90.search(t)
+    if m0 is None and m9 is None:
+        return None
+    if m9 is None or (m0 is not None and m0.start() <= m9.start()):
+        return 0.0
+    return 90.0
 
 
 def parse_layup(name: str) -> Layup | None:
@@ -245,10 +258,14 @@ def parse_layup(name: str) -> Layup | None:
     lay = None
     if re.search(r"\b(ud|unidirectional)\b", t):
         lay = Layup("laminate", [0.0] * (n or 1), grain, "name", name)
-    elif re.search(r"0\s*[-/]\s*90", t):
+    elif _cross_first(t) is not None:
+        # 0-90: the plies alternate from a 0 ply on the face the normal points away from;
+        # 90-0 from a 90 ply (which ply a glue line on a face lies on sets a crossed lap's
+        # strength)
         k = n or 2
-        lay = Layup("laminate", [0.0 if i % 2 == 0 else 90.0 for i in range(k)], grain,
-                    "name", name)
+        a0 = _cross_first(t)
+        lay = Layup("laminate", [a0 if i % 2 == 0 else 90.0 - a0 for i in range(k)],
+                    grain, "name", name)
     elif re.search(r"(\+-|±|\+/-)\s*45", t):
         k = n or 2
         lay = Layup("laminate", [45.0 if i % 2 == 0 else -45.0 for i in range(k)], grain,
@@ -266,13 +283,14 @@ def parse_layup(name: str) -> Layup | None:
 
 
 _OV_LAYUP = re.compile(
-    r"^\s*(?P<n>\d+)\s*-?\s*ply\s+(?P<o>ud|unidirectional|0\s*[-/]\s*90|"
+    r"^\s*(?P<n>\d+)\s*-?\s*ply\s+(?P<o>ud|unidirectional|0\s*[-/]\s*90|90\s*[-/]\s*0|"
     r"(?:\+-|±|\+/-)\s*45)(?P<span>\s+along\s+the\s+span)?\s*$")
 _OV_SPECIAL = re.compile(r"^\s*(block|(round\s+)?toothpick|(waxed\s+)?floss)\s*$")
 
 
 def parse_override_layup(text: str) -> Layup | None:
-    """A layup written in an overrides file, in a strict form: 'N-ply UD', 'N-ply 0-90',
+    """A layup written in an overrides file, in a strict form: 'N-ply UD', 'N-ply 0-90'
+    (a 0 ply on the face the plate's normal points away from; 'N-ply 90-0' a 90 ply),
     'N-ply +-45' (optionally followed by 'along the span'), 'block', 'toothpick' or
     'floss'. Anything else (a typo, an unfilled '<...>' placeholder) is None: unlike a
     body name, an override is never guessed at."""

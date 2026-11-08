@@ -37,6 +37,9 @@ README 3.14), so its agreement does not validate the model.
 
     uv run python validation/published_tests.py --case A --out DIR [--fidelity standard]
         [--seeds 0,1,2] [--threads 2] [--write-only]
+    bridgesim montecarlo DIR/A.stl -o DIR/A.overrides.yaml -n 10 --fidelity fine \
+        --sample-placeholders --out DIR/A_mc10      (each case)
+    uv run python validation/published_tests.py --summarize --out DIR
 
 writes DIR/<case>.stl and DIR/<case>.overrides.yaml and crushes it (study.crush), then
 prints F_u against the test.
@@ -150,7 +153,7 @@ def lamberti_2025():
            "Fu_kgf": 160.0, "Fu_range_kgf": [140.0, 160.0],
            "failure": "top chord panel next to the centre and a compression diagonal, "
                       "after a lateral drift from 100 kgf",
-           "parts": ["TopChord", "Diag"], "mass_g": 180.0,
+           "parts": ["TopChord", "Diag"], "place": ["TopChord"], "mass_g": 180.0,
            "load": "dead weights hung from the centre bottom node, 20 kgf steps",
            "glue": "cyanoacrylate"}
     return bodies, ov, ref
@@ -208,7 +211,8 @@ def silva_2026(width: float = 150.0):
     ref = {"case": "B", "source": "Silva et al. 2026, Rev. Ensino Eng. 45:389",
            "Fu_kgf": 710.0 / 9.80665, "failure": "compression diagonal D3 buckling out "
            "of plane where its outer plies were butted at mid-length",
-           "parts": ["Diag"], "load": "bar through the centre bottom nodes",
+           "parts": ["Diag"], "place": ["member", "Diag"],
+           "load": "bar through the centre bottom nodes",
            "width_mm": width}
     return bodies, ov, ref
 
@@ -252,7 +256,7 @@ def moraes_2019(width: float = 85.0):
            "Fu_kgf": 490.0 / 9.80665, "Fu_range_kgf": [421.0 / 9.80665, 490.0 / 9.80665],
            "calibration": "round 21 chose the end-grain glue law after seeing this test",
            "failure": "the bottom chord and the foot of a "
-           "vertical", "parts": ["BotChord", "Vertical"],
+           "vertical", "parts": ["BotChord", "Vertical"], "place": ["BotChord"],
            "stiffness_kgf_per_mm": 9.6, "deflection_at_Fu_mm": 3.8,
            "load": "test machine platen on a rebar across the top chords at mid-span"}
     return bodies, ov, ref
@@ -261,9 +265,43 @@ def moraes_2019(width: float = 85.0):
 CASES = {"A": lamberti_2025, "B": silva_2026, "C": moraes_2019}
 
 
+def summarize(out: Path, case: str, mc: str = "mc10") -> dict:
+    """A case's montecarlo (``<case>_<mc>/seed_*/crush.json``, placeholders drawn) against
+    its test: the runs' F_u over the test's (median and range), where the test falls
+    among the runs (the share of runs below it), and the share of runs failing at the
+    test's place (``place``: words every governing label must hold; 'member' for a
+    member's own failure). A distribution, not seed 0 (the realism review of round 22:
+    one seed misrepresented trusses whose seeds spread 2x)."""
+    ref = CASES[case]()[2]
+    runs = []
+    for f in sorted((out / f"{case}_{mc}").glob("seed_*/crush.json")):
+        d = json.loads(f.read_text())
+        runs.append((d["Fu_kgf"], d.get("governing", ""), d["quality"]["trustworthy"]))
+    if not runs:
+        return {"case": case, "runs": 0}
+    F = np.array([r[0] for r in runs])
+    lo, hi = ref.get("Fu_range_kgf", [ref["Fu_kgf"]] * 2)
+    place = ref.get("place", [])
+
+    def at_place(g: str) -> bool:
+        kind, _, what = g.partition(": ")
+        return all((w in kind) if w == "member" else (w in what) for w in place)
+
+    return {"case": case, "runs": len(runs), "test_Fu_kgf": [round(lo, 1), round(hi, 1)],
+            "Fu_kgf": [round(float(x), 1) for x in sorted(F)],
+            "ratio_median": round(float(np.median(F)) / hi, 2),
+            "ratio_range": [round(float(F.min()) / hi, 2), round(float(F.max()) / lo, 2)],
+            "share_below_test": round(float(np.mean(F < lo)), 2),
+            "share_above_test": round(float(np.mean(F > hi)), 2),
+            "share_at_test_place": round(float(np.mean([at_place(r[1]) for r in runs])), 2),
+            "untrustworthy": int(sum(not r[2] for r in runs))}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--case", choices=sorted(CASES), required=True)
+    ap.add_argument("--case", choices=sorted(CASES))
+    ap.add_argument("--summarize", action="store_true",
+                    help="summarize each case's montecarlo in --out (<case>_mc10)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--fidelity", default="standard")
     ap.add_argument("--seeds", default="0")
@@ -271,6 +309,12 @@ def main() -> None:
     ap.add_argument("--threads", type=int, default=0,
                     help="CPU threads for each crush (default: all cores)")
     a = ap.parse_args()
+    if a.summarize:
+        for c in sorted(CASES):
+            print(json.dumps(summarize(Path(a.out), c)))
+        return
+    if a.case is None:
+        ap.error("--case is required unless --summarize")
     if a.threads:
         import numba
 

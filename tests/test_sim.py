@@ -3156,10 +3156,14 @@ def test_plates_glued_face_to_face_are_laminations():
     assert laps and not any(p.lamination for p in laps)
     for p in laps:
         assert p.area_mm2 > SP["glue.size_cap_mm2"]
-        # a stringer along the span on a 0/90 deck: half its plies cross it at 90
-        assert p.strength_MPa == pytest.approx(MAT.glue.tau_g_MPa.value * lap_size_factor(
+        # a stringer along the span on a 0/90 deck: on its 0 ply or its 90 ply
+        from bridgesim.sim.idealize import lap_crossing_factor
+
+        base = MAT.glue.tau_g_MPa.value * lap_size_factor(
             p.area_mm2, SP["glue.size_ref_mm2"], SP["glue.weibull_m"],
-            SP["glue.size_cap_mm2"]) * (1 + SP["glue.cross_grain_ratio"]) / 2)
+            SP["glue.size_cap_mm2"])
+        assert any(p.strength_MPa == pytest.approx(base * f) for f in (
+            1.0, lap_crossing_factor(0.0, SP["glue.wood_failure_share"])))
         assert np.allclose(m.c_Ks[np.array(p.springs)], SP["glue.K_s_N_per_mm3"])
     from bridgesim.sim.study import _joint_reports
 
@@ -3215,8 +3219,9 @@ def test_the_glue_law_bends_before_its_peak():
 
 def test_the_glue_is_as_strong_as_a_test_failing_when_the_crush_does():
     """A PVA line's strength depends on its time to failure, tau(t) = tau(t_ref) (t /
-    t_ref)^-n (n 0.1: +16 % per decade faster, Wernersson 1994; -40 % at a tenth of the
-    rate, Serrano 2000): a lap that fails 10x sooner than the coupons tau_g describes
+    t_ref)^-n (n 0.1: +26 % per decade faster; PVAc +20 % at 16x the rate, Wernersson
+    1994; -40 % at a tenth of the rate, Serrano 2000): a lap that fails 10x sooner than
+    the coupons tau_g describes
     holds ~10^0.1 = 1.26x, through the compiled kernel and its NumPy mirror alike; at
     the coupons' own time (or before any physical time has passed) tau_g. The crush's
     glue points carry glue.rate_exponent, a face through one piece the wood's (0.02); the
@@ -3241,11 +3246,13 @@ def test_the_glue_is_as_strong_as_a_test_failing_when_the_crush_does():
     m = build_model(simple_beam_bridge(), MAT, SP, Overrides(), seed=None)
     st = S_.initial_state(m, 1e12)
     st.t_test = 6.0
-    rate, lr = S_.glue_rate(m, st)
-    assert lr == pytest.approx(math.log(0.1))
+    rate, tnow, tr, t0 = S_.glue_rate(m, st)
+    assert (tnow, tr) == (6.0, tref) and np.all(t0 == -1.0)
     assert np.allclose(rate[m.c_breakable], n) and np.allclose(rate[~m.c_breakable], 0.0)
-    st.t_test = 0.0
-    assert S_.glue_rate(m, st)[1] == 0.0
+    loaded = np.zeros(len(t0))  # loaded from the start: 6 s to failure
+    assert np.allclose(S_.glue_rate_factor(rate, tnow, tr, loaded)[m.c_breakable],
+                       10 ** n)
+    assert np.all(S_.glue_rate_factor(rate, 0.0, tr, loaded) == 1.0)
     # one piece of wood: the wood's own exponent
     bodies = simple_beam_bridge()
     m2 = build_model(bodies, MAT, SP, Overrides.from_dict(
@@ -3412,15 +3419,20 @@ def test_small_joints_hold_more_across_the_grain_and_crossed_laps_less():
     joint pulls on it follows a weakest-link size effect (birch veneer m ~5-11, Kruger et
     al. 2025; Barrett 1974), 1.64 x f_t90 for a 47 mm^2 vertical's foot at m 8 (one held
     2.6 MPa, Moraes et al. 2019), never below f_t90; and a lap whose two sticks' grains
-    cross holds less than one of parallel sticks, Hankinson's form with 0.38 at 90
-    degrees and exponent 2.35 (Padilha et al. 2023): 0.81 / 0.62 / 0.48 at 30 / 45 / 60."""
+    cross holds less than one of parallel sticks, by the share that fails in the wood
+    times the face ply's loss of shear strength at that angle (birch veneer, Wang et al.
+    2024: 0.69 / 0.62 / 0.66 / 0.72 at 30 / 45 / 60 / 90; the round-22 literature
+    review), and not at all where the glue line itself gives way."""
     from bridgesim.sim.idealize import Overrides, build_model, lap_crossing_factor, t90_size_factor
 
     assert t90_size_factor(47.0, 8.0) == pytest.approx(1.635, abs=0.01)
     assert t90_size_factor(2400.0, 8.0) == 1.0 and t90_size_factor(1e5, 8.0) == 1.0
     assert t90_size_factor(0.5, 8.0) == 2.5 and t90_size_factor(47.0, 0.0) == 1.0
-    for deg, f in ((0, 1.0), (30, 0.813), (45, 0.622), (60, 0.482), (90, 0.38)):
-        assert lap_crossing_factor(math.cos(math.radians(deg))) == pytest.approx(f, abs=0.01)
+    for deg, f in ((0, 1.0), (30, 0.69), (45, 0.625), (60, 0.656), (90, 0.719)):
+        c = math.cos(math.radians(deg))
+        assert lap_crossing_factor(c, 1.0) == pytest.approx(f, abs=0.005)
+        assert lap_crossing_factor(c, 0.0) == 1.0
+        assert lap_crossing_factor(c, 0.5) == pytest.approx(1 - 0.5 * (1 - f), abs=0.005)
     st = {}
     for cross in (False, True):
         m = build_model(simple_beam_bridge() + _two_sticks(cross), MAT, SP, Overrides(),
@@ -3430,7 +3442,26 @@ def test_small_joints_hold_more_across_the_grain_and_crossed_laps_less():
                  == {"Stick A (1-ply UD)", "Stick B (1-ply UD)"})
         assert p.area_mm2 == pytest.approx(100.0, rel=0.05)
         st[cross] = p.strength_MPa
-    assert st[True] / st[False] == pytest.approx(SP["glue.cross_grain_ratio"], rel=0.03)
+    assert st[True] / st[False] == pytest.approx(
+        lap_crossing_factor(0.0, SP["glue.wood_failure_share"]), rel=0.03)
+
+
+def test_a_crossed_lap_takes_the_ply_the_glue_is_on():
+    """The realism review of round 22: a stick glued along a 0/90 gusset's 0 ply is a lap
+    of parallel sticks, on its 90 ply a crossed one, not the average of the two whatever
+    face it is on."""
+    from bridgesim.sim.idealize import Overrides, build_model, lap_crossing_factor
+
+    g = box("Gusset (2-ply 0-90)", (600, 10, 50), (700, 14, 110))
+    top = box("Stick T (1-ply UD)", (610, 14, 75), (690, 16, 85))
+    bot = box("Stick B (1-ply UD)", (610, 8, 75), (690, 10, 85))
+    m = build_model(simple_beam_bridge() + [g, top, bot], MAT, SP, Overrides(), seed=None)
+    names = [b.name for b in m.bodies]
+    st = sorted(p.strength_MPa for p in m.patches
+                if "Gusset (2-ply 0-90)" in (names[p.body_a], names[p.body_b]))
+    assert len(st) == 2
+    assert st[0] / st[1] == pytest.approx(
+        lap_crossing_factor(0.0, SP["glue.wood_failure_share"]), rel=0.02)
 
 
 def test_the_glue_scatter_never_lifts_the_wood_past_its_strength():
@@ -3539,3 +3570,52 @@ def test_ab_names_the_bodies_whose_scatter_is_drawn_afresh():
 
     assert renamed_bodies(["A", "B", "C"], ["A", "B", "C", "D"]) == []
     assert renamed_bodies(["A", "B", "C"], ["A", "B", "Body 7"]) == ["Body 7"]
+
+
+def test_a_strap_glued_flat_goes_over_to_a_lamination_with_its_width():
+    """A 100 mm strap glued flat over its whole face on the deck: one stick wide (10 mm) it
+    is a hand-made lap like tau_g's coupon, three sticks wide (an effective width
+    2 A / perimeter of 30 mm and more) a lamination, in between partly each, whatever it
+    is meshed as (the adversarial review
+    of round 22: 2192 N as a frame at 20 mm against 10,500 N as a shell at 30 mm)."""
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    h = 150.0 + 23.1
+    kinds, st = {}, {}
+    for w in (10.0, 20.0, 50.0):
+        pad = box("Pad (2-ply UD)", (100, h, -w / 2), (200, h + 4.1, w / 2))
+        m = build_model(simple_beam_bridge() + [pad], MAT, SP, Overrides(), seed=None)
+        names = [b.name for b in m.bodies]
+        p = next(p for p in m.patches if {names[p.body_a], names[p.body_b]}
+                 == {"Deck (2-ply 0-90)", "Pad (2-ply UD)"})
+        kinds[w] = m.bodies[names.index("Pad (2-ply UD)")].kind
+        st[w] = (p.lamination, p.strength_MPa)
+    assert st[50.0][0] and not st[10.0][0]
+    assert st[50.0][1] == pytest.approx(SP["glue.interlaminar_MPa"], rel=0.02)
+    assert st[10.0][1] < st[20.0][1] < st[50.0][1]
+    assert st[50.0][1] / st[20.0][1] < 2.0 and st[20.0][1] / st[10.0][1] < 2.0
+
+
+def test_each_glue_line_keeps_its_own_clock():
+    """The realism review of round 22: a glue line's strength follows its own time under
+    load, not the test's elapsed time: a line that picks up load only when a neighbour
+    breaks, 9 minutes into a test, is loaded fast (as strong as a lap failing in seconds),
+    one loaded since the start is as old as the test. Each line's clock starts when it
+    takes RATE_LOAD of its strength (the NumPy mirror of the kernel)."""
+    from bridgesim.sim import solver as S_
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    rate = np.full(3, 0.1)
+    f = S_.glue_rate_factor(rate, 600.0, 60.0, np.array([0.0, 540.0, 599.5]))
+    assert f == pytest.approx([10 ** -0.1, 1.0, 60 ** 0.1], rel=1e-6)
+    m = build_model(simple_beam_bridge(), MAT, SP, Overrides(), seed=None)
+    st = S_.initial_state(m, 1e12)
+    st.t_test = 540.0
+    F, Mo = np.zeros((m.n_nodes, 3)), np.zeros((m.n_nodes, 3))
+    S_.glue_forces(m, st, F, Mo)
+    assert np.all(st.c_t0 == -1.0)  # nothing loaded yet
+    deck = [b.name for b in m.bodies].index("Deck (2-ply 0-90)")
+    st.x[m.node_body == deck, 1] += 0.05  # the deck lifted off its stringers
+    S_.glue_forces(m, st, F, Mo)
+    on = st.c_t0 >= 0.0
+    assert on.any() and np.all(st.c_t0[on] == 540.0)

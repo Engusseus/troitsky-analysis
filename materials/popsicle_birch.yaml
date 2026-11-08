@@ -88,8 +88,10 @@ glue:
       value that moves the predicted load most. Nothing is published for craft sticks:
       a pressed PVAc bond line holds 9-14 MPa (EN 205 laps; Serrano 2000, Lund), the
       stick's surface fails in shear at ~9 MPa, peel at the lap ends at ~1.5 MPa, all
-      scaled by how much of the face the glue covers, so hand-made laps plausibly hold
-      2-6 MPa; 2 MPa here, the low end. Larger laps are weaker on average (a size effect,
+      scaled by how much of the face the glue covers; pressed craft-stick laminates
+      failed at 3.7 MPa of glue-line shear (Karplus 1996), hand pressure costs 5-10 %
+      (Rabiej & Behm 1992) and unsanded faces ~30 % (Boon 2024), ~2.3 MPa for a hand-made
+      lap: 2 MPa here, montecarlo drawing 0.9-4.5 (90 %). Larger laps are weaker on average (a size effect,
       simulation.yaml glue.weibull_m). Joints glued on build day are crushed the next day
       at the Troitsky competition (15-30 h old): ~0.85-1.0 of their cured strength (PVAc
       laps reach EN 204's 10 MPa 75-165 min after bonding, Bomba et al., BioResources 9(1)

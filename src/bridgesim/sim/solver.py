@@ -121,6 +121,9 @@ class State:
     creep_dt: float = 0.0  # physical test time of the current step (s): jack travel /
     #                        the real test rate; 0 while the jack stands
     t_test: float = 0.0  # physical test time so far (s): the sum of creep_dt
+    c_t0: np.ndarray = field(default_factory=lambda: np.zeros(0))  # physical test time
+    #   at which each glue point first took load (RATE_LOAD of its strength), -1 not yet:
+    #   its time to failure, which its strength follows, runs from then
     b_s2: np.ndarray = field(default_factory=lambda: np.zeros(0))
     b_s3: np.ndarray = field(default_factory=lambda: np.zeros(0))
     # shear stress / strength of each beam (through the plies, across the width)
@@ -478,20 +481,33 @@ def trilinear_damage(dmx, dm0, keff, Gc, ga: float, gp: float) -> np.ndarray:
     return np.clip(d, 0.0, 1.0)
 
 
-def glue_rate(m: Model, st: State) -> tuple[np.ndarray, float]:
-    """The glue points' rate exponents and log(t / t_ref) for the physical test time so
-    far: a glue line's strength depends on its time to failure, tau(t) = tau(t_ref) (t /
-    t_ref)^-n (n 0.1: +26 % per decade faster; PVAc +20 % at 16x the rate, Wernersson 1994;
-    -40 % at a tenth of the rate, Serrano 2000), t_ref the time to failure of the lap
-    tests tau_g describes (glue.coupon_time_s). At each moment of the crush the glue holds
-    what a test failing then would show; before any physical time has passed (coupons, the
-    screen) tau_g."""
+RATE_LOAD = 0.1  # share of its strength at which a glue line's own clock starts
+
+
+def glue_rate(m: Model, st: State) -> tuple[np.ndarray, float, float, np.ndarray]:
+    """The glue points' rate exponents, the physical test time so far, t_ref and each
+    point's start time: a glue line's strength depends on its time to failure, tau(t) =
+    tau(t_ref) (t / t_ref)^-n (n 0.1: +26 % per decade faster; PVAc +20 % at 16x the rate,
+    Wernersson 1994; -40 % at a tenth of the rate, Serrano 2000), t_ref the time to failure
+    of the lap tests tau_g describes (glue.coupon_time_s), t the line's own time under
+    load: from when it first took RATE_LOAD of its strength (at least 1 s), so a line that
+    picks up load when its neighbour breaks is loaded fast, not as old as the test (the
+    realism and adversarial reviews of round 21-22). Before any physical time has passed
+    (the screen) tau_g; a coupon (lab) has every line loaded from its start."""
     nc = len(m.c_a)
     rate = m.c_rate if len(m.c_rate) == nc else np.zeros(nc)
     tref = float(m.params.get("glue_coupon_time_s", 60.0))
-    if st.t_test <= 0.0 or tref <= 0.0:
-        return rate, 0.0
-    return rate, math.log(max(st.t_test, 1.0) / tref)
+    if len(st.c_t0) != nc:
+        st.c_t0 = np.full(nc, -1.0)
+    return rate, float(st.t_test), tref, st.c_t0
+
+
+def glue_rate_factor(rate, tnow: float, tref: float, t0: np.ndarray) -> np.ndarray:
+    """Each glue point's strength factor at its own time under load (glue_rate)."""
+    if tnow <= 0.0 or tref <= 0.0:
+        return np.ones(len(t0))
+    tl = np.where(t0 >= 0.0, tnow - t0, 0.0)
+    return np.exp(-rate * np.log(np.maximum(tl, 1.0) / tref))
 
 
 def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
@@ -532,11 +548,14 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
         st.c_crush = st.c_crush - dp
     dn = dn + dp
     dnp = np.maximum(dn, 0.0)
-    rate, lr = glue_rate(m, st)
-    rs = np.exp(-rate * lr) if lr != 0.0 else 1.0
+    rate, tnow, tref, t0 = glue_rate(m, st)
+    dm = np.sqrt(dnp**2 + s**2)
+    if update and tnow > 0.0:
+        on = (t0 < 0.0) & (dm > RATE_LOAD * np.minimum(m.c_sig / Kn, m.c_tau / Ks))
+        st.c_t0 = t0 = np.where(on, tnow, t0)
+    rs = glue_rate_factor(rate, tnow, tref, t0)
     dn0 = m.c_sig * rs / Kn
     ds0 = m.c_tau * rs / Ks
-    dm = np.sqrt(dnp**2 + s**2)
     mix = s / np.maximum(dnp, 1e-12)
     dm0 = np.where(dnp > 1e-12, dn0 * ds0 * np.sqrt((1 + mix**2)
                                                    / (ds0**2 + (mix * dn0) ** 2)), ds0)

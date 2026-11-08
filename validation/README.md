@@ -765,7 +765,7 @@ diagonal's laps on it, where the adversarial review found the load depends; the 
 would reach the peak ~24 s in (the glue ~9 % stronger than in 60 s coupons). Standard
 seed 0: 2061 kgf in round 20, +10 %.
 
-### 3.14 Validation against published tests (rounds 21-22)
+### 3.14 Validation against published tests (rounds 21-23)
 
 No team has crushed a bridge for this repository yet, but three craft-stick trusses were
 built, loaded to failure and published with their geometry, stick, glue, load and
@@ -779,59 +779,69 @@ everything else the shipped placeholders (white glue at 2.0 MPa, birch). Each te
 at its own pace (`crusher.test_rate_mm_per_min`: C's press ~2 min to the peak; A's dead
 weights and B's unknown pace leave the default, A's glue having no rate law).
 
-**A and B are predictions made without their results. C is a calibration case**: round
-21 chose its end-grain glue law after seeing C (the old law read 0.55 there), and round
-22's size effect across the grain gives the 2.6 MPa C's foot held, so C's agreement does
-not validate the model; it is listed for its failure place and its curve.
+**None of the three is a blind validation.** A's rebuild changed after round 21's
+comparison (its hanger, its glue); B's putty stand-in (the end face glued x5) came with
+its first comparison, and its governing joint is that one; C chose round 21's end-grain
+glue law, and round 22's size effect across the grain gives the 2.6 MPa C's foot held: C
+is a calibration case. They are listed for what they show about the model's form.
 
-Round 22, one frozen code (`r22_runs/published`), seed 0, standard and fine mesh (the
-members are 6-9 mm deep: standard is flagged too coarse for them, fine is the reading):
+**As distributions** (round 23, `r23_runs/published`, one frozen code: `montecarlo -n 10
+--fidelity fine --sample-placeholders` per case, the members 6-9 mm deep, summarised by
+`published_tests.py --summarize`; the realism review of round 22: one seed misrepresented
+trusses whose seeds alone spread 2x):
 
-| Test | Glue | Test F_u | Standard | Fine | Fine / test | Failure: test / model |
+| Test | Glue | Test F_u (kgf) | 10 runs (kgf) | Median / test | Test among the runs | Runs failing where the test did |
 | --- | --- | --- | --- | --- | --- | --- |
-| A, Lamberti et al. 2025: Warren, 6 x 100 mm, 3-ply, dead weights | superglue | 140-160 kgf | 33.9 (flagged: mesh, 5.7 % mass) | 33.5 (flagged: 5.5 % mass) | 0.21-0.24 | a top-chord panel and a compression diagonal after a lateral drift / the diagonals' 36 mm^2 laps on the bottom chord at the centre |
-| B, Silva et al. 2026: Warren, 4 x 260 mm, 5-8 ply, putty nodes | wood glue, epoxy putty | 72.4 kgf | 87.2 (flagged: mesh) | 85.6 | 1.18 | a compression diagonal buckling where its outer plies were butted / a diagonal's putty joint |
-| C, Moraes et al. 2019: Howe, 6 x 80 mm, 3-ply, test machine (calibration) | wood glue | 42.9 (text) - 50 (curve) kgf | 27.3 (flagged: mesh) | 28.2 | 0.56-0.66 | the bottom chord and a vertical's foot / the bottom chord's joints to a diagonal and a vertical (the same place) |
+| A, Lamberti et al. 2025: Warren, 6 x 100 mm, 3-ply, dead weights | superglue | 140-160 | 22-61 | 0.24 | above all 10 (every run flagged: 5.5 % mass) | 0 of 10 (test: top chord and a diagonal after a lateral drift; model: the diagonals' laps at the centre) |
+| B, Silva et al. 2026: Warren, 4 x 260 mm, 5-8 ply, putty nodes | wood glue, epoxy putty | 72.4 | 40-242 | 1.24 | 4 runs below, 6 above | 0 of 10 (test: a diagonal buckling at its butted plies; model: putty joints, once a chord) |
+| C, Moraes et al. 2019: Howe, 6 x 80 mm, 3-ply, test machine (calibration) | wood glue | 42.9 (text) - 50 (curve) | 13-77 | 0.40 | 8 runs below, 2 above | 7 of 10 at the bottom chord (test: the bottom chord and a vertical's foot) |
+
+Seed 0 alone (round 22, the placeholders as shipped, fine): A 33.5, B 85.6, C 28.2 kgf
+(0.21-0.24, 1.18, 0.56-0.66).
 
 What they say:
 
+* **B's and C's loads fall inside the model's range, A's far above it**; the ranges
+  are wide (a factor of 3-6 over 10 runs, the placeholders drawn), and the medians read
+  0.24, 1.24 and 0.40 of the tests.
 * **Two of three failure mechanisms are wrong.** A's test failed in its members after a
   lateral drift, the model at its joints; B's in a diagonal buckling at its butted outer
-  plies, the model at a putty joint. Neither failure can happen in the model as built:
-  A's drift needs the dead-weight hanger to swing, which a rigid hanger pushed by the
-  plate does not; B's buckling needs the diagonal's crookedness at its butt joints,
-  which the literature review puts at L/50-L/90 to fail at the test's load (the model's
-  bows are L/400; nobody has measured a hand-laminated member's). Only C fails where its
-  test did.
-* **A is far below its test** (0.21-0.24). Its laps are 36 mm^2 of superglue on members
-  crossing at ~62 degrees; to carry the test's load they would hold ~12 MPa, above what
-  the maker gives for pine with the wood failing (10-12 MPa, parallel laps), and the
-  crossed-lap factor takes 0.47 of that: either the rebuild's laps are smaller than the
-  real ones (the node geometry is read from photos, confidence low) or the test's
-  joints held more than any glue-on-stick lap the literature reports.
-* **B's agreement is partly built in**: the putty wraps each diagonal's end, which the
-  rebuild stands for by gluing the end face at x5 (its four sides); the putty's strength
-  is not published.
+  plies, the model at a putty joint. Neither can happen in the model as built: A's drift
+  needs the dead-weight hanger to swing, which a rigid hanger pushed by the plate does
+  not; B's buckling needs the diagonal's outer plies to drop out of its bending stiffness
+  at their butt joints near mid-length, which the model's butt joints (a factor over the
+  whole member) cannot do: Silva et al.'s own back-analysis with 3 of the 5 plies over
+  the length reproduces the test within 3.5-15 % (the literature review of round 22).
+  C fails where its test did in 7 of 10 runs.
+* **A is far below its test**. Its laps are 36 mm^2 of superglue on members crossing at
+  ~62 degrees; to carry the test's load they would hold ~12 MPa, above what the maker
+  gives for pine with the wood failing (10-12 MPa, parallel laps): either the rebuild's
+  laps are smaller than the real ones (the node geometry is read from photos, confidence
+  low; superglue wicks along the edges) or the test's joints held more than any
+  glue-on-stick lap the literature reports.
 * **Stiffness** (C's record, 9.6 kgf/mm between 10 and 40 % of the peak, crosshead
-  travel): the model reads 34.8 kgf/mm by jack travel, 3.6 x stiffer, and peaks
-  at 0.88 mm of travel against the record's 3.8. The rebuild's flat bar leaves out
-  the rebar's indentation into the 6 mm chords across the grain (round bar, f_c90 6 MPa:
-  0.18 mm between 10 and 40 % of the peak, 1.3 mm at it), which takes the model's secant
-  to ~26 kgf/mm: the model is still 2-2.7x stiffer than the test, unexplained (a test
-  frame's compliance is ~0.01 mm at 0.5 kN). The glue lines would have to be ~10x softer
-  than the placeholder to close it (the ambitious review of round 21: 41.0 to 12.7
-  kgf/mm). The model's F_u depends on this only weakly (glue stiffness / 4: -12 % on
-  Bridge_v10).
-* **The scatter**: over the three, the log of fine / test has a mean of -0.65 and a
-  standard deviation of 0.87 (A_B_C); over the two white-glue tests 0.42-0.52 (C read from its text or its curve). These are
-  single specimens of other teams' small trusses (members 6-9 mm deep, joints of 36-90
-  mm^2), partly read from photos, outside Bridge_v10's range (13-ply members, gusset laps
-  of ~1300 mm^2): they set no bias to apply to it. `uncertainty.model_cov` is 0.40 since round 22 (0.30 before): the two white-glue tests pooled with the old value as a prior worth a few tests (A, another glue, left out; with it ~0.56).
+  travel): the model reads 34.8 kgf/mm by jack travel (round 22, seed 0), 3.6 x stiffer,
+  and peaks at 0.88 mm of travel against the record's 3.8. The rebuild's flat bar leaves
+  out the rebar's indentation into the 6 mm chords across the grain (round bar, f_c90 6
+  MPa: 0.18 mm between 10 and 40 % of the peak, 1.3 mm at it), which takes the model's
+  secant to ~26 kgf/mm. The record itself is weak evidence of the truss's stiffness: the
+  crosshead of a 30 t press over 0.05-0.2 kN (0.02-0.07 % of its range), stiffer at its
+  peak (13.2 kgf/mm) than over 10-40 %, the mark of seating; a rigid-joint model of
+  full-scale glued trusses read 0.82-0.96 of their stiffness measured on the bridge
+  (Debertolis et al. 2025), and glued joints' slip is negligible in a truss's deflection
+  (Hansen 1965). The glue lines would have to be ~10x softer to match it, which would
+  lower Bridge_v10's F_u by ~17 % (the realism review of round 22): it is not done.
+* **The scatter**: over the three seed-0 results the log of fine / test has a mean of
+  -0.65 and a standard deviation of 0.87; over the two white-glue tests 0.42-0.52.
+  Small trusses (members 6-9 mm deep, joints of 36-90 mm^2), partly read from photos,
+  outside Bridge_v10's range (13-ply members, gusset laps of ~2100 mm^2): they set no
+  bias to apply to it. `uncertainty.model_cov`, 0.40 since round 22, is a judgement
+  informed by them, not a measurement.
 
 Round 21's table (the same rebuilds, with A's hanger glued 40 mm along the chords over
 the laps that fail, A at white glue's 2.0 MPa and every test at 10 mm/min) read 0.18,
-1.18 and 0.66 at fine; its C "improvement from 0.55" compared round 20 at standard with
-round 21 at fine (the realism and adversarial reviews of round 21).
+1.18 and 0.66 at fine on seed 0; its C "improvement from 0.55" compared round 20 at
+standard with round 21 at fine (the realism and adversarial reviews of round 21).
 
 ### 3.15 Round 22: crossed laps, small joints, the reviews of round 21
 
@@ -895,3 +905,75 @@ spread 807-2757 kgf (median 1697), every run trustworthy, failing at node M in 7
 (the diagonal's gusset laps 3, its foot 2, `plate_M` cracking 2) and at node A once;
 recommended prediction 1103 kgf (interval 882-1463), total range with the mesh and the
 model-form error (now 40 %) 607-3633 kgf. Round 21's three finished runs read 1150-2288.
+
+### 3.16 Round 23: what a crossed lap loses, each glue line's own clock
+
+From the four reviews of round 22 (realism 5/10: validation -2.5, placeholders -0.75, a
+response too stiff and linear -0.75, idealisation gaps -0.5, small bridges -0.25,
+validation reporting -0.25) and its literature review:
+
+* **A crossed lap loses what its wood loses, as much as the wood fails.** Round 22 took
+  Padilha et al.'s pine blocks (0.38 at 90 degrees, a strong adhesive failing in the
+  wood) on every ply pair of both sides; the literature review found that the extreme
+  case (birch veneer keeps 0.62-0.72 of its shear strength at 45-90 degrees, Wang et al.
+  2024; where the glue line itself gives way the angle matters little), and the
+  adversarial review that it alone set Bridge_v10's answer (-27 %). Now 1 - w (1 - f),
+  f the face ply's strength at its angle (birch veneer), w the share of the lap failing
+  in the wood (0.5, drawn 0-1, so "no effect" is sampled), on the two plies the glue lies
+  on (a 0/90 plate's face ply; `90-0` names a plate with a 90 ply on the face its normal
+  points away from); peel no longer weakened by it. Rolling shear 4 MPa (birch veneer
+  4.6, silver birch 3.5), up from 3.0.
+* **Each glue line keeps its own clock**: its strength follows its time under load from
+  when it first took a tenth of its strength (the realism review), not the test's
+  elapsed time (a line picking up load when its neighbour breaks was as old as the test).
+* **A lamination is a plate on a plate, by geometry**: a strap narrow enough to be a
+  frame of members was always a lap, 4.8x weaker than one 10 mm wider (the adversarial
+  review); now one stick wide is a lap like tau_g's coupon, three sticks wide a
+  lamination, ramping between; a lamination holds no more than its two facing plies
+  take at the angle they cross at.
+* **inspect's joint capacities are what the crush holds**: the sum over each joint's
+  glue points (end grain, crossing, fit-up gaps, scatter), not area x the face's average
+  (the diagonal's end-grain foot read 872 N where its points hold 520); `weak_joints`
+  uses them.
+* **sensitivity ranks 18 values by default**, adding the six that moved F_u most in
+  round 22 and were never ranked (the wood-failure share, the rate exponent, the
+  crusher's pace, the two size effects, the end-grain tension factor).
+* **crush.json records `code_sha`**, the code's own fingerprint: every run below has
+  6a81ef9f7a7532fc; the committed code's is ad8581714e3823b0, which differs from it by a
+  line wrap and a comment in `study.py` only (`r23_runs/code_after_runs.diff`: undo it
+  and `_code_sha()` reads 6a81ef9f7a7532fc again). The full suite ran on the runs' code
+  (587 passed, 8 skipped, in two invocations: `test_sim.py`, then the rest), and the
+  crush-report tests again after the line wrap.
+* **Docs**: the rate law adds ~11 % on Bridge_v10 (round 22), not ~5 %; design
+  comparisons inherit an uncertain law at the part they change (glue x1.5 at node M:
+  +32 % with round 22's crossed-lap law, +8 % without it), so `ab` there is re-run with
+  that law at its other end; `uncertainty.model_cov` is labelled a judgement; the
+  stiffness evidence (a rigid-joint model of full-scale glued trusses read 0.82-0.96 of
+  their LVDT stiffness, Debertolis et al. 2025; test C's crosshead record is dominated
+  by seating).
+
+**A deformable floor beam** (the realism review: the rigid block under the plate):
+Bridge_v10 quick seed 0 with Floor Beam M as a 15-ply UD plate spanning between the
+trusses read 1017 kgf against 2079 rigid, cracking inside the beam at ~10 kN, where the
+team's hand checks give it 42 kN in bending and 25.6 kN in shear at its notched ends:
+thin-plate elements for a 30 mm thick part of 162 mm span, glued at its edges to rigid
+tenons, concentrate the stress where they join. The rigid block joins its tenons through
+'solid' faces (the wood's shear across the tenon's root, f_v / 1.5: ~3500 kgf, the
+team's governing 1.02x check at f_v 6 MPa), so it is kept, and the beam's bending is
+left to the hand check.
+
+Evidence on round 23's model (Bridge_v10, the same overrides as rounds 21-22,
+`r23_runs/bridge_v10/`), 100 mm/s, every run trustworthy and failing at node M's gusset
+laps (the diagonal's foot lets go, then its laps on the 0/90 `plate_M`): quick /
+standard / fine read 2079 / 2021 / 2014 kgf on seed 0 (fine -0.4 %) and 2142 / 1944
+(quick, standard) on seed 1. Standard seed 0 read 1651 kgf in round 22 and 2276 in
+round 21: the crossed laps now hold 0.83 of a parallel lap at the diagonal's angle
+(w 0.5) against 0.62-0.64 in round 22. `montecarlo -n 8 --sample-placeholders` (`mc8.json`):
+the runs spread 1061-2796 kgf, every run trustworthy, at node M in 7 of 8 (its laps 5,
+the foot 1, `plate_M` cracking 1) and at node A once; recommended prediction 1387 kgf
+(interval 1188-1669), total range with the mesh and model-form error 795-3865 kgf.
+
+The published tests as distributions (`r23_runs/published`, 10 runs each at fine,
+placeholders drawn): §3.14. B's and C's loads fall inside the runs (B 4 runs below, 6
+above; C 8 below, 2 above), A's above all of them; C fails where its test did in 7 of
+10 runs, A and B never.

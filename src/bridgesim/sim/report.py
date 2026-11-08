@@ -68,10 +68,11 @@ class JointReport(BaseModel):
         "as the plies inside one laminated body, at glue.interlaminar_MPa and "
         "glue.lamination_K_s_N_per_mm3, with no size effect"))
     shear_capacity_N: float = Field(description=(
-        "Area x the face's average shear strength, what a lap test of this joint would "
-        "give in pure shear: tau_g times the lap size factor (glue.weibull_m, up to "
-        "glue.size_cap_mm2), glue.interlaminar_MPa for a lamination, f_v / 1.5 for a "
-        "solid face; before the joint-to-joint scatter, glue_factor and end grain"))
+        "What the joint's glue points carry in pure shear, as the crush holds them: the "
+        "sum of their areas x their strengths (tau_g times the lap size factor, the "
+        "crossed-lap factor, the end-grain share, the fit-up gaps, the seed's scatter and "
+        "glue_factor; glue.interlaminar_MPa for a lamination, f_v / 1.5 for a solid "
+        "face), dry points left out"))
 
 
 class RuleLine(BaseModel):
@@ -259,6 +260,9 @@ class CrushReport(BaseModel):
     inputs_sha256: str = Field("", description=(
         "Fingerprint of everything the run depends on: the CAD, the overrides as read, "
         "the material, the simulation parameters, seed, fidelity and the code"))
+    code_sha: str = Field("", description=(
+        "Fingerprint of the bridgesim code alone (every module): two runs with the same "
+        "code_sha ran the same code, whatever else changed"))
     Fu_kgf: float = Field(description="Predicted ultimate load (rulebook §12.5), kgf.")
     Fu_N: float
     failure_mode: FailureMode = Field(description="collapse (the load fell 30 % below "
