@@ -832,8 +832,12 @@ nonlocal_onset`; the process-zone onset tried before doubled the 45 strip by hol
 the modes at their strengths, `validation/README.md` §3.4); a notched strip dissipates
 G_f x its ligament within 8 % on two meshes (`test_a_notched_strip_dissipates_the_
 fracture_energy_with_the_nonlocal_onset`); an open-hole strip of an isotropic test ply
-follows the average-stress criterion with the same L_c within HOLE_PCT for holes of
-half and one and a half L_c (`test_an_open_hole_follows_the_average_stress_criterion`).
+reads 7-11 % above the average-stress criterion with the same L_c, converged to 1 % on two
+meshes, for holes of half and one and a half L_c, the small one close to its net section
+and the large one far below it as the criterion has them (0.87 and 0.63 against 0.81 and
+0.58; locally 0.54 for the large hole on 1 mm elements): the criterion is an onset, and
+here the fibres at the hole soften from the stress they held and the crack grows stably
+for a while (`test_an_open_hole_follows_the_average_stress_criterion`).
 An average over a disc (the area method) was tried first and not adopted: it takes the
 unloaded wood beside a notch (its shadow) into the ligament's average, and a notched
 strip's ligament held 1.7-1.85 x its net section. Limits: a part shallower than about 2

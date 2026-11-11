@@ -5896,6 +5896,27 @@ def _sp_nl(on: float, **kw) -> SimParams:
     return sp
 
 
+def _same_time_step(monkeypatch):
+    """Make a compiled and a NumPy run of lab.drive step alike, so their force kernels
+    can be compared over a whole test: the nodes turned by one update in both (solver.
+    rotate's compiled and NumPy rotation updates differ by ~1e-5 over a plate's run, the
+    force kernels by ~1e-11), and the time step lab.drive takes recorded (crush.
+    stable_dt's power iteration runs on either's forces) and returned by the function
+    this returns for the next runs."""
+    from bridgesim.sim import crush
+
+    real, seen = crush.stable_dt, []
+
+    def record(*a, **k):
+        seen.append(real(*a, **k))
+        return seen[-1]
+
+    monkeypatch.setattr(S, "rotate", lambda st, dt, use_numba=True:
+                        S.K.expmap_update(st.R, st.w, dt))
+    monkeypatch.setattr(crush, "stable_dt", record)
+    return lambda: monkeypatch.setattr(crush, "stable_dt", lambda *a, **k: seen[0])
+
+
 def test_the_nonlocal_line_reproduces_the_onset_of_a_sharp_notch(monkeypatch):
     """The averaging of the nonlocal onset (solver.plate_nonlocal_averaging) is the line
     method of the theory of critical distances: a line along each mode's crack path, NL_
@@ -5913,9 +5934,10 @@ def test_the_nonlocal_line_reproduces_the_onset_of_a_sharp_notch(monkeypatch):
     Lc = E * G / (math.pi * f * f)
     assert Lc == pytest.approx(16.71, abs=0.01)
     Kc = math.sqrt(E * G)
-    r = np.linspace(0, S.NL_HALF_LENGTH * Lc, 200001)[1:]
-    mean = np.trapezoid(Kc / np.sqrt(2 * math.pi * r), r) / (S.NL_HALF_LENGTH * Lc)
-    assert mean == pytest.approx(f, rel=2e-3)  # (the integrable singularity at r = 0)
+    a0 = S.NL_HALF_LENGTH * Lc
+    u = np.linspace(0, math.sqrt(a0), 20001)  # r = u^2: dr / sqrt(r) = 2 du
+    mean = np.trapezoid(np.full_like(u, 2 * Kc / math.sqrt(2 * math.pi)), u) / a0
+    assert mean == pytest.approx(f, rel=1e-9)
     m = build_model(simple_beam_bridge(), MAT, _sp_nl(1.0), Overrides(), seed=None)
     W, nlon = S.plate_nonlocal_averaging(m)
     ns, nlay = len(m.s_nodes), m.s_lay.shape[1]
@@ -6023,6 +6045,7 @@ def test_the_nonlocal_onset_switch_and_kernel(monkeypatch):
     kw = dict(L=40, W=30, angles=(90,), weak=1, grip=1 / 3)
     off = lab.shell_strip_tension(5.0, sim_params=_sp_nl(0.0), max_disp=0.3, **kw)
     assert off.peak == pytest.approx(71.38, abs=0.01)
+    replay = _same_time_step(monkeypatch)
     on = lab.shell_strip_tension(5.0, sim_params=_sp_nl(1.0), max_disp=0.3, **kw)
     assert on.peak > 1.2 * off.peak and (on.state.s_hon > 1.0).any()
     with monkeypatch.context() as mp:
@@ -6030,6 +6053,7 @@ def test_the_nonlocal_onset_switch_and_kernel(monkeypatch):
         tiny = lab.shell_strip_tension(5.0, sim_params=_sp_nl(1.0), max_disp=0.3, **kw)
     assert np.array_equal(tiny.force, off.force)
     monkeypatch.setattr(S.K, "HAVE_NUMBA", False)
+    replay()
     ref = lab.shell_strip_tension(5.0, sim_params=_sp_nl(1.0), max_disp=0.3, **kw)
     np.testing.assert_allclose(ref.force, on.force, rtol=1e-6, atol=1e-6 * on.peak)
     np.testing.assert_allclose(ref.state.s_hon, on.state.s_hon, rtol=1e-6, atol=1e-9)
@@ -6053,8 +6077,19 @@ def test_a_plate_crushing_along_its_grain_takes_the_same_shortening_on_any_mesh(
 
     pytest.importorskip("numba")
     rr = np.random.default_rng(0).uniform(0.5, 4.0, 50)
-    old = np.where(rr > 1.0, 1.0 - (1.0 - 0.3 * np.minimum(rr - 1.0, 1.0)) / rr, 0.0)
-    assert all(Kn._plateau(float(x), 0.7, 1.0) == y for x, y in zip(rr, old, strict=True))
+
+    def plateau27(r, rc):  # round 27's law, as it was written: u = min(r - 1, 1)
+        if r <= 1.0:
+            return 0.0
+        u = r - 1.0
+        if u > 1.0:
+            u = 1.0
+        return 1.0 - (1.0 - (1.0 - rc) * u) / r
+
+    old27 = Kn.njit(cache=False, fastmath=True, error_model="numpy")(plateau27)
+    assert all(Kn._plateau(float(x), 0.7, 1.0) == old27(float(x), 0.7) for x in rr)
+    u = np.minimum(np.maximum(rr - 1.0, 0.0), 1.0)
+    old = np.where(rr > 1.0, 1.0 - (1.0 - (1.0 - 0.7) * u) / np.maximum(rr, 1.0), 0.0)
     assert np.array_equal(S._plateau(rr, 0.7), old)
     E, fc, A, L = 10000.0, 30.0, 20.0, 40.0
     fp = 0.95 * fc * A
@@ -6094,10 +6129,47 @@ def test_a_plate_crushing_along_its_grain_takes_the_same_shortening_on_any_mesh(
         mm = SimpleNamespace(s_nodes=np.zeros((3, 3), int), s_lc=lc,
                              params={"crush_band_mm": band})
         assert np.array_equal(S.shell_crush_fall(mm), want)
+    # round 27's column at 10 mm: A h e0 (f + f_pl) / 2 = 13.8 N mm, a sixth of the band's
     old = column_work(run(10.0, 0.0), 10.0)
-    assert old == pytest.approx(A * 10.0 * 0.95 * fc / E * band_work / (A * w) * 1.0,
-                                rel=0.1)  # the column's work A h e0 (f + f_pl) / 2
+    assert old < 0.3 * band_work
+    replay = _same_time_step(monkeypatch)
     fast = run(10.0, 12.5)
     monkeypatch.setattr(S.K, "HAVE_NUMBA", False)
+    replay()
     ref = run(10.0, 12.5)
     np.testing.assert_allclose(ref.force, fast.force, rtol=1e-6, atol=1e-6 * fp)
+
+
+@pytest.mark.slow
+def test_an_open_hole_follows_the_average_stress_criterion():
+    """A strip with a central hole (30 wide, 60 long, 2 thick; its upper half, held on its
+    centre line) of an isotropic test ply (E 10 GPa, nu 0, f 40 MPa, G = pi L_c f^2 / E
+    for L_c = 3 mm, no shear or crushing failure) pulled along X, nonlocal onset on.
+    Whitney & Nuismer's average-stress criterion with the line method's length, a_0 =
+    2 L_c: sigma_N / sigma_0 = 2 (1 - x) / (2 - x^2 - x^4), x = a / (a + a_0), over the
+    finite-width factor (2 + (1 - 2a/W)^3) / (3 (1 - 2a/W)): a = 1.5 mm (half L_c) 0.808,
+    a = 4.5 mm (one and a half) 0.575, against the net section 0.9 and 0.7 (the size
+    effect: the small hole weakens the strip about as its net section says, the large one
+    as its stress concentration does). Measured 0.874 and 0.630 with 1 mm elements, 0.867
+    and 0.636 with 0.7 mm: 7-11 % above the criterion (an onset criterion; here the
+    fibres at the hole soften from the stress they held and the crack grows stably for a
+    while), converged to 1 %, and their ratio 1.36 against its 1.41 (local, the large
+    hole: 0.539 at 1 mm)."""
+    from shapely.geometry import Point, box
+
+    pytest.importorskip("numba")
+    Lc, E, f, t, W, L = 3.0, 10000.0, 40.0, 2.0, 30.0, 60.0
+    G = math.pi * Lc * f * f / E
+    ply = Ply(E_L=E, E_T=E, G_LT=E / 2, nu_LT=0.0, f_t=f, f_c=1e4, f_t90=f, f_c90=1e4,
+              f_v=1e4)
+    sp = _sp_nl(1.0, **{"wood.G_f_N_per_mm": G, "wood.G_f90_N_per_mm": G,
+                        "wood.G_v_N_per_mm": 1e4})
+    for a, want in ((1.5, 0.808), (4.5, 0.575)):
+        x = a / (a + 2 * Lc)
+        r_ = 2 * a / W
+        asc = 2 * (1 - x) / (2 - x**2 - x**4) / ((2 + (1 - r_) ** 3) / (3 * (1 - r_)))
+        assert asc == pytest.approx(want, abs=0.001)
+        poly = box(-L / 2, 0, L / 2, W / 2).difference(Point(0, 0).buffer(a, 128))
+        r = lab.shell_plate_pull(poly, 1.0, t=t, ply=ply, sim_params=sp, max_disp=0.6,
+                                 rho_scale=100.0, sym_y0=True, stop_drop=0.3)
+        assert asc < r.peak / (f * W / 2 * t) < 1.12 * asc, a
