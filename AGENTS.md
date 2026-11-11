@@ -195,7 +195,9 @@ meanwhile, and `answer_with`: how to answer, as an overrides fragment (`bodies`,
   little inside the other (`near_miss:A | B`, important, one question per pair): up to
   0.8 mm they are glued as if they touched (a member drawn at a slightly different
   thickness than its gusset gap; if they are not glued, `glue: {"A | B": 0}`), 0.8-3 mm
-  apart they are not (close the gap in the CAD if they are);
+  apart they are not (close the gap in the CAD if they are): since round 28 such faces
+  are dry faces (joint `kind: dry` in `inspect`) that bear on each other, with friction,
+  once the test has closed their gap;
 * bodies the CAD file names that could not be read at all (`cad_unread`, important:
   they are missing from the model);
 * faces read only approximately (`cad_approximated:<body>`, important when they are a
@@ -222,8 +224,11 @@ meanwhile, and `answer_with`: how to answer, as an overrides fragment (`bodies`,
   `inspect` lists them as `butt_zones_mm`);
 * a loading plate that does not fit where it goes (`plate_fit`, important: parts closer
   together than the plate is wide; meanwhile they are taken as clear of it);
-* a rigid block directly under the loading plate (`rigid_under_plate:`), and the compact
-  parts in the load path modelled as rigid blocks (`rigid_blocks`);
+* a compact block directly under the loading plate (`rigid_under_plate:`), and the compact
+  parts in the load path (`rigid_blocks`; the ids are round 27's): since round 28 a block
+  is a few cells of its wood that deform and can split (`block.cell_mm`), so say which
+  way its sticks run (`grain`), or `kind: rigid` for a stand-in that is not wood (a steel
+  load hanger), or `kind: bar` / `shell` when it is really a member or a plate;
 * glued joints that are mostly end grain, a member's end glued flat (`end_grain_joints`):
   whether they are reinforced, and how well the cut ends fit (`scatter.bearing_gap_mm`: a
   cut end out of square stands off its seat at one edge, dry where the gap is wider than
@@ -246,7 +251,9 @@ designer *where* a part or a failure is ("the gusset at x = -310 mm, far side").
 ```yaml
 bodies:                     # by exact body name or glob pattern
   "Body 21531": {layup: "10-ply UD"}            # what an unnamed body is made of
-  "Saddle*": {kind: block}                      # bar | shell | frame | block | cable | ignore
+  "Saddle*": {kind: block}                      # bar | shell | frame | block | rigid | cable
+                                                 # | ignore (block: cells of its wood;
+                                                 # rigid: one rigid body, not wood)
   "Hub Tie Strap*": {glue_factor: 0.7}          # poorly glued part (x glue strength)
   "Spacer*": {glue_factor: 0}                   # touching but NOT glued
   "Top Chord*": {strength_factor: 0.9, grain: span}
@@ -329,7 +336,11 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
   crushed 0.1 mm deep: it bears more than its grain takes, and more glue there changes
   nothing (a `strengthen` step then says so and offers no glue what-if for that face: a
   bigger bearing face, or the grain along the force); `member_shear` means the member split along its
-  glue lines or grain (it keeps carrying axial load). Which part goes first can change
+  glue lines or grain (it keeps carrying axial load); `plate_shear` (since round 28) that
+  a plate split between its plies in out-of-plane shear (under the loading plate, at a
+  support: its what-if is a thicker plate, `section_scale`); `block_fracture` (since round
+  28) that a compact block split inside, along or across its grain (its what-if is
+  `strength_factor`, standing for a bigger block or its grain along the force). Which part goes first can change
   with the mesh when two parts are close to failing together: check with
   `--fidelity fine` before redesigning around one part, and use `ab` to confirm.
 * `events`: the first event of each kind per part, with `where_mm`; `events.csv` in the
@@ -341,7 +352,7 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
   0.1: 10^0.1), against the 60 s its coupons took (`glue.coupon_time_s`); a line that
   picks up load when its neighbour breaks is loaded fast.
 * `Fu_first_joint_failure_kgf`: the highest load up to the moment the first glued joint
-  separated or a member split in shear (what a strict judge who stops the test there
+  separated, a member or plate split in shear or a compact block split (what a strict judge who stops the test there
   reads: §12.5 counts "shear, including joint failure" as failure); it equals F_u when
   the first joint goes at or after the peak. `montecarlo` gives both readings:
   `recommended_prediction_kgf` (judged at the collapse, the usual practice) and
@@ -413,7 +424,11 @@ B's diagonal buckling at its butt joints are mechanisms the model cannot form. S
    stronger than one that takes 60 s, and `calibrate` brings each to `glue.coupon_time_s`;
    the crush test's `time_s` column times the crusher):
    `stick_bending_template.csv` (E, bending strength) and `glue_joint_template.csv`
-   (tau_g), which `calibrate` fits through the simulated coupons, and the direct ones:
+   (tau_g; since round 28 also `clamp_pressure_MPa`: laps of one size pulled while
+   clamped at two or more pressures give `glue.pressure_coeff`, how much more a pressed
+   glue line holds; and laps of three or more sizes, with `exposed_perimeter_mm` when it
+   is not twice the width, let `calibrate` tell the size law `glue.weibull_m` from
+   squeeze-out fillets, `glue.fillet_mm`), which `calibrate` fits through the simulated coupons, and the direct ones:
    `stick_tension_template.csv` (f_t), `stick_compression_template.csv` (f_c, short
    stacks), `crush_across_template.csv` (f_c90), `end_grain_template.csv` (the
    end-grain glue factor), `lap_slip_template.csv` (a lap test's load-slip record:
@@ -472,15 +487,26 @@ seat at one edge by a seeded fit-up gap (`scatter.bearing_gap_mm`); butt joints 
 laminated members and stick plates are assumed in a brick pattern unless
 `butt_stagger_mm` says otherwise; members are shear-flexible fibre beams
 (no splitting along the grain except through shear), tapered ones with their real
-profile (a part at least twice as long as its section is a member); compact blocks are
-rigid; plates crack ply by ply; plates made of narrow arms are frames of members (thick
-plates otherwise use thin-plate elements); the bearing faces seat over 0.3 mm, the support
+profile (a part at least twice as long as its section is a member), each stick with its
+own strength since round 28 (`scatter.stick_field`: a long member is as strong as its
+weakest section); compact blocks are a few rigid cells joined by their wood (they split
+only between cells; `kind: rigid` for one rigid body); plates crack ply by ply and, since
+round 28, deform and split between their plies in out-of-plane shear; plates made of
+narrow arms are frames of members; a glue line pressed together holds more in shear
+(`glue.pressure_coeff`, assumed until clamped laps measure it); the built bridge differs
+from the drawing by seeded amounts that are judgements until measured on a build (plates
+out of flat, members twisted, sticks thicker or thinner, members off their drawn line or
+cut long: `scatter.plate_flatness`, `twist_rad_per_m`, `thickness_cov`,
+`member_placement_mm`, `fit_mm`); the bearing faces seat over 0.3 mm, the support
 corners are up to 0.5 mm out of level and the bridge leans out of its plane by up to
 0.005 rad (`contact.seating_mm`, `scatter.support_level_mm`, `scatter.lean_rad`: measure
-them on the built bridge); parts that come into contact during the test push on each other without
-friction; time is compressed (the jack moves ~mm/s instead of mm/min; the glue's creep
-and its rate-dependent strength run on the physical test time, the jack's travel at the
-real rate; the wood is as dry as its coupons unless `wood.moisture_excess_pct` says the
+them on the built bridge); parts that come into contact during the test push on each other with
+their real section outlines and friction (`contact.friction_parts`; a compact block is
+no contact surface); time is compressed (the jack moves ~mm/s instead of mm/min; the glue's creep
+and its rate-dependent strength, and since round 28 the wood's strength and creep
+(`wood.rate_exponent`, `wood.creep_coeff`), run on the physical test time, the jack's travel at the
+real rate, or its strokes and pauses when the crusher is hand-pumped (`crusher.stroke_mm`,
+`stroke_time_s`, `pause_s`: time them from a video); the wood is as dry as its coupons unless `wood.moisture_excess_pct` says the
 members were laminated in the days before the test; F_u falls a few %
 as the simulated jack slows, -2.4 % from quick's 200 to 100 mm/s on Bridge_v10 and
 -0.5 % from 100 to 50: `--rate-check` measures it and extrapolates to a jack at rest).
