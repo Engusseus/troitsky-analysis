@@ -4576,7 +4576,7 @@ def test_the_woods_strength_follows_its_time_under_load():
 def test_a_member_held_near_its_strength_fails_when_the_law_says():
     """A member held at 95 % of its coupon-time strength (force control, a tension bar)
     breaks by itself once (t / t_ref)^-n has fallen to 0.95: by hand with the shipped
-    n = 0.02 and t_ref = 60 s, t = 60 x 0.95^(-1 / 0.02) = 780.6 s after its clock
+    n = 0.02 and t_ref = 60 s, t = 60 x 0.95^(-1 / 0.02) = 779.8 s after its clock
     started (its strength first ~16^n = 1.057 x: the law is taken no faster than 16x the
     coupons). The fall below the stress it carries puts its fibres on their softening
     branch (the kernel's law), not a jump: it cracks through (b_fractured). Its strengths
@@ -4599,7 +4599,7 @@ def test_a_member_held_near_its_strength_fails_when_the_law_says():
     k = run(fext, fix_t, fix_r, 60_000, 3000.0, dtp=0.02, stop=lambda s_: s_.dmg_t.max() > 0)
     assert k < 60_000
     t_e = st.t_test - wt.b_t0.max()
-    assert t_e == pytest.approx(tref * 0.95 ** (-1 / n), rel=0.005)  # 780.6 s
+    assert t_e == pytest.approx(tref * 0.95 ** (-1 / n), rel=0.005)  # 779.8 s
     run(fext, fix_t, fix_r, 20_000, 3000.0, dtp=0.02, stop=lambda s_: s_.b_fractured.any())
     assert st.b_fractured.any()
     woodtime.release(m)

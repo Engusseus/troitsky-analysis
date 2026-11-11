@@ -631,7 +631,7 @@ a standard 5-min test, n ~0.017) could not be rechecked in round 28. A coupon pu
 failure at two paces a decade apart breaks at loads in the ratio 10^(n / (1 + n)) (the
 stronger one takes longer), each at f (t_e / t_ref)^-n of its own time under load t_e
 (`test_the_woods_strength_follows_its_time_under_load`); a member held at 95 % of its
-strength breaks by itself after t_ref 0.95^(-1/n) = 781 s, the fall of its strength
+strength breaks by itself after t_ref 0.95^(-1/n) = 780 s, the fall of its strength
 below its stress putting its fibres on their softening branch, not a jump
 (`test_a_member_held_near_its_strength_fails_when_the_law_says`). *Creep*: an
 isochronous modulus, E(t) = E_ref (1 + phi(t_ref)) / (1 + phi(t)), phi(t) = a (t / 60
@@ -664,9 +664,13 @@ beam's damage and plastic strains are strains already, so a fibre already crushi
 whose modulus then falls moves back a little along its fall (its onset strain f_c / E
 grows: ~1 % of f_c at most over a test). A crush that peaks 10-40 s in at 10 mm/min
 finds its elements younger than the coupons: ~1-6 % stronger and ~0.4-1.4 % stiffer
-than their coupon-time values. `wood.rate_exponent` 0 and `wood.creep_coeff` 0 give
-round 27's model bit for bit (the coupon's forces in the first test above). `screen`
-and the coupons of `lab` take the coupon-time values.
+than their coupon-time values. On the benchmark (round 28, seed 0, both governed by a
+glued joint) the 10 mm truss moved +0.2 % (46.45 to 46.55 kgf, its secant stiffness
++1.4 %) and published test C +0.03 % (37.43 to 37.44, +0.8 %; its first break the same,
+the label moved to the top joint of the same vertical, which let go 0.05 mm later).
+`wood.rate_exponent` 0 and `wood.creep_coeff` 0 give round 27's model bit for bit (the
+coupon's forces in the first test above; the 10 mm truss's curve and events byte for
+byte). `screen` and the coupons of `lab` take the coupon-time values.
 
 **Scatter** (seeded, `--seed`; `--seed -1` for a perfect bridge): per stick, E (CoV 12 %)
 and strength (CoV 18 %), correlated (`scatter.E_strength_corr`, 0.7: stiffer wood is
@@ -796,7 +800,13 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   however it is split (`test_a_pumped_jacks_pause_lets_the_glue_creep_as_a_kelvin_
   element`); the wood's creep law is a function of each element's time, with no step to
   integrate. A run counts its pauses (`quality.pauses`) and times F_u on its own clock
-  (`test_time_at_Fu_s`); the replay's real-time clock still runs at the mean pace. From
+  (`test_time_at_Fu_s`); the replay's real-time clock still runs at the mean pace. On
+  the 10 mm truss (standard, seed 0) 1 mm strokes of 0.5 s at a mean 10 mm/min (5.5 s
+  pauses) relaxed the load by 1.4-1.8 % in each pause before the peak and moved F_u
+  +2.1 % (47.55 against 46.55 kgf, 24 s of test time against 17): the jack stood just
+  after the near side's joints let go at 2.9 mm, so the bridge was not called failed at
+  that fall and went on to fail at the far side's at 4.3 mm; the run took 64 % more
+  steps. From
   a video of the competition: count the strokes in a minute, read the head's travel over
   it against something of known size (the stroke: that over the count), and the frames
   in which the head moves within a stroke (its time; the pause the rest).
