@@ -1173,8 +1173,8 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
     near = [e for e in broke if e.load_kgf >= 0.9 * rep.Fu_kgf and e not in lead]
     if lead and lead[0].kind.startswith("member_"):
         # a joint whose glue was still intact when the governing member broke is its
-        # cascade (crush.glue_intact_at): more glue there leaves the run up to that break
-        # as it was, so it gets no what-if
+        # cascade (crush.glue_intact_at): its strength was never reached before that
+        # break, so more glue there cannot raise F_u and it gets no glue what-if
         late = glue_intact_at(pool, lead[0].t_s, when=lambda e: e.t_s)
         near = [e for e in near if not (e.kind.startswith("joint") and e.what in late)]
     # every joint of the governing part that broke with it (a diagonal's foot and both

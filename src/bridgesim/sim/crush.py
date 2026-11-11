@@ -799,12 +799,12 @@ def glue_intact_at(events, t: float, kind=lambda e: e.kind,
     first ``glue_damage`` event comes after it (a joint without one is not in the set:
     nothing says when its glue began to go). Such a joint letting go after a member broke
     at ``t`` is that break's cascade: an intact glue line carries its share elastically
-    and cannot have started the fall, and more glue there leaves the run up to the
-    member's break as it was (round 28: a laminated beam on two piers broke in bending at
-    the peak; its joint on a pier began to let go 2.3 ms later, as the beam fell, and
-    separated with the load gone; it was named and its glue x1.5 changed F_u by 0.0 %,
-    the beam's section x1.25 by +77 %). ``kind`` / ``when`` read an event's kind and
-    time (crush.Event or report.EventOut)."""
+    and cannot have started the fall, and more glue there (a stronger line, a little
+    stiffer in shear) leaves its strength unreached up to the member's break (round 28:
+    a laminated beam on two piers broke in bending at the peak; its joint on a pier began
+    to let go 2.3 ms later, as the beam fell, and separated with the load gone; it was
+    named and its glue x1.5 changed F_u by 0.0 %, the beam's section x1.25 by +77 %).
+    ``kind`` / ``when`` read an event's kind and time (crush.Event or report.EventOut)."""
     onset: dict[str, float] = {}
     for e in events:
         if kind(e) == "glue_damage":
