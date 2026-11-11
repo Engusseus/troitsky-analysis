@@ -2975,6 +2975,11 @@ def test_cut_ends_stand_off_their_seats_by_a_seeded_gap(tmp_path):
                                                  "x")
     sp = sp.updated({"scatter.bearing_gap_mm": 3.0, "glue.gap_fill_mm": 0.15,
                      "scatter.glue_cov": 0.0, "scatter.glue_bridge_cov": 0.0})
+    # (gaps this wide also leave the stringers' butt joints open, which since round 28
+    # splits them into ply groups: one beam each, so only the post's end faces differ)
+    from bridgesim.sim.idealize import Overrides
+
+    ov = Overrides.from_dict({"bodies": {"*": {"ply_groups": 1}}})
 
     def build(seed):
         m = study._build(bodies, mat, sp, ov, seed, 1.0, False)
