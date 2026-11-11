@@ -54,7 +54,8 @@ class Patch:
     normal: np.ndarray  # from A towards B
     springs: list[int] = field(default_factory=list)
     kind: str = "glue"  # "glue", "tie" (floss knot), "bonded" (bodies overlap in CAD),
-    # "solid" (two bodies of one piece of wood: the wood's strength across the face)
+    # "solid" (two bodies of one piece of wood: the wood's strength across the face),
+    # "dry" (faces drawn apart, not glued: they bear once their gap has closed)
     polygon: np.ndarray | None = None  # (k, 3) outline
     strength_MPa: float = 0.0  # average shear strength of its face (before scatter and
     # glue factors): tau_g x the lap size factor, the interlaminar strength of a

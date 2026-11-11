@@ -63,11 +63,13 @@ class BodyReport(BaseModel):
 class JointReport(BaseModel):
     a: str
     b: str
-    kind: Literal["glue", "tie", "bonded", "solid"] = Field(description=(
+    kind: Literal["glue", "tie", "bonded", "solid", "dry"] = Field(description=(
         "glue (a glued joint), tie (a floss knot), bonded (bodies that overlap in the "
         "CAD), solid (two bodies of one piece of wood, glue override 'solid': the face "
         "between them breaks at the wood's shear strength f_v / 1.5 averaged, as a "
-        "notched end, and its tension across the grain)"))
+        "notched end, and its tension across the grain), dry (two faces drawn apart, "
+        "0.8-3 mm, or left unglued by the overrides: no glue; they bear on each other, "
+        "with friction, once the gap has closed)"))
     area_mm2: float
     lamination: bool = Field(False, description=(
         "Two plates glued face to face (a deck's plies drawn as separate bodies): glued "

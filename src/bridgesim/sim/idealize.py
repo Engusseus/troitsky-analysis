@@ -396,8 +396,9 @@ def find_patches(bodies: list[CadBody], outlines: list | None = None,
     one (a's, b's) pair per patch (how far a gusset reaches past a member lapped on it).
     ``near``: if given, faces that face each other over an overlap but are drawn apart
     (a gap, + mm) or one inside the other part (-, mm) by more than CONTACT_TOL_MM are
-    listed in it as (a, b, area, offset, index of its patch or None, a's normal); up to
-    NEAR_GLUE_MM they are patches too."""
+    listed in it as (a, b, area, offset, index of its patch or None, a's normal, (overlap,
+    origin, e1, e2, a's outline, b's outline)); up to NEAR_GLUE_MM they are patches too
+    (the others, not glued, become dry faces that bear once their gap closes)."""
     reach = NEAR_ASK_MM if near is not None else CONTACT_TOL_MM
     lo = np.array([b.mesh.bbox[0] for b in bodies]) - reach
     hi = np.array([b.mesh.bbox[1] for b in bodies]) + reach
@@ -436,7 +437,8 @@ def find_patches(bodies: list[CadBody], outlines: list | None = None,
                     if abs(off) > CONTACT_TOL_MM:
                         glued = abs(off) < NEAR_GLUE_MM
                         near.append((ia, ib, float(inter.area), off,
-                                     len(out) if glued else None, na))
+                                     len(out) if glued else None, na,
+                                     (inter, oa, e1, e2, pa, pbp)))
                         if not glued:
                             continue
                     out.append((ia, ib, inter, oa, e1, e2, na))
@@ -1424,6 +1426,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         keep_k = [k_ for k_ in range(len(raw_patches)) if k_ not in gone]
         raw_patches = [raw_patches[k_] for k_ in keep_k]
         raw_outlines[:] = [raw_outlines[k_] for k_ in keep_k]
+    near_all = list(near_faces)
     near_faces = [x for x in near_faces if not unglued(x[0], x[1])]
     # nor a gap another part fills (a chord between a splice and a diagonal laid over
     # it): a third part touching both on faces parallel to theirs
@@ -1438,11 +1441,19 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         return bool((ca & cb) - {a_, b_})
 
     near_faces = [x for x in near_faces if not filled(x[0], x[1], x[5])]
+    # the faces drawn apart that are not glued (more than NEAR_GLUE_MM apart, or a pair
+    # the overrides leave unglued) are dry faces: their points start broken, held apart
+    # by the drawn gap (none for one drawn inside the other), and bear, with friction and
+    # crushing, once it has closed (since round 28; until then they had nothing, and the
+    # pair was kept from touching at all)
+    dry_faces = [x for x in near_all
+                 if (abs(x[3]) >= NEAR_GLUE_MM or unglued(x[0], x[1]))
+                 and not filled(x[0], x[1], x[5])]
     # faces drawn close but apart, or one inside the other: glued as if they touched up
     # to NEAR_GLUE_MM, asked about one pair at a time (an acknowledgement covers that
     # pair only), the largest first
     by_pair: dict[tuple[int, int], list] = {}
-    for ia_, ib_, ar_, off_, _k, _n in near_faces:
+    for ia_, ib_, ar_, off_, _k, _n, _g in near_faces:
         by_pair.setdefault((ia_, ib_), []).append((ar_, off_))
     for (ia_, ib_), lst in sorted(by_pair.items(), key=lambda kv: -sum(a for a, _ in kv[1])):
         ar_ = sum(a for a, _ in lst)
@@ -1463,7 +1474,11 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                         "slightly different thickness than the gap it sits in, or plates "
                         "offset for the glue line, leave such gaps.)",
             "assumed": ("glued as if they touched" if glued else
-                        f"not glued (more than {NEAR_GLUE_MM} mm apart)"),
+                        f"not glued (more than {NEAR_GLUE_MM} mm apart): they bear on each "
+                        f"other, with friction, once the {off_:.2f} mm gap has closed"
+                        if off_ > 0 else
+                        f"not glued (one more than {NEAR_GLUE_MM} mm inside the other): "
+                        "they bear on each other, with friction, as faces that touch"),
             "answer_with": ({"glue": {f"{na_} | {nb_}": 0},
                              "cad": "close the gap (or the overlap) in SolidWorks"}
                             if glued else
@@ -2116,7 +2131,13 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     # reaches past a member lapped on it: panel_factor)
     sides_of: dict[int, tuple] = {}
     mesh_ratio_of: dict[int, float] = {}
-    for k_raw, (ia, ib, inter, oa, e1, e2, na) in enumerate(raw_patches):
+    # the dry faces (drawn apart, not glued) get their bearing points as glued faces get
+    # their glue points, after them: dry_of holds each one's drawn offset
+    all_faces = list(raw_patches) + [(x[0], x[1], x[6][0], x[6][1], x[6][2], x[6][3], x[5])
+                                 for x in dry_faces]
+    face_outlines = list(raw_outlines) + [(x[6][4], x[6][5]) for x in dry_faces]
+    dry_of: dict[int, float] = {}
+    for k_raw, (ia, ib, inter, oa, e1, e2, na) in enumerate(all_faces):
         if shapes[ia].kind in ("ignore", "cable") or shapes[ib].kind in ("ignore", "cable"):
             continue
         # the shell's own nodes carry the glue where the patch lies on its face, or joins
@@ -2190,7 +2211,9 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             hull = np.asarray(inter.convex_hull.exterior.coords)
             face_of[len(patch_pts3)] = oa + np.outer(hull[:, 0], e1) + np.outer(hull[:, 1],
                                                                               e2)
-        sides_of[len(patch_pts3)] = (inter, e1, e2) + tuple(raw_outlines[k_raw])
+        sides_of[len(patch_pts3)] = (inter, e1, e2) + tuple(face_outlines[k_raw])
+        if k_raw >= len(raw_patches):
+            dry_of[len(patch_pts3)] = float(dry_faces[k_raw - len(raw_patches)][3])
         mesh_ratio_of[len(patch_pts3)] = max(
             [shell_mesh[b_][2] / max(p_min, 1e-6) for b_ in (ia, ib)
              if shapes[b_].kind == "shell"] or [0.0])
@@ -2222,6 +2245,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     # both its faces (between two gussets) from one glued on one
     faces_on: dict[int, list[tuple[int, np.ndarray, np.ndarray]]] = {}
     for k_, (ia_, ib_, p3_, n_, *_r) in enumerate(patch_pts3):
+        if k_ in dry_of:  # a dry face bears behind nothing until its gap has closed
+            continue
         c_ = np.asarray(p3_, float).reshape(-1, 3)  # its glue points (a long face: many)
         faces_on.setdefault(ia_, []).append((k_, np.asarray(n_, float), c_))
         faces_on.setdefault(ib_, []).append((k_, -np.asarray(n_, float), c_))
@@ -2523,7 +2548,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
 
     springs: dict[str, list] = {k: [] for k in ("a", "b", "area", "n0", "Kn", "Ks", "sig",
                                                 "tau", "GIc", "GIIc", "mu", "patch",
-                                                "breakable", "d0", "fc", "cdep")}
+                                                "breakable", "d0", "fc", "cdep", "gap0")}
     end_grain_joints: list[tuple[str, str, float]] = []
     patches: list[Patch] = []
     # the workmanship of the whole build: one factor on every joint of the bridge
@@ -2536,6 +2561,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     # contact gained or lost beside it does not redraw it (round 24)
     by_pair: dict[tuple[int, int], list[tuple[tuple, int]]] = {}
     for k_, (ia_, ib_, _p, _n, a_, cad_c_, _w) in enumerate(patch_pts3):
+        if k_ in dry_of:  # no glue, no draw: the glued joints keep their streams
+            continue
         by_pair.setdefault((min(ia_, ib_), max(ia_, ib_)), []).append(
             ((-int(round(float(a_))),) + tuple(
                 np.floor(np.asarray(cad_c_, float) + 0.5).astype(int).tolist()), k_))
@@ -2544,6 +2571,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         for r_, (_c, k_) in enumerate(sorted(lst)):
             pair_rank[k_] = r_
     for k_patch, (ia, ib, pts3, na, area, _cad_c, wts) in enumerate(patch_pts3):
+        if k_patch in dry_of:
+            continue
         key = "|".join(sorted((bodies[ia].name, bodies[ib].name)))
         # the stream of its random glue strength: a joint alone between its two bodies by
         # their names (an edit that moves it keeps its draw, so ab compares the design,
@@ -2754,9 +2783,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                          + 1.0 / wood_normal_stiffness(k_patch, ia, cen, na, float(area))
                          + 1.0 / wood_normal_stiffness(k_patch, ib, cen, -na,
                                                        float(area)))
-        for wa, a_, b_, d_, fl in zip(wts, att_a, att_b, dry, fill, strict=True):
+        for wa, a_, b_, d_, fl, gi in zip(wts, att_a, att_b, dry, fill, gaps, strict=True):
             # glue_factor 0: not glued; past the glue's reach across a fit-up gap: dry
             springs["d0"].append(1.0 if gf <= 0 or d_ else 0.0)
+            springs["gap0"].append(float(gi) if d_ else 0.0)  # held apart by the gap
             springs["a"].append(a_)
             springs["b"].append(b_)
             springs["area"].append(float(wa))
@@ -2788,6 +2818,57 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             springs["mu"].append(sp_glue["friction"])
             springs["patch"].append(pid)
             springs["breakable"].append(True)
+            springs["fc"].append(f_bear)
+            springs["cdep"].append(c_dep)
+            patches[pid].springs.append(len(springs["a"]) - 1)
+    # dry faces: two faces drawn apart (a near miss more than NEAR_GLUE_MM apart, or any
+    # the overrides leave unglued) bear on each other once their gap has closed, as a dry
+    # fit-up gap does: points spread over the overlap as glue points are, started broken
+    # (no glue: neither glued area nor glue that fails), their two sides attached to the
+    # two faces where they are drawn (a face drawn inside the other: where it would
+    # touch), so each bears from the moment its own gap has closed, with the stiffness of
+    # a glued face (glue.K_n in series with the wood on either side), the wood under it
+    # crushing at its grain's bearing strength, and friction (glue.friction) once pressed
+    for k_patch, (ia, ib, pts3, na, area, _cad_c, wts) in enumerate(patch_pts3):
+        if k_patch not in dry_of:
+            continue
+        gap = max(dry_of[k_patch], 0.0)
+        for key, val in ov.glue.items():
+            if not val and _joint_matches(key, bodies[ia].name, bodies[ib].name):
+                ov.used.add(key)
+        pid = len(patches)
+        cen = pts3.mean(0)
+        patches.append(Patch(ia, ib, float(area), cen, na, kind="dry"))
+        fa, _ea = bearing_at(ia, cen, na, k_patch, float(area))
+        fb, _eb = bearing_at(ib, cen, -na, k_patch, float(area))
+        f_bear = min(fa, fb)
+        c_dep = min(crush_depth(i, na) for i, f in ((ia, fa), (ib, fb))
+                    if f <= 1.05 * f_bear)
+        kn_line = 1.0 / (1.0 / sp_glue["K_n_N_per_mm3"]
+                         + 1.0 / wood_normal_stiffness(k_patch, ia, cen, na, float(area))
+                         + 1.0 / wood_normal_stiffness(k_patch, ib, cen, -na,
+                                                       float(area)))
+        u_lap = lap_direction(ia, ib, na)
+        c_wood = (shear_compliance(k_patch, ia, cen, na, float(area), u_lap)
+                  + shear_compliance(k_patch, ib, cen, -na, float(area), u_lap))
+        ks_line = 1.0 / (1.0 / sp_glue["K_s_N_per_mm3"] + c_wood)
+        for wa, p in zip(wts, pts3, strict=True):
+            springs["a"].append(attach(ia, p))
+            springs["b"].append(attach(ib, p + gap * na))
+            springs["area"].append(float(wa))
+            springs["n0"].append(na)
+            springs["Kn"].append(kn_line)
+            springs["Ks"].append(ks_line)
+            # (no glue: started broken, d0 = 1; a token strength as a glue_factor 0 has)
+            springs["tau"].append(1e-3 * mat.glue.tau_g_MPa.value)
+            springs["sig"].append(1e-3 * mat.glue.tau_g_MPa.value * sp_glue["peel_to_shear"])
+            springs["GIc"].append(1e-3 * sp_glue["G_Ic_N_per_mm"])
+            springs["GIIc"].append(1e-3 * sp_glue["G_IIc_N_per_mm"])
+            springs["mu"].append(sp_glue["friction"])
+            springs["patch"].append(pid)
+            springs["breakable"].append(True)
+            springs["d0"].append(1.0)
+            springs["gap0"].append(gap)
             springs["fc"].append(f_bear)
             springs["cdep"].append(c_dep)
             patches[pid].springs.append(len(springs["a"]) - 1)
@@ -2913,6 +2994,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             springs["patch"].append(pid)
             springs["breakable"].append(True)
             springs["d0"].append(0.0)
+            springs["gap0"].append(0.0)
             springs["fc"].append(ply.f_c90)
             springs["cdep"].append(1e30)
             patches[pid].springs.append(len(springs["a"]) - 1)
@@ -3198,6 +3280,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 "deck_bodies": deck_bodies, "deck_y": deck_y,
                 "test_rate_mm_per_min": sp["crusher.test_rate_mm_per_min"],
                 "c_d0": np.array(springs["d0"], float),
+                "c_gap0": np.array(springs["gap0"], float),
+                "friction_parts": sp.values.get("contact.friction_parts", 0.4),
                 "fmax_p": np.array(p_fmax, float), "fmax_q": np.array(q_fmax, float),
                 "p_lift": p_lift, "seating_mm": sp["contact.seating_mm"],
                 "mass_change_kg": mass_change_t / TONNE_PER_KG,
