@@ -3403,7 +3403,7 @@ def _mesh_robust(poly, h: float, name: str, fixed=None):
                      f"({poly.area:.0f} mm^2){': ' + str(last) if last else ''}")
 
 
-THICK_H = 1.5  # smallest shell element / plate thickness (Kirchhoff plates)
+THICK_H = 1.5  # smallest shell element / plate thickness (set for Kirchhoff plates)
 
 #: a plate whose arms are narrower than this many shell elements (at the standard element
 #: size, so the choice is the same at every fidelity) is a frame of members along its
@@ -3504,7 +3504,9 @@ def _shell_h(sh: Shape) -> float:
     h = float(np.clip(math.sqrt(sh.poly.area) / 5, 10.0, 30.0))
     h = min(h, max(sh.Wp / 2.5, 6.0))
     # Kirchhoff (DKT) plates ignore shear deformation, which is only right for elements
-    # several times larger than the thickness: thick plates get coarse elements
+    # several times larger than the thickness: thick plates get coarse elements (kept
+    # since round 28, when the plates became shear-deformable, so the meshes stay those
+    # of round 27; finer would need a mesh study)
     return max(h, min(THICK_H * sh.T, 60.0))
 
 
