@@ -2894,9 +2894,9 @@ PLACEHOLDER_PRIORS = {
     "glue.G_Ic_N_per_mm": 0.45, "glue.gap_fill_mm": 0.40, "glue.coupon_time_s": 0.40,
     "scatter.glue_bridge_cov": 0.40, "scatter.E_cov": 0.30, "scatter.strength_cov": 0.30,
     "wood.crush_softening": 0.30,
-    # round 28: friction between parts that come into contact (wood on wood, 0.25-0.6
-    # with the surface and the moisture: the contact between parts was frictionless
-    # until then)
+    # round 28: friction between parts that come into contact (dry wood on wood 0.25-0.5,
+    # wet 0.2, Bowden & Tabor 1950: the contact between parts was frictionless until
+    # then)
     "contact.friction_parts": 0.30,
 }
 # placeholders drawn additively, value + sd x z within (low, high): the wood's moisture
