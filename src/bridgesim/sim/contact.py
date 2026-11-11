@@ -13,16 +13,18 @@ diagonal pressing on its neighbour, a member that seats on a part it was drawn c
   frame (built as the beam kernel builds it); its ends are faces only where the member
   ends (an end shared with the next element of the same body is open, the box reaching
   on past it, so a point near a joint between elements is pushed out through the
-  member's side, not along its axis). Shell elements are slabs of their thickness
-  (distance to the closest point of the triangle). Until round 27 a beam was a capsule
-  of the radius of the circle with the section's area: a 21 x 47 mm chord was 6 mm too
-  slim one way and 7 mm too fat the other;
+  member's side, not along its axis). A shell element is a slab: its triangle times
+  the plate's thickness, square-edged. Until round 27 a beam was a capsule of the radius
+  of the circle with the section's area (a 21 x 47 mm chord 6 mm too slim one way and 7
+  mm too fat the other) and a slab's edges were rounded by half its thickness (a 50 mm
+  pier read as a plate reached 25 mm past its top);
 * slave points: the outline of each member's section at each beam node and element
   mid-point (its four corners and the middle of each side, and more along a side longer
   than an element, so no two are farther apart than an element), carried on the node by
-  rigid arms; shell nodes (a sphere of half the plate's thickness); the corners of rigid
-  blocks. (Corners alone miss two members of one width lying flush: each corner is on
-  the other's side face, at no depth however far they are pressed together);
+  rigid arms; a point on each face of a plate at each of its nodes, and its mid-surface
+  at the nodes along its edges; the corners of rigid blocks. (Corners alone miss two
+  members of one width lying flush: each corner is on the other's side face, at no depth
+  however far they are pressed together);
 * a point never pushes on its own body. Two bodies joined by a patch (glue, a tie, one
   piece drawn as two, a dry face drawn apart) do not push on each other near that patch:
   a point closer to one of the patch's glue points than the larger section depth of the
@@ -324,18 +326,42 @@ def _gap(p, e, x, R, el_nodes, el_kind, el_r, el_h, el_c, el_q0, el_cap):
         ay = x[n0, 1] + u * ll * a1
         az = x[n0, 2] + u * ll * a2
         return g, nx, ny, nz, ax, ay, az, 1.0 - u, u, 0.0
-    # slab over a triangle: closest point of the triangle, edges included
+    # a slab: the triangle times the plate's thickness, square-edged (a prism): its
+    # closest point is the triangle's closest point to p's projection, lifted by p's
+    # height clamped to the half thickness; inside, the nearest face (its edges, shared
+    # with the next element, open)
     w0, w1, w2 = _closest_on_triangle(p, x, n0, n1, n2)
     ax = w0 * x[n0, 0] + w1 * x[n1, 0] + w2 * x[n2, 0]
     ay = w0 * x[n0, 1] + w1 * x[n1, 1] + w2 * x[n2, 1]
     az = w0 * x[n0, 2] + w1 * x[n1, 2] + w2 * x[n2, 2]
-    gx = p[0] - ax
-    gy = p[1] - ay
-    gz = p[2] - az
-    dist = math.sqrt(gx * gx + gy * gy + gz * gz)
-    if dist < 1e-9:  # on the mid-surface: no normal (passed through)
-        return 1e30, 0.0, 0.0, 0.0, ax, ay, az, w0, w1, w2
-    return (dist - el_r[e], gx / dist, gy / dist, gz / dist, ax, ay, az, w0, w1, w2)
+    u0 = x[n1, 0] - x[n0, 0]
+    u1 = x[n1, 1] - x[n0, 1]
+    u2 = x[n1, 2] - x[n0, 2]
+    v0 = x[n2, 0] - x[n0, 0]
+    v1 = x[n2, 1] - x[n0, 1]
+    v2 = x[n2, 2] - x[n0, 2]
+    m0 = u1 * v2 - u2 * v1
+    m1 = u2 * v0 - u0 * v2
+    m2 = u0 * v1 - u1 * v0
+    mn = max(math.sqrt(m0 * m0 + m1 * m1 + m2 * m2), 1e-30)
+    m0 /= mn
+    m1 /= mn
+    m2 /= mn
+    hgt = (p[0] - x[n0, 0]) * m0 + (p[1] - x[n0, 1]) * m1 + (p[2] - x[n0, 2]) * m2
+    d0 = p[0] - hgt * m0 - ax  # in the plane: from the triangle to p's projection
+    d1 = p[1] - hgt * m1 - ay
+    d2 = p[2] - hgt * m2 - az
+    din = math.sqrt(d0 * d0 + d1 * d1 + d2 * d2)
+    ht = el_r[e]
+    if din <= 1e-9:
+        sg = _sgn(hgt)
+        return abs(hgt) - ht, sg * m0, sg * m1, sg * m2, ax, ay, az, w0, w1, w2
+    hc = min(ht, max(-ht, hgt))
+    gx = d0 + (hgt - hc) * m0
+    gy = d1 + (hgt - hc) * m1
+    gz = d2 + (hgt - hc) * m2
+    g = math.sqrt(gx * gx + gy * gy + gz * gz)
+    return g, gx / g, gy / g, gz / g, ax, ay, az, w0, w1, w2
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
@@ -834,16 +860,34 @@ def setup(m: Model, x: np.ndarray, mass: np.ndarray, dt: float, k_nom: float = 2
         for e in range(nb_):
             ring(int(m.b_i[e]), e, 0.5 * (X[m.b_j[e]] - X[m.b_i[e]]), e)
     if ns_:
-        node_r = np.full(m.n_nodes, -1.0)
+        # a plate: a point on each of its two faces at every node (its element's normal
+        # times half its thickness), and its mid-surface at the nodes along its edges
+        # (until round 27 a sphere of half its thickness at each node, which a thick
+        # plate - a 50 mm pier read as one - pushed half its thickness past its edges)
+        sn = np.asarray(m.s_nodes)
+        half_t = np.full(m.n_nodes, -1.0)
         for a in range(3):
-            np.maximum.at(node_r, m.s_nodes[:, a], np.asarray(m.s_t, float) / 2)
-        for nd in np.where(node_r >= 0)[0]:
-            a_node.append(int(nd))
-            a_r0.append(np.zeros(3))
-            s_att.append(len(a_node) - 1)
-            s_r.append(float(node_r[nd]))
-            s_body.append(int(m.node_body[nd]))
-            s_el.append(-1)
+            np.maximum.at(half_t, sn[:, a], np.asarray(m.s_t, float) / 2)
+        nrm = np.cross(X[sn[:, 1]] - X[sn[:, 0]], X[sn[:, 2]] - X[sn[:, 0]])
+        nrm /= np.maximum(np.linalg.norm(nrm, axis=1), 1e-30)[:, None]
+        n_of = np.zeros((m.n_nodes, 3))
+        for a in (2, 1, 0):  # each node: the normal of the first element it is in
+            n_of[sn[::-1, a]] = nrm[::-1]
+        edges = np.sort(np.r_[sn[:, [0, 1]], sn[:, [1, 2]], sn[:, [2, 0]]], axis=1)
+        uq, cnt_e = np.unique(edges, axis=0, return_counts=True)
+        rim = np.zeros(m.n_nodes, bool)
+        rim[uq[cnt_e == 1].ravel()] = True
+        for nd in np.where(half_t >= 0)[0]:
+            offs = [half_t[nd] * n_of[nd], -half_t[nd] * n_of[nd]]
+            if rim[nd]:
+                offs.append(np.zeros(3))
+            for o in offs:
+                a_node.append(int(nd))
+                a_r0.append(o)
+                s_att.append(len(a_node) - 1)
+                s_r.append(0.0)
+                s_body.append(int(m.node_body[nd]))
+                s_el.append(-1)
     blocks = {i for i, b in enumerate(m.bodies) if b.kind == "block"}
     for a in m.p_att:
         if m.node_body[m.a_node[a]] in blocks:

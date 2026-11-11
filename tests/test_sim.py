@@ -4252,14 +4252,17 @@ def test_where_the_bridge_sits_in_the_cad_changes_no_joint():
     from bridgesim.cad.synthetic import upright
 
     taus = []
-    for h2 in (30.0, 29.0):  # the second post touching the chord over 2 x 18 mm, or not
+    # the second post touching the chord over 2 x 18 mm, or 1 mm under it (since round 28
+    # a dry face there, which bears once closed: no glue, no draw)
+    for h2 in (30.0, 29.0):
         u = upright("Seat (9-ply UD)", [(0, 0), (60, 0), (60, h2), (58, h2), (58, 10),
                                         (25, 10), (25, 30), (0, 30)], 0, 18)
         chord = box("Chord (9-ply UD)", (-50, 30, 0), (110, 50, 18))
         m = build_model(simple_beam_bridge() + [u, chord], MAT, SP, Overrides(), seed=1)
         names = [b.name for b in m.bodies]
         ps = sorted((p for p in m.patches if {names[p.body_a], names[p.body_b]}
-                     == {"Seat (9-ply UD)", "Chord (9-ply UD)"}), key=lambda p: -p.area_mm2)
+                     == {"Seat (9-ply UD)", "Chord (9-ply UD)"} and p.kind != "dry"),
+                    key=lambda p: -p.area_mm2)
         assert len(ps) == (2 if h2 == 30.0 else 1)
         taus.append(float(m.c_tau[np.array(ps[0].springs)].mean()))
     assert taus[0] == pytest.approx(taus[1], rel=1e-9)
