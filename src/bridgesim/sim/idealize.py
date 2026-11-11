@@ -2067,23 +2067,31 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         rec = {"c": c, "u": u, "nrm": nrm, "s0": s0, "T": T, "groups": list(groups),
                "x": [], "ids": [], "gaps": []}
         all_ids: list[int] = []
-        # every group on the same stations, the open joints' edges among them: a group
-        # that runs through a joint has an element across its gap (the net section the
-        # load crosses there) and its glue to a butted ply ends at the gap's edge, on its
-        # own side (a node shared across the gap would let the butted plies push on each
-        # other past the net section)
+        # stations: a group butted open at a joint ends at the gap's edges (its elements
+        # there at least half an element long); a group that runs through it has an
+        # element of the usual length across the gap, centred on it (the net section the
+        # load crosses there: no node of it inside the gap, where the glue of a butted ply
+        # on either side would reach it and let the two push on each other past the net
+        # section; no element as short as the gap, which would set the time step)
         all_gaps = sorted((xc - g_b / 2, xc + g_b / 2) for xc, _cut in zones) \
             if open_all else []
         hs_ = float(np.diff(xu).max())
-        xs = [x for x in xu if x in (xu[0], xu[-1])
-              or not any(a - 0.3 * hs_ < x < b_ + 0.3 * hs_ for a, b_ in all_gaps)]
-        xs = np.array(sorted({*xs, *(v for ab in all_gaps for v in ab)}))
+
+        def stations(gp):
+            spans = [(a, b_) if (a, b_) in gp else
+                     (0.5 * (a + b_) - 0.5 * max(hs_, b_ - a + 0.5),
+                      0.5 * (a + b_) + 0.5 * max(hs_, b_ - a + 0.5)) for a, b_ in all_gaps]
+            xs_ = [x for x in xu if x in (xu[0], xu[-1])
+                   or not any(a - 0.5 * hs_ < x < b_ + 0.5 * hs_ for a, b_ in spans)]
+            return np.array(sorted({*xs_, *(v for ab in spans for v in ab)}))
+
         for k0, k1 in groups:
             ng = k1 - k0
             Tg = ng * t_p
             zg = -T / 2 + 0.5 * (k0 + k1) * t_p
             gp = sorted((xc - g_b / 2, xc + g_b / 2) for xc, cut in zones
                         if open_all and k0 in cut)
+            xs = stations(gp)
             ids = [bld.node(c + (s0 + x) * u + bow_a * math.sin(math.pi * x / L) * bow_dir
                             + zg * nrm, bi) for x in xs]
             rec["x"].append(xs)
@@ -2164,7 +2172,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             if L > lo:
                 bonded.append((lo, L))
             xs_all = np.unique(np.round(np.r_[rec["x"][gi], rec["x"][gi + 1]], 6))
-            pts, trib = [], []
+            pts, trib, side = [], [], []
             for a, b_ in bonded:
                 xi = np.unique(np.r_[a, xs_all[(xs_all > a + 0.1) & (xs_all < b_ - 0.1)], b_])
                 if len(xi) < 2:
@@ -2174,12 +2182,14 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 tr[1:] += 0.5 * np.diff(xi)
                 pts += list(xi)
                 trib += list(tr)
+                side += [(a, b_)] * len(xi)
             if not pts:
                 continue
             k0a, k1a = groups[gi]
             angs2 = [sh.layup.angles[k1a - 1], sh.layup.angles[k1a]]
             ply_ifaces.append({
                 "bi": bi, "ga": gi, "gb": gi + 1, "x": np.array(pts), "trib": np.array(trib),
+                "side": side,
                 "z": -T / 2 + k1a * t_p, "t_p": t_p, "Sf": Sf, "W": wid, "off": offs,
                 "xu": xu, "tau": interlaminar_strength(angs2, f_v, il_strength["f_rolling"],
                                                        il_strength["bond"] * gf) * Sf,
@@ -2591,13 +2601,16 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                          f"{infos[bi].kind}: only a member, a bar of two plies or more, "
                          "can be split into ply groups)")
 
-    def attach_group(bi: int, gi: int, p: np.ndarray) -> int:
+    def attach_group(bi: int, gi: int, p: np.ndarray, lo: float = -math.inf,
+                     hi: float = math.inf) -> int:
         """A point on ply group gi of a member split into ply groups: on its node nearest
-        along the member."""
+        along the member, among those from ``lo`` to ``hi`` (a glue line's bonded stretch
+        between open joints: the point's own side of them)."""
         g = bar_groups[bi]
         s = float((p - g["c"]) @ g["u"]) - g["s0"]
-        k = int(np.argmin(np.abs(g["x"][gi] - s)))
-        return bld.attach(int(g["ids"][gi][k]), p)
+        xg = g["x"][gi]
+        d = np.abs(xg - s) + np.where((xg >= lo - 1e-6) & (xg <= hi + 1e-6), 0.0, 1e9)
+        return bld.attach(int(g["ids"][gi][int(np.argmin(d))]), p)
 
     def attach(bi: int, p: np.ndarray) -> int:
         sh = shapes[bi]
@@ -3484,14 +3497,14 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                              plies=spec["plies"]))
         patches[pid].strength_MPa = tau_i
         xm = 0.5 * (spec["xu"][:-1] + spec["xu"][1:])
-        for x, t_ in zip(xs, tr, strict=True):
+        for x, t_, (lo_, hi_) in zip(xs, tr, spec["side"], strict=True):
             We = float(np.interp(x, xm, spec["W"]))
             oy = float(np.interp(x, xm, spec["off"]))
             for yq in (-1.0, 1.0):
                 p = c + (g["s0"] + x) * u + spec["z"] * nrm \
                     + (oy + yq * We / (2.0 * math.sqrt(3.0))) * w_ax
-                springs["a"].append(attach_group(bi, spec["ga"], p))
-                springs["b"].append(attach_group(bi, spec["gb"], p))
+                springs["a"].append(attach_group(bi, spec["ga"], p, lo_, hi_))
+                springs["b"].append(attach_group(bi, spec["gb"], p, lo_, hi_))
                 springs["area"].append(float(t_ * We / 2.0))
                 springs["n0"].append(nrm.copy())
                 springs["Kn"].append(kn_i)
