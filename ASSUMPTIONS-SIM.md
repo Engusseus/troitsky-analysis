@@ -323,7 +323,14 @@ expected: its buckling needs a kink at the joint or unglued outer plies as well.
   onset used only the opening and the friction acted on the debonded share alone (Alfano
   & Sacco 2006): an intact line pressed together held exactly tau whatever the clamping.
   It matters where a thrust clamps a lap: knee and heel laps, a diagonal's foot on its
-  seat. Glue lines and faces through one piece of wood (`solid`) alike; ties none. The
+  seat. With it (round 28's benchmark cases, seed 0): published test C at fine read 39.97
+  kgf against 37.4 (+6.9 %), its diagonals' 33 mm^2 laps on the chords and verticals
+  pressed by the members' thrust and their own moments (in the linear screen at 40 kgf
+  the pressure adds 13-33 % to their capacity), the joint that governs, a vertical's
+  end-grain foot pulled off the top chord, unchanged and still governing; the 10 mm
+  truss 46.28 against 46.41 kgf (its governing lap gains ~1.5 %, less than the peak
+  factor's -2.3 % below); the synthetic bridge identical to its peak (it sways). Glue
+  lines and faces through one piece of wood (`solid`) alike; ties none. The
   lap coupon's own bending presses the middle of its overlap, so with mu_i on it read
   2.4 % above tau_g at the round-27 peak factor: `glue.tau_peak_over_avg` is 1.04 since
   round 28 (1.065 with mu_i 0, round 27 with both). `screen` gives a pressed joint the
