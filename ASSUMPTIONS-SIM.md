@@ -915,6 +915,87 @@ an edit elsewhere in the design. Monte Carlo over seeds gives the spread of F_u.
 perfect bridge whose asymmetry is still the seed's, for a mesh or imperfection-
 sensitivity study: `validation/convergence_study.py --amplitude`).
 
+**The built bridge is not the drawn bridge** (since round 28, `idealize`'s built bridge).
+A hand-built bridge differs from its CAD in more ways than its members' bow, and five of
+them are seeded, each from a stream named after its body (`thick:`, `twist:`, `place:`,
+`fit:`, `flat:` and the body's name), so the same at every fidelity and independent for
+mirrored copies, each scaled by `scatter.amplitude`, none for the perfect bridge (`--seed
+-1`), each switched off by its parameter at 0 (all five at 0: the model of round 27 and
+round 28's member sections bit for bit). The parts are built that way, not bent into it:
+the offsets move a body's own nodes (the stress-free reference) while every point it is
+glued or bears at stays where it is drawn, its rigid arm taking up the difference (as
+the bow and the lean do), so no glue line starts open, pressed or sheared and the first
+step's internal forces are round-off (`test_the_built_bridge_is_stress_free_seeded_per_
+body_and_off_at_zero`, on the synthetic bridge and the layered truss). All five are
+assumed values (judgements, nothing measured on stick bridges), drawn by `montecarlo
+--sample-placeholders` (50 %).
+
+* **Plates out of flat** (`scatter.plate_flatness`, L/250). A stick plate (the layered
+  shells: gussets, webs, decks; plates glued face to face into a stack, meshed node on
+  node, share one shape) is held flat where a part is glued on its face or its edge
+  (pressed there while the glue set): it is cut into the free pieces its glued faces
+  leave, and each piece is built with a smooth shape of its own (`idealize.FlatField`):
+  along its longer extent L a half sine wave, across it a half wave, a full wave or a
+  seeded mix of the two, flattened toward a uniform section where the piece is narrower
+  than its free span (a strap glued at its ends bows as a column, it is not cupped), times
+  a mask that is zero where the piece meets a glued region and rises smoothly (zero slope:
+  a plate pressed flat there leaves it tangentially) to one at its farthest point from
+  them, d_max; its largest offset is the flatness x the piece's free span min(L, 2 d_max)
+  (a deck panel glued along two stringers bows by its width, not its length). Plywood and
+  veneer sheets are flat to the order of L/200-L/300, a hand-glued 2-ply stick plate no
+  better. A strip of plate compressed through pinned ends deflects by the column
+  amplification of each harmonic of its built shape, w - w0 = sum b_n alpha / (n^2 -
+  alpha) (Timoshenko & Gere 1.12; -2.0 % at alpha 0.5,
+  `test_a_plate_strip_built_out_of_flat_deflects_by_the_amplification_law`). Frames
+  (plates of narrow arms) keep their arms' bow instead.
+* **Members twisted** (`scatter.twist_rad_per_m`, 0.1 rad/m for one stick). A member's
+  section turns about its axis linearly from -phi/2 to +phi/2 along it (each element's
+  frame at its middle), phi = tau z sqrt(L min(L, L_stick)) / sqrt(n): a laminate takes
+  the mean twist of its n plies (glued, they share one shape), and along it its sticks'
+  twists add as independent pieces; a 13-ply 400 mm member twists ~0.006 rad end to end,
+  a single stick ~0.011. Bent about its strong axis it bends about its weak one too: a
+  cantilever's tip moves out of its plane by P (1 / EI_w - 1 / EI_s) phi L^3 / 12, the
+  moment-weighted mean turn -phi/4 (+0.6 %, `test_a_pre_twisted_cantilever_bends_out_of_
+  its_plane_by_its_mean_turn`). It matters for single sticks on edge, little for
+  laminated members.
+* **Sticks thicker or thinner than drawn** (`scatter.thickness_cov`, 0.03). A laminated
+  member, frame or plate of n plies is (1 + c z / sqrt(n)) x its drawn thickness (its
+  sticks independent through the stack): its area, its fibres' coordinates through the
+  stack (EI through the plies ~ (1 + e)^3), a plate's layers (D ~ t^3), its torsion and
+  shear stiffness and its nodes' mass follow; its nodes, its glued areas and glue points
+  stay as drawn (a member a little thicker than its gusset slot is the near-miss
+  tolerance, section 3), and so do its reported mass and the mass rule, checked on the
+  drawing (`test_a_thicker_built_member_has_its_stiffness_through_the_stack_and_mass`).
+* **Members off their drawn place** (`scatter.member_placement_mm`, 0.3 mm standard
+  deviation per direction: half the 0.5-1 mm a careful builder achieves with a jig). A
+  member's centre line is shifted rigidly, only in the plane of its glued (and bearing)
+  faces, the directions within ~13 degrees of none of their normals: a member lapped
+  between gussets shifts in their plane, one glued on two faces at an angle (a chord
+  under a deck and between gussets) only along itself, one glued on its end grain alone
+  across itself either way. Its glue points stay where they are drawn, so its
+  eccentricity at every joint changes: an eccentric pin-ended column bends as the secant
+  formula says (-0.2 %, `test_a_member_placed_off_its_line_carries_the_eccentric_
+  moment`). The glued areas stay as drawn (a 0.3 mm shift on a joint 10 mm and more wide
+  changes its area by a few %). Members (bars) only: plates, frames and blocks are placed
+  as drawn.
+* **Members cut long** (`scatter.fit_mm`, 0.05 mm). A member fitted end to end between
+  two parts (a face within 60 degrees of its axis in each end quarter: a vertical glued on
+  its end grain between chords, a post on its seat) is cut with a length error of this x
+  z; cut long it was pushed into place, and its rest length is its drawn length + the
+  error, shared over its elements by their lengths (`Model.b_dL`), so the bridge starts
+  in a self-equilibrated prestress, the member in compression; cut short it is not
+  pulled, its glue fills the gap (`glue.gap_fill_mm`; the fit-up of its ends is
+  `scatter.bearing_gap_mm`). Lapped members slide into place while their glue is wet and
+  get none. 0.05 mm is the effective locked-in value: half of the ~0.1 mm a careful
+  builder cuts to, as a PVA line held at a displacement relaxes its force to 1 / (1 +
+  `glue.creep_factor`) (the wood's relaxation left out). In a three-bar frame the bar
+  forces are the statics' within 0.1 % (`test_a_member_cut_long_is_locked_in_compression_
+  as_statics_says`). The crush brings the lack of fit in along the gravity ramp while the
+  bridge settles (`solver.fit_ramp`): released at once it rings the bridge (+9 % kinetic
+  energy just after the ramp on the synthetic bridge with a strut cut 0.6 mm long),
+  ramped it adds none, and the jack starts on a bridge as quiet as without it
+  (`test_a_lack_of_fit_comes_in_while_the_bridge_settles_without_ringing`).
+
 ## 5. The test
 
 * The bridge stands on the crusher's flat steel base platform: unilateral contact with
@@ -1380,6 +1461,13 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
 * A block is no contact surface: its corners push on other parts, but another
   part's points pass into a block they were not glued or drawn close to (it is reached
   through its glue lines and dry faces only).
+* Of the built bridge's differences from its drawing (section 4, since round 28: plates
+  out of flat, members twisted, thicker or thinner, off their place, cut long), not yet:
+  the sticks' width tolerance, plates, frames and blocks placed off their drawn place, a
+  frame's own out-of-flatness (its arms' bow stands for it), a twist other than linear
+  along a member, the change of a glued area a placement error makes, and a member cut
+  short and pulled into place (its glue fills the gap). The five that are in are
+  judgements until measured on a built bridge.
 * Debris (pieces with nothing left holding them) falls under gravity and lands on the
   platform, but does not hit the bridge or the plate.
 * Creep of the wood and the time the bridge waits loaded (the glue's creep and its

@@ -44,6 +44,10 @@ class BodyInfo:
     # a compact block cut into cells (idealize.BlockLattice): its frame (centre, axes, lo,
     # size, k), the cell of each lattice cell (group) and each cell's node (nodes)
     cells: dict = field(default_factory=dict)
+    # the seeded differences of the built part from its drawing (round 28, idealize:
+    # thickness factor, twist (rad), placement shift (mm), lack of fit (mm), a plate's
+    # largest out-of-flatness at its nodes (mm) and its field, idealize.FlatField or None)
+    built: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -199,6 +203,11 @@ class Model:
     s_H: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     s_fil: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     s_nply: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    # beams (round 28): the share of each element's rest length b_L0 that is the member's
+    # lack of fit (mm; idealize, scatter.fit_mm): b_L0 = drawn length + b_dL, the member
+    # cut long (+) or short (-) and forced into place. The crush brings it in with gravity
+    # while the bridge settles (crush.py); empty: none
+    b_dL: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
     @property
     def n_nodes(self) -> int:

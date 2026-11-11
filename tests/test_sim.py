@@ -2048,8 +2048,10 @@ def test_the_built_bridge_leans_without_stress():
     glued pair still coincides (no initial stress); the perfect bridge stands upright."""
     from bridgesim.sim.idealize import build_model
 
+    # (the built bridge's other differences off: they move nodes on purpose, round 28)
     sp = SP.updated({"scatter.lean_rad": 0.01, "scatter.bow_L_over": 1e6,
-                     "scatter.support_level_mm": 0.0, "scatter.placement_mm": 0.0})
+                     "scatter.support_level_mm": 0.0, "scatter.placement_mm": 0.0,
+                     **BUILT_OFF})
     bodies = simple_beam_bridge()
     m0 = build_model(bodies, MAT, sp, seed=None)
     leans = []
@@ -4615,9 +4617,10 @@ def test_with_the_stick_field_off_the_model_is_round_27s():
                    "b_GJ": 189071306.55228245, "b_kGA": 16387500.000000004,
                    "s_lim": 10.726003469935472, "s_K": 653420818.2046883}}
     # (the plates Kirchhoff elements as round 27's: shear-deformable, plate.shear_deformable,
-    # their stiffness s_K holds the shear term)
+    # their stiffness s_K holds the shear term; and the built bridge's differences of
+    # round 28 off: this test is about the stick field)
     r27 = {"plate.shear_deformable": 0}
-    for sp_, seed in ((SP.updated({"scatter.stick_field": 0, **r27}), 0),
+    for sp_, seed in ((SP.updated({"scatter.stick_field": 0, **r27, **BUILT_OFF}), 0),
                       (SP.updated(r27), None)):
         m = build_model(simple_beam_bridge(), MAT, sp_, seed=seed)
         for k, v in want[seed].items():
@@ -5887,3 +5890,549 @@ def test_a_plate_split_governs_and_is_strengthened_by_a_thicker_plate():
     # a crush test that split a plate measures its glue planes (calibrate-bridge)
     assert "glue.interlaminar_MPa" in study.MECHANISM_KEYS[study._mechanism(
         "plate shear: Deck - L")]
+
+
+# ------------------------------------------------- the built bridge (round 28, package E)
+# the built bridge's differences from its drawing, all off (also used by the tests above
+# that are about something else)
+BUILT_OFF = {"scatter.plate_flatness": 0.0, "scatter.twist_rad_per_m": 0.0,
+             "scatter.thickness_cov": 0.0, "scatter.member_placement_mm": 0.0,
+             "scatter.fit_mm": 0.0}
+
+
+def _built_sp(**on):
+    """SP with the built bridge's differences off but those named (key without
+    'scatter.': value)."""
+    return SP.updated({**BUILT_OFF, **{f"scatter.{k}": v for k, v in on.items()}})
+
+
+def _strut_bridge():
+    """The synthetic bridge with a strut fitted end to end between its stringers at
+    mid-span (glued on its end grain at both ends: a member that can be cut long)."""
+    return simple_beam_bridge() + [box("Strut (5-ply UD)", (-5.0, 152.0, -55.0),
+                                       (5.0, 165.0, 55.0))]
+
+
+def _relax(m, fix_t, fix_r, fext, alpha: float, ramp_s: float, tol: float,
+           max_steps: int = 1_000_000, every=None):
+    """Static equilibrium of a small model by dynamic relaxation: the external forces
+    ``fext`` (n, 3) ramped on over ``ramp_s`` (``every(st, g)``: called each step with
+    the ramp's share g), mass-proportional damping ``alpha``, the translations ``fix_t``
+    and rotations ``fix_r`` (n, 3) held; until the largest residual force on a free
+    degree of freedom is below ``tol``."""
+    from bridgesim.sim.crush import stable_dt
+
+    m.mass = np.maximum(m.mass, 1e-12)
+    m.rot_inertia = np.maximum(m.rot_inertia, 1e-12)
+    s = S.Settings(dt=1e-6)
+    s.dt, m.mass, m.rot_inertia, _ = stable_dt(m, s, 5e-6, 0.0)
+    n_ramp = max(1, int(ramp_s / s.dt))
+    st = S.initial_state(m, 1e12)
+    F, Mo = np.zeros((m.n_nodes, 3)), np.zeros((m.n_nodes, 3))
+    k = 0
+    while True:
+        g = min(1.0, (k + 1) / n_ramp)
+        if every is not None:
+            every(st, g)
+        S.internal_and_contact(m, st, s, F, Mo)
+        acc = (g * fext - F) / m.mass[:, None] - alpha * st.v
+        acc[fix_t] = 0.0
+        st.v += s.dt * acc
+        st.v[fix_t] = 0.0
+        st.x += s.dt * st.v
+        st.x[fix_t] = m.X[fix_t]
+        wacc = -Mo / m.rot_inertia[:, None] - alpha * st.w
+        wacc[fix_r] = 0.0
+        st.w += s.dt * wacc
+        st.w[fix_r] = 0.0
+        S.rotate(st, s.dt)
+        k += 1
+        if k > n_ramp and k % 500 == 0:
+            res = np.abs(fext - F)[~fix_t]
+            if (res.max() if res.size else 0.0) < tol or k > max_steps:
+                break
+    assert k <= max_steps, "dynamic relaxation did not converge"
+    return st
+
+
+def test_a_plate_strip_built_out_of_flat_deflects_by_the_amplification_law():
+    """A stick plate strip (1-ply UD, L = 200 x W = 20 x t = 2 mm, 5 mm DKT elements)
+    glued on its two end edges (held there: idealize.FlatField's glued regions) is built
+    with its seeded out-of-flatness, scatter.plate_flatness x its free span (here its
+    length: 0.8 mm at L/250, kappa = 1 - W / L of it uniform across, nearly a column's
+    half wave), and compressed in its plane through its pinned ends to P = 0.5 P_cr,
+    P_cr = pi^2 E I / L^2 (I = W t^3 / 12; a plate's 1 / (1 - nu12 nu21) is 1.006). A
+    pin-ended column of initial shape w0(x) = sum b_n sin(n pi x / L) deflects further by
+    w(x) - w0(x) = sum b_n alpha / (n^2 - alpha) sin(n pi x / L), alpha = P / P_cr, each
+    harmonic amplified by 1 / (1 - alpha / n^2) (Timoshenko & Gere, Theory of Elastic
+    Stability, 1.12; the Southwell law of the first): at mid-span, with the b_n of the
+    strip's width-averaged built shape, ~w0 at alpha 0.5. Within 5 % (the 40 x 4 element
+    mesh: P_cr within ~1 %, amplified by alpha / (1 - alpha) = 1; the shape's sampling).
+    The perfect strip (flatness 0) under the same load stays flat to round-off."""
+    from shapely.geometry import LineString as _LS
+    from shapely.geometry import Polygon as _Poly
+
+    from bridgesim.sim import shell as shellmod
+    from bridgesim.sim.idealize import FlatField
+
+    L, W, t, h = 200.0, 20.0, 2.0, 5.0
+    ply = Ply.from_material(MAT, SP)
+    rho = MAT.density_kg_m3.value * 1e-12
+    G = (SP["wood.G_f_N_per_mm"], SP["wood.G_f90_N_per_mm"], SP["wood.G_v_N_per_mm"])
+    nx, ny = round(L / h), round(W / h)
+    xs, ys = np.linspace(0, L, nx + 1), np.linspace(0, W, ny + 1)
+    P0 = np.array([[x, y, 0.0] for x in xs for y in ys])
+    ff = FlatField("strip", np.zeros(3), np.array([1.0, 0, 0]), np.array([0.0, 1, 0]),
+                   np.array([0.0, 0, 1]), _Poly([(0, 0), (L, 0), (L, W), (0, W)]),
+                   [_LS([(0, 0), (0, W)]), _LS([(L, 0), (L, W)])], seed=5, flat=0.004,
+                   amp=1.0)
+    assert len(ff.pieces) == 1
+    pc = ff.pieces[0]
+    assert pc.a == pytest.approx(0.004 * L) and pc.kappa == pytest.approx(1 - W / L)
+    EI = ply.E_L * W * t**3 / 12
+    Pcr = math.pi**2 * EI / L**2
+    alpha = 0.5
+    mid = [(nx // 2) * (ny + 1) + j for j in range(ny + 1)]
+
+    def strip(off):
+        X = P0 + off
+        m = lab.blank_model(X)
+        els, nodes, E0s, Ps = [], [], [], []
+        for i in range(nx):
+            for j in range(ny):
+                a_, b_, c_, d_ = (i * (ny + 1) + j, (i + 1) * (ny + 1) + j,
+                                  (i + 1) * (ny + 1) + j + 1, i * (ny + 1) + j + 1)
+                for tri in ((a_, b_, c_), (a_, c_, d_)):
+                    P3 = X[list(tri)]
+                    ex = (P3[1] - P3[0]) / np.linalg.norm(P3[1] - P3[0])
+                    ez = np.cross(P3[1] - P3[0], P3[2] - P3[0])
+                    ez /= np.linalg.norm(ez)
+                    ey = np.cross(ez, ex)
+                    E0 = np.stack([ex, ey, ez], axis=1)
+                    Ploc = (P3 - P3.mean(0)) @ E0
+                    gang = math.degrees(math.atan2(float(ey[0]), float(ex[0])))
+                    ed = shellmod.element_data(Ploc[:, :2], [gang], t, ply, 1.0, 1.0, G,
+                                               ply.E_L * t)
+                    els.append(ed)
+                    nodes.append(tri)
+                    E0s.append(E0)
+                    Ps.append(Ploc)
+                    me = rho * ed["area"] * t / 3
+                    for nd in tri:
+                        m.mass[nd] += me
+                        m.rot_inertia[nd] += me * (h * h + t * t) / 12
+        for k_, v in shellmod.pack(els).items():
+            setattr(m, k_, v)
+        m.s_nodes, m.s_E0, m.s_P = np.array(nodes, int), np.array(E0s), np.array(Ps)
+        m.s_t, m.s_body = np.full(len(nodes), t), np.zeros(len(nodes), int)
+        fix_t = np.zeros((m.n_nodes, 3), bool)
+        fext = np.zeros((m.n_nodes, 3))
+        for j in range(ny + 1):
+            fix_t[j] = True  # pinned along x = 0
+            fix_t[nx * (ny + 1) + j, 1:] = True  # a roller along x = L, pushed along -x
+            fext[nx * (ny + 1) + j, 0] = -alpha * Pcr * (0.5 if j in (0, ny) else 1.0) / ny
+        # damped at about the first mode's critical damping under the load
+        w1 = (math.pi / L) ** 2 * math.sqrt(EI / (rho * W * t)) * math.sqrt(1 - alpha)
+        st = _relax(m, fix_t, np.zeros_like(fix_t), fext, 2 * w1, 2 * 2 * math.pi / w1,
+                    1e-6 * Pcr)
+        return float((st.x[mid, 2] - X[mid, 2]).mean()), st
+
+    off = ff.offsets(P0)
+    w_add, _st = strip(off)
+    # the hand value: the sine series of the width-averaged built shape, each term
+    # amplified
+    xf, yf = np.linspace(0, L, 801), np.linspace(0, W, 41)
+    Q = np.array([[x, y, 0.0] for x in xf for y in yf])
+    wq = ff.offsets(Q)[:, 2].reshape(len(xf), len(yf))
+    wbar = np.trapezoid(wq, yf, axis=1) / W
+    pred = 0.0
+    for n in range(1, 30):
+        bn = 2 / L * np.trapezoid(wbar * np.sin(n * math.pi * xf / L), xf)
+        pred += bn * alpha / (n * n - alpha) * math.sin(n * math.pi / 2)
+    w0_mid = float(np.interp(L / 2, xf, wbar))
+    assert abs(w0_mid) > 0.3  # a real imperfection, near its 0.8 mm amplitude
+    # (its first harmonic amplified by 2: of the order of w0, the higher ones barely)
+    assert 0.5 < pred / w0_mid < 1.0
+    assert w_add == pytest.approx(pred, rel=0.05)
+    # the perfect strip under the same load does not move out of its plane
+    w_perfect, st0 = strip(np.zeros_like(off))
+    assert abs(w_perfect) < 1e-9 and np.abs(st0.x[:, 2]).max() < 1e-9
+
+
+def test_a_pre_twisted_cantilever_bends_out_of_its_plane_by_its_mean_turn():
+    """A stick cantilever (b = 10 along e2, d = 2 along e3, L = 100, Euler-Bernoulli)
+    pre-twisted as idealize builds a member: each element's frame turned about its axis
+    by theta(x) = phi (x / L - 1/2) at its middle (twisted_frame), phi = 0.05 rad, loaded
+    at its tip by P along y, the strong axis at mid-length. In the turned principal axes
+    (e_b = (cos th, sin th), e_t = (-sin th, cos th) in y, z) the curvature is
+    (v'', w'') = M (e_b e_b^T / EI_s + e_t e_t^T / EI_w) y, M = P (L - x), so w'' = M
+    sin th cos th (1 / EI_s - 1 / EI_w) and the tip moves out of the plane by
+    w(L) = int (L - x) w'' dx = P (1 / EI_w - 1 / EI_s) phi L^3 / 12 (int (L - x)^2
+    theta dx = -phi L^3 / 12): what a straight member turned by the moment-weighted mean
+    rotation -phi / 4 gives, P L^3 / 3 (-phi / 4) (1 / EI_s - 1 / EI_w); in its plane
+    v(L) = P L^3 / (3 EI_s). Within 2 % (20 elements: the twist taken constant along each
+    costs ~h^2 / L^2). Untwisted, it stays in its plane. idealize turns a member's
+    elements that way, by phi drawn from the member's own stream (twist_angle)."""
+    from bridgesim.sim.idealize import build_model, twist_angle, twisted_frame
+
+    L, b, d, E, n = 100.0, 10.0, 2.0, 10000.0, 20
+    EIs, EIw = E * d * b**3 / 12, E * b * d**3 / 12
+    P = 0.01 * EIs / L**2
+    out = {}
+    for phi in (0.05, 0.0):
+        X = np.c_[np.linspace(0, L, n + 1), np.zeros(n + 1), np.zeros(n + 1)]
+        m = lab.blank_model(X)
+        lab.add_beam_line(m, list(range(n + 1)), lab.BeamSpec(b=b, d=d, E=E, shear=False),
+                          up=(0, 0, 1))
+        sm = 0.5 * (X[:-1, 0] + X[1:, 0])
+        m.b_E0 = np.array([twisted_frame(E0, phi * (s_ / L - 0.5))
+                           for E0, s_ in zip(m.b_E0, sm, strict=True)])
+        fix = np.zeros((n + 1, 3), bool)
+        fix[0] = True
+        fext = np.zeros((n + 1, 3))
+        fext[-1, 1] = P
+        w1 = 3.516 * math.sqrt(EIw / (6.5e-10 * b * d * L**4))
+        st = _relax(m, fix, fix.copy(), fext, 2 * w1, 4 * 2 * math.pi / w1, 1e-7 * P)
+        out[phi] = st.x[-1] - X[-1]
+    assert out[0.05][1] == pytest.approx(P * L**3 / (3 * EIs), rel=0.02)
+    assert out[0.05][2] == pytest.approx(P * (1 / EIw - 1 / EIs) * 0.05 * L**3 / 12,
+                                         rel=0.02)
+    assert abs(out[0.0][2]) < 1e-9
+    # idealize: the synthetic bridge's stringer (1100 mm, 3 plies) turned by
+    # phi (s / L - 1/2) at each element's middle
+    sp_on = _built_sp(twist_rad_per_m=0.5)
+    m1 = build_model(simple_beam_bridge(), MAT, sp_on, seed=3)
+    m0 = build_model(simple_beam_bridge(), MAT, _built_sp(), seed=3)
+    name = "Stringer Near (3-ply UD)"
+    info = {bb.name: bb for bb in m1.bodies}[name]
+    phi = twist_angle(3, name, 3, 1100.0, MAT.stick.length_mm, sp_on)
+    assert info.built["twist_rad"] == pytest.approx(phi, rel=1e-12) and abs(phi) > 0.005
+    e = np.asarray(info.beams)
+    x_mid = 0.5 * (m0.X[m0.b_i[e], 0] + m0.X[m0.b_j[e], 0])
+    e1, e2a, e2b = m0.b_E0[e][:, :, 0], m0.b_E0[e][:, :, 1], m1.b_E0[e][:, :, 1]
+    th = np.arctan2(np.einsum("ij,ij->i", np.cross(e2a, e2b), e1),
+                    np.einsum("ij,ij->i", e2a, e2b))
+    np.testing.assert_allclose(th, phi * x_mid * info.axis[0] / 1100.0,
+                               atol=1e-6 * abs(phi))
+    np.testing.assert_array_equal(m1.b_E0[e][:, :, 0], e1)  # its axis unchanged
+
+
+def test_a_thicker_built_member_has_its_stiffness_through_the_stack_and_mass():
+    """thickness_factor: a laminated part of n plies is (1 + c z / sqrt(n)) x its drawn
+    thickness (c = scatter.thickness_cov, its sticks independent through the stack): over
+    4000 bodies its CoV is c / sqrt(n) (1, 3 and 13 plies; within 5 %, the sampling's
+    error of a standard deviation ~1.1 %) and its mean 1. Built, a member's EI through
+    its plies (sum E A_f z_f^2) scales as (1 + e)^3, its area, its EI across its width
+    and its nodes' mass as (1 + e); a plate's thickness, its layers and its mass as
+    (1 + e); its nodes, glued areas and glue points and its reported mass (the drawing's:
+    the mass rule) stay."""
+    from bridgesim.sim.idealize import build_model, thickness_factor
+
+    sp = _built_sp(thickness_cov=0.1)
+    for n in (1, 3, 13):
+        k = np.array([thickness_factor(7, f"Body {i}", n, sp) for i in range(4000)])
+        assert k.mean() == pytest.approx(1.0, abs=0.006)
+        assert k.std() == pytest.approx(0.1 / math.sqrt(n), rel=0.05)
+    m0 = build_model(simple_beam_bridge(), MAT, _built_sp(), seed=3)
+    m1 = build_model(simple_beam_bridge(), MAT, sp, seed=3)
+    for b0, b1 in zip(m0.bodies, m1.bodies, strict=True):
+        assert b1.mass_kg == b0.mass_kg
+        if b1.kind == "bar":
+            kT = thickness_factor(3, b1.name, 3, sp)
+            assert b1.built["thickness_factor"] == kT and abs(kT - 1) > 0.01
+            e = np.asarray(b1.beams)
+            EI3 = (m0.b_E[e, None] * m0.b_fA[e] * m0.b_fz[e] ** 2).sum(1)
+            EI3b = (m1.b_E[e, None] * m1.b_fA[e] * m1.b_fz[e] ** 2).sum(1)
+            np.testing.assert_allclose(EI3b, EI3 * kT**3, rtol=1e-12)
+            EI2 = (m0.b_E[e, None] * m0.b_fA[e] * m0.b_fy[e] ** 2).sum(1)
+            EI2b = (m1.b_E[e, None] * m1.b_fA[e] * m1.b_fy[e] ** 2).sum(1)
+            np.testing.assert_allclose(EI2b, EI2 * kT, rtol=1e-12)
+            np.testing.assert_allclose(m1.b_A[e], m0.b_A[e] * kT, rtol=1e-12)
+        elif b1.kind == "shell":
+            kT = thickness_factor(3, b1.name, 2, sp)
+            assert abs(kT - 1) > 0.01
+            s_ = np.asarray(b1.shells)
+            np.testing.assert_allclose(m1.s_t[s_], m0.s_t[s_] * kT, rtol=1e-12)
+            np.testing.assert_allclose(m1.s_lay[s_][:, :, :2], m0.s_lay[s_][:, :, :2] * kT,
+                                       rtol=1e-12, atol=1e-12)
+        else:
+            continue
+        nd = np.asarray(b1.nodes)
+        assert m1.mass[nd].sum() == pytest.approx(m0.mass[nd].sum() * kT, rel=1e-12)
+    np.testing.assert_array_equal(m1.X, m0.X)
+    np.testing.assert_array_equal(m1.c_area, m0.c_area)
+    np.testing.assert_array_equal(m1.a_r0, m0.a_r0)
+
+
+def test_a_member_placed_off_its_line_carries_the_eccentric_moment():
+    """placement_shift: a member lands off its drawn place, in the plane of its glued
+    faces only, its nodes shifted rigidly while its glue points and contacts stay where
+    they are drawn (their arms take the shift; every glued pair still together). The
+    synthetic bridge's stringers are glued on their top and bottom faces (normal y): they
+    shift along x and z, never into the deck or the piers; plates and blocks stay. The
+    mechanics of such a joint: a pin-ended column (6 x 6 mm, E 10 GPa, L = 120 mm) whose
+    centre line lies e = 0.3 mm off the line through its two pins, each pin a pair of
+    glue points on that line hung on the column's end node by a rigid arm (as idealize
+    hangs a shifted member on its joints), loaded through them to P = 0.3 P_E: it bends
+    as the secant formula says, delta_mid = e (sec(k L / 2) - 1), k = sqrt(P / EI)
+    (Timoshenko & Gere 1.11): 0.534 e. Within 2 % (24 Euler-Bernoulli elements)."""
+    from bridgesim.sim.idealize import build_model, placement_shift
+
+    sp = _built_sp(member_placement_mm=0.3)
+    m0 = build_model(simple_beam_bridge(), MAT, _built_sp(), seed=3)
+    m1 = build_model(simple_beam_bridge(), MAT, sp, seed=3)
+    pos0, pos1 = m0.X[m0.a_node] + m0.a_r0, m1.X[m1.a_node] + m1.a_r0
+    np.testing.assert_allclose(pos1, pos0, rtol=0, atol=1e-11)
+    assert np.abs(pos1[m1.c_a] - pos1[m1.c_b]).max() < 1e-9
+    n_bars = 0
+    for b1 in m1.bodies:
+        nd = np.asarray(b1.nodes, int)
+        d = m1.X[nd] - m0.X[nd]
+        if b1.kind != "bar":
+            assert not d.any()  # plates and blocks are placed as drawn
+            continue
+        n_bars += 1
+        e = placement_shift(3, b1.name, [np.array([0.0, 1.0, 0.0])], sp)
+        np.testing.assert_allclose(d, np.repeat(e[None], len(nd), 0), rtol=0, atol=1e-12)
+        assert abs(e[1]) < 1e-12 and np.hypot(e[0], e[2]) > 0.02  # in the glued plane
+        assert b1.built["shift_mm"] == pytest.approx(list(e), abs=1e-12)
+    assert n_bars == 2
+    # an eccentric pin-ended column
+    L, a, E, ecc, n = 120.0, 6.0, 10000.0, 0.3, 24
+    EI = E * a**4 / 12
+    P = 0.3 * math.pi**2 * EI / L**2
+    X = np.r_[[[0.0, 0.0, 0.0], [L, 0.0, 0.0]],
+              np.c_[np.linspace(0, L, n + 1), np.full(n + 1, ecc), np.zeros(n + 1)]]
+    m = lab.blank_model(X)
+    col = list(range(2, n + 3))
+    lab.add_beam_line(m, col, lab.BeamSpec(b=a, d=a, E=E, shear=False), up=(0, 0, 1))
+    m.mass[:2], m.rot_inertia[:2] = m.mass[2], m.rot_inertia[2]
+    a_node, a_r0, ca, cb = [], [], [], []
+    for pin, end in ((0, col[0]), (1, col[-1])):
+        for z in (-3.0, 3.0):  # two points: the pin's axis along z
+            p = np.array([X[pin, 0], 0.0, z])
+            a_node += [pin, end]
+            a_r0 += [p - X[pin], p - X[end]]
+            ca.append(len(a_node) - 2)
+            cb.append(len(a_node) - 1)
+    nc = len(ca)
+    m.a_node, m.a_r0 = np.array(a_node), np.array(a_r0)
+    m.c_a, m.c_b, m.c_area = np.array(ca), np.array(cb), np.ones(nc)
+    m.c_n0 = np.repeat([[1.0, 0.0, 0.0]], nc, 0)
+    m.c_Kn, m.c_Ks = np.full(nc, 2e4), np.full(nc, 2e4)
+    m.c_sig, m.c_tau = np.full(nc, 1e12), np.full(nc, 1e12)
+    m.c_GIc, m.c_GIIc = np.full(nc, 1e12), np.full(nc, 1e12)
+    m.c_mu, m.c_patch = np.full(nc, 0.4), np.zeros(nc, int)
+    m.c_breakable = np.zeros(nc, bool)
+    fix_t = np.zeros((m.n_nodes, 3), bool)
+    fix_t[0], fix_t[1, 1:] = True, True
+    fix_r = np.zeros_like(fix_t)
+    fix_r[:2] = True
+    fext = np.zeros((m.n_nodes, 3))
+    fext[1, 0] = -P
+    w1 = math.pi**2 / L**2 * math.sqrt(EI / (6.5e-10 * a * a)) * math.sqrt(0.7)
+    st = _relax(m, fix_t, fix_r, fext, 2 * w1, 6 * 2 * math.pi / w1, 1e-6 * P)
+    y = st.x[col, 1]
+    delta = y[n // 2] - 0.5 * (y[0] + y[-1])
+    kL2 = math.sqrt(P / EI) * L / 2
+    assert delta == pytest.approx(ecc * (1 / math.cos(kL2) - 1), rel=0.02)
+
+
+def test_a_member_cut_long_is_locked_in_compression_as_statics_says():
+    """Lack of fit: a member cut delta long and pushed into place (its rest length its
+    drawn length + delta, shared over its elements: Model.b_dL) in a three-bar frame whose
+    middle bar (L2 = 200 mm) is vertical and whose side bars stand at theta = 45 degrees,
+    the three meeting at D (10 x 10 mm bars, E 10 GPa, clamped supports, their bending
+    ~12 I / (A L^2) ~ 0.1 % of the axial stiffness). Compatibility (D moves v away from
+    the supports): N2 = EA (v - delta) / L2, N1 = EA v cos^2 theta / L2; equilibrium at
+    D, N2 + 2 N1 cos theta = 0, so v = delta / (1 + 2 cos^3 theta), N2 = -EA delta / L2 x
+    2 cos^3 theta / (1 + 2 cos^3 theta) = -207.1 N and N1 = EA delta cos^2 theta / (L2 (1 +
+    2 cos^3 theta)) = 146.4 N for delta = 0.1 mm: within 1 %, the bar forces at D summing
+    to zero (to the bars' shear, ~0.1 %). The lack of fit comes in along a ramp
+    (solver.fit_ramp, as the crush brings it in while the bridge settles). idealize gives
+    it to a member fitted end to end between two parts (a strut glued on its end grain
+    between the synthetic bridge's stringers) when it was cut long, max(0, fit_error), its
+    elements' rest lengths adding up to it; none to the lapped stringers, none to the
+    strut cut short (the glue fills its gap)."""
+    from bridgesim.sim.idealize import build_model, fit_error
+
+    E, a, L2, th, delta = 10000.0, 10.0, 200.0, math.radians(45.0), 0.1
+    D = np.array([0.0, -L2, 0.0])
+    sup = [np.array([-L2 * math.tan(th), 0.0, 0.0]), np.zeros(3),
+           np.array([L2 * math.tan(th), 0.0, 0.0])]
+    n_el = 4
+    pts, lines = [D], []
+    for s_ in sup:
+        idx = [0]
+        for k in range(1, n_el + 1):
+            pts.append(D + (s_ - D) * k / n_el)
+            idx.append(len(pts) - 1)
+        lines.append(idx)
+    m = lab.blank_model(np.array(pts))
+    bars = []
+    for idx in lines:
+        nb0 = len(m.b_i)
+        lab.add_beam_line(m, idx, lab.BeamSpec(b=a, d=a, E=E, shear=False), up=(0, 0, 1))
+        bars.append(np.arange(nb0, len(m.b_i)))
+    m.b_dL = np.zeros(len(m.b_i))
+    m.b_dL[bars[1]] = m.b_L0[bars[1]] * delta / L2
+    m.b_L0 = m.b_L0 + m.b_dL
+    fix = np.zeros((m.n_nodes, 3), bool)
+    for idx in lines:
+        fix[idx[-1]] = True
+    st = _relax(m, fix, fix.copy(), np.zeros((m.n_nodes, 3)), 3000.0, 0.005, 1e-6,
+                every=lambda st_, g: S.fit_ramp(m, st_, g))
+    assert st.b_L0.size == 0  # the whole lack of fit is in
+    F, Mo = np.zeros((m.n_nodes, 3)), np.zeros((m.n_nodes, 3))
+    N = S.beam_forces(m, st, F, Mo, update=False)["N"]
+    N1, N2, N3 = (float(N[bb].mean()) for bb in bars)
+    c3 = math.cos(th) ** 3
+    EA = E * a * a
+    assert N2 == pytest.approx(-EA * delta / L2 * 2 * c3 / (1 + 2 * c3), rel=0.01)
+    assert N1 == pytest.approx(EA * delta * math.cos(th) ** 2 / (L2 * (1 + 2 * c3)),
+                               rel=0.01)
+    assert N3 == pytest.approx(N1, rel=1e-6)
+    u = [(s_ - D) / np.linalg.norm(s_ - D) for s_ in sup]
+    tot = N1 * u[0] + N2 * u[1] + N3 * u[2]
+    assert np.abs(tot).max() < 3e-3 * abs(N2)
+    # idealize: the strut fitted between the stringers
+    sp = _built_sp(fit_mm=0.2)
+    name = "Strut (5-ply UD)"
+    seed = next(s_ for s_ in range(30) if fit_error(s_, name, sp) > 0.05)
+    neg = next(s_ for s_ in range(30) if fit_error(s_, name, sp) < 0.0)
+    m1 = build_model(_strut_bridge(), MAT, sp, seed=seed)
+    m0 = build_model(_strut_bridge(), MAT, _built_sp(), seed=seed)
+    by = {bb.name: bb for bb in m1.bodies}
+    e = np.asarray(by[name].beams)
+    assert m1.b_dL[e].sum() == pytest.approx(fit_error(seed, name, sp), rel=1e-9)
+    np.testing.assert_allclose(m1.b_L0, m0.b_L0 + m1.b_dL, rtol=1e-15)
+    assert by[name].built["fit_mm"] == pytest.approx(fit_error(seed, name, sp))
+    rest = np.setdiff1d(np.arange(len(m1.b_i)), e)
+    assert (m1.b_dL[rest] == 0.0).all()  # the stringers are lapped
+    assert build_model(_strut_bridge(), MAT, sp, seed=neg).b_dL.size == 0
+
+
+def test_a_lack_of_fit_comes_in_while_the_bridge_settles_without_ringing():
+    """The crush brings the members' lack of fit in along the gravity ramp while the
+    bridge settles (solver.fit_ramp): the synthetic bridge with a strut cut 0.6 mm long
+    (12 x the default's standard deviation) between its stringers is as quiet when the
+    jack starts (the bridge's kinetic energy at the first sample of the load) as without
+    it, and settles in about the same time. (Its deck sags slowly, overdamped by the
+    settling's damping, and settles in 0.4 s either way: the settling is cut at 0.1 s
+    here, the jack starting on a bridge still sagging alike in both.)"""
+    from bridgesim.sim.crush import CrushOptions, run_crush
+    from bridgesim.sim.idealize import build_model, fit_error
+
+    name = "Strut (5-ply UD)"
+    sp_on = _built_sp(fit_mm=1.0)
+    seed = next(s_ for s_ in range(30) if fit_error(s_, name, sp_on) > 0.6)
+    sp_on = _built_sp(fit_mm=0.6 / fit_error(seed, name, sp_on))
+    ke, t0, ms = {}, {}, {}
+    for lab_, sp_ in (("off", _built_sp()), ("on", sp_on)):
+        m = build_model(_strut_bridge(), MAT, sp_, seed=seed, mesh_scale=1.6)
+        ms[lab_] = m
+        res = run_crush(m, CrushOptions(speed_mm_s=150, max_travel_mm=0.3,
+                                        auto_speed=False, settle_max_s=0.1))
+        ke[lab_], t0[lab_] = res.curve["kinetic"][0], res.curve["t"][0]
+    assert ms["on"].b_dL.sum() == pytest.approx(0.6, rel=1e-9)
+    assert ms["off"].b_dL.size == 0
+    assert ke["on"] <= 2.0 * ke["off"] + 1e-6
+    assert t0["on"] <= 1.5 * t0["off"] + 0.01
+
+
+def test_the_built_bridge_is_stress_free_seeded_per_body_and_off_at_zero():
+    """The built bridge's differences (plates out of flat, members twisted, thicker, off
+    their place; the lack of fit apart, a prestress on purpose): with them all on, the
+    synthetic bridge and the layered truss start with no internal force (the first step's
+    forces at round-off, as without them), every glued pair together. Each is a function
+    of the CAD and its body's stream: the same at quick, standard and fine (the drawn
+    values, the deck's flatness field and its nodes on it, the members' rigid shifts, the
+    strut's lack of fit). With all five at 0 the model is the one the code before built,
+    bit for bit (the sums of the synthetic bridge's arrays at seed 0 recorded on round 27
+    + package B, 199c168); each alone changes only what it should; seed None is the
+    perfect bridge with them all at their defaults."""
+    from bridgesim.cad.synthetic import layered_truss
+    from bridgesim.sim.idealize import build_model, fit_error
+
+    on = {"plate_flatness": 0.01, "twist_rad_per_m": 0.5, "thickness_cov": 0.1,
+          "member_placement_mm": 0.5}
+    for bodies in (simple_beam_bridge(), layered_truss()):
+        for sp_ in (_built_sp(), _built_sp(**on)):
+            m = build_model(bodies, MAT, sp_, seed=2)
+            m.table_y -= 5.0  # (off the platform: its contacts are no internal force)
+            st = S.initial_state(m, 1e12)
+            F, Mo = np.zeros((m.n_nodes, 3)), np.zeros((m.n_nodes, 3))
+            S.internal_and_contact(m, st, S.Settings(dt=1e-6), F, Mo, update=False)
+            assert max(np.abs(F).max(), np.abs(Mo).max()) < 1e-8
+            pos = m.X[m.a_node] + m.a_r0
+            assert np.abs(pos[m.c_a] - pos[m.c_b]).max() < 1e-9
+    # the same bridge at every fidelity
+    built, flat, shifts = [], [], []
+    sp_all = _built_sp(**on, fit_mm=0.2, lean_rad=0.0)
+    sp_z = _built_sp(lean_rad=0.0)
+    for scale in (1.6, 1.0, 0.75):
+        m = build_model(_strut_bridge(), MAT, sp_all, seed=4, mesh_scale=scale)
+        mz = build_model(_strut_bridge(), MAT, sp_z, seed=4, mesh_scale=scale)
+        built.append({b.name: {k: v for k, v in b.built.items() if k not in
+                               ("flat_field", "flatness_mm")} for b in m.bodies})
+        deck = {b.name: b for b in m.bodies}["Deck (2-ply 0-90)"]
+        ff = deck.built["flat_field"]
+        flat.append([(p.a, p.psi, p.sigma, p.kappa, p.d_max, p.norm, p.L, p.W)
+                     for p in ff.pieces])
+        nd = np.asarray(deck.nodes)
+        np.testing.assert_allclose(m.X[nd] - mz.X[nd], ff.offsets(mz.X[nd]), rtol=0,
+                                   atol=1e-12)
+        assert np.abs(m.X[nd] - mz.X[nd]).max() > 0.3  # 1/100 of a 110 mm panel
+        shifts.append({b.name: m.X[b.nodes[0]] - mz.X[b.nodes[0]] for b in m.bodies
+                       if b.kind == "bar"})
+        e = np.asarray({b.name: b for b in m.bodies}["Strut (5-ply UD)"].beams)
+        built[-1]["strut dL"] = float(m.b_dL[e].sum()) if m.b_dL.size else 0.0
+    assert len(flat[0]) == 3  # the panel between the stringers and the two overhangs
+    for k in (1, 2):
+        assert built[k] == built[0]
+        assert flat[k] == pytest.approx(flat[0], rel=1e-12)
+        for nm, v in shifts[0].items():
+            np.testing.assert_allclose(shifts[k][nm], v, rtol=0, atol=1e-12)
+    # all at 0: the model of the code before (199c168), bit for bit
+    want = {"X": [86331.92725043825, 70975383.9360694],
+            "mass": [0.006471773111379473, 1.89351880903628e-05],
+            "rot_inertia": [21.12414960465966, 292.42857031622026],
+            "b_L0": [2200.044305968253, 17536.93822175669],
+            "b_E0": [-275.9988810917059, 828.0], "b_fz": [0.0, 12419.999999999998],
+            "b_fA": [31463.999999999993, 239126.39999999997],
+            "b_GJ": [178333243.1175639, 115444185881883.66],
+            "b_kGA3": [8434299.786444863, 257890670124.33423],
+            "s_E0": [430.5592792282141, 1230.0],
+            "s_t": [1680.9999999999977, 6892.0999999999785],
+            "s_K": [587802164.897002, 196558110037297.94],
+            "s_lay": [6.497625127017404, 4266.049999999988],
+            "a_r0": [-3706.8731248705303, 1382141.4668170507]}
+    m0 = build_model(simple_beam_bridge(), MAT, _built_sp(), seed=0)
+    for k, (s1, s2) in want.items():
+        a_ = getattr(m0, k)
+        assert float(np.sum(a_)) == pytest.approx(s1, rel=1e-14, abs=1e-9), k
+        assert float(np.sum(a_**2)) == pytest.approx(s2, rel=1e-14), k
+    assert m0.b_dL.size == 0
+    # each alone touches only its own arrays (others at round-off at most)
+    names = ("X", "b_L0", "b_E0", "b_fz", "b_fA", "s_t", "mass", "s_K", "a_r0", "b_dL")
+    touches = {"plate_flatness": {"X", "a_r0", "s_K"}, "twist_rad_per_m": {"b_E0"},
+               "thickness_cov": {"b_fz", "b_fA", "s_t", "mass", "s_K"},
+               "member_placement_mm": {"X", "a_r0"}, "fit_mm": {"b_L0", "b_dL"}}
+    seed = next(s_ for s_ in range(30)
+                if fit_error(s_, "Strut (5-ply UD)", _built_sp(fit_mm=0.5)) > 0.1)
+    z = build_model(_strut_bridge(), MAT, _built_sp(), seed=seed)
+    for key, arrays in touches.items():
+        val = 0.5 if key == "fit_mm" else SP[f"scatter.{key}"]
+        mk = build_model(_strut_bridge(), MAT, _built_sp(**{key: val}), seed=seed)
+        for nm in names:
+            a_, b_ = getattr(mk, nm), getattr(z, nm)
+            if a_.shape != b_.shape:
+                assert nm in arrays, (key, nm)
+                continue
+            diff = float(np.abs(a_ - b_).max()) / max(float(np.abs(b_).max()), 1e-30) \
+                if a_.size else 0.0
+            assert (diff > 1e-9) if nm in arrays else (diff < 1e-12), (key, nm, diff)
+    p0 = build_model(_strut_bridge(), MAT, _built_sp(), seed=None)
+    p1 = build_model(_strut_bridge(), MAT, SP, seed=None)
+    for nm in names + ("b_fy", "b_GJ", "b_kGA", "b_kGA3", "c_Ks", "s_P", "s_E0"):
+        np.testing.assert_array_equal(getattr(p1, nm), getattr(p0, nm))
