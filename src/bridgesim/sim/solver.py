@@ -15,9 +15,12 @@ LS-DYNA and Abaqus/Explicit). Ingredients:
   splits (:func:`split_members`): its plies then bend each about its own axis, and it
   keeps its axial strength. An element bent or twisted past 1 rad at an end is removed
   (erosion, reported as such).
-* **shells**: corotational CST + DKT triangles with laminate stiffness; a ply strain
-  limit reached anywhere in an element cracks it (its stiffness falls to zero over a
-  small strain range); a node held only by broken elements becomes loose debris.
+* **shells**: corotational CST + DKMT (shear-deformable; DKT with plate.shear_deformable
+  0) triangles with laminate stiffness; a ply strain limit reached anywhere in an
+  element cracks it (its stiffness falls to zero over a small strain range); a node held
+  only by broken elements becomes loose debris. A plate whose out-of-plane shear,
+  averaged over its thickness, reaches the strength of its glue planes splits between
+  its plies (:func:`split_plates`), as members do.
 * **glue lines**: zero-thickness cohesive springs with a bilinear mixed-mode law
   (quadratic initiation, Benzeggagh-Kenane propagation). In compression they keep
   bearing (contact); once broken they slide with Coulomb friction.

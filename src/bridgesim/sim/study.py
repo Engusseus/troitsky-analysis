@@ -3085,6 +3085,8 @@ MECHANISM_KEYS = {
     "member": ("material.f_t_MPa", "material.f_c_MPa", "material.f_v_MPa",
                "material.f_b_MPa"),
     "plate": ("material.f_t_MPa", "material.f_c_MPa", "wood.f_rolling_MPa"),
+    # a plate split between its plies (plate_shear): its glue planes' strength
+    "plate_shear": ("material.f_v_MPa", "wood.f_rolling_MPa", "glue.interlaminar_MPa"),
     "bearing": ("wood.f_c90_MPa",),
     "floss": ("floss.strand_break_N",),
 }
@@ -3095,6 +3097,8 @@ def _mechanism(governing: str) -> str:
     g = (governing or "").lower()
     if "floss" in g:
         return "floss"
+    if g.startswith("plate shear"):
+        return "plate_shear"
     for k in ("joint", "bearing", "plate", "member"):
         if g.startswith(k) or f" {k}" in g.split(":", 1)[0]:
             return k

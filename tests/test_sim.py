@@ -4497,3 +4497,6 @@ def test_a_plate_split_governs_and_is_strengthened_by_a_thicker_plate():
     wi = study._whatif([e])
     assert list(wi["bodies"].values()) == [{"section_scale": 1.25}]
     assert "plate split" in study._sequence([ev(0.2, 2000, "plate_shear", "Deck - L")])[0]
+    # a crush test that split a plate measures its glue planes (calibrate-bridge)
+    assert "glue.interlaminar_MPa" in study.MECHANISM_KEYS[study._mechanism(
+        "plate shear: Deck - L")]
