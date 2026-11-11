@@ -500,7 +500,7 @@ def crush(cad: CadArg, overrides: OverridesOpt = None, material: MaterialOpt = N
         typer.echo("  also broke within 10 % of F_u (the failure could start there on "
                    "another seed): " + "; ".join(rep.competing[:4]))
     if rep.Fu_first_joint_failure_kgf is not None:
-        typer.echo(f"  first joint separated (or member split in shear) at "
+        typer.echo(f"  first joint separated (or a member or plate split in shear) at "
                    f"{rep.Fu_first_joint_failure_kgf:.1f} kgf")
     rc = rep.quality.rate_check
     if rc:

@@ -140,14 +140,16 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
           max_disp: float, dt: float | None = None, alpha: float = 200.0,
           stop_drop: float = 0.3, record_every: int = 20, max_steps: int = 2_000_000,
           gravity: bool = False, sign: float = 1.0, slow_disp: float = 0.0,
-          slow_rate: float | None = None, test_time_s: float = 0.0) -> TestResult:
+          slow_rate: float | None = None, test_time_s: float = 0.0,
+          until=None) -> TestResult:
     """Move ``node`` (one node or a list: a grip) along global ``dof`` at ``rate`` mm/s
     (displacement control) with the ``fixed`` nodes held ("xyz", "xyzr" = also rotations,
     any subset of x, y, z, r) and record the reaction force. Stops at ``max_disp`` or
     when the force drops below ``stop_drop`` x peak after the peak. Up to ``slow_disp``
     the node moves at ``slow_rate`` instead (a quasi-static start, for the stiffness).
     ``test_time_s``: the physical time to failure the glue's strength is taken at
-    (solver.glue_rate; 0: the coupon's own, tau_g)."""
+    (solver.glue_rate; 0: the coupon's own, tau_g). ``until(state)``: checked every step;
+    true stops the test there, its last record the force of that step."""
     node = np.atleast_1d(np.asarray(node, int))
     m.mass = np.maximum(m.mass, 1e-12)
     m.rot_inertia = np.maximum(m.rot_inertia, 1e-12)
@@ -182,6 +184,11 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
         st.x[node, dof] = x0 + sign * u
         st.v[node, dof] = sign * vr
         S.internal_and_contact(m, st, s, F, Mo)
+        if until is not None and until(st):
+            disp.append(u)
+            force.append(sign * float(F[node, dof].sum()))
+            peak = max(peak, force[-1])
+            break
         fext = np.zeros_like(F)
         if gravity:
             fext[:, 1] = -m.mass * s.gravity
@@ -422,3 +429,80 @@ def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2
     fixed = {n: "xyzr" for n in left} | {n: "yzr" for n in right}
     return drive(m, fixed, right, 0, rate, max_disp=max_disp, stop_drop=0.01, alpha=2000.0,
                  record_every=5)
+
+
+def shell_strip_bending(h: float, L: float = 12.0, W: float = 20.0, t: float = 4.0,
+                        angles: tuple = (0.0, 90.0), rate: float = 20.0, material=None,
+                        sim_params=None, max_disp: float | None = None,
+                        stop_at_split: bool = False, alpha: float = 2000.0) -> TestResult:
+    """A plate strip in three-point bending, as a short-beam shear test of a stick plate
+    on its flat: span L along X between line supports at its ends (w held), W across,
+    thickness t, plies ``angles`` (deg from X) listed from its underside, meshed with
+    right triangles of size ``h``; its mid-span line is pushed down (-Z) and the force on
+    it recorded. Its elements are the bridge's (shear-deformable unless
+    plate.shear_deformable is 0; their glue planes split in out-of-plane shear,
+    solver.split_plates). ``stop_at_split``: stop at the step the first element splits."""
+    from bridgesim.schema import Material
+    from bridgesim.sim.materials import Ply, SimParams, laminate_shear
+
+    sp = sim_params or SimParams.load()
+    mat = material or Material.from_yaml(
+        __import__("pathlib").Path(__file__).resolve().parents[3] / "materials"
+        / "popsicle_birch.yaml")
+    ply = Ply.from_material(mat, sp)
+    nx, ny = max(2, 2 * round(L / (2 * h))), max(1, round(W / h))
+    xs, ys = np.linspace(0, L, nx + 1), np.linspace(0, W, ny + 1)
+    X = np.array([[x, y, 0.0] for x in xs for y in ys])
+    m = blank_model(X)
+    rho = mat.density_kg_m3.value * 1e-12  # t/mm^3
+    hx = L / nx
+
+    def nid(i, j):
+        return i * (ny + 1) + j
+
+    G = (sp["wood.G_f_N_per_mm"], sp["wood.G_f90_N_per_mm"], sp["wood.G_v_N_per_mm"])
+    shear_on = sp.values.get("plate.shear_deformable", 1.0) >= 0.5
+    il = (mat.f_v_MPa.value, sp["wood.f_rolling_MPa"], sp["glue.interlaminar_MPa"]) \
+        if shear_on and len(angles) >= 2 else None
+    els, nodes, E0s, Ps = [], [], [], []
+    for i in range(nx):
+        for j in range(ny):
+            for tri in ((nid(i, j), nid(i + 1, j), nid(i + 1, j + 1)),
+                        (nid(i, j), nid(i + 1, j + 1), nid(i, j + 1))):
+                P3 = X[list(tri)]
+                c = P3.mean(0)
+                ex = (P3[1] - P3[0]) / np.linalg.norm(P3[1] - P3[0])
+                ez = np.array([0.0, 0.0, 1.0])
+                ey = np.cross(ez, ex)
+                E0 = np.stack([ex, ey, ez], axis=1)
+                Ploc = (P3 - c) @ E0
+                gang = math.degrees(math.atan2(float(ey[0]), float(ex[0])))
+                angs = [gang + a for a in angles]
+                H = laminate_shear(ply, angs, t, sp["wood.G_rolling_MPa"],
+                                   sp["glue.lamination_K_s_N_per_mm3"],
+                                   sp.values.get("plate.shear_correction", 5.0 / 6.0)) \
+                    if shear_on else None
+                ed = shellmod.element_data(Ploc[:, :2], angs, t, ply, 1.0, 1.0, G,
+                                           ply.E_L * t, H=H, interlaminar=il)
+                els.append(ed)
+                nodes.append(tri)
+                E0s.append(E0)
+                Ps.append(Ploc)
+                me = rho * ed["area"] * t
+                for nd in tri:
+                    m.mass[nd] += me / 3
+                    m.rot_inertia[nd] += me / 3 * (hx * hx / 12 + t * t / 12)
+    for k, v in shellmod.pack(els).items():
+        setattr(m, k, v)
+    m.s_nodes = np.array(nodes, int)
+    m.s_E0, m.s_P = np.array(E0s), np.array(Ps)
+    m.s_t = np.full(len(nodes), t)
+    m.s_body = np.zeros(len(nodes), int)
+    m.params["crush_softening"] = sp["wood.crush_softening"]
+    m.params["fc_proportional"] = sp.values.get("wood.fc_proportional", 1.0)
+    fixed = {nid(0, j): "z" for j in range(ny + 1)} | \
+        {nid(nx, j): "z" for j in range(ny + 1)} | {nid(0, 0): "xyz", nid(nx, 0): "yz"}
+    load = [nid(nx // 2, j) for j in range(ny + 1)]
+    return drive(m, fixed, load, 2, rate, max_disp=max_disp or L / 10, sign=-1.0,
+                 stop_drop=0.5, alpha=alpha, record_every=5,
+                 until=(lambda st: bool(st.s_shear.any())) if stop_at_split else None)

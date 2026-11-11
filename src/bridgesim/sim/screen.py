@@ -483,17 +483,36 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
                 add(info.name, "buckling", best[0], best[1])
     # plates: ply strains at each element's centre against the ply's limits
     if len(m.s_nodes):
+        from bridgesim.sim.solver import shell_shear_arrays
+
+        sR, _sKH, sGs, sphi, sH, sfil = shell_shear_arrays(m)
         worst_s: dict[tuple, tuple] = {}
         names = ("plate fibre tension", "plate fibre crushing", "plate across-grain "
-                 "tension", "plate across-grain crushing", "plate shear")
+                 "tension", "plate across-grain crushing", "plate shear",
+                 "plate interlaminar shear")
+        ib = np.array([2, 3, 4, 8, 9, 10, 14, 15, 16])
         for e in range(len(m.s_nodes)):
             T = _block(m.s_E0[e].T, 6)
             dg = np.concatenate([u[nd] for nd in m.s_nodes[e]])
             dl = T @ dg
-            Rr = shellmod.recovery(m.s_P[e][:, :2])
+            dkmt = sH[e, 0] > 0
+            Rr = shellmod.recovery(m.s_P[e][:, :2], sphi[e] if dkmt else None)
             eps = Rr @ dl
             lim = m.s_lim[e]
-            ut = np.zeros(5)
+            ut = np.zeros(6)
+            if dkmt and sfil[e, 2] > 0:
+                # out-of-plane shear (DKMT): 1.5 |Q| / t over the glue planes' strength,
+                # along and across each ply's grain and on the bond line (as the crush)
+                om = sphi[e] / (1.0 + sphi[e])
+                gm = sGs[e] @ (om * (sR[e] @ dl[ib]))
+                qx = sH[e, 0] * gm[0] + sH[e, 2] * gm[1]
+                qy = sH[e, 2] * gm[0] + sH[e, 1] * gm[1]
+                r_il = math.hypot(qx, qy) * sfil[e, 2]
+                for ll in range(int(m.s_nl[e])):
+                    c_, s_ = m.s_lay[e, ll, 2], m.s_lay[e, ll, 3]
+                    r_il = max(r_il, math.hypot((c_ * qx + s_ * qy) * sfil[e, 0],
+                                                (-s_ * qx + c_ * qy) * sfil[e, 1]))
+                ut[5] = r_il
             for ll in range(int(m.s_nl[e])):
                 zb, zt, c, s = m.s_lay[e, ll]
                 for z in (zb, zt):
@@ -501,12 +520,13 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
                     e1 = ex * c * c + ey_ * s * s + gxy * c * s
                     e2 = ex * s * s + ey_ * c * c - gxy * c * s
                     g12 = 2 * (ey_ - ex) * c * s + gxy * (c * c - s * s)
-                    ut = np.maximum(ut, [max(e1, 0) / lim[0], max(-e1, 0) / lim[1],
-                                         max(e2, 0) / lim[2], max(-e2, 0) / lim[3],
-                                         abs(g12) / lim[4]])
+                    ut[:5] = np.maximum(ut[:5], [max(e1, 0) / lim[0],
+                                                 max(-e1, 0) / lim[1],
+                                                 max(e2, 0) / lim[2], max(-e2, 0) / lim[3],
+                                                 abs(g12) / lim[4]])
             bd = int(m.s_body[e])
             ctr = m.X[m.s_nodes[e]].mean(0)
-            for k in range(5):
+            for k in range(6):
                 if ut[k] > worst_s.get((bd, k), (0,))[0]:
                     worst_s[(bd, k)] = (ut[k], ctr)
         for (bd, k), (ut, ctr) in worst_s.items():

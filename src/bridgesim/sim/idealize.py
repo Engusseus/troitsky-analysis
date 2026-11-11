@@ -45,6 +45,7 @@ from bridgesim.sim.materials import (
     SimParams,
     inplane_split_strength,
     laminate,
+    laminate_shear,
     parse_layup,
     parse_override_layup,
     rect_torsion,
@@ -2021,6 +2022,18 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 mat.f_v_MPa.value, il_strength["f_rolling"], il_strength["bond"],
                 il_strength["butt_eff"])
             kc_pl = butt_compression(b.name, kt_pl, o)
+            # shear-deformable plates (DKMT, since round 28): the laminate's transverse
+            # shear stiffness from its plies in series with their glue lines, and the
+            # strengths of its glue planes, where it splits (as a member's: the lower of
+            # the bond line and the plies next to it, along and across their grain; the
+            # wood's scatter on both, the body's glue_factor on the bond line)
+            shear_on = sp.values.get("plate.shear_deformable", 1.0) >= 0.5
+            il_pl = None
+            if shear_on and len(sh.layup.angles) >= 2:
+                gf_pl = max(float(o.get("glue_factor", 1.0)), 1e-3)
+                il_pl = tuple(v * Ef * Sf for v in (mat.f_v_MPa.value,
+                                                    il_strength["f_rolling"],
+                                                    il_strength["bond"] * gf_pl))
             for t3 in tri:
                 xy3 = P2[t3]
                 X3 = np.array([bld.X[ids[k]] for k in t3])
@@ -2043,8 +2056,14 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 angs = [gang + a for a in sh.layup.angles]
                 if float(ez @ sh.n) < 0:  # plies listed from the -n face up
                     angs = angs[::-1]
+                H_el = laminate_shear(
+                    ply, angs, T, sp.values.get("wood.G_rolling_MPa", 150.0),
+                    sp.values.get("glue.lamination_K_s_N_per_mm3", 350.0),
+                    sp.values.get("plate.shear_correction", 5.0 / 6.0), Ef) \
+                    if shear_on else None
                 ed = shellmod.element_data(Ploc[:, :2], angs, T, ply_s, Ef, Sf, Gm,
-                                           lam_ref.E_x * Ef * T, kt=kt_pl, kc=kc_pl)
+                                           lam_ref.E_x * Ef * T, kt=kt_pl, kc=kc_pl,
+                                           H=H_el, interlaminar=il_pl)
                 if ed["snapback"]:
                     n_snap += 1
                     snap_excess = min(snap_excess, ed["excess"])

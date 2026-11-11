@@ -667,7 +667,7 @@ def _backward_mean(t: np.ndarray, raw: np.ndarray, period_s: float) -> np.ndarra
 MINOR_SHARE = 0.02  # a joint that can carry less than this share of F_u never governs
 CRUSH_EVENT_MM = 0.1  # a face's wood crushed this deep on average: bearing_crushing
 BREAKS = ("joint_failure", "joint_cracking", "member_fracture", "member_shear",
-          "plate_crack", "floss_break", "member_crushing", "member_erosion")
+          "plate_crack", "plate_shear", "floss_break", "member_crushing", "member_erosion")
 
 
 def major_breaks(events: list[Event], t_call: float, peak: float) -> list[Event]:
@@ -689,8 +689,8 @@ def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
     when a joint goes first, the joint that could carry the most (a diagonal's foot and
     its two gusset laps letting go together: the load falls because the laps go, and
     strengthening the foot alone changes nothing, the adversarial review of round 20),
-    and a member split within 2 ms of a member fracture is put down to the fracture (its
-    stress wave). The same moment: within half a period of the bridge's ringing
+    and a member or plate split within 2 ms of a member fracture is put down to the
+    fracture (its stress wave). The same moment: within half a period of the bridge's ringing
     (``period_s``), the time its load takes to fall (the adversarial review of round 24:
     the laps went 2-3 ms after the foot, outside the load cell's window of 0.75-3 ms, and
     the foot, 5 % of F_u, kept the label); a plate that had cracked before (it was
@@ -738,7 +738,7 @@ def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
                 and abs(e.travel_mm - peak_travel) <= 3.0]
         first = near[0] if near else next(
             (e for e in before if e.kind in BREAKS and e.kind != "joint_cracking"), None)
-    if first is not None and first.kind == "member_shear":
+    if first is not None and first.kind in ("member_shear", "plate_shear"):
         # a member breaking sends a stress wave that can split its neighbours (or itself)
         # in the same instant: the break is the cause, not the splits
         root = [e for e in before if e.kind in ("member_fracture", "member_erosion")
@@ -995,6 +995,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     prev_a = st.b_alive.copy()
     prev_bs = st.b_shear.copy()
     prev_s = st.s_dmg > 0.5
+    prev_ss = st.s_shear.copy()
     prev_k = st.k_alive.copy()
     # a member crushing: a fibre's plastic strain in compression past f_c by its onset
     # strain (past the rising curve's (1 - kap) f_c / E)
@@ -1072,8 +1073,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     n_seen = 0
     ke_q = 0.0  # kinetic energy of the bridge under steady loading (full jack speed)
     recent: list[tuple[float, float]] = []  # (t, load) over the last half settle window
-    major = ("joint_cracking", "joint_failure", "plate_crack", "member_fracture",
-             "member_shear", "floss_break", "member_erosion")
+    major = ("joint_cracking", "joint_failure", "plate_crack", "plate_shear",
+             "member_fracture", "member_shear", "floss_break", "member_erosion")
     # the jack travel over which the bridge beds in: its bearing faces seating and the
     # support corner that stood off the platform coming down (0.2 mm margin)
     lift = np.asarray(m.params.get("p_lift", np.zeros(0)), float)
@@ -1192,6 +1193,13 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                     els = np.where(sd & (m.s_body == bid))[0]
                     ev("plate_crack", m.bodies[bid].name,
                        f"{len(els)} shell element(s) cracked", mid(m.s_nodes[els].ravel()))
+            ss = st.s_shear & ~prev_ss
+            for bid in np.unique(m.s_body[ss]) if ss.any() else ():
+                els = np.where(ss & (m.s_body == bid))[0]
+                ev("plate_shear", m.bodies[bid].name,
+                   f"the plate split between its plies in out-of-plane shear ({len(els)} "
+                   "shell element(s)): it bends as separate layers but still carries "
+                   "in-plane load", mid(m.s_nodes[els].ravel()))
             kb = ~st.k_alive & prev_k
             for c in np.where(kb)[0]:
                 ev("floss_break", m.bodies[m.k_body[c]].name, "floss snapped",
@@ -1242,6 +1250,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                          f"{pa.area_mm2:.0f} mm^2 let go)"), pa.centroid,
                    fraction=float(pfrac[pid]), capacity=float(patch_cap[pid]))
             prev_b, prev_bs, prev_s = st.b_fractured.copy(), st.b_shear.copy(), st.s_dmg > 0.5
+            prev_ss = st.s_shear.copy()
             prev_a = st.b_alive.copy()
             prev_k = st.k_alive.copy()
             prev_patch_started, prev_patch_broken = started, broken
@@ -1294,7 +1303,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                                            "load_N": force, "part": "press frame"}
                     ev("criterion", "contact", "the bridge touches the press uprights")
             if criteria["joint_or_shear"] is None:
-                hit = [e for e in events if e.kind in ("joint_failure", "member_shear")]
+                hit = [e for e in events if e.kind in ("joint_failure", "member_shear",
+                                                       "plate_shear")]
                 if hit:
                     criteria["joint_or_shear"] = {"t_s": hit[0].t, "load_N": hit[0].force_N,
                                                   "travel_mm": hit[0].travel_mm,
@@ -1518,6 +1528,8 @@ def _frame(m: Model, st: S.State, travel: float, force: float, defl: float) -> F
     bstate[st.b_fractured] = 1
     bstate[st.b_shear | ~st.b_alive] = 2
     sstate = (st.s_dmg > 0.5).astype(np.uint8)
+    if len(st.s_shear) == len(sstate):
+        sstate[st.s_shear] = 1  # split between its plies: shown as broken, as a member
     sstate[st.s_gone] = 2
     pd = np.zeros(len(m.patches))
     if len(m.c_patch):  # share of each joint's glued area that has let go

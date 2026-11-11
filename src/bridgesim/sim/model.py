@@ -167,6 +167,19 @@ class Model:
     # per glue point: the exponent n of its strength's dependence on the time to failure,
     # tau(t) = tau(t_ref) (t / t_ref)^-n (glue.rate_exponent; the wood's for a solid face)
     c_rate: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    # shear-deformable shells (DKMT, shell.py; zeros for a DKT element, s_H[:, 0] == 0):
+    # side residuals (ns, 3, 9), curvature of the unit side bubbles at the 3 points
+    # (ns, 3, 3, 3), side-to-element shear (ns, 2, 3), the sides' phi (ns, 3), the
+    # transverse shear stiffness H11, H22, H12 (ns, 3, N/mm), 1.5 / (t f) of the glue
+    # planes' strengths along and across a ply's grain and of the bond line (ns, 3; zero:
+    # it cannot split) and the plies (ns,)
+    s_R: np.ndarray = field(default_factory=lambda: np.zeros((0, 3, 9)))
+    s_KH: np.ndarray = field(default_factory=lambda: np.zeros((0, 3, 3, 3)))
+    s_Gs: np.ndarray = field(default_factory=lambda: np.zeros((0, 2, 3)))
+    s_phi: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    s_H: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    s_fil: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    s_nply: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
     @property
     def n_nodes(self) -> int:

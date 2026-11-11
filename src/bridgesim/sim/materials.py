@@ -122,6 +122,8 @@ PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("scatter.*_corr", 0.0, 1.0, True),
     ("scatter.amplitude", 0.0, 10.0, True),
     ("wood.E_placeholder_MPa", 0.0, 1e6, True),
+    ("plate.shear_deformable", 0.0, 1.0, True),
+    ("plate.shear_correction", 0.0, 1.0, False),
     ("*", 0.0, float("inf"), False),  # moduli, strengths, energies, sizes: positive
 ]
 
@@ -375,6 +377,48 @@ def laminate(ply: Ply, angles: list[float], t: float) -> LaminateProps:
 
     return LaminateProps(A, D, t, E_x, E_bx, G_xy, fail_strain(1.0), fail_strain(-1.0),
                          list(angles), ply, B)
+
+
+def laminate_shear(ply: Ply, angles: list[float], t: float, G_rolling: float,
+                   K_line: float, kappa: float = 5.0 / 6.0, E_factor: float = 1.0
+                   ) -> np.ndarray:
+    """Transverse (out-of-plane) shear stiffness H (2 x 2, N/mm) of a stick laminate of
+    thickness t in its reference axes: Q = H gamma, Q = (Q_xz, Q_yz) the shear forces per
+    unit width and gamma the mean shear strains through the thickness.
+
+    Each ply shears along its grain with G_13 = G_LT and across it with the rolling-shear
+    modulus G_23 = ``G_rolling`` (the R-T plane of a stick: Collins & Fink 2025 measured
+    183-200 MPa on birch), its compliance S_p = diag(1/G_13, 1/G_23) turned into the
+    reference axes (T^T S_p T); through the thickness the plies are in series, so their
+    compliances add weighted by thickness, with one glue line between each pair of plies
+    adding its slip 1 / K_line (``glue.lamination_K_s_N_per_mm3``, a pressed line):
+
+        H = kappa t^2 (sum_i t_i T_i^T S_i T_i + (n - 1) / K_line I)^-1
+
+    (the shear stress taken uniform for the series sum: tau = Q / t; a homogeneous plate
+    gives H = kappa G t). ``kappa`` is the shear correction factor, 5/6 for a homogeneous
+    section with a parabolic shear stress (Reissner 1945). For a laminate whose plies
+    differ in stiffness through the thickness the energy-consistent factor differs
+    (Whitney 1973, J. Compos. Mater. 7:192: the shear stress from the bending stress
+    gradient in cylindrical bending, its energy over that of this H with kappa = 1): with
+    the stick values (E_L 10.5, E_T 0.5, G_LT 0.66, rolling 0.15 GPa, lines 350 N/mm^3)
+    it is 0.83 for a UD stack (0.70-0.79 with its glue lines), 0.60-0.68 along the outer
+    plies of 0/90/0, 0/90/90/0 and 0/90/0/90 stacks (the soft cross plies near the middle
+    carry the peak shear) and 0.95-1.49 across the outer plies of 0/90/0 and 0/90/90/0
+    and for a 2-ply 0/90 (the soft plies where the shear is low). So H is a first-order
+    value, as the plate theory it feeds (first-order shear deformation): for cross plies
+    -28 % to +79 % from the energy-consistent one. ``E_factor`` scales the wood's moduli
+    (the stick scatter), not the glue lines."""
+    n = max(1, len(angles))
+    S = np.zeros((2, 2))
+    for th in angles:
+        c, s = math.cos(math.radians(th)), math.sin(math.radians(th))
+        T = np.array([[c, s], [-s, c]])
+        Sp = np.diag([1.0 / (ply.G_LT * E_factor), 1.0 / (G_rolling * E_factor)])
+        S += (t / n) * T.T @ Sp @ T
+    if n > 1 and K_line > 0:
+        S += (n - 1) / K_line * np.eye(2)
+    return kappa * t * t * np.linalg.inv(S)
 
 
 def ply_layers(angles: list[float], t: float, min_layers: int = 2
