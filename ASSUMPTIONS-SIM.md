@@ -134,7 +134,20 @@ expected: its buckling needs a kink at the joint or unglued outer plies as well.
   each such pair is asked about (`near_miss:A | B`, important); 0.8-3 mm apart they are
   asked about and not glued; not when the overrides leave the pair unglued (a load
   hanger) or a third part, touching both on parallel faces, fills the gap (a chord between
-  a splice and a diagonal). A member drawn 0.4 mm thinner than the gap between its
+  a splice and a diagonal). Since round 28 faces drawn apart and not glued (0.8-3 mm, or
+  up to 3 mm when the overrides leave the pair unglued) bear on each other once their gap
+  has closed: a **dry face**, points spread over the overlap as a glued face's glue
+  points are, started broken and held apart by the drawn gap (as a fit-up gap too wide
+  for the glue, below), so each bears from the moment its own gap has closed, with the
+  stiffness of a glued face (`glue.K_n` in series with the wood on either side), the wood
+  under it crushing at its grain's bearing strength, and friction (`glue.friction`); a
+  face drawn inside the other bears as faces that touch. Until then such a pair had
+  nothing, and the contact between parts kept it from touching at all: a member that
+  seats on a block after 1 mm of movement is a load path. A dry face is listed among the
+  joints as `dry` and counts neither as glued area nor as a joint that breaks; the
+  `screen`, linear, leaves it open
+  (`test_faces_drawn_apart_bear_once_the_gap_has_closed`, the same closing load with
+  elements half the size: `test_a_dry_face_bears_alike_on_two_meshes`). A member drawn 0.4 mm thinner than the gap between its
   gussets lost its laps until then, silently (Bridge_v10 37-49 % low, the adversarial
   review of round 26). The glue is a grid of cohesive springs (one per node of the finer mesh,
   or between two members a grid at their element size with at least two points across
@@ -603,12 +616,51 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   digging into the deck, or a support corner, crushes locally instead of carrying an
   unlimited load.
 * **Contact between parts that were not touching at the start** (a broken chord falling
-  on a cross-beam, a deck sagging onto a strut): penalty contact of every node and beam
-  mid-point against beam capsules and shell slabs of the other bodies
-  (`bridgesim/sim/contact.py`), frictionless. Parts touching at the start interact
-  through their glue springs instead, which keep bearing and sliding with friction after
-  the glue breaks; a broken glue pair whose two points have moved apart (3 mm), turned
-  (74 degrees) or passed through each other stops acting.
+  on a cross-beam, a deck sagging onto a strut, a buckled diagonal on its neighbour, a
+  member that seats on a part it was drawn clear of): penalty contact
+  (`bridgesim/sim/contact.py`). Since round 28 a member is a **box**: its rectangular
+  section (the width and depth its fibres are laid over, so a tapered member or a frame's
+  arm has its own per element) swept along each element's chord in the element's current
+  frame, its ends faces only where the member ends; a plate is a slab of its thickness.
+  The points that push on them: each member's section outline at every node and element
+  mid-point (its four corners and the middle of each side, more along a side longer than
+  an element; corners alone miss two members of one width lying flush), each plate node
+  (a sphere of half its thickness), each block corner. Until round 27 a member was a
+  capsule of the radius of the circle with its section's area (a 21 x 47 mm chord 6 mm
+  too slim one way and 7 mm too fat the other: a 20 x 10 mm member dropped on another
+  came to rest 3.6 mm above its face lying flat and 1.4 mm inside it on its edge; now
+  within a micron, `test_a_member_dropped_flat_rests_face_on_face`), and each point was
+  kept off every body it touched or came within 1 mm of at the start (with fat capsules,
+  many unglued neighbours) for the whole run, along that body's whole length. Now a
+  point never pushes on
+  its own body, nor on a body it shares a patch with (glue, a tie, one piece drawn as
+  two, a dry face) within the larger section depth of the two plus the patch's point
+  spacing of one of the patch's points: the patch's springs carry the contact there,
+  and two members glued at one end still touch where they are bent together far from it
+  (`test_contact_near_a_glued_patch_is_left_to_its_glue`). Every other pair starts
+  force-free: a point drawn inside another body (an overlap in the CAD, a bowed member)
+  is allowed that depth and pushes only beyond it, the allowance shrinking as it comes
+  out (so a pair that separates later bears at its true surface); a pair drawn apart
+  pushes once its real gap has closed (the settled perfect bridge has no contact force,
+  `test_no_part_contact_force_on_the_settled_bridge`). A point touching two elements of
+  one body (at a joint between elements) is pushed by the deeper one only. The normal
+  force is a soft penalty: 2000 N/mm a point, at most 0.2 m / dt^2 of the lighter of its
+  node and a light master node, shared among the points on the node (their sum is what
+  one point had until round 27, so contact does not lower the stable time step), with a
+  little normal damping. **Friction** is Coulomb's, mu = `contact.friction_parts` (0.4,
+  wood on wood as `glue.friction`; dry wood on wood 0.25-0.5, wet 0.2, Bowden & Tabor
+  1950; drawn by montecarlo, 30 %; frictionless until round 28): an elastic-plastic
+  tangential spring as stiff as the normal penalty, anchored on the touched body in its
+  element's own coordinates (so the anchor moves with that part), kept per point and
+  body across searches and from element to element, sticking while its force is below
+  mu times the normal force and dragging its anchor once it passes it, as the platform's
+  contact does (`test_friction_between_parts_sticks_and_slips`: a short member on an
+  incline below the friction angle does not creep, above it slides at g (sin a - mu cos
+  a) within 3 %, at g sin a with mu = 0). Parts touching at the start interact through
+  their glue springs instead, which keep bearing and sliding with friction after the glue
+  breaks; a broken glue pair whose two points have moved 3 mm from where they were drawn,
+  turned (74 degrees) or passed through each other stops acting (until round 28 3 mm
+  from touching, which a dry face drawn apart starts close to).
 * The jack moves down at constant speed (displacement control); its force is the
   load-cell reading. The crusher + load cell stiffness is 10 kN/mm (estimated from
   Appendix B's press: oil column ~19, crossbeam ~35, load cell ~100 kN/mm in series; 20
@@ -966,7 +1018,9 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   are rigid: they crush only where they bear on the plate or the platform, and their
   glue lines crush (by grain direction, as above); a question lists the ones in the load
   path, answered with `kind: bar` or `kind: shell` when one is really a member.
-* Friction in the contact between parts that were not touching at the start.
+* A rigid block is no contact surface: its corners push on other parts, but another
+  part's points pass into a block they were not glued or drawn close to (it is reached
+  through its glue lines and dry faces only).
 * Debris (pieces with nothing left holding them) falls under gravity and lands on the
   platform, but does not hit the bridge or the plate.
 * Creep of the wood and the time the bridge waits loaded (the glue's creep and its
