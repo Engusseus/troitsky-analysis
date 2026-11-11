@@ -927,9 +927,9 @@ def split_plates(m: Model, st: State) -> None:
     while the shear still reaches it, down to its separate plies (1/n). It keeps its
     membrane stiffness and strength and its transverse shear stiffness (the parts share
     the shear, each with its own: kappa G t in all). A single ply has no glue plane."""
-    if len(m.s_nodes) == 0 or not (m.s_fil[:, 2] > 0.0).any() \
-            or len(st.s_split) != len(m.s_nodes):
-        return
+    if len(m.s_nodes) == 0 or len(st.s_split) != len(m.s_nodes) or \
+            len(st.s_rat) != len(m.s_nodes) or not st.s_rat.max() > 1.0:
+        return  # (a mean of values none above 1 is not above 1)
     r = plate_split_averaging(m) @ st.s_rat
     last = 1.0 / np.maximum(m.s_nply, 1.0)
     f = ~st.s_gone & (st.s_split > last * (1.0 + 1e-9)) & (r > 1.0)
