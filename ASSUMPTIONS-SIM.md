@@ -559,7 +559,8 @@ stringers shears about half as much as it bends (ratio 12 D / (H L^2) = 0.51 in
 loading plate. The plate element is now the discrete Kirchhoff-Mindlin triangle (DKMT,
 Katili 1993, Int. J. Numer. Meth. Engng 36:1859; `shell.py`): the rotations are linear
 plus a quadratic bubble of the tangential rotation on each side, and each side is an
-exact Timoshenko beam element, its shear strain gamma_s,k = phi_k / (1 + phi_k) r_k
+exact Timoshenko beam element (derived for this code after Katili's construction; the
+paper's own formulas were not at hand, the tests below decide), its shear strain gamma_s,k = phi_k / (1 + phi_k) r_k
 (r_k the side's Kirchhoff residual, phi_k = 12 D_ss / (H_ss L_k^2) from the bending
 stiffness along the side and its shear compliance), the element's shear strain the mean
 of the lowest-order edge field through the three sides, constant. As the plate gets

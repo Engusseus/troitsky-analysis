@@ -26,8 +26,10 @@ mean, int (w,s + beta_s - gamma_s) ds = 0:
 
     gamma_s,k = r_k + (2/3) dbeta_k,   r_k = (w_j - w_i) / L_k + (beta_s,i + beta_s,j) / 2
 
-and each side is a Timoshenko beam (Katili's DKMT/DKMQ: the shear along the side from the
-moment gradient along it, M_s = D_ss beta_s,s): gamma_s,k = -(2/3) phi_k dbeta_k with
+and each side is a Timoshenko beam (the shear along the side from the moment gradient
+along it, M_s = D_ss beta_s,s; derived here in the spirit of Katili's elements, whose
+paper was not at hand to check its formulas against: tests/test_sim.py decides):
+gamma_s,k = -(2/3) phi_k dbeta_k with
 
     phi_k = 12 D_ss,k / (H_ss,k L_k^2),
 
