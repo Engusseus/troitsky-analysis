@@ -44,6 +44,7 @@ from bridgesim.sim.materials import (
     Ply,
     SimParams,
     inplane_split_strength,
+    jack_strokes,
     laminate,
     parse_layup,
     parse_override_layup,
@@ -3343,6 +3344,15 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 "densified_E": sp["wood.E_T_MPa"],
                 "bearing_cap": float(ply.f_c),
                 "crush_band_mm": sp.values.get("wood.crush_band_mm", 0.0),
+                # the wood's time effects in physical test time (woodtime: duration of
+                # load, creep) and the pumped jack's strokes (crush.JackProtocol; stroke
+                # 0: the constant pace), round 28
+                "wood_rate_exponent": sp.values.get("wood.rate_exponent", 0.0),
+                "wood_coupon_time_s": sp.values.get("wood.coupon_time_s", 60.0),
+                "wood_creep_coeff": sp.values.get("wood.creep_coeff", 0.0),
+                "wood_creep_exponent": sp.values.get("wood.creep_exponent", 0.25),
+                **dict(zip(("crusher_stroke_mm", "crusher_stroke_time_s",
+                            "crusher_pause_s"), jack_strokes(sp.values), strict=True)),
                 # each beam's section (width along e2, depth along e3, centre along e2)
                 # and each joint's share of its crush on either side's member, crushed
                 # across its grain on its side (sections: the member gets shallower)

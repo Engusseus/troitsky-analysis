@@ -4459,3 +4459,378 @@ def test_a_member_crushed_on_its_side_gets_shallower():
             np.testing.assert_array_equal(m.b_fy[ee], fy[ee])  # its width is kept
         rest = np.setdiff1d(np.arange(len(m.b_i)), e)
         assert (m.b_fz[rest] == fz[rest]).all()
+
+
+# --------------------------------------- round 28: the wood's time effects, the pumped jack
+
+
+def _bar(n_el: int, L: float, E: float, f: float, b: float = 10.0, t: float = 2.0,
+         bow: float = 0.0, G: float = 600.0, Gf: float = 1.0, **params):
+    """A line of fibre beams along X (depth t along Y, an optional half-sine bow along Y),
+    with the wood's time-law params (woodtime: wood_rate_exponent, wood_creep_coeff, ...)."""
+    s = np.linspace(0.0, L, n_el + 1)
+    X = np.c_[s, bow * np.sin(np.pi * s / L), np.zeros_like(s)]
+    m = lab.blank_model(X)
+    lab.add_beam_line(m, list(range(n_el + 1)),
+                      lab.BeamSpec(b=b, d=t, E=E, ft=f, fc=f, Gf=Gf, G=G), up=(0, 1, 0))
+    m.params.update(params)
+    return m
+
+
+def _stepper(m):
+    """The wood's time laws set up (woodtime.setup: the instantaneous moduli), the stable
+    time step, a fresh state and a function that advances it ``steps`` steps under the
+    external forces ``fext`` (ramped on over ``ramp`` steps) with the ``fix_t`` / ``fix_r``
+    dofs held, mass damping ``alpha``, the test time running ``dtp`` per step and the
+    wood's laws following it every woodtime.EVERY steps; ``stop(st)`` ends it early
+    (returns the steps taken)."""
+    from bridgesim.sim import woodtime
+    from bridgesim.sim.crush import stable_dt
+
+    wt = woodtime.setup(m)
+    m.mass = np.maximum(m.mass, 1e-12)
+    m.rot_inertia = np.maximum(m.rot_inertia, 1e-12)
+    s = S.Settings(dt=1e-6)
+    s.dt, m.mass, m.rot_inertia, _ = stable_dt(m, s, dt_target=5e-6, max_added=0.0)
+    st = S.initial_state(m, jack_y=1e12)
+    F, Mo = np.zeros((m.n_nodes, 3)), np.zeros((m.n_nodes, 3))
+
+    def run(fext, fix_t, fix_r, steps, alpha, dtp=0.0, ramp=0, stop=None):
+        for k in range(steps):
+            if dtp > 0.0:
+                st.creep_dt = dtp
+                st.t_test += dtp
+                if wt is not None and k % woodtime.EVERY == 0:
+                    woodtime.update(m, st, wt)
+            S.internal_and_contact(m, st, s, F, Mo)
+            load = min(1.0, (k + 1) / ramp) if ramp else 1.0
+            acc = (fext * load - F) / m.mass[:, None] - alpha * st.v
+            acc[fix_t] = 0.0
+            st.v += s.dt * acc
+            st.v[fix_t] = 0.0
+            st.x += s.dt * st.v
+            st.x[fix_t] = m.X[fix_t]
+            wacc = -Mo / m.rot_inertia[:, None] - alpha * st.w
+            wacc[fix_r] = 0.0
+            st.w += s.dt * wacc
+            st.w[fix_r] = 0.0
+            S.rotate(st, s.dt)
+            st.t += s.dt
+            if stop is not None and stop(st):
+                return k + 1
+        return steps
+
+    return wt, s, st, run
+
+
+def test_the_woods_strength_follows_its_time_under_load():
+    """Duration of load (woodtime, round 28): a stick's strength at its time under load
+    t is f_ref (t / t_ref)^-n (wood.rate_exponent n, t_ref = wood.coupon_time_s), t from
+    when it first carried a tenth of it. A tension coupon (E 10 GPa, f 40 MPa, 100 mm,
+    20 mm^2) pulled at a real pace k (MPa of stress per s) fails at x = sigma_f / f where
+    x = ((f / k)(x - 0.1) / t_ref)^-n: its clock starts at 0.1 f / k, it fails at x f / k.
+    By hand with n = 0.1, t_ref = 60 s: f / k = 66 s gives x = 1.001, 660 s (a decade
+    slower) x = 0.814, loads in the ratio 1.230 (~10^(n / (1 + n)) = 1.233: the stronger
+    coupon takes longer, so its time to failure is less than a decade shorter); and each
+    peak is A f (t_e / t_ref)^-n at its own measured time under load t_e. n = 0 gives the
+    coupon of round 27 bit for bit (its forces with the test-time clock running and
+    without)."""
+    n, tref, A, f = 0.1, 60.0, 20.0, 40.0
+
+    def coupon(rate, n_=n):
+        m = _bar(2, 100.0, 10000.0, f, wood_rate_exponent=n_, wood_coupon_time_s=tref)
+        return lab.drive(m, {0: "xyzr"}, 2, 0, rate=2.0, max_disp=0.6, stop_drop=0.3,
+                         record_every=5, test_rate_mm_s=rate)
+
+    def hand(T):  # x = (T (x - 0.1) / t_ref)^-n by fixed-point iteration
+        x = 1.0
+        for _ in range(200):
+            x = (T * (x - 0.1) / tref) ** -n
+        return x
+
+    assert hand(66.0) == pytest.approx(1.001, abs=1e-3)
+    assert hand(660.0) == pytest.approx(0.814, abs=1e-3)
+    peaks = []
+    for T in (66.0, 660.0):
+        rate = 0.4 / T  # mm/s: the coupon reaches f / E x 100 mm = 0.4 mm in T
+        r = coupon(rate)
+        i = int(np.argmax(r.force))
+        # each element's clock started at 0.1 f / k (within an update), the older (the
+        # weaker) breaks
+        assert np.allclose(r.wood.b_t0, 0.1 * T, rtol=0.03)
+        t_e = r.disp[i] / rate - float(r.wood.b_t0.min())
+        assert r.peak / (A * f) == pytest.approx((t_e / tref) ** -n, rel=0.005)
+        assert r.peak / (A * f) == pytest.approx(hand(T), rel=0.01)
+        peaks.append(r.peak)
+    assert peaks[0] / peaks[1] == pytest.approx(hand(66.0) / hand(660.0), rel=0.01)
+    assert peaks[0] / peaks[1] == pytest.approx(10 ** (n / (1 + n)), rel=0.01)
+    # n = 0: round 27's coupon, bit for bit
+    m0 = _bar(2, 100.0, 10000.0, f, wood_rate_exponent=0.0, wood_creep_coeff=0.0)
+    m1 = _bar(2, 100.0, 10000.0, f)
+    r0 = lab.drive(m0, {0: "xyzr"}, 2, 0, rate=2.0, max_disp=0.6, stop_drop=0.3,
+                   test_rate_mm_s=0.4 / 66)
+    r1 = lab.drive(m1, {0: "xyzr"}, 2, 0, rate=2.0, max_disp=0.6, stop_drop=0.3)
+    assert r0.wood is None and np.array_equal(r0.force, r1.force)
+
+
+def test_a_member_held_near_its_strength_fails_when_the_law_says():
+    """A member held at 95 % of its coupon-time strength (force control, a tension bar)
+    breaks by itself once (t / t_ref)^-n has fallen to 0.95: by hand with the shipped
+    n = 0.02 and t_ref = 60 s, t = 60 x 0.95^(-1 / 0.02) = 780.6 s after its clock
+    started (its strength first ~16^n = 1.057 x: the law is taken no faster than 16x the
+    coupons). The fall below the stress it carries puts its fibres on their softening
+    branch (the kernel's law), not a jump: it cracks through (b_fractured). Its strengths
+    are back at their coupon-time values after the run (woodtime.release)."""
+    from bridgesim.sim import woodtime
+
+    n, tref = SP["wood.rate_exponent"], SP["wood.coupon_time_s"]
+    assert (n, tref) == (0.02, 60.0)
+    m = _bar(2, 100.0, 10000.0, 40.0, wood_rate_exponent=n, wood_coupon_time_s=tref)
+    ft0 = m.b_ft.copy()
+    wt, s, st, run = _stepper(m)
+    fix_t = np.ones((3, 3), bool)
+    fix_t[1:, 0] = False  # pulled along its axis only
+    fix_r = np.ones((3, 3), bool)
+    fext = np.zeros((3, 3))
+    fext[2, 0] = 0.95 * 20.0 * 40.0
+    run(fext, fix_t, fix_r, 6000, 3000.0, ramp=3000)  # loaded with no test time passing
+    assert st.dmg_t.max() == 0.0
+    assert st.x[2, 0] - 100.0 == pytest.approx(760.0 * 100 / (10000 * 20), rel=1e-3)
+    k = run(fext, fix_t, fix_r, 60_000, 3000.0, dtp=0.02, stop=lambda s_: s_.dmg_t.max() > 0)
+    assert k < 60_000
+    t_e = st.t_test - wt.b_t0.max()
+    assert t_e == pytest.approx(tref * 0.95 ** (-1 / n), rel=0.005)  # 780.6 s
+    run(fext, fix_t, fix_r, 20_000, 3000.0, dtp=0.02, stop=lambda s_: s_.b_fractured.any())
+    assert st.b_fractured.any()
+    woodtime.release(m)
+    assert np.array_equal(m.b_ft, ft0)
+
+
+def test_a_held_cantilever_creeps_as_the_power_law():
+    """Creep of the wood (woodtime, round 28): each element under load takes the
+    isochronous modulus E_ref (1 + phi(t_ref)) / (1 + phi(t)), phi(t) = a (t / 60 s)^m
+    (wood.creep_coeff a, wood.creep_exponent m), G alike. A cantilever (100 mm, 10 x 2
+    mm, 10 elements) under a held tip load P = 0.01 E I / L^2, its root at half its
+    strength: loaded with no test time passing it deflects P L^3 / (3 E_0 I) + P L / k G
+    A (E_0 = E_ref (1 + a) at t_ref = 60 s, the instantaneous modulus); after t under
+    load, by virtual work, (1 + w phi(t)) times that, w the share of the elements whose
+    clock started (those carrying a tenth of their strength: all but the 20 mm at the
+    tip, w = 1 - 0.2^3 = 0.992; an element's share of the tip deflection is the integral
+    of x^2 over it): with a = 0.3, m = 0.25, t = 600 s, phi = 0.3 x 10^0.25 = 0.533, a
+    deflection 1.529x. a = 0 (and n = 0): nothing set up, round 27's model."""
+    from bridgesim.sim import woodtime
+
+    a, mm, L, E, b, t, n_el = 0.3, 0.25, 100.0, 10000.0, 10.0, 2.0, 10
+    I = b * t**3 / 12
+    P = 0.01 * E * I / L**2
+    m = _bar(n_el, L, E, 2.0, b=b, t=t, wood_creep_coeff=a, wood_creep_exponent=mm,
+             wood_rate_exponent=0.0, wood_coupon_time_s=60.0)
+    wt, s, st, run = _stepper(m)
+    E0 = E * (1 + a)
+    assert np.allclose(m.b_E, E0) and np.allclose(m.b_GJ, wt.pristine["b_GJ"] * (1 + a))
+    fix_t = np.zeros((n_el + 1, 3), bool)
+    fix_r = np.zeros((n_el + 1, 3), bool)
+    fix_t[0], fix_r[0] = True, True
+    fix_t[:, 2] = True
+    fext = np.zeros((n_el + 1, 3))
+    fext[-1, 1] = -P
+    w1 = 3.516 * math.sqrt(E0 * I / (float(m.mass.sum()) / L * L**4))
+    per = int(2 * math.pi / w1 / s.dt)
+    run(fext, fix_t, fix_r, 12 * per, 2 * w1, ramp=4 * per)
+    d0 = -(st.x[-1, 1] - m.X[-1, 1])
+    kGA = 5 / 6 * 600.0 * b * t * (1 + a)
+    assert d0 == pytest.approx(P * L**3 / (3 * E0 * I) + P * L / kGA, rel=0.005)
+    run(fext, fix_t, fix_r, 6000, 2 * w1, dtp=0.1)  # 600 s of test time
+    t_load = st.t_test - wt.b_t0[wt.b_t0 >= 0]
+    assert np.ptp(t_load) < 1e-9
+    run(fext, fix_t, fix_r, 12 * per, 2 * w1)  # at rest
+    started = np.where(wt.b_t0 >= 0)[0]
+    h = L / n_el
+    w = sum(((L - k * h) ** 3 - (L - (k + 1) * h) ** 3) / L**3 for k in started)
+    assert w == pytest.approx(0.992)
+    phi = a * (float(t_load[0]) / 60.0) ** mm
+    assert phi == pytest.approx(0.3 * 10**0.25, rel=1e-3)
+    d = -(st.x[-1, 1] - m.X[-1, 1])
+    assert d / d0 == pytest.approx(1 + w * phi, rel=0.005)
+    woodtime.release(m)
+    assert np.allclose(m.b_E, E)
+    m2 = _bar(n_el, L, E, 2.0, wood_creep_coeff=0.0, wood_rate_exponent=0.0)
+    E2 = m2.b_E.copy()
+    assert woodtime.setup(m2) is None and np.array_equal(m2.b_E, E2)
+
+
+def test_a_strut_held_below_its_buckling_load_buckles_by_creep():
+    """Creep buckling (woodtime, round 28): a pin-ended strut (115 mm, 10 x 2 mm, a bow
+    of L / 100,000) held at 90 % of its buckling load P_cr = P_E / (1 + P_E / k G A),
+    P_E = pi^2 E_0 I / L^2 (E_0 the instantaneous modulus; G creeps alike, so P_cr goes
+    as E) buckles when E(t) has fallen to P L^2 / (pi^2 I) (with the shear term), 0.9
+    E_0: by hand 1 + phi(t) = 1 / 0.9, phi = 0.111, with a = 0.05 and m = 0.25 after t =
+    60 (0.111 / 0.05)^4 = 1463 s under load. The 4-element strut's own P_cr (5 % above
+    P_E's: the mesh, not this test's subject) is read from how it amplifies its bow at
+    half of P_E, 1 / (1 - P / P_cr) (Southwell), and the load set at 0.9 of it (the bow
+    then amplified 10x). Its deflection runs away (past L / 100, elastic: 10.5 MPa of its
+    15) when its modulus has fallen to 0.9 E_0 within 1 %. The time is 40x as sensitive
+    (d ln t / d ln E = -(1 + phi) / (m phi) = -40): within 25 % of 1463 s."""
+    a, mm, L, E, b, t, n_el = 0.05, 0.25, 115.0, 10000.0, 10.0, 2.0, 4
+    m = _bar(n_el, L, E, 15.0, b=b, t=t, bow=L / 100_000, wood_creep_coeff=a,
+             wood_creep_exponent=mm, wood_rate_exponent=0.0, wood_coupon_time_s=60.0)
+    wt, s, st, run = _stepper(m)
+    E0 = E * (1 + a)
+    I = b * t**3 / 12
+    PE = math.pi**2 * E0 * I / L**2
+    kGA = 5 / 6 * 600.0 * b * t * (1 + a)
+    fix_t = np.zeros((n_el + 1, 3), bool)
+    fix_t[0] = True
+    fix_t[-1, 1:] = True
+    fix_t[:, 2] = True
+    fix_r = np.zeros((n_el + 1, 3), bool)
+    fix_r[:, :2] = True  # it bends in the X-Y plane
+    fext = np.zeros((n_el + 1, 3))
+    mid, bow = n_el // 2, L / 100_000
+    fext[-1, 0] = -0.5 * PE
+    run(fext, fix_t, fix_r, 20_000, 2000.0, ramp=10_000)  # no test time passing
+    Pcr = 0.5 * PE / (1 - bow / st.x[mid, 1])  # Southwell
+    assert Pcr / (PE / (1 + PE / kGA)) == pytest.approx(1.05, abs=0.01)
+    fext[-1, 0] = -0.9 * Pcr
+    run(fext, fix_t, fix_r, 20_000, 2000.0)
+    assert st.x[mid, 1] / bow == pytest.approx(10.0, rel=0.02)  # 1 / (1 - 0.9)
+    k = run(fext, fix_t, fix_r, 200_000, 100.0, dtp=0.02,
+            stop=lambda s_: abs(s_.x[mid, 1]) > L / 100)
+    assert k < 200_000
+    assert float(m.b_E[mid]) / E0 == pytest.approx(0.9, rel=0.01)
+    t_load = st.t_test - float(wt.b_t0[mid])
+    t_hand = 60.0 * ((1 / 0.9 - 1) / a) ** (1 / mm)
+    assert t_hand == pytest.approx(1463.0, rel=1e-3)
+    assert t_load == pytest.approx(t_hand, rel=0.25)
+
+
+def test_the_pumped_jacks_clock_follows_its_timetable(monkeypatch):
+    """The physical test time of a crush (crush.JackProtocol, round 28). A jack at a
+    constant pace (crusher.stroke_mm 0): v dt / rate, the expression of round 27 bit for
+    bit. A hand-pumped jack advancing 1 mm in 0.5 s at a mean 10 mm/min (the pause that
+    keeps it, by hand: 1 x 60 / 10 - 0.5 = 5.5 s): at travel x after k pauses the test
+    time is x 0.5 + 5.5 k; the simulated jack stops at each stroke's end (its slowing
+    ramp started so that it does) and stands while the pause's 5.5 s pass, the bridge
+    carrying its load: crushed to 2.6 mm, two pauses, at 1 and 2 mm; its moving samples
+    sit on the timetable, a sample inside a pause between its ends; the report times F_u
+    on that clock."""
+    from bridgesim.sim import crush, study
+    from bridgesim.sim.idealize import Overrides, build_model
+    from bridgesim.sim.materials import jack_strokes
+
+    rng = np.random.default_rng(0)
+    base = crush.JackProtocol.from_params({"test_rate_mm_per_min": 10.0})
+    assert not base.pumped
+    for v, dt in rng.uniform(1e-6, 200.0, (20, 2)) * [1.0, 1e-7]:
+        assert base.test_dt(v, dt) == v * dt / (max(10.0, 1e-6) / 60.0)
+    sp = SP.updated({"crusher.stroke_mm": 1.0, "crusher.stroke_time_s": 0.5})
+    assert jack_strokes(sp.values) == (1.0, 0.5, pytest.approx(5.5))
+    hand = crush.JackProtocol(10.0 / 60, 1.0, 0.5, 5.5)
+    assert hand.test_time_at(2.5, 2) == pytest.approx(12.25)
+    assert base.test_time_at(2.5, 0) == pytest.approx(15.0)
+    monkeypatch.setattr(crush, "PAUSE_PERIODS", 0.05)  # short pauses, a quick test
+    m = build_model(simple_beam_bridge(span=400.0), MAT, sp, Overrides(), seed=None)
+    assert m.params["crusher_stroke_mm"] == 1.0
+    assert m.params["crusher_pause_s"] == pytest.approx(5.5)
+    res = crush.run_crush(m, crush.CrushOptions(speed_mm_s=100.0, max_travel_mm=2.6,
+                                                auto_speed=False, hold_on_failure=False))
+    assert res.pauses == 2
+    x = np.asarray(res.curve["travel"])
+    tt = np.asarray(res.curve["t_test"])
+    k = np.round((tt - 0.5 * x) / 5.5)
+    mv = np.diff(x) > 1e-9  # samples moving on both sides (not the ends of a pause)
+    moving = np.r_[True, mv] & np.r_[mv, True]
+    assert np.allclose((tt - 0.5 * x)[moving], 5.5 * k[moving], atol=1e-6)
+    assert np.all((tt - 0.5 * x >= -1e-9) & (tt - 0.5 * x <= 11.0 + 1e-6))
+    inside = np.floor((tt - 0.5 * x) / 5.5 + 1e-9)  # pauses done (a pause under way: not)
+    for j in (1, 2):  # where each pause stood
+        stood = x[(inside == j - 1) & ~moving]
+        assert stood.size and np.allclose(stood, j, atol=0.02)
+    assert tt[-1] == pytest.approx(hand.test_time_at(x[-1], 2))
+    i = int(np.argmax(res.curve["force"]))
+    assert study._time_at_peak(None, sp, 0.0, None, clock=res.curve) == tt[i]
+
+
+@pytest.mark.parametrize("fast", [False, True])
+def test_a_pumped_jacks_pause_lets_the_glue_creep_as_a_kelvin_element(fast):
+    """A lap (one glue point, its two sides moved apart by the jack: the slip is the
+    travel) under a pumped jack (crush.JackProtocol: 0.01 mm strokes in 0.5 s at a mean
+    0.1 mm/min, so 5.5 s pauses). While the jack stands the total slip ds is held and the
+    creep slip of the glue's Kelvin element (glue.creep_factor phi, glue.creep_time_s
+    t_r) relaxes over the pause's test time t_p: c_end = phi / (1 + phi) ds + (c_start -
+    phi / (1 + phi) ds) exp(-(1 + phi) t_p / t_r), by hand with phi = 1, t_r = 600 s:
+    c moves 1 - exp(-2 x 5.5 / 600) = 1.82 % of the way to ds / 2. The pause's test time
+    is spread over many steps; the kernel's exponential update composes exactly, so each
+    pause matches the analytical value however it is split; the shear force falls to
+    K_s (ds - c_end)."""
+    from bridgesim.sim.crush import JackProtocol
+
+    if fast:
+        pytest.importorskip("numba")
+    phi, tr, Ks = 1.0, 600.0, 60.0
+    m = _one_glue_point(Ks=Ks)
+    m.params.update(glue_creep_factor=phi, glue_creep_time_s=tr)
+    proto = JackProtocol.from_params({"test_rate_mm_per_min": 0.1, "crusher_stroke_mm": 0.01,
+                                      "crusher_stroke_time_s": 0.5, "crusher_pause_s": 5.5},
+                                     spread_s=0.003)
+    assert proto.pumped and proto.pause_s == 5.5
+    st = S.initial_state(m, jack_y=1e12)
+    s = S.Settings(dt=1e-5, use_numba=fast)
+    F, Mo = np.zeros((2, 3)), np.zeros((2, 3))
+    vb, ramp = 1.0, 0.002  # mm/s, s: the simulated jack and its slowing ramp
+    throttle, v, travel = 1.0, 0.0, 0.0
+    c_start = ds = None
+    pause_time = 0.0
+    checked = 0
+    for _ in range(200_000):
+        proto.start_pause(travel, v, throttle, ramp)
+        target = 0.0 if proto.pausing else 1.0
+        throttle = min(throttle + s.dt / ramp, target) if throttle < target else \
+            max(throttle - s.dt / ramp, target)
+        v = vb * throttle
+        travel += v * s.dt
+        st.x[1, 0] = travel
+        if proto.pausing and v == 0.0 and c_start is None:
+            c_start, ds, pause_time = float(st.c_creep[0, 0]), travel, 0.0
+        st.creep_dt = proto.test_dt(v, s.dt)
+        st.t_test += st.creep_dt
+        if c_start is not None:
+            pause_time += st.creep_dt
+        S.internal_and_contact(m, st, s, F, Mo, update=True)
+        if c_start is not None and not proto.pausing:
+            assert pause_time == pytest.approx(5.5, rel=1e-12)
+            want = phi / (1 + phi) * ds + (c_start - phi / (1 + phi) * ds) * math.exp(
+                -(1 + phi) * 5.5 / tr)
+            assert float(st.c_creep[0, 0]) == pytest.approx(want, rel=1e-9)
+            F2, M2 = np.zeros((2, 3)), np.zeros((2, 3))  # the force it carries now
+            S.internal_and_contact(m, st, s, F2, M2, update=False)
+            assert abs(F2[1, 0]) == pytest.approx(Ks * (ds - want), rel=1e-9)
+            assert ds == pytest.approx(0.01 * proto.pauses, abs=1e-12 + 0.0001)
+            c_start = None
+            checked += 1
+        if proto.pauses == 3:
+            break
+    assert checked == 3
+
+
+def test_a_pumped_jack_needs_a_pause_that_is_not_negative(tmp_path):
+    """crusher.stroke_mm 0 is the jack at a constant pace (no protocol); with strokes the
+    pause is stroke x 60 / rate - stroke time unless given (a given pause sets the mean
+    pace); a stroke slower than the mean pace allows (1 mm in 10 s at 10 mm/min: a pause
+    of 6 - 10 = -4 s) is an input error naming the keys, as a value out of its range."""
+    from bridgesim.sim import study
+    from bridgesim.sim.materials import jack_strokes
+
+    assert jack_strokes(SP.values) == (0.0, 0.0, 0.0)
+    assert jack_strokes(SP.updated({"crusher.stroke_mm": 1.0, "crusher.pause_s": 2.0}).values
+                        ) == (1.0, 0.5, 2.0)
+    assert jack_strokes(SP.updated({"crusher.stroke_mm": 1.0, "crusher.stroke_time_s": 6.0}
+                                   ).values) == (0.0, 0.0, 0.0)  # back to back: constant
+    with pytest.raises(ValueError, match=r"crusher\.stroke_time_s.*-4 s"):
+        SP.updated({"crusher.stroke_mm": 1.0, "crusher.stroke_time_s": 10.0})
+    with pytest.raises(ValueError, match="physical range"):
+        SP.updated({"crusher.stroke_mm": -1.0})
+    write_stl(simple_beam_bridge(), tmp_path / "b.stl")
+    with pytest.raises(ValueError, match="negative"):
+        study.inspect(tmp_path / "b.stl", {"params": {"crusher.stroke_mm": 1.0,
+                                                      "crusher.stroke_time_s": 10.0}})

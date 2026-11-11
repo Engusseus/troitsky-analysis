@@ -459,14 +459,28 @@ def _body_reports(model: Model) -> list[BodyReport]:
     return out
 
 
-def _time_at_peak(curve, sp: SimParams, fallback: float, Fu_kgf: float | None = None
-                  ) -> float:
+def _time_at_peak(curve, sp: SimParams, fallback: float, Fu_kgf: float | None = None,
+                  clock: dict | None = None) -> float:
     """When the real test reaches the reported F_u: the jack's travel where the reported
     curve first reaches F_u (``Fu_kgf``; its highest point without it: a load climbing
     again after the failure call, on the platform, is not F_u) at the real jack speed
     (crusher.test_rate_mm_per_min); the time the glue's strength was taken at moment by
-    moment (solver.glue_rate)."""
+    moment (solver.glue_rate). A pumped jack (crusher.stroke_mm > 0, round 28): the
+    crush's own test-time clock there (``clock``: the crush's curve with its ``t_test``),
+    its strokes at their pace and the pauses between them."""
+    from bridgesim.sim.materials import jack_strokes
+
     try:
+        if clock is not None and jack_strokes(sp.values)[0] > 0 and clock.get("t_test"):
+            F = np.asarray(clock["force"], float) / KGF
+            tt = np.asarray(clock["t_test"], float)
+            if len(F) == len(tt) and len(F):
+                i = int(np.argmax(F))
+                if Fu_kgf:
+                    hit = np.where(F >= 0.995 * Fu_kgf)[0]
+                    if len(hit):
+                        i = int(hit[0])
+                return float(tt[i])
         L = np.asarray(curve.load_kgf, float)
         x = np.asarray(curve.jack_travel_mm, float)
         rate = float(sp.values.get("crusher.test_rate_mm_per_min", 0.0)) / 60.0
@@ -784,7 +798,8 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         competing=list(getattr(res, "competing", [])),
         deflection_at_Fu_mm=round(res.deflection_at_Fu_mm, 2),
         test_time_at_Fu_s=round(_time_at_peak(curve, sp, getattr(res, "test_time_at_Fu_s",
-                                                                   0.0), res.Fu_kgf), 1),
+                                                                   0.0), res.Fu_kgf,
+                                              clock=res.curve), 1),
         mass_kg=round(mass, 3), efficiency_kgf_per_kg=round(res.Fu_kgf / mass, 2),
         criteria=_criteria(res.criteria),
         failures=_failures(res.events, _fail_time(res)),
@@ -1509,7 +1524,7 @@ def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = N
                    speed_mm_s=getattr(res, "speed_mm_s", 0.0), rate_check=rc,
                    fundamental_period_ms=round(1000 * float(
                        res.model.params.get("period_s", 0.0)), 2),
-                   holds=getattr(res, "holds", 0),
+                   holds=getattr(res, "holds", 0), pauses=getattr(res, "pauses", 0),
                    hold_time_s=round(getattr(res, "hold_time_s", 0.0), 4),
                    min_fidelity=min_fid)
 
@@ -2897,6 +2912,12 @@ PLACEHOLDER_PRIORS = {
     # round 28: the gauge length of the crushing fall (a kink band's width, millimetres to
     # a few centimetres in wood; nothing measured on sticks)
     "wood.crush_band_mm": 0.50,
+    # round 28: the wood's duration of load (n ~0.005 in ramp tests of lumber to ~0.028
+    # on the Madison curve), its creep after a minute (~0.02-0.08: a relative creep of
+    # ~1 after a year with powers 0.2-0.33, at moderate stress; more near the strength)
+    # and the power of its creep in time, and the coupons' time both take the wood from
+    "wood.rate_exponent": 0.50, "wood.creep_coeff": 0.50, "wood.creep_exponent": 0.20,
+    "wood.coupon_time_s": 0.40,
 }
 # placeholders drawn additively, value + sd x z within (low, high): the wood's moisture
 # above its coupons' (percentage points; members laminated in the last days before the

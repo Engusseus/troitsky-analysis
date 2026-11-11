@@ -126,6 +126,87 @@ class CrushResult:
     # travel at crusher.test_rate_mm_per_min, the time the glue's strength is taken at
     reload_kgf: float = 0.0  # the highest reported load after the failure call (0: none
     # recorded): a bridge that carries more after its first fall (a minor joint let go)
+    pauses: int = 0  # pauses of a pumped jack (JackProtocol) during the run
+
+
+PAUSE_PERIODS = 2.0  # a pumped jack's pause: its test time spread over this many periods
+
+
+@dataclass
+class JackProtocol:
+    """How the real jack advances, and so the physical test time of each simulated step
+    (round 28). A constant pace (crusher.stroke_mm 0, the default): the jack's travel at
+    crusher.test_rate_mm_per_min, ``v dt / rate`` as until round 27. A hand-pumped jack
+    (materials.jack_strokes): it advances ``stroke_mm`` in ``stroke_time_s`` (so within a
+    stroke the test time runs at that pace, the loading fast), then stands for
+    ``pause_s`` while the bridge carries its load. The simulated jack keeps its own
+    speed (the fidelity's, slowed for a bridge that rings slowly); at each stroke's end it
+    slows to a stop over the hold ramp (:meth:`start_pause` starts slowing so that it
+    stops there) and stands while the pause's test time passes, spread evenly over
+    ``spread_s`` of simulated time (PAUSE_PERIODS periods of the bridge's ringing: it
+    follows the creep and relaxation quasi-statically), then speeds up again. So at a
+    travel x after k pauses the test time is x stroke_time / stroke + k pause, the hand
+    timetable (``test_the_pumped_jacks_clock_follows_its_timetable``)."""
+
+    rate_mm_s: float  # the mean pace of a constant-rate jack (mm/s of test time)
+    stroke_mm: float = 0.0
+    stroke_time_s: float = 0.0
+    pause_s: float = 0.0
+    spread_s: float = 0.0  # simulated time a pause's test time is spread over
+    next_end: float = 0.0  # the travel at which the stroke under way ends
+    pausing: bool = False
+    pause_left: float = 0.0  # test time of the pause still to pass (s)
+    pauses: int = 0  # pauses completed
+
+    @classmethod
+    def from_params(cls, params: dict, spread_s: float = 0.0) -> JackProtocol:
+        rate = max(float(params.get("test_rate_mm_per_min", 10.0)), 1e-6) / 60.0  # mm/s
+        s = float(params.get("crusher_stroke_mm", 0.0))
+        tp = float(params.get("crusher_pause_s", 0.0))
+        if s <= 0.0 or tp <= 0.0:
+            return cls(rate)
+        return cls(rate, s, float(params["crusher_stroke_time_s"]), tp,
+                   max(spread_s, 1e-6), next_end=s)
+
+    @property
+    def pumped(self) -> bool:
+        return self.stroke_mm > 0.0
+
+    def start_pause(self, travel: float, v: float, throttle: float, ramp_s: float) -> bool:
+        """Whether a pause begins now: the jack at ``v`` (mm/s), slowing linearly from
+        ``throttle`` to a stop at 1 / ``ramp_s`` per second (it covers v throttle ramp_s
+        / 2 meanwhile), would stop at the end of the stroke under way."""
+        if not self.pumped or self.pausing:
+            return False
+        if travel + 0.5 * v * throttle * ramp_s >= self.next_end:
+            self.pausing = True
+            self.pause_left = self.pause_s
+            return True
+        return False
+
+    def test_dt(self, v: float, dt: float) -> float:
+        """The physical test time of a step of ``dt`` (s) with the jack at ``v`` (mm/s):
+        its travel at the real pace, and while the jack stands in a pause, its share of
+        the pause; the pause ends once all of it has passed."""
+        if not self.pumped:
+            return v * dt / self.rate_mm_s
+        p = v * dt * self.stroke_time_s / self.stroke_mm
+        if self.pausing and v == 0.0:
+            q = min(self.pause_left, self.pause_s * dt / self.spread_s)
+            self.pause_left -= q
+            p += q
+            if self.pause_left <= 0.0:
+                self.pausing = False
+                self.pauses += 1
+                self.next_end += self.stroke_mm
+        return p
+
+    def test_time_at(self, travel_mm: float, pauses: int) -> float:
+        """The test time (s) at jack travel ``travel_mm`` after ``pauses`` pauses: the
+        hand timetable (a constant pace: travel / rate)."""
+        if not self.pumped:
+            return travel_mm / self.rate_mm_s
+        return travel_mm * self.stroke_time_s / self.stroke_mm + pauses * self.pause_s
 
 
 def _quat(R: np.ndarray) -> np.ndarray:
@@ -780,19 +861,26 @@ def run_crush(m: Model, opt: CrushOptions | None = None) -> CrushResult:
     att0 = (m.a_node.copy(), m.a_r0.copy())
     notes = []
     dt_target = opt.dt_target
-    for _attempt in range(4):
-        try:
-            res = _run_crush_once(m, opt, dt_target)
-            res.notes = notes + res.notes
-            return res
-        except _Unstable as exc:
-            if opt.progress:
-                opt.progress(0.0, f"unstable: {exc}; restarting with a smaller time step")
-            notes.append(f"integration diverged at dt = {dt_target * 1e6:.1f} us ({exc}); "
-                         "restarted with a smaller step")
-            m.X, m.mass, m.rot_inertia = X0.copy(), m0.copy(), r0.copy()
-            m.a_node, m.a_r0 = att0[0].copy(), att0[1].copy()
-            dt_target *= 0.5
+    from bridgesim.sim import woodtime
+
+    try:
+        for _attempt in range(4):
+            try:
+                res = _run_crush_once(m, opt, dt_target)
+                res.notes = notes + res.notes
+                return res
+            except _Unstable as exc:
+                if opt.progress:
+                    opt.progress(0.0, f"unstable: {exc}; restarting with a smaller time "
+                                      "step")
+                notes.append(f"integration diverged at dt = {dt_target * 1e6:.1f} us "
+                             f"({exc}); restarted with a smaller step")
+                m.X, m.mass, m.rot_inertia = X0.copy(), m0.copy(), r0.copy()
+                m.a_node, m.a_r0 = att0[0].copy(), att0[1].copy()
+                dt_target *= 0.5
+    finally:
+        # the wood's strengths and moduli back at their coupon-time values (woodtime)
+        woodtime.release(m)
     raise RuntimeError("the simulation is unstable even with a small time step: "
                        + "; ".join(notes))
 
@@ -807,6 +895,11 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         opt.progress(0.0, f"model: {m.n_nodes} nodes, {len(m.b_i)} beams, "
                           f"{len(m.s_nodes)} shells, {len(m.c_a)} glue points; estimating "
                           "the stable time step")
+    # the wood's duration of load and creep (woodtime): the pristine arrays back, the
+    # moduli at their instantaneous value (the stiffest the run sees) before the step
+    from bridgesim.sim import woodtime
+
+    wt = woodtime.setup(m)
     dt, mass, rot, scale_log = stable_dt(m, s, dt_target, opt.max_added_mass)
     if opt.progress:
         opt.progress(0.0, f"time step {dt * 1e6:.2f} us; settling under self-weight")
@@ -828,6 +921,16 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     from bridgesim.sim import sections
 
     fmap = sections.face_map(m)
+    # a member crushing: a fibre's plastic strain in compression past f_c by its onset
+    # strain (past the rising curve's (1 - kap) f_c / E), each fibre at its own f_c (the
+    # stick field) and, with the wood's time laws, at its element's f_c / E of the moment
+    kap = float(m.params.get("fc_proportional", 1.0))
+
+    def crush_strain() -> np.ndarray:
+        return -(2.0 - kap) * (np.asarray(m.b_fc) / np.maximum(np.asarray(m.b_E), 1e-9)
+                               )[:, None] * S.beam_fs(m) if len(m.b_i) else np.zeros((0, 1))
+
+    crush_eps = crush_strain()
     if opt.self_contact:
         from bridgesim.sim import contact
 
@@ -935,6 +1038,10 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         steps += 1
         if fmap is not None and steps % sections.EVERY == 0:
             sections.squeeze(m, st, fmap)
+        if wt is not None and steps % woodtime.EVERY == 0 and st.t_test > 0.0:
+            woodtime.update(m, st, wt)
+            if len(m.b_i):  # the member_crushing event follows the fibres' f_c / E
+                crush_eps[:] = crush_strain()
         if steps % 2000 == 0:
             S.reorthonormalize(st)
         if dump_path and steps % 200 == 0:
@@ -1003,12 +1110,6 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     prev_bs = st.b_shear.copy()
     prev_s = st.s_dmg > 0.5
     prev_k = st.k_alive.copy()
-    # a member crushing: a fibre's plastic strain in compression past f_c by its onset
-    # strain (past the rising curve's (1 - kap) f_c / E), each fibre at its own f_c (the
-    # stick field)
-    kap = float(m.params.get("fc_proportional", 1.0))
-    crush_eps = -(2.0 - kap) * (np.asarray(m.b_fc) / np.maximum(np.asarray(m.b_E), 1e-9)
-                                )[:, None] * S.beam_fs(m) if len(m.b_i) else np.zeros((0, 1))
     prev_c = np.zeros(len(m.b_i), bool)
     patch_of = m.c_patch
     n_patch = len(m.patches)
@@ -1049,6 +1150,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     Fu_at_fail = None
     i_fail: int | None = None  # curve sample at which the bridge was judged failed
     est_steps = int((opt.max_travel_mm / opt.speed_mm_s) / dt)
+    max_steps = opt.max_steps
     frame_every = max(1, int(opt.frame_mm / opt.speed_mm_s / dt))
     # the jack starts smoothly, and speeds up again after a hold smoothly: a change of
     # speed made faster than the bridge's period kicks the plate and sets the bridge
@@ -1087,17 +1189,33 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     lift = np.asarray(m.params.get("p_lift", np.zeros(0)), float)
     bedding_mm = float(m.params.get("seating_mm", 0.3)) + \
         (float(lift.max()) if lift.size else 0.0) + 0.2
-    test_rate = max(float(m.params.get("test_rate_mm_per_min", 10.0)), 1e-6) / 60.0  # mm/s
+    # the physical test time of each step: the jack's travel at the real pace, or a
+    # pumped jack's strokes and pauses (JackProtocol)
+    proto = JackProtocol.from_params(
+        m.params, spread_s=max(PAUSE_PERIODS * float(m.params.get("period_s", 0.0)),
+                               opt.hold_settle_s))
+    if proto.pumped:  # its pauses take simulated time too
+        pump = 1.0 + (proto.spread_s + opt.hold_ramp_s + up_ramp) * opt.speed_mm_s \
+            / proto.stroke_mm
+        est_steps, max_steps = int(est_steps * pump), int(max_steps * pump)
+    after_pause = -1.0  # a pumped jack speeding up again after a pause, until then
+    v = 0.0
     drop_start = None  # (time, travel) the load first fell 30 % below its peak
     out_of_steps = False
     hold_starts: list[float] = []  # when each hold began: the load may jump there
     hold_period = float(m.params.get("period_s", 0.0)) if opt.auto_speed else 0.0
     while not unstable:
         tl = st.t - t_load0
-        target = opt.hold_speed_frac if st.t < hold_until else 1.0
+        # a pumped jack's stroke ends: it slows to a stop and stands while the bridge
+        # creeps; the reading is cut there as at a break (its load falls in time)
+        if proto.start_pause(jack0 - st.jack_y, v, throttle, opt.hold_ramp_s) and \
+                (not hold_starts or st.t > hold_starts[-1]):
+            hold_starts.append(st.t)
+        target = 0.0 if proto.pausing else \
+            (opt.hold_speed_frac if st.t < hold_until else 1.0)
         throttle = min(throttle + dt / up_ramp, target) if throttle < target else \
             max(throttle - dt / opt.hold_ramp_s, target)
-        if throttle < 0.999:
+        if throttle < 0.999 and not proto.pausing and st.t >= after_pause:
             hold_time += dt
         v_b = opt.speed_mm_s  # the jack's speed, before the start and the holds
         if rings_slowly:  # its jack speeds up as the travel grows (jack_speed)
@@ -1105,9 +1223,13 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         v = v_b * min(1.0, tl / ramp) * throttle
         st.jack_y -= v * dt
         st.jack_v = -v
-        # the physical test time of this step (glue creep): the jack's travel at the
-        # real test rate, so creep follows the travel, not the compressed time
-        st.creep_dt = v * dt / test_rate
+        # the physical test time of this step (the glue's and the wood's creep and rate
+        # laws): the jack's travel at the real test rate, so creep follows the travel,
+        # not the compressed time (and a pumped jack's pauses)
+        was_pausing = proto.pausing
+        st.creep_dt = proto.test_dt(v, dt)
+        if was_pausing and not proto.pausing:
+            after_pause = st.t + up_ramp
         st.t_test += st.creep_dt
         do_step(1.0, opt.alpha if fail_at is None else opt.alpha_collapse)
         k += 1
@@ -1133,6 +1255,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                 inb[P] = False
             kin = 0.5 * float((mass[inb] * (st.v[inb] ** 2).sum(1)).sum())
             curve.setdefault("work", []).append(work)
+            curve.setdefault("t_test", []).append(st.t_test)
             curve["t"].append(st.t)
             curve["travel"].append(travel)
             curve["force"].append(force)
@@ -1313,7 +1436,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                 # corner that stood off the platform): a dip of the load there is no
                 # moment of failure
                 below = peak > 50 and force < opt.drop_ratio * peak and \
-                    travel > peak_travel and travel > bedding_mm
+                    (travel > peak_travel or proto.pausing) and travel > bedding_mm
                 # the drop has to last one period of the bridge's ringing (a dynamic dip
                 # is not the moment of failure); failure is then dated from its start
                 if below and drop_start is None:
@@ -1352,7 +1475,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             break
         if travel > opt.max_travel_mm:
             break
-        if k > min(opt.max_steps, 3 * est_steps):
+        if k > min(max_steps, 3 * est_steps):
             out_of_steps = True
             break
     frames.append(_frame(m, st, jack0 - st.jack_y, st.jack_force, deck0 - deck_y()))
@@ -1507,7 +1630,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         added_mass_kg=added * 1000, added_mass_frac=added / phys_mass.sum(),
         settle_sag_mm=sag, kinetic_ratio_max=max_ke_ratio, model=m,
         speed_mm_s=float(opt.speed_mm_s), holds=holds, hold_time_s=hold_time,
-        test_time_at_Fu_s=float(peak_test_t), reload_kgf=reload_N / KGF)
+        test_time_at_Fu_s=float(peak_test_t), reload_kgf=reload_N / KGF,
+        pauses=proto.pauses)
     del ke
     return res
 
