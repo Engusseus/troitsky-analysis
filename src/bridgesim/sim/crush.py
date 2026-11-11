@@ -1214,6 +1214,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             / proto.stroke_mm
         est_steps, max_steps = int(est_steps * pump), int(max_steps * pump)
     after_pause = -1.0  # a pumped jack speeding up again after a pause, until then
+    stood = False  # a pumped jack standing in its pause
     v = 0.0
     drop_start = None  # (time, travel) the load first fell 30 % below its peak
     out_of_steps = False
@@ -1221,11 +1222,15 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     hold_period = float(m.params.get("period_s", 0.0)) if opt.auto_speed else 0.0
     while not unstable:
         tl = st.t - t_load0
-        # a pumped jack's stroke ends: it slows to a stop and stands while the bridge
-        # creeps; the reading is cut there as at a break (its load falls in time)
-        if proto.start_pause(jack0 - st.jack_y, v, throttle, pause_ramp) and \
-                (not hold_starts or st.t > hold_starts[-1]):
-            hold_starts.append(st.t)
+        v_b = opt.speed_mm_s  # the jack's speed, before the start and the holds
+        if rings_slowly:  # its jack speeds up as the travel grows (jack_speed)
+            v_b = jack_speed(opt.max_speed_mm_s, T1, jack0 - st.jack_y)
+        # a pumped jack's stroke ends: it slows to a stop over pause_ramp (at the speed
+        # it will have half way through, still starting up on the first stroke) and
+        # stands while the bridge creeps
+        proto.start_pause(jack0 - st.jack_y,
+                          v_b * min(1.0, (tl + 0.5 * pause_ramp) / ramp) * throttle,
+                          throttle, pause_ramp)
         target = 0.0 if proto.pausing else \
             (opt.hold_speed_frac if st.t < hold_until else 1.0)
         # (a pumped jack slows to a pause and speeds up after it over pause_ramp)
@@ -1235,9 +1240,6 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             max(throttle - dt / (pause_ramp if proto.pausing else opt.hold_ramp_s), target)
         if throttle < 0.999 and not proto.pausing and st.t >= after_pause:
             hold_time += dt
-        v_b = opt.speed_mm_s  # the jack's speed, before the start and the holds
-        if rings_slowly:  # its jack speeds up as the travel grows (jack_speed)
-            v_b = jack_speed(opt.max_speed_mm_s, T1, jack0 - st.jack_y)
         v = v_b * min(1.0, tl / ramp) * throttle
         st.jack_y -= v * dt
         st.jack_v = -v
@@ -1245,10 +1247,17 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         # laws): the jack's travel at the real test rate, so creep follows the travel,
         # not the compressed time (and a pumped jack's pauses)
         was_pausing = proto.pausing
+        if was_pausing and v == 0.0 and not stood:
+            # the jack stands: the reading is cut there as at a break, the pause read in
+            # time (its load relaxing), the stroke before it along the travel
+            stood = True
+            if not hold_starts or st.t > hold_starts[-1]:
+                hold_starts.append(st.t)
         st.creep_dt = proto.test_dt(v, dt)
         if was_pausing and not proto.pausing:
-            # the jack speeds up again; the reading is cut there too (pause_cuts)
+            # the jack speeds up again: cut there too (reported_load pause_cuts)
             after_pause = st.t + max(up_ramp, pause_ramp)
+            stood = False
             hold_starts.append(st.t)
         st.t_test += st.creep_dt
         do_step(1.0, opt.alpha if fail_at is None else opt.alpha_collapse)
@@ -1280,7 +1289,12 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             curve["travel"].append(travel)
             curve["force"].append(force)
             curve.setdefault("force_raw", []).append(raw_mean)
-            curve.setdefault("hold", []).append(1.0 if throttle < 0.5 else 0.0)
+            # held: the jack nearly still while something breaks, or a pumped jack
+            # standing in a pause (not slowing to it or speeding up after it: those
+            # are read along the travel with their strokes)
+            curve.setdefault("hold", []).append(
+                1.0 if throttle < 0.5 and not (proto.pausing and not stood)
+                and st.t >= after_pause else 0.0)
             curve["deflection"].append(defl)
             curve["kinetic"].append(kin)
             curve["plate_load"].append(0.0)
