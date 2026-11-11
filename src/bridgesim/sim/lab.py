@@ -148,7 +148,7 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
           gravity: bool = False, sign: float = 1.0, slow_disp: float = 0.0,
           slow_rate: float | None = None, test_time_s: float = 0.0,
           f_ext: np.ndarray | None = None, f_ramp: float = 0.0,
-          until=None) -> TestResult:
+          until=None, weights=None) -> TestResult:
     """Move ``node`` (one node or a list: a grip) along global ``dof`` at ``rate`` mm/s
     (displacement control) with the ``fixed`` nodes held ("xyz", "xyzr" = also rotations,
     any subset of x, y, z, r) and record the reaction force. Stops at ``max_disp`` or
@@ -158,8 +158,16 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
     (solver.glue_rate; 0: the coupon's own, tau_g). ``f_ext``: constant nodal forces (n,
     3) besides the grip, a clamp, applied in full once the grip has moved ``f_ramp`` mm
     (linearly before). ``until(state)``: checked every step; true stops the test there,
-    its last record the force of that step."""
+    its last record the force of that step. ``weights`` (one per node of the grip): each
+    node moves weights x the displacement and the force recorded is the sum of weights x
+    their forces, its work conjugate (a rotation and its moment, with lever arms)."""
     node = np.atleast_1d(np.asarray(node, int))
+    wts = 1.0 if weights is None else np.asarray(weights, float)
+
+    def grip_force(F):
+        return float(F[node, dof].sum()) if weights is None else \
+            float((wts * F[node, dof]).sum())
+
     m.mass = np.maximum(m.mass, 1e-12)
     m.rot_inertia = np.maximum(m.rot_inertia, 1e-12)
     s = S.Settings(dt=dt or 1e-6)
@@ -191,12 +199,12 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
     while u < max_disp and k < max_steps:
         vr = rate if u >= slow_disp or not slow_rate else slow_rate
         u = min(max_disp, u + vr * s.dt)
-        st.x[node, dof] = x0 + sign * u
-        st.v[node, dof] = sign * vr
+        st.x[node, dof] = x0 + sign * u * wts
+        st.v[node, dof] = sign * vr * wts
         S.internal_and_contact(m, st, s, F, Mo)
         if until is not None and until(st):
             disp.append(u)
-            force.append(sign * float(F[node, dof].sum()))
+            force.append(sign * grip_force(F))
             peak = max(peak, force[-1])
             break
         fext = np.zeros_like(F)
@@ -209,7 +217,7 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
         acc[node, dof] = 0.0
         st.v += s.dt * acc
         st.v[fix_t] = 0.0
-        st.v[node, dof] = sign * vr
+        st.v[node, dof] = sign * vr * wts
         st.x += s.dt * st.v
         st.x[fix_t] = m.X[fix_t]
         wacc = -Mo / m.rot_inertia[:, None] - alpha * st.w
@@ -219,7 +227,7 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
         S.rotate(st, s.dt)
         st.t += s.dt
         if k % record_every == 0:
-            f = sign * float(F[node, dof].sum())
+            f = sign * grip_force(F)
             disp.append(u)
             force.append(f)
             if a_glue > 0:
@@ -423,7 +431,8 @@ def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2
                         max_disp: float = 1.0, sign: float = 1.0, flat: bool = False,
                         notch: float = 0.0, ply=None, stop_drop: float = 0.01,
                         rho_scale: float = 1.0, rollers: bool = False,
-                        weak_cells: bool = False) -> TestResult:
+                        weak_cells: bool = False, profile=None,
+                        until=None) -> TestResult:
     """A plate strip (L along X, W across, thickness t, ply ``angles`` from X) meshed with
     right triangles of size ``h``, clamped at x = 0 and pulled along X at x = L until it
     breaks. The column of elements at mid-length is ``weak`` x as strong, so the crack
@@ -439,7 +448,11 @@ def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2
     couple stretching and shearing (an angle ply) is stretched uniformly, not clamped;
     ``weak_cells``: the weak column is the cells from x = L / 2 (whole cross-sections:
     the two triangles of each), not the triangles whose centroid is nearest it (a
-    zig-zag of half cells, round 27's)."""
+    zig-zag of half cells, round 27's); ``profile`` (a, b): the end at x = L moves
+    in X by a + b (2 y / W - 1), scaled to 1 at its largest, its ends on rollers (0, 1:
+    a rotation, the strip in pure bending in its plane; 1, b: tension with bending), the
+    force recorded the work conjugate sum (weight x force): for (0, 1) the moment / (W /
+    2); ``until(state)``: stop there (drive)."""
     from bridgesim.schema import Material
     from bridgesim.sim.materials import Ply, SimParams
 
@@ -499,13 +512,18 @@ def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2
     left = [nid(0, j) for j in range(ny + 1)]
     right = [nid(nx, j) for j in range(ny + 1)
              if abs(ys[j] - W / 2) <= grip * W / 2 + 1e-9]
+    wts = None
+    if profile is not None:
+        rollers = True
+        wts = profile[0] + profile[1] * (2.0 * X[right, 1] / W - 1.0)
+        wts = wts / np.abs(wts).max()
     fixed = ({n: "z" for n in range(len(X))} if flat else {}) | \
         {n: "xz" if rollers else "xyzr" for n in left} | \
         {n: "z" if rollers else "yzr" for n in right}
     if rollers:
         fixed[left[0]] = "xyz"
     return drive(m, fixed, right, 0, rate, max_disp=max_disp, stop_drop=stop_drop,
-                 alpha=2000.0, record_every=5, sign=sign)
+                 alpha=2000.0, record_every=5, sign=sign, weights=wts, until=until)
 
 
 def shell_plate_pull(poly, h: float, t: float = 2.0, angles: tuple = (0.0,), ply=None,
