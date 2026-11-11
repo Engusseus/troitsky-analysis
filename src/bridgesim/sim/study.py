@@ -506,7 +506,7 @@ def _joint_reports(model: Model, mat: Material) -> list[JointReport]:
                         kind=p.kind, area_mm2=round(p.area_mm2, 1),
                         lamination=p.lamination,
                         shear_capacity_N=round(patch_capacity_N(model, p, mat), 1))
-            for p in model.patches]
+            for p in model.patches if p.kind != "block"]  # (not the planes inside blocks)
 
 
 def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
@@ -541,7 +541,10 @@ def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
         assumed_parameters=_assumed(mat, sp),
         model={"nodes": int(model.n_nodes), "beam_elements": int(len(model.b_i)),
                "shell_elements": int(len(model.s_nodes)), "glue_points": int(len(model.c_a)),
-               "glued_patches": len(model.patches), "floss_cables": int(len(model.k_a)),
+               "glued_patches": sum(p.kind != "block" for p in model.patches),
+               "block_cells": int(sum((model.params.get("block_cells") or {}).values())),
+               "block_planes": int(model.params.get("block_faces", 0)),
+               "floss_cables": int(len(model.k_a)),
                "platform_contact_points": int(len(model.p_att)),
                "plate_contact_points": int(len(model.q_att))},
         warnings=list(model.notes))
@@ -681,6 +684,7 @@ def _sequence(events: list) -> list[str]:
                 "bearing_crushing": "bearing face crushing",
                 "member_erosion": "member element removed (bent past 1 rad)",
                 "plate_crack": "plate cracked", "joint_failure": "glued joint separated",
+                "block_fracture": "block split inside",
                 "joint_cracking": "glued joint cracking",
                 "floss_break": "floss snapped", "criterion": "§12.5 failure criterion",
                 "instability": "instability", "numerical": "numerical problem"}.get(
@@ -852,7 +856,7 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
 
 
 MAJOR = ("bearing_crushing", "joint_cracking", "joint_failure", "member_fracture",
-         "member_shear",
+         "member_shear", "block_fracture",
          "member_crushing", "member_erosion", "plate_crack", "floss_break")
 
 
@@ -1067,8 +1071,10 @@ def _copies(name: str) -> str:
 def _whatif(gov: list[EventOut], crushed: set | frozenset = frozenset()) -> dict:
     """Overrides that strengthen the parts that broke at the peak, on every copy of them:
     a joint's glue (a bigger glued area or a gusset), a member's section or a plate's
-    thickness. A joint whose face crushed first (``crushed``) gets none: it bears, and
-    more glue does not change what its grain can take."""
+    thickness, a compact block's strength (it split inside: it stands for a bigger
+    block or its grain turned along the force; no glue changes it). A joint whose face
+    crushed first (``crushed``) gets none: it bears, and more glue does not change what
+    its grain can take."""
     bodies: dict[str, dict] = {}
     glue: dict[str, float] = {}
     for e in gov:
@@ -1079,6 +1085,9 @@ def _whatif(gov: list[EventOut], crushed: set | frozenset = frozenset()) -> dict
                         "member_erosion", "plate_crack"):
             for p in e.parts or [e.what]:
                 bodies[_copies(p)] = {"section_scale": 1.25}
+        elif e.kind == "block_fracture":
+            for p in e.parts or [e.what]:
+                bodies[_copies(p)] = {"strength_factor": 1.25}
     return {k: v for k, v in (("bodies", bodies), ("glue", glue)) if v}
 
 
@@ -1200,8 +1209,14 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
                           f"({e.load_kgf / max(rep.Fu_kgf, 1e-9):.0%} of F_u)" for e in gov)
             + bear
             + ". The bridge failed there: strengthen it (glued area, a gusset, a deeper "
-              "member). Try it first as a what-if (`overrides`: 1.5x the glue of a joint "
-              "that separated, 1.25x the section of a part that broke, on every copy of "
+              "member" + ("; a block that split: a bigger block, or its sticks' grain "
+                          "along the force (grain), not more glue"
+                          if any(e.kind == "block_fracture" for e in gov) else "")
+            + "). Try it first as a what-if (`overrides`: 1.5x the glue of a joint "
+              "that separated, 1.25x the section of a part that broke"
+            + (", 1.25x the strength of a block that split"
+               if any(e.kind == "block_fracture" for e in gov) else "")
+            + ", on every copy of "
               "it; with your own overrides: whatif.yaml in the output folder) with ab on "
               "the same seeds; if it helps, make the change in the CAD and compare the two "
               "files",
@@ -1360,7 +1375,8 @@ def _first_joint(res: CrushResult) -> float | None:
     joint goes after the peak)."""
     # a joint worth a few % of the load (MINOR_SHARE) letting go is not what a judge
     # stops the test for: it carried next to nothing
-    hit = [e for e in res.events if e.kind in ("joint_failure", "member_shear")
+    hit = [e for e in res.events if e.kind in ("joint_failure", "member_shear",
+                                                "block_fracture")
            and e.capacity_N >= MINOR_SHARE * res.Fu_N]
     if not hit:
         return None
@@ -2459,9 +2475,11 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
     rigid = sorted({b for r in res for b in r.get("rigid_under_plate", [])})
     if rigid:
         rep.note += (" The part(s) under the loading plate " + ", ".join(rigid)
-                     + " are rigid blocks in the model: they cannot bend, shear or crush, "
-                     "so a failure there is missing from every run (check them by hand, "
-                     "or model them as members: kind: bar, with axis: the direction each spans).")
+                     + " are compact blocks in the model: a rigid one cannot bend, shear "
+                     "or crush, and one cut into cells (block.cell_mm) splits only between "
+                     "its cells and does not bend as a member, so a failure there may be "
+                     "missing from every run (check them by hand, or model them as "
+                     "members: kind: bar, with axis: the direction each spans).")
     if out_dir:
         (Path(out_dir) / "montecarlo.json").write_text(rep.model_dump_json(indent=2),
                                                       encoding="utf-8")

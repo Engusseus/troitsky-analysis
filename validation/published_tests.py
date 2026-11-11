@@ -81,10 +81,12 @@ def _i_profile(foot: float, stem: float, cap: float, y0: float, y1: float, y2: f
 COMMON_OVERRIDES = {
     # the supports bear only; the hanger is glued to the node it loads (the bar passes
     # through B's putty lumps) unless the case says it bears dry (A, C); the press's
-    # 4.2 kg plate is not there
+    # 4.2 kg plate is not there. The supports are blocks (since round 28 cells of wood: a
+    # support pier is wood); the hanger stands for a steel bar, a wire's yoke or the
+    # machine's own loading block: one rigid body, as every block was until round 27
     "glue": {"Support* | *": 0},
     "params": {"crusher.plate_mass_kg": 0.05},
-    "bodies": {"Support*": {"kind": "block"}, "Load hanger*": {"kind": "block"}},
+    "bodies": {"Support*": {"kind": "block"}, "Load hanger*": {"kind": "rigid"}},
     "acknowledge": ["rigid_blocks", "rigid_under_plate:*", "material:density",
                     "material:measure", "end_grain_joints", "weak_joints", "rule:*",
                     "plate_fit", "plate_edges"],
@@ -213,7 +215,8 @@ def silva_2026(width: float = 150.0):
     bodies.append(hanger("Load hanger", _i_profile(w2, 10, 45, 30.6, 36.6, 260, 270),
                          500, 540))
     ov = _merge(COMMON_OVERRIDES, {
-        "bodies": {"Putty*": {"kind": "block"}},
+        # (epoxy putty, not wood: one rigid body each, as until round 27)
+        "bodies": {"Putty*": {"kind": "rigid"}},
         # the putty wraps round each diagonal's end (P): the end face glued to the lump
         # stands for that, x5 (its four sides, ~4 x 9 x 10 mm against the 85 mm^2 end)
         "glue": {"Diag* | Putty*": 5.0},

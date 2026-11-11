@@ -41,6 +41,9 @@ class BodyInfo:
     axis: tuple | None = None
     chains: list = field(default_factory=list)  # a frame's beams, arm by arm
     butt_zones: list = field(default_factory=list)  # open butt joints at their places
+    # a compact block cut into cells (idealize.BlockLattice): its frame (centre, axes, lo,
+    # size, k), the cell of each lattice cell (group) and each cell's node (nodes)
+    cells: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -54,7 +57,8 @@ class Patch:
     normal: np.ndarray  # from A towards B
     springs: list[int] = field(default_factory=list)
     kind: str = "glue"  # "glue", "tie" (floss knot), "bonded" (bodies overlap in CAD),
-    # "solid" (two bodies of one piece of wood: the wood's strength across the face)
+    # "solid" (two bodies of one piece of wood: the wood's strength across the face),
+    # "block" (a plane between two cells of one compact block: not a joint of the bridge)
     polygon: np.ndarray | None = None  # (k, 3) outline
     strength_MPa: float = 0.0  # average shear strength of its face (before scatter and
     # glue factors): tau_g x the lap size factor, the interlaminar strength of a
@@ -65,6 +69,7 @@ class Patch:
     # hang on that plate's nodes by rigid arms: above ~3 the joint is coarser than the
     # plate's mesh can follow; 0: no plate)
     mesh_ratio: float = 0.0
+    split: str = ""  # a block's plane: "along" its grain (fibres in it) or "across" it
 
 
 @dataclass

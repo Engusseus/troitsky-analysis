@@ -6,8 +6,10 @@ Every solid body is looked at the way an engineer would idealise it:
   beam elements on its centre line, with its real cross-section and laminate;
 * **shell** (a plate: gusset, web, deck, diaphragm): triangular shell elements on its
   mid-surface, meshed from the body's real outline (holes included);
-* **block** (a chunky piece: cleat, saddle, toggle): one rigid body with its real mass
-  and rotational inertia;
+* **block** (a chunky piece: cleat, saddle, toggle): a few rigid cells of its wood
+  (block.cell_mm), each with its mass and rotational inertia, joined by the wood's own
+  stiffness and strength across the planes between them (a rigid-body-spring model), so
+  it deforms and can split; one rigid body with block.cell_mm 0 or kind ``rigid``;
 * **cable** (floss): a tension-only cable between the bodies it is tied to.
 
 Bodies are joined where they really touch: every pair of coplanar faces that overlap
@@ -69,7 +71,9 @@ class Overrides:
     """What a designer (or an AI agent) tells the simulation that the CAD file does not.
 
     ``bodies`` maps a body name or glob pattern (``"Floss*"``) to fields: ``kind``
-    (bar/shell/block/cable/ignore), ``layup`` (any text bridgesim can parse, e.g.
+    (bar/shell/frame/block/rigid/cable/ignore: ``block`` a compact block of the wood's
+    cells, ``rigid`` one rigid body, as blocks were until round 27: a steel stand-in, a
+    load hanger), ``layup`` (any text bridgesim can parse, e.g.
     ``"6-ply UD"``), ``grain`` (``long``/``span``/``arm``), ``glue_factor`` (multiplies the
     strength of every glue line on that body, e.g. 0.5 for a poorly glued part) and
     ``strength_factor``; ``butt_stagger_mm`` is the distance between the butt joints of
@@ -91,7 +95,7 @@ class Overrides:
     unknown: list[str] = field(default_factory=list)  # top-level keys we do not read
     used: set = field(default_factory=set)  # patterns and glue keys that matched
 
-    KINDS = ("bar", "shell", "frame", "block", "cable", "ignore")
+    KINDS = ("bar", "shell", "frame", "block", "rigid", "cable", "ignore")
     FIELDS = ("kind", "layup", "grain", "glue_factor", "strength_factor", "butt_stagger_mm",
               "butt_gap_mm", "butt_at", "section_scale", "axis")
 
@@ -965,6 +969,299 @@ def bearing_depth(ell: float, b: float, h: float, ca: float = 1.0, cb: float = 0
     return float(np.trapezoid(f, z))
 
 
+# ------------------------------------------------------------------- compact blocks
+
+BLOCK_MAX_CELLS = 3  # cells along each of a block's axes at most
+BLOCK_MIN_CELLS = 1.5  # a block shorter than this many cells along an axis is not cut
+BLOCK_MERGE_SHARE = 0.25  # a cell filled less than this (a corner a chamfer cuts off) joins
+#                           its neighbour across the largest face
+BLOCK_SUBSAMPLES = 6  # sample points per cell and axis for a block that is not a box
+
+
+def _inside_mesh(P: np.ndarray, V: np.ndarray, T: np.ndarray,
+                 d: np.ndarray | None = None) -> np.ndarray:
+    """Whether each point of P lies inside the closed triangle mesh (V, T): the parity of
+    the crossings of a ray from it (Moller-Trumbore, vectorised over the triangles, in
+    chunks), along ``d`` (a direction tilted off the mesh's faces and edges)."""
+    P = np.asarray(P, float).reshape(-1, 3)
+    if d is None:
+        d = np.array([1.0, 3.17e-4, 7.31e-4])
+    d = np.asarray(d, float) / np.linalg.norm(d)
+    a, b, c = V[T[:, 0]], V[T[:, 1]], V[T[:, 2]]
+    e1, e2 = b - a, c - a
+    h = np.cross(d, e2)
+    det = (e1 * h).sum(1)
+    ok = np.abs(det) > 1e-12
+    inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+    out = np.zeros(len(P), bool)
+    step = max(1, 200_000 // max(len(T), 1))
+    for s0 in range(0, len(P), step):
+        s = P[s0:s0 + step, None, :] - a[None, :, :]
+        u = (s * h[None]).sum(2) * inv[None]
+        q = np.cross(s, e1[None, :, :])
+        v = (q @ d) * inv[None]
+        t = (q * e2[None]).sum(2) * inv[None]
+        hit = ok[None] & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 1e-9)
+        out[s0:s0 + step] = hit.sum(1) % 2 == 1
+    return out
+
+
+@dataclass
+class BlockLattice:
+    """A compact block cut into cells (a rigid-body-spring model of its wood): its
+    bounding box in its own axes cut by planes normal to them, each lattice cell (or a
+    group of them, where a cell is mostly outside the solid) a rigid cell with its own
+    mass and rotational inertia, neighbouring cells joined across each lattice face."""
+
+    centre: np.ndarray  # (3,) the solid's centroid: the origin of the block's frame
+    axes: np.ndarray  # (3, 3) rows: the block's axes (its long axis, its width, across)
+    lo: np.ndarray  # (3,) low corner of its bounding box, in its frame
+    size: np.ndarray  # (3,) lattice cell size along each axis (mm)
+    k: np.ndarray  # (3,) cells along each axis
+    group: np.ndarray  # (k0, k1, k2): the cell of each lattice cell (-1: outside the solid)
+    X: np.ndarray  # (G, 3) each cell's centroid (CAD coordinates)
+    mass: np.ndarray  # (G,) t
+    rot: np.ndarray  # (G,) mean principal moment of inertia about its centroid, t mm^2
+    # one per lattice face between two different cells: (axis, lower cell, upper cell,
+    # centre (3,), points (P, 3) on the face, area mm^2)
+    faces: list = field(default_factory=list)
+
+    @property
+    def n_cells(self) -> int:
+        return len(self.mass)
+
+    def cell_at(self, p) -> int:
+        """The cell holding the point p (CAD coordinates): the lattice cell it falls in,
+        or, if that one is outside the solid, the cell whose centroid is nearest."""
+        q = self.axes @ (np.asarray(p, float) - self.centre)
+        i = np.clip(np.floor((q - self.lo) / self.size).astype(int), 0, self.k - 1)
+        g = int(self.group[i[0], i[1], i[2]])
+        if g >= 0:
+            return g
+        return int(np.argmin(np.linalg.norm(self.X - np.asarray(p, float), axis=1)))
+
+
+def block_axes(sh) -> np.ndarray:
+    """A block's axes (rows, right-handed): its outline's long axis, its width and the
+    direction across both (the extrusion's normal for an extruded block)."""
+    u = np.asarray(sh.u, float)
+    u = u / np.linalg.norm(u)
+    w = np.asarray(sh.w, float)
+    w = w - float(w @ u) * u
+    w = w / np.linalg.norm(w)
+    return np.array([u, w, np.cross(u, w)])
+
+
+def block_lattice(b: CadBody, sh, cell_mm: float, mass_t: float, J_t: float,
+                  points_per_side: int = 3) -> BlockLattice:
+    """Cut a compact block into cells of about ``cell_mm`` (1 to BLOCK_MAX_CELLS along each
+    of its axes; an axis shorter than BLOCK_MIN_CELLS cells is not cut) and give each cell
+    the mass, centroid and rotational inertia of the wood in it. A box is cut exactly; any
+    other solid is sampled on a grid (BLOCK_SUBSAMPLES^3 points a cell, each standing for
+    its little box), a cell filled less than BLOCK_MERGE_SHARE joining the neighbour it
+    shares the most face with, and the cells' masses and positions are then scaled and
+    shifted so that the total mass ``mass_t``, the centre of gravity and the mean
+    principal moment ``J_t`` (the round-27 rigid block's) are the solid's exactly. Each
+    lattice face between two different cells gets ``points_per_side``^2 points spread so
+    that their equal shares of its area have its second moment (the glue grids'
+    exact_moment), inside the solid."""
+    A = block_axes(sh)
+    c0 = np.asarray(b.mesh.centroid, float)
+    Lv = (b.mesh.vertices - c0) @ A.T
+    lo, hi = Lv.min(0), Lv.max(0)
+    ext = np.maximum(hi - lo, 1e-9)
+    k = np.array([1 if e < BLOCK_MIN_CELLS * cell_mm else
+                  min(BLOCK_MAX_CELLS, int(e / cell_mm + 0.5)) for e in ext])
+    size = ext / k
+    vbox = float(np.prod(ext))
+    is_box = abs(float(b.mesh.volume) - vbox) <= 1e-6 * vbox
+    idx = np.array(np.meshgrid(*[np.arange(n) for n in k], indexing="ij")).reshape(3, -1).T
+    ncell = len(idx)
+    vol = np.zeros(ncell)
+    cen = np.zeros((ncell, 3))
+    tr = np.zeros(ncell)  # trace of the inertia tensor about the cell's centroid / rho
+    ns = BLOCK_SUBSAMPLES
+    inside3 = None
+    if is_box:
+        vol[:] = float(np.prod(size))
+        cen[:] = lo + (idx + 0.5) * size
+        tr[:] = vol * float((size**2).sum()) / 6.0
+    else:
+        ax_pts = [lo[a] + (np.arange(k[a] * ns) + 0.5) * size[a] / ns for a in range(3)]
+        G3 = np.array(np.meshgrid(*ax_pts, indexing="ij"))  # (3, n0, n1, n2), local
+        P = G3.reshape(3, -1).T
+        tilt = A.T @ np.array([1.0, 3.17e-4, 7.31e-4])
+        inside3 = _inside_mesh(c0 + P @ A, b.mesh.vertices, b.mesh.triangles,
+                               tilt).reshape(G3.shape[1:])
+        dv = float(np.prod(size / ns))
+        h2 = float(((size / ns) ** 2).sum())
+        for r_, (i, j, l) in enumerate(idx):
+            sl = (slice(i * ns, (i + 1) * ns), slice(j * ns, (j + 1) * ns),
+                  slice(l * ns, (l + 1) * ns))
+            ins = inside3[sl]
+            n_in = int(ins.sum())
+            if not n_in:
+                continue
+            q = np.stack([G3[a][sl][ins] for a in range(3)], axis=1)
+            vol[r_] = n_in * dv
+            cen[r_] = q.mean(0)
+            tr[r_] = 2.0 * dv * float(((q - cen[r_]) ** 2).sum()) + n_in * dv * h2 / 6.0
+
+    def lin(i, j, l):
+        return (i * k[1] + j) * k[2] + l
+
+    # each lattice face between two filled lattice cells and how much of it is solid
+    def face_share(a: int, c1, c2) -> float:
+        if is_box:
+            return 1.0
+        sl1 = [slice(c1[t] * ns, (c1[t] + 1) * ns) for t in range(3)]
+        sl2 = [slice(c2[t] * ns, (c2[t] + 1) * ns) for t in range(3)]
+        sl1[a] = slice((c1[a] + 1) * ns - 1, (c1[a] + 1) * ns)
+        sl2[a] = slice(c2[a] * ns, c2[a] * ns + 1)
+        both = inside3[tuple(sl1)].squeeze(a) & inside3[tuple(sl2)].squeeze(a)
+        return float(both.mean())
+
+    adj = []  # (axis, lin lower, lin upper, solid share of the face)
+    for a in range(3):
+        for i, j, l in idx:
+            c1 = np.array([i, j, l])
+            if c1[a] + 1 >= k[a]:
+                continue
+            c2 = c1.copy()
+            c2[a] += 1
+            r1, r2 = lin(*c1), lin(*c2)
+            if vol[r1] > 0 and vol[r2] > 0:
+                adj.append((a, r1, r2, face_share(a, c1, c2)))
+    # cells mostly outside the solid join a neighbour (a sliver would be light and stiff)
+    grp = np.where(vol > 0, np.arange(ncell), -1)
+    full = float(np.prod(size))
+
+    def root(r):
+        while grp[r] != r:
+            r = grp[r]
+        return r
+
+    for r in sorted(np.where(vol > 0)[0], key=lambda r_: (vol[r_], r_)):
+        rr = root(r)
+        if sum(vol[q] for q in range(ncell) if vol[q] > 0 and root(q) == rr) \
+                >= BLOCK_MERGE_SHARE * full:
+            continue
+        best, best_a = None, 0.0
+        for a, r1, r2, sh_ in adj:
+            if rr in (root(r1), root(r2)) and root(r1) != root(r2):
+                area = sh_ * float(np.prod(np.delete(size, a)))
+                if area > best_a:
+                    best, best_a = (root(r2) if root(r1) == rr else root(r1)), area
+        if best is not None:
+            grp[rr] = best
+    roots = sorted({root(r) for r in range(ncell) if vol[r] > 0})
+    gid = {r: g for g, r in enumerate(roots)}
+    group = np.full(ncell, -1)
+    for r in range(ncell):
+        if vol[r] > 0:
+            group[r] = gid[root(r)]
+    G = len(roots)
+    Vg = np.array([vol[group == g].sum() for g in range(G)])
+    Cg = np.array([(vol[group == g, None] * cen[group == g]).sum(0) / Vg[g] for g in range(G)])
+    Tg = np.array([float((tr[group == g] + 2.0 * vol[group == g]
+                          * ((cen[group == g] - Cg[g]) ** 2).sum(1)).sum()) for g in range(G)])
+    rho = mass_t / float(Vg.sum())
+    m_g = rho * Vg
+    X = c0 + Cg @ A
+    X += c0 - (m_g[:, None] * X).sum(0) / mass_t  # the solid's own centre of gravity
+    j_g = rho * Tg / 3.0
+    J_asm = float(j_g.sum() + 2.0 / 3.0 * (m_g * ((X - c0) ** 2).sum(1)).sum())
+    j_g = np.maximum(j_g + (J_t - J_asm) * m_g / mass_t, 0.1 * j_g)
+    # the faces between different cells, with their points
+    faces = []
+    pps = max(1, int(points_per_side))
+    for a, r1, r2, sh_ in adj:
+        g1, g2 = int(group[r1]), int(group[r2])
+        if g1 == g2 or sh_ <= 0:
+            continue
+        b_, c_ = [t for t in range(3) if t != a]
+        cl = lo + idx[r1] * size  # the lower lattice cell's low corner, local
+        x_a = cl[a] + size[a]
+        rect = Polygon([(0, 0), (size[b_], 0), (size[b_], size[c_]), (0, size[c_])])
+        pts2 = _sample_polygon(rect, 2.0 * max(size[b_], size[c_]), max_pts=pps * pps,
+                               min_per_side=pps, exact_moment=True)
+        q = np.zeros((len(pts2), 3))
+        q[:, a] = x_a
+        q[:, b_] = cl[b_] + pts2[:, 0]
+        q[:, c_] = cl[c_] + pts2[:, 1]
+        if not is_box:
+            off = np.zeros(3)
+            off[a] = 0.25 * size[a] / ns
+            keep = _inside_mesh(c0 + (q - off) @ A, b.mesh.vertices, b.mesh.triangles) & \
+                _inside_mesh(c0 + (q + off) @ A, b.mesh.vertices, b.mesh.triangles)
+            q = q[keep]
+            if not len(q):
+                continue
+        ctr = np.zeros(3)
+        ctr[a] = x_a
+        ctr[b_] = cl[b_] + 0.5 * size[b_]
+        ctr[c_] = cl[c_] + 0.5 * size[c_]
+        faces.append((a, g1, g2, c0 + ctr @ A, c0 + q @ A,
+                      sh_ * float(size[b_] * size[c_])))
+    return BlockLattice(c0, A, lo, size, k, group.reshape(tuple(k)), X, m_g, j_g, faces)
+
+
+@dataclass
+class WoodAcross:
+    """What the wood of a block holds across a plane through it (a cut between two of its
+    cells, or the wood under one of its faces): moduli (MPa), strengths (MPa), fracture
+    energies (N/mm), and whether a crack there runs along the grain or breaks fibres."""
+
+    E: float
+    G: float
+    f_t: float
+    f_v: float
+    f_c: float
+    G_I: float
+    G_II: float
+    split: str  # "along" (fibres in the plane: a split) or "across" (fibres broken)
+
+
+def wood_across(ply, grains, n, area_mm2: float, f_rolling: float, G_rolling: float,
+                t90_m: float, G_f: float, G_f90: float, G_v: float) -> WoodAcross:
+    """The wood of a compact block across a plane of normal n, for each layer's grain g
+    (cos t = |g.n|, averaged over the layers; a block whose grain is not known has its
+    fibres in the plane, as the code takes a block elsewhere: it bears across its grain,
+    f_c90, E_T): normal stiffness Hankinson's form between E_L (end grain) and E_T, as
+    wood_normal_stiffness; tension across the plane Hankinson's between f_t and f_t90 x
+    the size factor of the small volume it pulls on (t90_size_factor), as tension_at;
+    crushing Hankinson's between f_c and f_c90, as the glue lines'. Shear has no direction
+    known (the cohesive law is isotropic in the plane), so it is taken both ways in the
+    plane, as shear_compliance does when the force's direction is unknown: with the fibres
+    in the plane, half along the grain (G_LT, f_v) and half across it (G_rolling, the
+    rolling shear: face_shear_strength at 90 degrees), compliance and strength averaged;
+    with the fibres crossing the plane, G_LT and f_v (the shear on an end-grain plane is
+    the shear along the grain, by the symmetry of the stress). f_v is the average stress
+    on the sheared plane of a compact notched block at failure (ASTM D143 block shear,
+    which the Wood Handbook's f_v is), not the 1.5 V / A of a beam's section the solid
+    override uses. Fracture energy across the fibres (G_f) where they cross the plane,
+    across the grain (G_f90) where they lie in it, in shear G_v."""
+    n = np.asarray(n, float)
+    cs = [abs(float(np.asarray(g, float) @ n)) for g in grains] if len(grains) else [0.0]
+    vf = t90_size_factor(area_mm2, t90_m)
+    roll = face_shear_strength(ply.f_v, f_rolling, 0.0)
+    inv_g, E, ft, fv, fc, cross = [], [], [], [], [], []
+    for c in cs:
+        c2 = min(1.0, c * c)
+        across = 0.5 * (1.0 - c2)  # the share of the in-plane shear across the fibres
+        inv_g.append((1.0 - across) / ply.G_LT + across / max(G_rolling, 1e-9))
+        E.append(hankinson(ply.E_L, ply.E_T, c))
+        ft.append(hankinson(ply.f_t, ply.f_t90 * vf, c))
+        fv.append(c2 * ply.f_v + (1.0 - c2) * 0.5 * (ply.f_v + roll))
+        fc.append(hankinson(ply.f_c, ply.f_c90, c))
+        cross.append(c2)
+    x = float(np.mean(cross))
+    return WoodAcross(E=float(np.mean(E)), G=1.0 / float(np.mean(inv_g)),
+                      f_t=float(np.mean(ft)), f_v=float(np.mean(fv)), f_c=float(np.mean(fc)),
+                      G_I=G_f90 + x * (G_f - G_f90), G_II=G_v,
+                      split="across" if x > 0.5 else "along")
+
+
 def butt_open_compression(n: int, s: float, Ls: float, t: float, tol: float = 1.0) -> float:
     """Compression strength of ``n`` plies whose butt joints stand open (their gaps never
     close) over that of plies without joints: at the weakest section the cut plies carry
@@ -1311,6 +1608,11 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
 
     # ---------------------------------------------------------------- body analysis
     shapes: list[Shape] = []
+    # compact blocks set rigid in the overrides (kind: rigid): one rigid body each
+    rigid_set: set[int] = set()
+    # a compact block's cells: about this size (block.cell_mm; 0 = one rigid body, as
+    # until round 27)
+    cell_mm = float(sp.values.get("block.cell_mm", 0.0))
     # the bridge's centre (of its bounding box): plates' normals face away from it
     _lo = np.min([b.mesh.vertices.min(0) for b in bodies], axis=0) if bodies else np.zeros(3)
     _hi = np.max([b.mesh.vertices.max(0) for b in bodies], axis=0) if bodies else np.zeros(3)
@@ -1356,10 +1658,16 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 "answer_with": {"bodies": {g + "*": {
                     "layup": f"{len(lay.angles)}-ply <UD | 0-90 | +-45>"}}}})
         forced = o.get("kind")
-        if forced in ("block", "ignore") and questions and \
+        if forced in ("block", "rigid", "ignore") and questions and \
                 questions[-1].get("id") == f"layup:{b.name}":
-            questions.pop()  # set rigid or left out: what it is made of changes nothing
+            questions.pop()  # set a block or left out: the kind answers it (a block's
+            #                  grain, if known, is its grain override)
+        if forced == "rigid":  # one rigid body, as blocks were until round 27
+            rigid_set.add(len(shapes))
+            forced = "block"
         sh = analyse_shape(b, lay, forced, center)
+        if len(shapes) in rigid_set:
+            sh.why = "rigid body, set in overrides"
         if o.get("axis") is not None and sh.kind == "bar":
             gv = grain_vectors_of(o["axis"])
             if gv and len(gv) == 1:
@@ -1382,9 +1690,13 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                                             f"thickness ({t_s:g} mm) glued together")
         if lay.source == "default" and sh.kind == "block" and questions and \
                 questions[-1].get("id") == f"layup:{b.name}":
-            questions[-1]["question"] += (" It is compact, so it is modelled as a rigid "
-                                          "block whatever it is made of; if it is built "
-                                          "from plates or members, set its kind too.")
+            questions[-1]["question"] += (
+                " It is compact, so it is modelled as a block of the wood's cells (it "
+                "deforms and can split; its grain, if you know it, sets how stiff and "
+                "strong it is: 'grain'); if it is built from plates or members, set its "
+                "kind too." if cell_mm > 0 else
+                " It is compact, so it is modelled as a rigid block whatever it is made "
+                "of; if it is built from plates or members, set its kind too.")
             questions[-1]["answer_with"]["bodies"][b.name]["kind"] = "<block | shell | bar>"
         if forced == "ignore":
             sh.kind = "ignore"
@@ -1502,6 +1814,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         bld.imperf = lambda p: p + np.array([0.0, 0.0, lean * (p[1] - y_base)])
     infos: list[BodyInfo] = []
     body_nodes: dict[int, np.ndarray] = {}
+    block_cells: dict[int, BlockLattice] = {}  # compact blocks cut into cells
+    block_sf: dict[int, float] = {}  # their seeded strength factors
     bar_axis: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     shell_tree: dict[int, cKDTree] = {}
     shell_mesh: dict[int, tuple[np.ndarray, np.ndarray, float]] = {}
@@ -2071,6 +2385,30 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             _frame_body(bi, b, sh, info, o, ssc, Ef, Sf, mass_t)
         elif sh.kind == "cable":
             info.nodes = []  # a floss cable acts between the parts it is tied to
+        elif sh.kind == "block" and cell_mm > 0 and bi not in rigid_set:
+            # a compact block of the wood's cells (rigid-body-spring model, Kawai 1978):
+            # each cell a rigid node with its mass and inertia, the cells joined across
+            # the planes between them by the wood's own stiffness and strength (below)
+            ev = np.linalg.eigvalsh(b.mesh.inertia * rho * (1 + glue_frac))
+            lat = block_lattice(b, sh, cell_mm, mass_t, float(np.mean(ev)),
+                                int(sp.values.get("glue.points_per_side", 3)))
+            ids = []
+            for g in range(lat.n_cells):
+                nid = bld.node(lat.X[g], bi)
+                bld.mass[nid] += float(lat.mass[g])
+                bld.rot[nid] += float(lat.rot[g])
+                ids.append(nid)
+            body_nodes[bi] = np.array(ids)
+            info.nodes = list(ids)
+            block_cells[bi] = lat
+            block_sf[bi] = Ef * Sf  # the block's seeded strength factor (and the user's)
+            kk = "x".join(str(int(v)) for v in lat.k)
+            info.notes[0] += (f"; {lat.n_cells} cell(s) ({kk} along its axes, "
+                              f"block.cell_mm {cell_mm:g}) joined by the wood's stiffness "
+                              "and strength")
+            info.cells = {"centre": lat.centre, "axes": lat.axes, "lo": lat.lo,
+                          "size": lat.size, "k": lat.k, "group": lat.group,
+                          "nodes": np.array(ids)}
         elif sh.kind == "block":
             nid = bld.node(b.mesh.centroid, bi)
             bld.mass[nid] += mass_t
@@ -2093,6 +2431,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         if sh.kind == "frame":
             _, k = frame_tree[bi].query(p)
             return bld.attach(int(body_nodes[bi][k]), p)
+        if bi in block_cells:  # the cell of a block that holds the point
+            return bld.attach(int(body_nodes[bi][block_cells[bi].cell_at(p)]), p)
         return bld.attach(int(body_nodes[bi][0]), p)
 
     # ---------------------------------------------------------------- glue points
@@ -2384,7 +2724,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         modulus across it (wood.G_rolling_MPa), between them in series (as Hankinson).
         Beams and plates keep their sections plane, so this is not in them. It
         reproduces glued crossings of spruce boards (7-9.5 against 8.3 N/mm^3 measured,
-        Flaig & Meyer 2014; the literature review of round 24)."""
+        Flaig & Meyer 2014; the literature review of round 24). A block cut into cells:
+        block_face."""
+        if bi in block_cells:
+            return block_face(k, bi, n, area)[1]
         t = min(part_depth(bi, n), math.sqrt(max(area, 1e-9)))
         if glued_behind(k, bi, p, n, area):
             t *= 0.5
@@ -2477,7 +2820,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         orthotropic FE model: -9/+7 % on full-width faces, -6/+16 % on narrower ones,
         where round 24's depth, min(extent, 0.5 sqrt(area)), was 0.64-2.25x off). End
         grain: the part's depth, at most half the face's width. A block whose grain is
-        not given bears across it (as its crushing strength does)."""
+        not given bears across it (as its crushing strength does). A block cut into
+        cells: block_face."""
+        if bi in block_cells:
+            return block_face(k, bi, n, area)[0]
         gs = face_grain(bi, p, n) or grain_at(bi, p)
         H = part_depth(bi, n)
         if not glued_behind(k, bi, p, n, area):
@@ -2514,6 +2860,67 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             h = bearing_depth(ell, bw, H, 1.0, 0.0 if full else spread_c)
             ks.append(E / max(h, 0.5))
         return float(np.mean(ks))
+
+    G_f_w, G_f90_w, G_v_w = (sp["wood.G_f_N_per_mm"], sp["wood.G_f90_N_per_mm"],
+                             sp["wood.G_v_N_per_mm"])
+    t90_m_w = sp.values.get("wood.t90_weibull_m", 0.0)
+
+    def block_face(k: int, bi: int, n: np.ndarray, area: float) -> tuple[float, float]:
+        """The wood of a block cut into cells under one of its glued or bearing faces (of
+        outward normal n, patch k): (normal stiffness per mm^2, N/mm^3; shear compliance,
+        mm^3/N). Only the wood between the face and the centroid of the cell it hangs on,
+        d deep (half a cell for a box): the cells beyond are joined by their own springs,
+        so the block's depth is not counted twice (round 27 took the block's whole extent
+        under each face, glued behind or not: a block pressed between two faces had twice
+        its compliance). Normal: E at the grain's angle (wood_across) over the depth the
+        stress reaches within d, spreading as in wood_normal_stiffness only where the
+        block's face reaches past the patch (a face covering the block's whole face does
+        not spread); end grain: d, or half the face's width when the face is smaller.
+        Shear: the same slab sheared evenly, min(d, the face's width) / G, G both ways in
+        the plane (wood_across), as the cells' own springs, so that a block sheared between
+        two faces has the compliance of its depth whatever its cells."""
+        lat = block_cells[bi]
+        pts = np.asarray(patch_pts3[k][2], float).reshape(-1, 3)
+        d = float(np.mean([abs(float((lat.X[lat.cell_at(q)] - q) @ n)) for q in pts]))
+        H = max(d, 0.5)
+        wa = wood_across(ply, grain_vectors(shapes[bi]), n, area, f_roll, g_roll, t90_m_w,
+                         G_f_w, G_f90_w, G_v_w)
+        inter, e1, e2 = sides_of[k][:3]
+        outl = sides_of[k][3] if bi == patch_pts3[k][0] else sides_of[k][4]
+        hull = np.asarray(inter.convex_hull.exterior.coords) \
+            if inter.convex_hull.geom_type == "Polygon" else None
+        ring = np.asarray(outl.convex_hull.exterior.coords) \
+            if outl.convex_hull.geom_type == "Polygon" else None
+        gs = grain_vectors(shapes[bi]) or [None]
+        ks = []
+        for g in gs:
+            gn = 0.0 if g is None else abs(float(g @ n))
+            E = hankinson(ply.E_L, ply.E_T, gn)
+            gi = None if g is None else g - float(g @ n) * n
+            if gi is not None and float(np.linalg.norm(gi)) > 1e-6:
+                gi = gi / np.linalg.norm(gi)
+                a1 = np.array([float(gi @ e1), float(gi @ e2)])
+                c1, c2 = 1.0, spread_c  # 45 degrees along the grain, less across it
+            else:  # end grain or no grain known: across both ways
+                a1 = np.array([1.0, 0.0])
+                c1 = c2 = spread_c
+            a1 = a1 / max(float(np.linalg.norm(a1)), 1e-12)
+            a2 = np.array([-a1[1], a1[0]])
+            if hull is None or ring is None:
+                ell = bw = math.sqrt(max(area, 1e-9))
+                full1 = full2 = False
+            else:
+                ell = max(float(np.ptp(hull @ a1)), 0.5)
+                bw = max(float(np.ptp(hull @ a2)), 0.5)
+                full1 = ell >= 0.9 * float(np.ptp(ring @ a1))
+                full2 = bw >= 0.9 * float(np.ptp(ring @ a2))
+            if gn > 0.7:  # end grain: the stress stays in the fibres under the face
+                h = H if (full1 and full2) else min(H, BEARING_DEPTH_SHARE * math.sqrt(area))
+            else:
+                h = bearing_depth(ell, bw, H, 0.0 if full1 else c1, 0.0 if full2 else c2)
+            ks.append(E / max(h, 0.5))
+        t = min(H, math.sqrt(max(area, 1e-9)))
+        return float(np.mean(ks)), t / max(wa.G, 1e-9)
 
     def crush_depth(i: int, n: np.ndarray) -> float:
         ext = float(np.ptp(bodies[i].mesh.vertices @ n))
@@ -2929,6 +3336,48 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                             "cad": f"move '{b.name}' onto '{bodies[best].name}' if it is "
                                    "glued there"}})
 
+    # ---------------------------------------------------------------- inside the blocks
+    # each plane between two cells of a block (a lattice face): cohesive points of the
+    # wood itself, as a glue line's grid (glue.points_per_side a side, so the plane resists
+    # turning), with the stiffness of the wood between the two cells' centroids, K_n =
+    # E / h, K_s = G / h (h their distance along the normal: the rigid-body-spring model,
+    # Kawai 1978), its strength across the plane (wood_across) times the block's seeded
+    # strength factor, the wood's fracture energies; no glue scatter, fit-up gap, glue
+    # rate law or creep (crush.py takes the creep out); it crushes as a glue line's wood
+    # does, the cells' wood compacting over h
+    n_block_faces = 0
+    for bi, lat in block_cells.items():
+        grains = grain_vectors(shapes[bi])
+        ids = body_nodes[bi]
+        for ax, g1, g2, ctr, pts, area in lat.faces:
+            nrm = lat.axes[ax].copy()
+            h = max(abs(float((lat.X[g2] - lat.X[g1]) @ nrm)), 0.25 * float(lat.size[ax]))
+            wa = wood_across(ply, grains, nrm, float(area), f_roll, g_roll, t90_m_w, G_f_w,
+                             G_f90_w, G_v_w)
+            pid = len(patches)
+            patches.append(Patch(bi, bi, float(area), np.asarray(ctr, float), nrm,
+                                 kind="block", strength_MPa=wa.f_v * block_sf[bi],
+                                 split=wa.split))
+            n_block_faces += 1
+            for p in pts:
+                springs["a"].append(bld.attach(int(ids[g1]), p))
+                springs["b"].append(bld.attach(int(ids[g2]), p))
+                springs["area"].append(float(area) / len(pts))
+                springs["n0"].append(nrm)
+                springs["Kn"].append(wa.E / h)
+                springs["Ks"].append(wa.G / h)
+                springs["sig"].append(wa.f_t * block_sf[bi])
+                springs["tau"].append(wa.f_v * block_sf[bi])
+                springs["GIc"].append(wa.G_I)
+                springs["GIIc"].append(wa.G_II)
+                springs["mu"].append(sp_glue["friction"])  # wood on wood once split
+                springs["patch"].append(pid)
+                springs["breakable"].append(True)
+                springs["d0"].append(0.0)
+                springs["fc"].append(wa.f_c)
+                springs["cdep"].append(h)
+                patches[pid].springs.append(len(springs["a"]) - 1)
+
     # ---------------------------------------------------------------- floss cables
     cables: dict[str, list] = {k: [] for k in ("a", "b", "L0", "EA", "Fb", "body")}
     for bi, (b, sh) in enumerate(zip(bodies, shapes, strict=True)):
@@ -3146,7 +3595,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     # ch. 5); unbreakable ties and overlaps none
     kinds = np.array([p_.kind for p_ in patches] + ["glue"])
     sp_patch = np.asarray(springs["patch"], int)
-    c_rate = np.where(kinds[np.where(sp_patch >= 0, sp_patch, len(patches))] == "solid",
+    c_rate = np.where(np.isin(kinds[np.where(sp_patch >= 0, sp_patch, len(patches))],
+                              ("solid", "block")),
                       sp.values.get("wood.rate_exponent", 0.0),
                       sp.values.get("glue.rate_exponent", 0.0)) if len(sp_patch) else \
         np.zeros(0)
@@ -3228,9 +3678,14 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     # any crushing: say so
     glued_to: dict[int, set] = {}
     for pa in patches:
+        if pa.kind == "block":  # a plane inside a block is not a joint
+            continue
         glued_to.setdefault(pa.body_a, set()).add(pa.body_b)
         glued_to.setdefault(pa.body_b, set()).add(pa.body_a)
     rigid_path = []
+    grain_q = ("<x | y | z: the axis its sticks' fibres run along (a seat whose layers run "
+               "along the post it carries bears on end grain, ~6x stronger than across the "
+               "grain); leave out if not known>")
     for bi, sh in enumerate(shapes):
         if sh.kind != "block" or ov.for_body(bodies[bi].name).get("kind"):
             continue  # an explicit kind answers the question
@@ -3239,38 +3694,58 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         lo_, hi_ = bodies[bi].mesh.bbox
         if (lo_[0] < mid_x + PL / 2 and hi_[0] > mid_x - PL / 2 and lo_[2] < deck_z + PW / 2
                 and hi_[2] > deck_z - PW / 2 and hi_[1] > plate_bottom - 45):
+            nm = bodies[bi].name
+            if bi in block_cells:
+                q_ = (f"'{nm}' sits under the loading plate and is modelled as a compact "
+                      f"block of {block_cells[bi].n_cells} cell(s) of its wood (about "
+                      f"{cell_mm:g} mm) joined by the wood's own stiffness and strength: it "
+                      "deforms and can split between its cells, but it is neither a member "
+                      "nor a plate (no bending within a cell, no Poisson effect). Is it "
+                      "really a solid block of glued sticks, and which way do their fibres "
+                      "run? If it is built from plates or members, model it as such.")
+                a_ = ("a block of the wood's cells, its fibres in every plane between them "
+                      "unless its grain is given (E_T and f_t90 across them; bearing under "
+                      "the plate at the wood's crushing strength across the grain)")
+            else:
+                q_ = (f"'{nm}' sits under the loading plate and is modelled as a rigid "
+                      "block (it is compact, so it is neither a member nor a plate): it "
+                      "cannot crush or split. Is it really a solid block of glued sticks? If "
+                      "it is built from plates or members, model it as such.")
+                a_ = ("rigid, unbreakable (bearing under the plate is limited to the wood's "
+                      "crushing strength across the grain)")
             model.questions.insert(0, {
-                "id": f"rigid_under_plate:{bodies[bi].name}", "body": bodies[bi].name,
-                "topic": "design", "severity": "important",
-                "question": f"'{bodies[bi].name}' sits under the loading plate and is "
-                            "modelled as a rigid block (it is compact, so it is neither a "
-                            "member nor a plate): it cannot crush or split. Is it really a "
-                            "solid block of glued sticks? If it is built from plates or "
-                            "members, model it as such.",
-                "assumed": "rigid, unbreakable (bearing under the plate is limited to the "
-                           "wood's crushing strength across the grain)",
-                "answer_with": {"bodies": {bodies[bi].name: {
-                    "kind": "<block to confirm it | bar if it is a member>",
+                "id": f"rigid_under_plate:{nm}", "body": nm,
+                "topic": "design", "severity": "important", "question": q_, "assumed": a_,
+                "answer_with": {"bodies": {nm: {
+                    "kind": "<block to confirm it | rigid to keep it one rigid body | bar if "
+                            "it is a member>",
+                    "grain": grain_q,
                     "axis": "<x | y | z: the direction it spans between its supports, "
                             "for a bar (a floor beam wider than it is long)>",
                     "layup": "<N-ply UD: its sticks, for a bar>"}}}})
     if rigid_path:
         groups = sorted({_group(n) for n in rigid_path})
+        cells_on = any(bodies[bi].name in rigid_path for bi in block_cells)
         model.questions.append({
             "id": "rigid_blocks", "body": rigid_path[0], "topic": "geometry",
             "severity": "check",
-            "question": f"{len(rigid_path)} compact part(s) glued between other parts are "
-                        "modelled as rigid blocks (they neither bend nor break; their glue "
-                        "lines and bearing faces still crush): " + "; ".join(groups[:15])
+            "question": (
+                f"{len(rigid_path)} compact part(s) glued between other parts are modelled "
+                f"as blocks of the wood's cells (about {cell_mm:g} mm, block.cell_mm) joined "
+                "by the wood's own stiffness and strength: they deform and can split "
+                "between their cells (block_fracture), with their fibres in every plane "
+                "between the cells unless their grain is given; they do not bend as "
+                "members within a cell: " if cells_on else
+                f"{len(rigid_path)} compact part(s) glued between other parts are modelled "
+                "as rigid blocks (they neither bend nor break; their glue lines and bearing "
+                "faces still crush): ") + "; ".join(groups[:15])
                         + (" ..." if len(groups) > 15 else "") + ". Fine for solid blocks of "
                         "glued sticks; if one is a thin-walled or hollow build, or could "
-                        "snap, model it as a member.",
-            "assumed": "rigid blocks",
+                        "snap, model it as a member; which way do their sticks' fibres run?",
+            "assumed": ("blocks of the wood's cells, fibres in the planes between them (E_T, "
+                        "f_t90, rolling shear half the way)" if cells_on else "rigid blocks"),
             "answer_with": {"bodies": {groups[0] + "*": {
-                "kind": "<block | bar>",
-                "grain": "<x | y | z: the axis its sticks' fibres run along (a seat whose "
-                         "layers run along the post it carries bears on end grain, ~6x "
-                         "stronger than across the grain); leave out if not known>"}},
+                "kind": "<block | rigid | bar>", "grain": grain_q}},
                 "acknowledge": ["rigid_blocks"]}})
     capped = [f"{b.name}: {b.mesh.capped_loops} face(s) could not be decoded from the CAD "
               "and were closed over (usually a small hole)" for b in bodies
@@ -3352,6 +3827,11 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                                    "Split or separate extrusions), then inspect again",
                             "acknowledge": ["narrow_plates"]}})
     model.params["mesh_scale"] = float(mesh_scale)
+    if block_cells:  # compact blocks cut into cells (block.cell_mm)
+        model.params["block_cell_mm"] = cell_mm
+        model.params["block_cells"] = {bodies[bi].name: lat.n_cells
+                                       for bi, lat in block_cells.items()}
+        model.params["block_faces"] = n_block_faces
     model.params["s_snap"] = np.array(snap_el, bool)
     model.params["s_snap3"] = np.array(snap3, bool).reshape(-1, 3)
     if n_snap:

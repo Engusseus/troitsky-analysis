@@ -26,7 +26,7 @@ relevant parts in your Design Validation (§10). Units: mm, N, MPa, s.
 | slender but tapered extrusion (a wedge, a lip or filler cut along a diagonal: 40-75 % of its bounding box) | **tapered bar**: as above, each element with the width and centre offset of the profile at its position (same volume as the solid) | still a member; a rigid block would make the load path too stiff |
 | thin extrusion (width >= 3 x thickness) | **shell**: CST membrane + DKT bending triangles on the mid-surface, meshed from the real outline (holes > element size kept), integrated ply by ply (layered) | gussets, webs, decks, diaphragms |
 | plate made of narrow arms (an L-shaped leg, an X, a curved rib, a strut-like plate): arms narrower than 1.6 standard shell elements, or 3 when they are slender (centre lines >= 4x their width, and 90 % of their length no wider than 3 elements: a 140 mm gusset with 60 mm tails is a plate, not a strut; it was a single beam until round 16), arms covering >= 80 % of the plate and carrying what is glued to it (a part glued off the arms, a wing of a hub plate, gets an arm of its own out to it, if that runs inside the plate) | **frame**: fibre beams along the centre lines of its arms (the medial axis of its outline, `sim/skeleton.py`), each with the arm's local width and the plate's thickness, plies stacked through the thickness: a UD frame's sticks along each arm (it is built arm by arm), a cross-ply or angle-ply frame a sheet cut to shape whose plies keep the plate's long axis in every arm (an arm at 45 degrees to a +-45 plate is 0/90; asked as `frame_plies:`, `grain: arm` if they were laid along each arm; `test_frame_plies_follow_the_sheet_or_the_arm`), or the span; butt joints per arm as for bars, arms sharing nodes where they meet, glue on rigid arms to the nearest node | a strip of constant-strain triangles one or two elements wide is 2-4x too stiff in in-plane bending, and a 20 mm thick plate is no thin plate; a beam is exact there (`test_frame_plate_bends_like_a_beam`, a strip 40 mm deep on knife edges, ~2.5 elements across: beam theory within 3 %, the same strip as shells 20 % too stiff; the 70 % reported until round 15 was mostly the strip's ends glued to 10 mm piers, which fix them partly, for frames as for shells since round 15). The `frame_plates` question lists them; a plate whose glued parts cannot be reached that way stays a shell and the `narrow_plates` question asks about it |
-| compact piece (less than 2x longer than its section, not thin), a body named a block, short toothpick | **rigid body** (its faces bear at f_c90 unless its fibres are given along an axis, `grain: x | y | z`: a heel seat whose layers run along its post bears on end grain, Hankinson between) with its real mass and the mean of its principal moments of inertia (one value for all axes: the loading is quasi-static, kinetic energy below 5 % of the jack's work (on Bridge_v10 under 1 %), so a block's rotational inertia only enters the time step) | much stiffer than the members; a question lists those in the load path |
+| compact piece (less than 2x longer than its section, not thin), a body named a block, short toothpick | **block of cells** (since round 28): its bounding box in its own axes cut into rigid cells of about `block.cell_mm` (20 mm; 1 to 3 along each axis, none along an axis shorter than 1.5 cells), each with the mass and rotational inertia of its wood, joined across each plane between two cells by the wood itself (below); its faces bear at f_c90 unless its fibres are given along an axis, `grain: x | y | z` (a heel seat whose layers run along its post bears on end grain, Hankinson between). `kind: rigid` (or `block.cell_mm` 0) keeps **one rigid body** with its real mass and the mean of its principal moments of inertia, as every block was until round 27 (one value for all axes: the loading is quasi-static, kinetic energy below 5 % of the jack's work (on Bridge_v10 under 1 %), so a rotational inertia only enters the time step) | a block deforms and can split as its wood does (a rigid one neither bent nor broke: the stiffest and strongest idealisation in the load path, review item 12 of round 28); a question lists those in the load path |
 | floss (by name) | **cable**: tension only, snaps at its breaking load | §8.4.5 |
 
 Laminates come from the body name (`10-ply UD`, `2-ply 0-90`, `4-ply +-45`, `block`,
@@ -124,6 +124,79 @@ share its strength, so a ply cannot be cut in tension alone. With published test
 diagonal's outer plies open at mid-length its seed 0 still fails at a putty joint first
 (112.97 kgf against 112.94 with the factors), which the literature review of round 26
 expected: its buckling needs a kink at the joint or unglued outer plies as well.
+
+**Compact blocks are cells of their wood** (since round 28; until then one rigid body,
+which added no compliance between its faces beyond its glue lines and could not break
+inside: a node block could not split, a heel seat could not shear off). A block's
+bounding box in its own axes (its outline's long axis, its width, and across both) is cut
+by planes normal to them into cells of about `block.cell_mm` (20 mm, a numerical choice):
+1 to 3 cells along each axis, none along an axis shorter than 1.5 cells. Each cell is a
+rigid node with the mass, centroid and rotational inertia (the mean of its principal
+moments) of the wood in it: exact for a box; any other solid is sampled on a grid (6^3
+points a cell, each standing for its little box), a cell less than a quarter full (a
+corner a chamfer cuts off) joins the neighbour it shares the most face with, and the
+cells are then scaled and shifted so that the block's mass, centre of gravity and mean
+moment are the solid's exactly (`test_a_divided_block_keeps_its_mass_and_inertia`).
+Neighbouring cells are joined across each plane between them by a grid of cohesive
+points of the wood itself, glue.points_per_side a side so the plane resists turning,
+with the machinery of a glue line and the values of the wood (a rigid-body-spring model,
+Kawai 1978, Nucl. Eng. Des. 48:207):
+
+* stiffness per mm^2 K_n = E / h and K_s = G / h, h the distance between the two cells'
+  centroids along the normal: E Hankinson's form between E_L (fibres crossing the plane)
+  and wood.E_T_MPa, as a glued face's wood; G both ways in the plane, since the cohesive
+  law has one shear stiffness for every direction: with the fibres in the plane, half the
+  shear along the grain (G_LT) and half across it (wood.G_rolling_MPa), compliances
+  averaged, with the fibres crossing it G_LT (as `shear_compliance` takes a face whose
+  force direction is unknown);
+* strength: tension across the plane Hankinson's form between f_t and f_t90 x the size
+  factor of the small volume it pulls on (`t90_size_factor`); shear f_v with the fibres
+  crossing the plane, the mean of f_v and the rolling shear (`face_shear_strength` at 90
+  degrees, 4.0 MPa) with them in it (6.0 MPa: shear along the grain one way, rolling the
+  other), and between those by the share of the fibres crossing; f_v as the average on
+  the plane, not f_v / 1.5: the Wood Handbook's f_v is the average stress on the sheared
+  plane of a compact notched block (ASTM D143 block shear), which is what a plane inside a
+  block is, while the 1.5 of the `solid` override turns a beam section's parabolic shear
+  into its average. Compression is capped by crushing as at a glue line (Hankinson between
+  f_c and f_c90; the wood between the centroids compacting); the fracture energies are
+  the wood's (G_f where the fibres cross the plane, G_f90 where they lie in it, G_v in
+  shear); the body's seeded strength factor (and `strength_factor`) applies; no glue
+  scatter, no fit-up gap; the wood's rate exponent (`wood.rate_exponent`), not the
+  glue's; no creep (the kernels' glue creep is taken back out every 25 steps);
+* a block whose grain is not known has its fibres in every plane between its cells, as
+  the code takes a block elsewhere (it bears across its grain, f_c90, and its faces are as
+  stiff as E_T): its planes are as stiff as E_T and as strong as f_t90 x the size factor
+  across, 6.0 MPa in shear. `grain` (an axis, a direction, or one per layer) gives them
+  their real directions: a block whose sticks run along the load is ~20x stiffer (E_L).
+
+A face of the block glued to or bearing on another part counts only the wood between the
+face and the centroid of the cell it hangs on (half a cell for a box), the cells beyond
+being joined by their own planes: round 27 took the block's whole extent under each face
+whether or not it was glued behind, so a block pressed between two faces had twice its
+compliance. That depth spreads as under any face (`bearing_depth`) only where the block's
+face reaches past the patch (a face covering the block's whole face does not spread); in
+shear it is sheared evenly, min(depth, the face's width) / G with the block's G. So a
+block pressed between two faces has the compliance of its depth, L / (E A), and sheared
+between them L / (G A), with 1, 2 or 3 cells
+(`test_a_block_pressed_between_two_faces_has_the_compliance_of_its_depth`). Glue points,
+platform and plate contact points and the block's corners (its self-contact points) hang
+on the cell that holds them. A plane that lets go (90 % of its area, as a joint) is the
+block splitting there: `block_fracture` ("a compact block split inside, along / across its
+grain"), with where it happened, in the failures, `governing` and `competing` as other
+breaks are (`test_a_block_in_double_shear_splits_at_its_planes`); the planes are not joints
+of the bridge (not in inspect's joints, glued area, `weak_joints`, joint counts or the
+curve's joints broken). A piece of a split block keeps acting through its own glue and
+contact points; a cell with nothing left holding it (directly, or through planes of its
+block to a cell that is held) is debris, as a rigid block with no glue left was. What the
+cells do not give: the Poisson effect (a plane's normal and shear springs are uncoupled),
+bending within a cell (a block bends only through its planes, a coarse beam of 1-3 cells
+along it), shear that depends on its direction in a plane, splits off the cut planes,
+and a softening that resolves the wood's toughness at this cell size (a plane 20 mm
+between centroids holds more energy at its peak than G_v in shear, so past its peak it
+drops at once: its strength is right, its toughness too large); the pre-peak bend of the
+glue law (glue.prepeak_onset, glue.peak_slip_ratio) applies to the planes as to a `solid`
+face. A block that should stay rigid (a steel stand-in, a load hanger, the press's own
+parts in a rebuilt test) takes `kind: rigid` in the overrides.
 
 ## 3. Joints
 
@@ -423,7 +496,11 @@ expected: its buckling needs a kink at the joint or unglued outer plies as well.
   unbreakable): shear f_v / 1.5 averaged over the section, as the code check of a notched
   end (EN 1995-1-1 6.1.7, 6.5.2), tension across the face by the grain on either side (a
   block with no grain known has its fibres across it), the wood's fracture energies, no
-  fit-up gap and no glue scatter (`test_a_solid_joint_breaks_at_the_wood_strength`).
+  fit-up gap and no glue scatter (`test_a_solid_joint_breaks_at_the_wood_strength`). The
+  planes inside a compact block cut into cells (section 2, since round 28) use the same
+  machinery with the wood's average shear strength f_v on the plane (ASTM D143 block
+  shear), not f_v / 1.5, which is for a notched beam's section: a face glued `solid` keeps
+  f_v / 1.5 (a tenon's root is a notched end).
 * **Shear lag and the mesh.** The glue points of a joint hang on the nearest nodes of
   each part (rigid arms), so how much shear lag a joint shows depends on how many nodes
   that is. The lap coupon with its glue hung on 1, 2, 3, 5 and 9 nodes per side needs a
@@ -963,9 +1040,14 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   size (a membrane with drilling rotations was tried and not adopted:
   `validation/README.md` §3.4); plates of narrow arms are frames (section 2). Compact
   blocks (a node block, the block under the plate; slender or tapered pieces are bars)
-  are rigid: they crush only where they bear on the plate or the platform, and their
-  glue lines crush (by grain direction, as above); a question lists the ones in the load
-  path, answered with `kind: bar` or `kind: shell` when one is really a member.
+  are no continuum: since round 28 they are a few rigid cells joined by their wood's
+  stiffness and strength (section 2), which split only on the planes between their
+  cells, bend only through those planes, have no Poisson effect and the same shear
+  stiffness and strength every way in a plane (half along the grain, half across it,
+  with the fibres in it); until round 27 they were rigid. A question lists the ones in
+  the load path, answered with `grain` (which way their sticks run), `kind: bar` or
+  `kind: shell` when one is really a member, or `kind: rigid` for a stand-in that is not
+  wood.
 * Friction in the contact between parts that were not touching at the start.
 * Debris (pieces with nothing left holding them) falls under gravity and lands on the
   platform, but does not hit the bridge or the plate.

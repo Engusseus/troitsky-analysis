@@ -122,6 +122,7 @@ PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("scatter.*_corr", 0.0, 1.0, True),
     ("scatter.amplitude", 0.0, 10.0, True),
     ("wood.E_placeholder_MPa", 0.0, 1e6, True),
+    ("block.cell_mm", 0.0, 1e4, True),  # 0: one rigid body
     ("*", 0.0, float("inf"), False),  # moduli, strengths, energies, sizes: positive
 ]
 
