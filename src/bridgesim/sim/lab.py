@@ -434,14 +434,16 @@ def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2
 def shell_strip_bending(h: float, L: float = 12.0, W: float = 20.0, t: float = 4.0,
                         angles: tuple = (0.0, 90.0), rate: float = 20.0, material=None,
                         sim_params=None, max_disp: float | None = None,
-                        stop_at_split: bool = False, alpha: float = 2000.0) -> TestResult:
+                        stop_at_split: bool = False, alpha: float = 2000.0,
+                        until=None) -> TestResult:
     """A plate strip in three-point bending, as a short-beam shear test of a stick plate
     on its flat: span L along X between line supports at its ends (w held), W across,
     thickness t, plies ``angles`` (deg from X) listed from its underside, meshed with
     right triangles of size ``h``; its mid-span line is pushed down (-Z) and the force on
     it recorded. Its elements are the bridge's (shear-deformable unless
     plate.shear_deformable is 0; their glue planes split in out-of-plane shear,
-    solver.split_plates). ``stop_at_split``: stop at the step the first element splits."""
+    solver.split_plates). ``stop_at_split``: stop at the step the first element splits;
+    ``until(state)``: stop when it is true (drive)."""
     from bridgesim.schema import Material
     from bridgesim.sim.materials import Ply, SimParams, laminate_shear
 
@@ -505,4 +507,4 @@ def shell_strip_bending(h: float, L: float = 12.0, W: float = 20.0, t: float = 4
     load = [nid(nx // 2, j) for j in range(ny + 1)]
     return drive(m, fixed, load, 2, rate, max_disp=max_disp or L / 10, sign=-1.0,
                  stop_drop=0.5, alpha=alpha, record_every=5,
-                 until=(lambda st: bool(st.s_shear.any())) if stop_at_split else None)
+                 until=(lambda st: bool(st.s_shear.any())) if stop_at_split else until)
