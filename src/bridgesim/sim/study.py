@@ -541,7 +541,8 @@ def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
         assumed_parameters=_assumed(mat, sp),
         model={"nodes": int(model.n_nodes), "beam_elements": int(len(model.b_i)),
                "shell_elements": int(len(model.s_nodes)), "glue_points": int(len(model.c_a)),
-               "glued_patches": len(model.patches), "floss_cables": int(len(model.k_a)),
+               "glued_patches": sum(p.kind != "dry" for p in model.patches),
+               "floss_cables": int(len(model.k_a)),
                "platform_contact_points": int(len(model.p_att)),
                "plate_contact_points": int(len(model.q_att))},
         warnings=list(model.notes))
@@ -2893,6 +2894,10 @@ PLACEHOLDER_PRIORS = {
     "glue.G_Ic_N_per_mm": 0.45, "glue.gap_fill_mm": 0.40, "glue.coupon_time_s": 0.40,
     "scatter.glue_bridge_cov": 0.40, "scatter.E_cov": 0.30, "scatter.strength_cov": 0.30,
     "wood.crush_softening": 0.30,
+    # round 28: friction between parts that come into contact (wood on wood, 0.25-0.6
+    # with the surface and the moisture: the contact between parts was frictionless
+    # until then)
+    "contact.friction_parts": 0.30,
 }
 # placeholders drawn additively, value + sd x z within (low, high): the wood's moisture
 # above its coupons' (percentage points; members laminated in the last days before the
@@ -2984,6 +2989,8 @@ SENSITIVITY_MORE = {
                            "the soft start of your crush-test curve"),
     "scatter.support_level_mm": ("how far the support corners are out of level",
                                  "the gap under the corner that rocks on a flat table"),
+    "contact.friction_parts": ("friction between parts that come into contact",
+                               "the angle a stick starts to slide down another"),
     "floss.strand_break_N": ("breaking load of one floss strand",
                              "hang weights on a strand"),
 }

@@ -115,6 +115,8 @@ contact:
   friction_platform: {value: 0.2, source: assumed,
                       note: "Wood on the crusher's steel base platform: how freely the supports slide. Wood on steel, static 0.19 and kinetic 0.17 (chestnut at 12 % moisture, CoV 22-40 %; 0.1-0.25 for spruce and pine in the literature it cites: Villar-Garcia et al. 2022, Forests 13:1078); 0.35 until round 24 (the literature review of round 24). Drawn by montecarlo (30 %)."}
   friction_plate: {value: 0.2, source: assumed, note: "Wood on the steel loading plate (as contact.friction_platform; 0.3 until round 24). Drawn by montecarlo (30 %)."}
+  friction_parts: {value: 0.4, source: assumed,
+                   note: "Coulomb friction between parts of the bridge that come into contact during the test (a member seating on a part it was drawn clear of, a broken chord on a cross-beam, a buckled diagonal on its neighbour): wood on wood, as glue.friction (dry wood on wood 0.25-0.5, wet 0.2: Bowden & Tabor 1950, quoted by Hutchings 2016, 'Leonardo da Vinci's studies of friction', Wear). Frictionless (0) until round 28. Drawn by montecarlo (30 %). Measure: tilt a stick lying on another until it starts to slide; mu = tan of that angle."}
   seating_mm: {value: 0.3, source: assumed,
                note: "Depth over which a bearing face beds in on the steel (roughness, glue beads, fibres crushing at the first touch): its contact stiffness grows from 0 to full over this depth, the soft start ('toe') of a real load-deflection curve. Read it off the start of your crush-test curve."}
 

@@ -310,7 +310,7 @@ def test_shell_fracture_energy_is_mesh_independent():
 
 def test_self_contact_stops_a_falling_member():
     """A stick dropped across another (not touching at the start) comes to rest on it,
-    at the sum of their contact radii, instead of passing through."""
+    its face on the other's face, instead of passing through."""
     from bridgesim.sim import contact
     from bridgesim.sim.crush import stable_dt
     from bridgesim.sim.model import BodyInfo
@@ -319,7 +319,7 @@ def test_self_contact_stops_a_falling_member():
     n = 9
     s_ = np.linspace(-100, 100, n)
     XA = np.c_[s_, np.zeros(n), np.zeros(n)]
-    XB = np.c_[np.zeros(n), np.full(n, 15.0), s_]  # crossing above, 3.7 mm clear
+    XB = np.c_[np.zeros(n), np.full(n, 15.0), s_]  # crossing above, 5 mm clear
     m = lab.blank_model(np.vstack([XA, XB]))
     spec = lab.BeamSpec(b=10.0, d=10.0, E=10000.0)
     lab.add_beam_line(m, list(range(n)), spec, up=(0, 1, 0))
@@ -341,9 +341,302 @@ def test_self_contact_stops_a_falling_member():
         st.x[[0, n - 1]] = m.X[[0, n - 1]]  # A held at its ends
         st.v[[0, n - 1]] = 0.0
         lowest = min(lowest, st.x[n + n // 2, 1])
-    reach = 2 * math.sqrt(100.0 / math.pi)  # two capsules of the stick's area
+    # two boxes of the 10 x 10 section, face on face (round 28; until round 27 two
+    # capsules of the stick's area, 2 sqrt(100 / pi) = 11.3 mm apart)
+    reach = 10.0
     assert lowest > reach - 1.5  # it did not go through
     assert st.x[n + n // 2, 1] == pytest.approx(reach + st.x[n // 2, 1], abs=1.0)
+
+
+def _members(lines, dt_target: float = 5e-6, mu: float | None = None):
+    """A lab model of members, one body each: ``lines`` holds (nodes (k, 3), BeamSpec,
+    up). Returns the model (masses scaled for dt) and the settings."""
+    from bridgesim.sim.crush import stable_dt
+    from bridgesim.sim.model import BodyInfo
+
+    m = lab.blank_model(np.vstack([np.asarray(X, float) for X, _s, _u in lines]))
+    k0 = 0
+    for b, (X, spec, up) in enumerate(lines):
+        ne0 = len(m.b_i)
+        lab.add_beam_line(m, list(range(k0, k0 + len(X))), spec, up=up)
+        m.b_body[ne0:] = b
+        m.node_body[k0:k0 + len(X)] = b
+        k0 += len(X)
+    m.bodies = [BodyInfo(f"M{b}", "bar", "", "", 0.0, 0.0, section_mm=(s.b, s.d))
+                for b, (_X, s, _u) in enumerate(lines)]
+    if mu is not None:
+        m.params["friction_parts"] = mu
+    s = S.Settings(dt=1e-6)
+    s.dt, m.mass, m.rot_inertia, _ = stable_dt(m, s, dt_target, 0.0)
+    return m, s
+
+
+def test_contact_box_distance_is_the_exact_signed_distance():
+    """A member's contact surface is its rectangular section swept along it: the signed
+    distance of points around a 20 x 10 mm box (faces, edges, corners, inside) is the
+    exact one (outside: the length of the excess over each half size, sqrt(sum max(|p_i|
+    - h_i, 0)^2); inside: minus the depth below the nearest face, max(|p_i| - h_i)), and
+    the normal points out of the nearest face, edge or corner. An end the member
+    continues past is no face: a point inside next to it is pushed out sideways."""
+    from bridgesim.sim.contact import box_sdf
+
+    h = np.array([15.0, 10.0, 5.0])  # half length, half width, half depth
+    rng = np.random.default_rng(1)
+    pts = np.vstack([rng.uniform(-30, 30, (400, 3)),
+                     [[0, 12, 0], [0, 0, -6], [20, 0, 0],  # faces
+                      [0, 13, 8], [18, 0, -9], [17, 11, 0],  # edges
+                      [16, 11, 6], [-17, -12, -7],  # corners
+                      [0, 0, 0], [0, 9, 0], [14, 0, 1], [3, 2, -4.5]]])  # inside
+    for p in pts:
+        g, *n = box_sdf(p[0], p[1], p[2], h[0], h[1], h[2], True, True, 0.0)
+        q = np.abs(p) - h
+        exact = np.linalg.norm(np.maximum(q, 0.0)) if (q > 0).any() else q.max()
+        assert g == pytest.approx(exact, abs=1e-9), p
+        # the closest point on the surface is p - g n, and it is on the surface
+        c = p - g * np.asarray(n)
+        assert np.abs(np.abs(c) - h).min() == pytest.approx(0.0, abs=1e-9), p
+        assert (np.abs(c) <= h + 1e-9).all(), p
+        assert np.linalg.norm(n) == pytest.approx(1.0, abs=1e-12)
+    # inside, 0.5 mm from an open end and 2 mm below the top: out through the top
+    g, n0, n1, n2 = box_sdf(14.5, 8.0, 0.0, 15.0, 10.0, 5.0, True, False, 8.0)
+    assert g == pytest.approx(-2.0) and (n0, n1, n2) == (0.0, 1.0, 0.0)
+    g, n0, *_ = box_sdf(14.5, 8.0, 0.0, 15.0, 10.0, 5.0, True, True, 8.0)
+    assert g == pytest.approx(-0.5) and n0 == 1.0  # a real end: out through the end
+
+
+@pytest.mark.parametrize("flat", [True, False])
+def test_a_member_dropped_flat_rests_face_on_face(flat):
+    """A 20 x 10 mm member (2:1) dropped across a 10 x 10 mm one comes to rest with its
+    face on the other's top face, on its wide face (axis 5 + 5 = 10 mm above the other's)
+    or on its edge (5 + 10 = 15 mm): the error is the penalty's static penetration, W /
+    the contact stiffness, under a micron. The capsule model of round 27 put it at
+    sqrt(100 / pi) + sqrt(200 / pi) = 13.6 mm either way, 3.6 mm too high flat and 1.4 mm
+    too low on edge."""
+    from bridgesim.sim import contact
+
+    pytest.importorskip("numba")
+    n = 9
+    s_ = np.linspace(-100, 100, n)
+    half_b = 5.0 if flat else 10.0  # B's half depth, vertical
+    rest = 5.0 + half_b
+    XA = np.c_[s_, np.zeros(n), np.zeros(n)]
+    XB = np.c_[np.zeros(n), np.full(n, rest + 1.0), s_]  # 1 mm clear
+    specB = lab.BeamSpec(b=20.0 if flat else 10.0, d=10.0 if flat else 20.0, E=10000.0)
+    m, s = _members([(XA, lab.BeamSpec(b=10.0, d=10.0, E=10000.0), (0, 1, 0)),
+                     (XB, specB, (0, 1, 0))])
+    st = S.initial_state(m, 1e12)
+    st.sc = contact.setup(m, m.X, m.mass, s.dt)
+    assert st.sc.n_active == 0 and st.sc.n_excluded == 0 and st.sc.n_allowed == 0
+    F, Mo = np.zeros((m.n_nodes, 3)), np.zeros((m.n_nodes, 3))
+    for _ in range(int(0.12 / s.dt)):
+        S.step(m, st, s, F, Mo, grav_scale=1.0, alpha=60.0)
+        st.x[[0, n - 1]] = m.X[[0, n - 1]]  # A held at its ends
+        st.v[[0, n - 1]] = 0.0
+    gap = (st.x[n + n // 2, 1] - half_b) - (st.x[n // 2, 1] + 5.0)
+    W = float(m.mass[n:].sum() * 9806.65)
+    static = W / float(st.sc.k.max())  # what one point alone would sink under it
+    assert st.sc.n_active >= 3  # it rests on its face (the crossing's square), not a line
+    assert -static - 1e-6 < gap < 1e-6, (gap, static)  # (-2e-5 and -7e-5 mm here)
+    capsule = math.sqrt(100 / math.pi) + math.sqrt(specB.b * specB.d / math.pi)
+    assert abs(rest - capsule) > 1.0  # what the capsules missed
+
+
+def test_contact_near_a_glued_patch_is_left_to_its_glue():
+    """Two members lying face on face, glued only over their first 30 mm: pressed
+    together there, they bear through their glue springs and the contact pushes nothing
+    (a point within the larger section depth plus the patch's point spacing of a glue
+    point is kept off the other body); pressed together far from the patch they touch,
+    and the contact bears (k x the pressing, on those points only)."""
+    from bridgesim.sim import contact
+    from bridgesim.sim.model import Patch
+
+    n = 13
+    s_ = np.linspace(0, 300, n)
+    m, s = _members([(np.c_[s_, np.zeros(n), np.zeros(n)],
+                      lab.BeamSpec(b=10.0, d=10.0, E=10000.0), (0, 1, 0)),
+                     (np.c_[s_, np.full(n, 10.0), np.zeros(n)],
+                      lab.BeamSpec(b=10.0, d=10.0, E=10000.0), (0, 1, 0))])
+    # glue points on the interface (y = 5) over x 0-30, 3 x 3, on A's and B's nodes
+    gx, gz = np.meshgrid([5.0, 15.0, 25.0], [-3.0, 0.0, 3.0], indexing="ij")
+    a_node, a_r0, c_a, c_b = [], [], [], []
+    for x_, z_ in zip(gx.ravel(), gz.ravel(), strict=True):
+        k = int(round(x_ / 25.0))
+        for nd, lst in ((k, c_a), (n + k, c_b)):
+            a_node.append(nd)
+            a_r0.append(np.array([x_, 5.0, z_]) - m.X[nd])
+            lst.append(len(a_node) - 1)
+    m.a_node, m.a_r0 = np.array(a_node), np.array(a_r0)
+    m.c_a, m.c_b = np.array(c_a), np.array(c_b)
+    m.c_area = np.full(9, 300.0 / 9)
+    m.patches = [Patch(0, 1, 300.0, np.array([15.0, 5.0, 0.0]), np.array([0, 1.0, 0]),
+                       springs=list(range(9)))]
+    st = S.initial_state(m, 1e12)
+    sc = contact.setup(m, m.X, m.mass, s.dt)
+    st.sc = sc
+    F, Mo = np.zeros((m.n_nodes, 3)), np.zeros((m.n_nodes, 3))
+    contact.forces(m, st, sc, F, Mo, s.dt, True)
+    assert sc.n_active == 0 and not F.any()  # face on face, nothing pushing at the start
+    # the rule: within 10 (depth) + 5.8 (spacing) mm of a glue point (x <= 25)
+    P = m.X[m.a_node[sc.s_att]] + m.a_r0[sc.s_att]
+    kept = (sc.sl_d0 < 0).any(1)
+    assert kept[P[:, 0] < 35].all() and not kept[P[:, 0] > 55].any()
+    # pressed at the patch (B's end node: the element it turns stays within the zone),
+    # then far from it
+    for lo, hi, pushes in ((0.0, 0.0, False), (150.0, 300.0, True)):
+        st.x[:] = m.X
+        sel = n + np.where((s_ >= lo) & (s_ <= hi))[0]
+        st.x[sel, 1] -= 0.05  # B pressed into A there
+        sc.pair_i = None
+        F[:] = 0.0
+        Mo[:] = 0.0
+        contact.forces(m, st, sc, F, Mo, s.dt, True)
+        if not pushes:
+            assert sc.n_active == 0 and not F.any(), (lo, hi)
+        else:
+            assert sc.n_active > 0
+            on = np.where(np.abs(F).sum(1) > 0)[0]
+            assert (m.X[on, 0] >= lo - 26).all()  # only where they were pressed
+            assert F[sel, 1].sum() < 0  # A pushes B back up (F: minus the push)
+
+
+@pytest.mark.parametrize("ratio, mu", [(0.5, 0.4), (2.0, 0.4), (1.0, 0.0)])
+def test_friction_between_parts_sticks_and_slips(ratio, mu):
+    """A short member resting on a fixed one inclined at a (tan a = ratio x mu): below
+    the friction angle it sticks (no creep: the anchor holds it, its only give the
+    elastic tangential spring's W sin a / k); above it, it slides down at g (sin a - mu
+    cos a), within 3 %; with mu = 0 (frictionless, as until round 28) at g sin a."""
+    from bridgesim.sim import contact
+
+    pytest.importorskip("numba")
+    a = math.atan(ratio * mu) if mu > 0 else math.radians(20.0)
+    t = np.array([math.cos(a), math.sin(a), 0.0])
+    nrm = np.array([-math.sin(a), math.cos(a), 0.0])
+    sa = np.linspace(-150, 150, 13)
+    sb = np.linspace(-20, 20, 3)
+    spec = lab.BeamSpec(b=10.0, d=10.0, E=10000.0)
+    m, s = _members([(sa[:, None] * t, spec, nrm),
+                     (sb[:, None] * t + 10.0 * nrm, spec, nrm)], mu=mu)
+    nA = len(sa)
+    st = S.initial_state(m, 1e12)
+    st.sc = contact.setup(m, m.X, m.mass, s.dt)
+    F, Mo = np.zeros((m.n_nodes, 3)), np.zeros((m.n_nodes, 3))
+    B = np.arange(nA, m.n_nodes)
+    wB = m.mass[B] / m.mass[B].sum()
+    rec = []
+    n_ramp = int(0.005 / s.dt)
+    for k in range(int(0.06 / s.dt)):
+        S.step(m, st, s, F, Mo, grav_scale=min(1.0, (k + 1) / n_ramp), alpha=0.0)
+        st.x[:nA] = m.X[:nA]
+        st.v[:nA] = 0.0
+        st.w[:nA] = 0.0
+        st.R[:nA] = np.eye(3)
+        if k % 50 == 0:
+            rec.append((st.t, float(wB @ ((st.x[B] - m.X[B]) @ t)),
+                        float(wB @ (st.v[B] @ t))))
+    rec = np.array(rec)
+    late = rec[:, 0] > 0.02
+    if ratio < 1.0:
+        creep = np.ptp(rec[late, 1])
+        assert creep < 1e-3, creep  # mm over 40 ms: stuck
+    else:
+        acc = np.polyfit(rec[late, 0], rec[late, 2], 1)[0]
+        want = -9806.65 * (math.sin(a) - mu * math.cos(a))
+        assert acc == pytest.approx(want, rel=0.03)
+
+
+def test_no_part_contact_force_on_the_settled_bridge(synthetic_crush):
+    """No pair of parts pushes on another through the contact at the start of the
+    perfect synthetic bridge (its touching parts are all glued, so kept apart near their
+    patches, and nothing else is drawn touching), nor while the seeded one (leaning,
+    bowed) settles under its own weight before the jack moves (the crush of the suite's
+    fixture, watched)."""
+    from bridgesim.sim import contact
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    m = build_model(simple_beam_bridge(), MAT, SP, Overrides(), seed=None)
+    st = S.initial_state(m, jack_y=1e12)
+    st.sc = contact.setup(m, m.X, m.mass, 3e-6)
+    assert st.sc.n_excluded > 0 and st.sc.n_allowed == 0
+    F, Mo = np.zeros((m.n_nodes, 3)), np.zeros((m.n_nodes, 3))
+    contact.forces(m, st, st.sc, F, Mo, 3e-6, True)
+    assert st.sc.n_active == 0 and not F.any()
+    _, _, res = synthetic_crush
+    watch = res.settle_contact
+    assert watch["steps"] > 1000 and watch["searches"] >= 1
+    assert watch["active"] == 0 and watch["force_N"] == 0.0
+
+
+def _rail_and_cap(gap: float, ov: dict | None = None, mesh_scale: float = 1.0):
+    """The synthetic bridge with a 10 x 10 mm rail glued on its deck and a cap over it,
+    drawn ``gap`` mm above it, held by a block glued on its top (so not floating)."""
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    y0 = 173.1
+    bodies = simple_beam_bridge() + [
+        box("Rail (4-ply UD)", (250, y0, -5), (450, y0 + 10, 5)),
+        box("Cap (4-ply UD)", (250, y0 + 10 + gap, -5), (450, y0 + 20 + gap, 5)),
+        box("Knob (block)", (330, y0 + 20 + gap, -5), (370, y0 + 30 + gap, 5))]
+    return build_model(bodies, MAT, SP, Overrides.from_dict(ov or {}), seed=None,
+                       mesh_scale=mesh_scale)
+
+
+def _closing_force(m, deltas):
+    """The force between the rail and its cap (and knob) as the cap is pushed down onto
+    the rail by each of ``deltas`` (mm), quasi-statically: the glue and dry points
+    (solver.glue_forces) and the contact between parts, each on its own."""
+    from bridgesim.sim import contact
+
+    names = [b.name for b in m.bodies]
+    grp = np.where(np.isin(m.node_body, [names.index("Cap (4-ply UD)"),
+                                         names.index("Knob (block)")]))[0]
+    st = S.initial_state(m, 1e12)
+    st.sc = contact.setup(m, m.X, m.mass, 1e-6)
+    out = []
+    for dlt in deltas:
+        st.x[:] = m.X
+        st.x[grp, 1] -= dlt
+        F, Mo = np.zeros((m.n_nodes, 3)), np.zeros((m.n_nodes, 3))
+        S.glue_forces(m, st, F, Mo, update=False)
+        Fc, Mc = np.zeros_like(F), np.zeros_like(Mo)
+        st.sc.pair_i = None
+        contact.forces(m, st, st.sc, Fc, Mc, 1e-6, True)
+        out.append((-float(F[grp, 1].sum()), -float(Fc[grp, 1].sum()), st.sc.n_active))
+    return np.array(out)
+
+
+@pytest.mark.parametrize("gap, ov", [(1.5, None), (0.5, {"glue": {"Rail* | Cap*": 0}})])
+def test_faces_drawn_apart_bear_once_the_gap_has_closed(gap, ov):
+    """A member drawn 1.5 mm clear of another over a face (a near miss: asked about, not
+    glued), or 0.5 mm clear and left unglued by the overrides, bears on it once the gap
+    has closed, and not before: the dry face's points (started broken, held apart by the
+    gap) carry sum(K_n A) x (closure - gap), K_n the glue line's in series with the wood
+    on either side, as a glued face pressed; the contact between parts adds nothing
+    there (no double count); no glue: neither glued area nor a joint that breaks."""
+    m = _rail_and_cap(gap, ov)
+    names = [b.name for b in m.bodies]
+    dry = [p for p in m.patches if p.kind == "dry"]
+    assert len(dry) == 1 and {names[dry[0].body_a], names[dry[0].body_b]} == {
+        "Rail (4-ply UD)", "Cap (4-ply UD)"}
+    idx = np.asarray(dry[0].springs)
+    assert (np.asarray(m.params["c_d0"])[idx] == 1.0).all()
+    assert np.asarray(m.params["c_gap0"])[idx] == pytest.approx(gap)
+    assert m.c_area[idx].sum() == pytest.approx(200.0 * 10.0, rel=1e-6)
+    if ov is None:
+        q = next(q for q in m.questions if q["id"].startswith("near_miss:"))
+        assert "Cap" in q["id"] and "once the 1.50 mm gap has closed" in q["assumed"]
+    k_face = float((m.c_Kn[idx] * m.c_area[idx]).sum())
+    deltas = [0.0, gap - 0.2, gap - 0.01, gap + 0.01, gap + 0.03]
+    rec = _closing_force(m, deltas)
+    assert np.abs(rec[:3, :2]).max() < 1e-9  # nothing before the gap has closed
+    assert rec[3:, 0] == pytest.approx(k_face * (np.array(deltas[3:]) - gap), rel=1e-6)
+    assert not rec[:, 1].any() and not rec[:, 2].any()  # no contact on top of it
+
+
+def test_a_dry_face_bears_alike_on_two_meshes():
+    """The near miss's dry face carries the same load at the same closure with elements
+    half the size (its points share the face's area, its stiffness is the face's)."""
+    f = [_closing_force(_rail_and_cap(1.5, mesh_scale=ms), [1.53])[0, 0] for ms in (1.0, 0.5)]
+    assert f[0] > 0 and f[1] == pytest.approx(f[0], rel=0.03)
 
 
 # --------------------------------------------------------------------- CAD + rules
@@ -399,18 +692,38 @@ def test_idealisation_of_the_synthetic_bridge():
 
 @pytest.fixture(scope="module")
 def synthetic_crush(tmp_path_factory):
-    from bridgesim.sim import study
+    from bridgesim.sim import contact, study
     from bridgesim.sim.crush import CrushOptions
 
     d = tmp_path_factory.mktemp("crush")
     write_stl(simple_beam_bridge(), d / "bridge.stl")
+    # the contact between parts watched while the bridge settles, before the jack moves
+    # (test_no_part_contact_force_on_the_settled_bridge)
+    watch = {"steps": 0, "searches": 0, "active": 0, "force_N": 0.0}
+    forces = contact.forces
+
+    def watched(m, st, sc, F, Mo, dt, update):
+        n0 = sc.searches
+        forces(m, st, sc, F, Mo, dt, update)
+        if update and st.jack_v == 0.0:
+            watch["steps"] += 1
+            watch["searches"] += sc.searches - n0
+            watch["active"] = max(watch["active"], sc.n_active)
+            if sc.npair and sc.Fc is not None:
+                watch["force_N"] = max(watch["force_N"], float(np.abs(sc.Fc).max()))
+
+    contact.forces = watched
     # the reporting pipeline at a fixed jack speed (the bridge's own period would slow
     # this soft bridge 4x: test_the_jack_slows_for_a_bridge_that_rings_slowly)
     # (since round 19 its stringers' gapped butt joints let them crush first, a plateau,
     # and it collapses past ~30 mm of travel)
-    rep, res = study.crush(d / "bridge.stl", seed=0, out_dir=d / "out",
-                           options=CrushOptions(speed_mm_s=150, max_travel_mm=45,
-                                                auto_speed=False))
+    try:
+        rep, res = study.crush(d / "bridge.stl", seed=0, out_dir=d / "out",
+                               options=CrushOptions(speed_mm_s=150, max_travel_mm=45,
+                                                    auto_speed=False))
+    finally:
+        contact.forces = forces
+    res.settle_contact = watch
     return d, rep, res
 
 

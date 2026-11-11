@@ -616,7 +616,7 @@ def _trilinear_damage(dmx, dm0, keff, Gc, ga, gp):
 def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GIIc, mu,
                 breakable, dmax, dd, slip, F, Mo, update, beta, dt, prev, alive, crush,
                 fc90, cdep, eps_d, E_d, fcap, creep, cfac, cdec, ga, gp, crate, tnow,
-                tref, t0):
+                tref, t0, gap0):
     nc = ca.shape[0]
     pa = np.empty(3)
     pb = np.empty(3)
@@ -718,9 +718,11 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
                 if cfac > 0.0 and d < 0.999:
                     for k in range(3):
                         creep[i, k] = cfac * ds[k] + (creep[i, k] - cfac * ds[k]) * cdec
-            # a debonded pair that has turned, parted, or crushed through its whole depth:
-            # the two points no longer face each other, so the pair stops acting
-            if d >= 0.999 and (nn < 1.6 or crush[i] < -cdep[i] or dn * dn + s2 > 9.0):
+            # a debonded pair that has turned, parted (3 mm from where it was drawn: a
+            # dry face drawn apart by gap0 starts that far open), or crushed through its
+            # whole depth: the two points no longer face each other, so the pair stops
+            if d >= 0.999 and (nn < 1.6 or crush[i] < -cdep[i]
+                               or (dn - gap0[i]) ** 2 + s2 > 9.0):
                 if update:
                     alive[i] = False
                 continue
