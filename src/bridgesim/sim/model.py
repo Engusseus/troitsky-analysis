@@ -39,8 +39,13 @@ class BodyInfo:
     centroid_mm: tuple = (0.0, 0.0, 0.0)
     bbox_mm: tuple | None = None
     axis: tuple | None = None
-    chains: list = field(default_factory=list)  # a frame's beams, arm by arm
+    chains: list = field(default_factory=list)  # a frame's beams, arm by arm (a member
+    #                                              split into ply groups: group by group)
     butt_zones: list = field(default_factory=list)  # open butt joints at their places
+    # a laminated member split into ply groups (round 28): each group's plies (first,
+    # last + 1), each group its own chain of beams joined to its neighbours by lamination
+    # glue points; empty: one fibre beam through the whole stack
+    ply_groups: list = field(default_factory=list)
 
 
 @dataclass
@@ -69,6 +74,11 @@ class Patch:
     # the length of its outline where one part's face goes on past the other's edge (a
     # squeeze-out fillet can form there; flush edges and plate laminations not counted)
     exposed_mm: float = 0.0
+    # the glue line between two ply groups of one member split into ply groups (round
+    # 28; body_a == body_b): the plies either side, ((first, last + 1), (first, last +
+    # 1)); None for a joint between two parts. Not a joint: it is the member's own
+    # lamination, its parting a split of the member (member_shear)
+    plies: tuple | None = None
 
 
 @dataclass

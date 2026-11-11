@@ -57,6 +57,12 @@ class BodyReport(BaseModel):
         "net section, centred this far from the member's end (butt_stagger_mm and a "
         "seeded offset, or the designer's butt_at). Empty: joints that bear, the member's "
         "factors (E_eff, f_t_eff, f_c_eff) over its length"))
+    ply_groups: list[list[int]] = Field([], description=(
+        "A laminated member split into ply groups (overrides ply_groups, or by itself "
+        "where its butt joints stand open): each group's first and last ply (from 1, "
+        "through the thickness), each group its own beam glued to the next along the "
+        "member, a group whose plies are butted open ending at its joint. Empty: one "
+        "fibre beam through the whole stack"))
     why: str = ""
 
 

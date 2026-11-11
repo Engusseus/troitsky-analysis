@@ -158,6 +158,14 @@ class MemberField:
         smin, emean = self.section(sa, sb)
         return np.einsum("frc,rc->f", W, smin), float(emean.mean())
 
+    def element_rows(self, sa: float, sb: float, W: np.ndarray, r0: int, r1: int
+                     ) -> tuple[np.ndarray, float]:
+        """As ``element`` for the plies ``r0`` to ``r1`` - 1 only (a ply group of a member
+        split into ply groups: W the fibre weights of its own section over its r1 - r0
+        rows): the same cells the whole member's elements read."""
+        smin, emean = self.section(sa, sb)
+        return (np.einsum("frc,rc->f", W, smin[r0:r1]), float(emean[r0:r1].mean()))
+
 
 def plate_cells(seed: int, key: str, pts2: np.ndarray, g2: np.ndarray, a_min: float,
                 c_min: float, Ls: float, ws: float, stagger: float, offset: float,
