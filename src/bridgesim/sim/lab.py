@@ -422,7 +422,8 @@ def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2
                         material=None, sim_params=None, grip: float = 1.0,
                         max_disp: float = 1.0, sign: float = 1.0, flat: bool = False,
                         notch: float = 0.0, ply=None, stop_drop: float = 0.01,
-                        rho_scale: float = 1.0, rollers: bool = False) -> TestResult:
+                        rho_scale: float = 1.0, rollers: bool = False,
+                        weak_cells: bool = False) -> TestResult:
     """A plate strip (L along X, W across, thickness t, ply ``angles`` from X) meshed with
     right triangles of size ``h``, clamped at x = 0 and pulled along X at x = L until it
     breaks. The column of elements at mid-length is ``weak`` x as strong, so the crack
@@ -435,7 +436,10 @@ def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2
     materials.Ply instead of the material's (a test material); ``rho_scale``: its density
     x this (mass scaling: a larger stable time step for a test that stays quasi-static);
     ``rollers``: both ends free to slide across (one corner held), so a strip whose plies
-    couple stretching and shearing (an angle ply) is stretched uniformly, not clamped."""
+    couple stretching and shearing (an angle ply) is stretched uniformly, not clamped;
+    ``weak_cells``: the weak column is the cells from x = L / 2 (whole cross-sections:
+    the two triangles of each), not the triangles whose centroid is nearest it (a
+    zig-zag of half cells, round 27's)."""
     from bridgesim.schema import Material
     from bridgesim.sim.materials import Ply, SimParams
 
@@ -470,7 +474,8 @@ def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2
                 Ploc = (P3 - c) @ E0
                 gang = math.degrees(math.atan2(float(np.array([1.0, 0, 0]) @ ey),
                                                float(np.array([1.0, 0, 0]) @ ex)))
-                Sf = weak if abs(c[0] - L / 2) < 0.5 * L / nx else 1.0
+                mid = (i == nx // 2) if weak_cells else abs(c[0] - L / 2) < 0.5 * L / nx
+                Sf = weak if mid else 1.0
                 ed = shellmod.element_data(Ploc[:, :2], [gang + a for a in angles], t, ply,
                                            1.0, Sf, G, ply.E_L * t)
                 els.append(ed)

@@ -3184,8 +3184,8 @@ SENSITIVITY_MORE = {
                           "an edge-notched stick pulled apart (K_Ic, G = K^2 / E)"),
     "wood.densification_strain": ("how far crushed wood compacts",
                                   "press a stick stack flat and record the curve"),
-    "wood.crush_band_mm": ("how much shortening a member crushing in compression takes to "
-                           "lose its strength",
+    "wood.crush_band_mm": ("how much shortening a member or a plate crushing in "
+                           "compression takes to lose its strength",
                            "a short glued stack crushed past its peak "
                            "(stick_compression_template.csv): the shortening to its plateau"),
     "contact.seating_mm": ("how far the bearing faces bed in",
