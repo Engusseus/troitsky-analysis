@@ -4713,7 +4713,8 @@ def test_the_pumped_jacks_clock_follows_its_timetable(monkeypatch):
     ramp started so that it does) and stands while the pause's 5.5 s pass, the bridge
     carrying its load: crushed to 2.6 mm, two pauses, at 1 and 2 mm; its moving samples
     sit on the timetable, a sample inside a pause between its ends; the report times F_u
-    on that clock."""
+    on that clock (the pauses here shortened, PAUSE_PERIODS and PAUSE_RAMP_PERIODS, for
+    a quick test)."""
     from bridgesim.sim import crush, study
     from bridgesim.sim.idealize import Overrides, build_model
     from bridgesim.sim.materials import jack_strokes
@@ -4729,6 +4730,7 @@ def test_the_pumped_jacks_clock_follows_its_timetable(monkeypatch):
     assert hand.test_time_at(2.5, 2) == pytest.approx(12.25)
     assert base.test_time_at(2.5, 0) == pytest.approx(15.0)
     monkeypatch.setattr(crush, "PAUSE_PERIODS", 0.05)  # short pauses, a quick test
+    monkeypatch.setattr(crush, "PAUSE_RAMP_PERIODS", 0.05)
     m = build_model(simple_beam_bridge(span=400.0), MAT, sp, Overrides(), seed=None)
     assert m.params["crusher_stroke_mm"] == 1.0
     assert m.params["crusher_pause_s"] == pytest.approx(5.5)
@@ -4834,3 +4836,46 @@ def test_a_pumped_jack_needs_a_pause_that_is_not_negative(tmp_path):
     with pytest.raises(ValueError, match="negative"):
         study.inspect(tmp_path / "b.stl", {"params": {"crusher.stroke_mm": 1.0,
                                                       "crusher.stroke_time_s": 10.0}})
+
+
+def test_a_pumped_jacks_load_reads_each_stroke_and_each_pause():
+    """The reading of a pumped jack's crush (crush.reported_load with pause_cuts): a light
+    truss (period 33 ms, jack 40 mm/s) pumped in 1 mm strokes, each 25 ms of simulated
+    time, its load k x travel (k = 18 N/mm), relaxing 10 % over each 66 ms pause (held, a
+    cut at its start and at its end). Each stroke is read along the travel: at its end
+    the load k x its travel within 1 %; each pause in time, the mean over the period
+    before each moment (the reading's own rule for a load that falls at a standing jack,
+    half a period late): at a pause's end the mean of the last third of the fall, 1 -
+    0.1 x 0.75 = 0.925 of the stroke's end load, within 1 %. Without the cut at a pause's
+    end (round 27's reading, which a jack at a constant pace keeps bit for bit) the
+    held pauses less than a period apart are read as one hold, in time: a stroke's end
+    read ~20 % low (half a period late)."""
+    from bridgesim.sim.crush import reported_load
+
+    v, T, k = 40.0, 0.033, 18.0
+    t, x, F, hold, cuts, ends = [], [], [], [], [], []
+    tc, xc, Fc = 0.0, 0.0, 0.0
+    dt = 1e-4
+    for _stroke in range(4):
+        for _ in range(int(round(1.0 / v / dt))):  # a stroke: 1 mm at v
+            tc += dt
+            xc += v * dt
+            Fc += k * v * dt
+            t.append(tc), x.append(xc), F.append(Fc), hold.append(0.0)
+        ends.append((len(t) - 1, Fc))
+        cuts.append(tc + dt / 2)
+        F0 = Fc
+        n_p = int(round(2 * T / dt))
+        for j in range(n_p):  # a pause: the travel stands, the load relaxes 10 %
+            tc += dt
+            Fc = F0 * (1 - 0.1 * (j + 1) / n_p)
+            t.append(tc), x.append(xc), F.append(Fc), hold.append(1.0)
+        ends.append((len(t) - 1, 0.925 * F0))
+        cuts.append(tc + dt / 2)
+    t, x, F = np.array(t), np.array(x), np.array(F)
+    rd = reported_load(t, F, v, x, breaks=cuts, hold=hold, period_s=T, pause_cuts=True)
+    for i, want in ends[:-1]:
+        assert rd[i] == pytest.approx(want, rel=0.01)
+    old = reported_load(t, F, v, x, breaks=cuts[::2], hold=hold, period_s=T)
+    i, want = ends[2]  # the second stroke's end
+    assert old[i] < 0.9 * want

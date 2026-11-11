@@ -132,6 +132,10 @@ class CrushResult:
 
 
 PAUSE_PERIODS = 2.0  # a pumped jack's pause: its test time spread over this many periods
+# ... and the jack slowing to it and speeding up after it over this many (a linear ramp
+# over a whole period leaves the bridge ringing hardly at all: a stop over the 2 ms of a
+# hold set a light truss (33 ms) ringing by 60 % of its load in round 28's first try)
+PAUSE_RAMP_PERIODS = 1.0
 
 
 @dataclass
@@ -591,16 +595,19 @@ def centred_mean(t: np.ndarray, raw: np.ndarray, width_s: float) -> np.ndarray:
 
 def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
                   travel: np.ndarray | None = None, breaks=(), hold=None,
-                  period_s: float = 0.0) -> np.ndarray:
+                  period_s: float = 0.0, pause_cuts: bool = False) -> np.ndarray:
     """The load reported for a crush (:func:`_reported`), kept within the envelope of
     the raw jack force over a centred period of the ringing (or the smoothing window):
     a reading never stands above the highest force the jack applied around that moment,
     nor below the lowest, so the fit's extrapolation at a break cannot invent a peak
     (a force that rounds over just before a break read 4-7 % high) and a fit after a
-    break cannot read the collapse before it happens."""
+    break cannot read the collapse before it happens. ``pause_cuts`` (a pumped jack,
+    JackProtocol: ``breaks`` holds each pause's start and end): a stretch read in time
+    ends at the next cut (a pause and the stroke after it are not one hold)."""
     raw = np.asarray(raw, float)
     t = np.asarray(t, float)
-    out = _reported(t, raw, speed_mm_s, travel, breaks, hold, period_s)
+    out = _reported(t, raw, speed_mm_s, travel, breaks, hold, period_s,
+                    pause_cuts=pause_cuts)
     if len(raw) < 3:
         return out
     h = 0.5 * (period_s if period_s > 0 else 3 * LOAD_CELL_MM / max(speed_mm_s, 1e-9))
@@ -643,7 +650,7 @@ def reading_window(raw, travel, speed_mm_s: float, period_s: float = 0.0) -> flo
 def _reported(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
               travel: np.ndarray | None = None, breaks=(), hold=None,
               period_s: float = 0.0, _start: bool = True,
-              _W: float | None = None) -> np.ndarray:
+              _W: float | None = None, pause_cuts: bool = False) -> np.ndarray:
     """The load reported for a crush: the raw jack force smoothed by a centred Hann
     window 0.9 mm of jack travel wide (three online load-cell time constants at full
     speed; for a bridge that peaks within a few mm, a quarter of its travel to the peak,
@@ -678,26 +685,31 @@ def _reported(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
         # ringing; a break reads the load it broke at)
         ref = out.copy()
         region = np.zeros(len(t), bool)
-        for c in sorted({int(np.searchsorted(t, b)) for b in breaks if t[0] < b <= t[-1]}):
+        cs = sorted({int(np.searchsorted(t, b)) for b in breaks if t[0] < b <= t[-1]})
+        for ic, c in enumerate(cs):
             if not 0 < c < len(t):
                 continue
+            # a pumped jack: no stretch read in time runs past the next cut (a stroke
+            # between two pauses can be shorter than a period of a light truss, and the
+            # pauses would merge into one hold read in time, lagging the strokes)
+            end = cs[ic + 1] if pause_cuts and ic + 1 < len(cs) else len(t)
             k = c
-            while k < len(t) and not held[k] and t[k] - t[c] < 5 * period_s:
+            while k < end and not held[k] and t[k] - t[c] < 5 * period_s:
                 k += 1
-            if k >= len(t) or not held[k]:
+            if k >= end or not held[k]:
                 continue
             # through the hold, and through a gap in it shorter than a period (a hold
             # that ended and was extended again while the bridge still rang: the travel
             # stood still across it, and a window in travel would reach into the
             # collapse after it)
-            while k < len(t):
+            while k < end:
                 if held[k]:
                     k += 1
                     continue
                 g = k
-                while g < len(t) and not held[g] and t[g] - t[k] < period_s:
+                while g < end and not held[g] and t[g] - t[k] < period_s:
                     g += 1
-                if g < len(t) and held[g]:
+                if g < end and held[g]:
                     k = g
                     continue
                 break
@@ -1193,11 +1205,12 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         (float(lift.max()) if lift.size else 0.0) + 0.2
     # the physical test time of each step: the jack's travel at the real pace, or a
     # pumped jack's strokes and pauses (JackProtocol)
+    T_pause = float(m.params.get("period_s", 0.0))
     proto = JackProtocol.from_params(
-        m.params, spread_s=max(PAUSE_PERIODS * float(m.params.get("period_s", 0.0)),
-                               opt.hold_settle_s))
+        m.params, spread_s=max(PAUSE_PERIODS * T_pause, opt.hold_settle_s))
+    pause_ramp = max(opt.hold_ramp_s, PAUSE_RAMP_PERIODS * T_pause)
     if proto.pumped:  # its pauses take simulated time too
-        pump = 1.0 + (proto.spread_s + opt.hold_ramp_s + up_ramp) * opt.speed_mm_s \
+        pump = 1.0 + (proto.spread_s + 2.0 * pause_ramp) * opt.speed_mm_s \
             / proto.stroke_mm
         est_steps, max_steps = int(est_steps * pump), int(max_steps * pump)
     after_pause = -1.0  # a pumped jack speeding up again after a pause, until then
@@ -1210,13 +1223,16 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         tl = st.t - t_load0
         # a pumped jack's stroke ends: it slows to a stop and stands while the bridge
         # creeps; the reading is cut there as at a break (its load falls in time)
-        if proto.start_pause(jack0 - st.jack_y, v, throttle, opt.hold_ramp_s) and \
+        if proto.start_pause(jack0 - st.jack_y, v, throttle, pause_ramp) and \
                 (not hold_starts or st.t > hold_starts[-1]):
             hold_starts.append(st.t)
         target = 0.0 if proto.pausing else \
             (opt.hold_speed_frac if st.t < hold_until else 1.0)
-        throttle = min(throttle + dt / up_ramp, target) if throttle < target else \
-            max(throttle - dt / opt.hold_ramp_s, target)
+        # (a pumped jack slows to a pause and speeds up after it over pause_ramp)
+        throttle = min(throttle + dt / (up_ramp if st.t >= after_pause else
+                                        max(up_ramp, pause_ramp)), target) \
+            if throttle < target else \
+            max(throttle - dt / (pause_ramp if proto.pausing else opt.hold_ramp_s), target)
         if throttle < 0.999 and not proto.pausing and st.t >= after_pause:
             hold_time += dt
         v_b = opt.speed_mm_s  # the jack's speed, before the start and the holds
@@ -1231,7 +1247,9 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         was_pausing = proto.pausing
         st.creep_dt = proto.test_dt(v, dt)
         if was_pausing and not proto.pausing:
-            after_pause = st.t + up_ramp
+            # the jack speeds up again; the reading is cut there too (pause_cuts)
+            after_pause = st.t + max(up_ramp, pause_ramp)
+            hold_starts.append(st.t)
         st.t_test += st.creep_dt
         do_step(1.0, opt.alpha if fail_at is None else opt.alpha_collapse)
         k += 1
@@ -1510,7 +1528,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         fz = reported_load(tt, np.asarray(curve["force_raw"]), opt.speed_mm_s,
                            np.asarray(curve["travel"]), breaks=hold_starts,
                            hold=curve.get("hold"),
-                           period_s=float(m.params.get("period_s", 0.0)))
+                           period_s=float(m.params.get("period_s", 0.0)),
+                           pause_cuts=proto.pumped)
         curve["force_online"] = curve["force"]
         curve["force"] = [float(f) for f in fz]
         # each event's load: the reading at the last sample at or before it (not an
