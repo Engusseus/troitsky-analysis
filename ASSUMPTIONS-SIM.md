@@ -201,7 +201,14 @@ step: a cell is at least 15 mm along an axis it is cut along (an axis 1.5 cells 
 in two), and a wave along the grain crosses it in ~4 us, above standard's 3 us target
 (the stable-step estimate sees the planes' springs as it sees glue lines); on the
 synthetic beam bridge (two 0.8 kg piers of 27 cells) the time step stayed 3.00 us, the
-added mass went from 3.60 to 3.63 % and the time per step stayed the same.
+added mass went from 3.60 to 3.63 % and the time per step stayed the same. What the
+cells moved (round 28, against round 27's rigid blocks): the support blocks under the
+benchmark trusses and published tests changed F_u by -0.3 % (truss10_standard) and -0.1
+% (published C at fine) with the same failure, and the stiffness under the plate
+(screen) by -1.5 to +0.4 %; the synthetic beam bridge's piers +2.7 % (its stringers'
+glued ends turn the piers' top cells: a pier of cells bends with its bottom cells flat on
+the platform where a rigid pier rocked on its edge). A load hanger or a putty lump in a
+rebuilt published test is not wood: `kind: rigid` there.
 
 ## 3. Joints
 
