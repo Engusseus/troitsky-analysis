@@ -596,19 +596,21 @@ def centred_mean(t: np.ndarray, raw: np.ndarray, width_s: float) -> np.ndarray:
 
 def reported_load(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
                   travel: np.ndarray | None = None, breaks=(), hold=None,
-                  period_s: float = 0.0, pause_cuts: bool = False) -> np.ndarray:
+                  period_s: float = 0.0, restarts=()) -> np.ndarray:
     """The load reported for a crush (:func:`_reported`), kept within the envelope of
     the raw jack force over a centred period of the ringing (or the smoothing window):
     a reading never stands above the highest force the jack applied around that moment,
     nor below the lowest, so the fit's extrapolation at a break cannot invent a peak
     (a force that rounds over just before a break read 4-7 % high) and a fit after a
-    break cannot read the collapse before it happens. ``pause_cuts`` (a pumped jack,
-    JackProtocol: ``breaks`` holds each pause's start and end): a stretch read in time
-    ends at the next cut (a pause and the stroke after it are not one hold)."""
+    break cannot read the collapse before it happens. ``restarts`` (a pumped jack,
+    JackProtocol: the times it moves again after a pause; ``breaks`` holds those and
+    where it stood still): a stretch read in time ends at the next cut (a pause and the
+    stroke after it are not one hold), and each stroke after a pause starts from the
+    load there, as the record does from rest (odd reflection)."""
     raw = np.asarray(raw, float)
     t = np.asarray(t, float)
     out = _reported(t, raw, speed_mm_s, travel, breaks, hold, period_s,
-                    pause_cuts=pause_cuts)
+                    restarts=restarts)
     if len(raw) < 3:
         return out
     h = 0.5 * (period_s if period_s > 0 else 3 * LOAD_CELL_MM / max(speed_mm_s, 1e-9))
@@ -651,7 +653,7 @@ def reading_window(raw, travel, speed_mm_s: float, period_s: float = 0.0) -> flo
 def _reported(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
               travel: np.ndarray | None = None, breaks=(), hold=None,
               period_s: float = 0.0, _start: bool = True,
-              _W: float | None = None, pause_cuts: bool = False) -> np.ndarray:
+              _W: float | None = None, restarts=()) -> np.ndarray:
     """The load reported for a crush: the raw jack force smoothed by a centred Hann
     window 0.9 mm of jack travel wide (three online load-cell time constants at full
     speed; for a bridge that peaks within a few mm, a quarter of its travel to the peak,
@@ -677,7 +679,7 @@ def _reported(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
     if _W is None:
         _W = reading_window(raw, travel, speed_mm_s, period_s)
     if hold is not None and period_s > 0:
-        out = _reported(t, raw, speed_mm_s, travel, breaks, _W=_W)
+        out = _reported(t, raw, speed_mm_s, travel, breaks, _W=_W, restarts=restarts)
         held = np.asarray(hold, float) > 0.5
         # from each break through the jack's slowing and the hold that follows, the
         # travel stands (nearly) still while the load changes in time: there the load
@@ -693,7 +695,7 @@ def _reported(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
             # a pumped jack: no stretch read in time runs past the next cut (a stroke
             # between two pauses can be shorter than a period of a light truss, and the
             # pauses would merge into one hold read in time, lagging the strokes)
-            end = cs[ic + 1] if pause_cuts and ic + 1 < len(cs) else len(t)
+            end = cs[ic + 1] if len(restarts) and ic + 1 < len(cs) else len(t)
             k = c
             while k < end and not held[k] and t[k] - t[c] < 5 * period_s:
                 k += 1
@@ -724,9 +726,13 @@ def _reported(t: np.ndarray, raw: np.ndarray, speed_mm_s: float,
     if cuts:
         out = np.empty_like(raw)
         trv = None if travel is None else np.asarray(travel, float)
+        # a pumped jack moving again after a pause: the bridge at rest there, as at the
+        # record's start
+        rest = {int(np.searchsorted(t, b)) for b in restarts}
         for a, b in zip([0] + cuts, cuts + [len(raw)], strict=True):
             out[a:b] = _reported(t[a:b], raw[a:b], speed_mm_s,
-                                 None if trv is None else trv[a:b], _start=a == 0, _W=_W)
+                                 None if trv is None else trv[a:b],
+                                 _start=a == 0 or a in rest, _W=_W)
         return out
     if len(raw) < 3:
         return raw.copy()
@@ -1216,6 +1222,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         est_steps, max_steps = int(est_steps * pump), int(max_steps * pump)
     after_pause = -1.0  # a pumped jack speeding up again after a pause, until then
     stood = False  # a pumped jack standing in its pause
+    restarts: list[float] = []  # when it moved again after each pause
     v = 0.0
     drop_start = None  # (time, travel) the load first fell 30 % below its peak
     out_of_steps = False
@@ -1257,10 +1264,11 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                 hold_starts.append(st.t)
         st.creep_dt = proto.test_dt(v, dt)
         if was_pausing and not proto.pausing:
-            # the jack speeds up again: cut there too (reported_load pause_cuts)
+            # the jack speeds up again: cut there too (reported_load restarts)
             after_pause = st.t + max(up_ramp, pause_ramp)
             stood = False
             hold_starts.append(st.t)
+            restarts.append(st.t)
         st.t_test += st.creep_dt
         do_step(1.0, opt.alpha if fail_at is None else opt.alpha_collapse)
         k += 1
@@ -1545,7 +1553,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                            np.asarray(curve["travel"]), breaks=hold_starts,
                            hold=curve.get("hold"),
                            period_s=float(m.params.get("period_s", 0.0)),
-                           pause_cuts=proto.pumped)
+                           restarts=restarts)
         curve["force_online"] = curve["force"]
         curve["force"] = [float(f) for f in fz]
         # each event's load: the reading at the last sample at or before it (not an

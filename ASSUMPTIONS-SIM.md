@@ -787,7 +787,8 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   bridge's periods (`crush.PAUSE_PERIODS`: the glue's and the wood's creep and their rate
   laws' clocks follow it quasi-statically), and speeds up again over a period. The
   reading is cut where the jack stands and where it moves again: the pause is read in
-  time (its load relaxing), each stroke along the travel (a stretch read in time never
+  time (its load relaxing), each stroke along the travel from the load it starts at (the
+  bridge at rest there, as at the record's start; a stretch read in time never
   runs past the next cut: strokes shorter than a period otherwise merged the pauses
   into one hold, each stroke's end read half a period late, ~20 % low,
   `test_a_pumped_jacks_load_reads_each_stroke_and_each_pause`). The glue's Kelvin element is integrated exactly over any

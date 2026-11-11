@@ -4839,24 +4839,26 @@ def test_a_pumped_jack_needs_a_pause_that_is_not_negative(tmp_path):
 
 
 def test_a_pumped_jacks_load_reads_each_stroke_and_each_pause():
-    """The reading of a pumped jack's crush (crush.reported_load with pause_cuts): a light
+    """The reading of a pumped jack's crush (crush.reported_load with restarts): a light
     truss (period 33 ms, jack 40 mm/s) pumped in 1 mm strokes, each 25 ms of simulated
     time, its load k x travel (k = 18 N/mm), relaxing 10 % over each 66 ms pause (held, a
-    cut at its start and at its end). Each stroke is read along the travel: at its end
-    the load k x its travel within 1 %; each pause in time, the mean over the period
-    before each moment (the reading's own rule for a load that falls at a standing jack,
-    half a period late): at a pause's end the mean of the last third of the fall, 1 -
-    0.1 x 0.75 = 0.925 of the stroke's end load, within 1 %. Without the cut at a pause's
-    end (round 27's reading, which a jack at a constant pace keeps bit for bit) the
-    held pauses less than a period apart are read as one hold, in time: a stroke's end
-    read ~20 % low (half a period late)."""
+    cut at its start and at its end). Each stroke is read along the travel, from the load
+    it starts at (the bridge at rest after a pause, as at the record's start): at its
+    start the pause's last load, at its end k x its travel, within 1 %; each pause in
+    time, the mean over the period before each moment (the reading's own rule for a load
+    that falls at a standing jack, half a period late): at a pause's end the mean over
+    its last third, 1 - 0.1 x 0.75 = 0.925 of the stroke's end load, within 1 %. Without
+    the cut at a pause's end (round 27's reading, which a jack at a constant pace keeps
+    bit for bit) the held pauses less than a period apart are read as one hold, in
+    time: a stroke's end read ~20 % low (half a period late)."""
     from bridgesim.sim.crush import reported_load
 
     v, T, k = 40.0, 0.033, 18.0
-    t, x, F, hold, cuts, ends = [], [], [], [], [], []
+    t, x, F, hold, cuts, ends, starts = [], [], [], [], [], [], []
     tc, xc, Fc = 0.0, 0.0, 0.0
     dt = 1e-4
     for _stroke in range(4):
+        starts.append((len(t), Fc))
         for _ in range(int(round(1.0 / v / dt))):  # a stroke: 1 mm at v
             tc += dt
             xc += v * dt
@@ -4873,8 +4875,9 @@ def test_a_pumped_jacks_load_reads_each_stroke_and_each_pause():
         ends.append((len(t) - 1, 0.925 * F0))
         cuts.append(tc + dt / 2)
     t, x, F = np.array(t), np.array(x), np.array(F)
-    rd = reported_load(t, F, v, x, breaks=cuts, hold=hold, period_s=T, pause_cuts=True)
-    for i, want in ends[:-1]:
+    rd = reported_load(t, F, v, x, breaks=cuts, hold=hold, period_s=T,
+                       restarts=cuts[1::2])
+    for i, want in ends[:-1] + starts[1:]:
         assert rd[i] == pytest.approx(want, rel=0.01)
     old = reported_load(t, F, v, x, breaks=cuts[::2], hold=hold, period_s=T)
     i, want = ends[2]  # the second stroke's end
