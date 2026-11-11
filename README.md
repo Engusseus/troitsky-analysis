@@ -109,14 +109,16 @@ body becomes what an engineer would model it as: a **member** (corotational
 shear-flexible beam with a fibre section that cracks in tension and crushes in
 compression; tapered members follow their profile), a **plate** (shell
 elements meshed on its real outline, holes included, that crack ply by ply, each
-crack dissipating its fracture energy whatever the element size; where a crack starts
-still depends on the mesh), a **rigid block**, or **floss** (a tension-only cable
+crack dissipating its fracture energy whatever the element size and starting where the
+strain averaged along its path reaches the strength, and that deform and split between
+their plies in out-of-plane shear), a **block** (a few rigid cells joined by their wood,
+which can split between them), or **floss** (a tension-only cable
 that snaps). The layup comes from the body name: `10-ply UD`, `2-ply 0-90`, `4-ply +-45`,
 `block`, `round toothpick`, `waxed floss`. Laminates use classical lamination theory;
 members longer than one stick lose tension strength at their butt joints. Every place
 where two bodies touch face to face becomes a **glue joint** of the exact overlap shape.
 It peels and slides, fails in mixed mode, and keeps bearing with friction once broken.
-Parts that meet during the collapse push on each other (contact), and wood crushes
+Parts that meet during the collapse push on each other with friction (contact), and wood crushes
 locally under the plate and at the supports (across or along the grain, as it bears).
 The glue lines crush by grain direction too, and end-grain joints are weaker.
 
