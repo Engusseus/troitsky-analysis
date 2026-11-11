@@ -4076,6 +4076,9 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 "densified_E": sp["wood.E_T_MPa"],
                 "bearing_cap": float(ply.f_c),
                 "crush_band_mm": sp.values.get("wood.crush_band_mm", 0.0),
+                # the plates' tension modes start where the strain averaged over a disc
+                # of their material length reaches the onset (solver.plate_nonlocal_onset)
+                "plate_nonlocal": sp.values.get("plate.nonlocal_onset", 0.0),
                 # each beam's section (width along e2, depth along e3, centre along e2)
                 # and each joint's share of its crush on either side's member, crushed
                 # across its grain on its side (sections: the member gets shallower)

@@ -131,6 +131,7 @@ PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("block.cell_mm", 0.0, 1e4, True),  # 0: one rigid body
     ("plate.shear_deformable", 0.0, 1.0, True),
     ("plate.shear_correction", 0.0, 1.0, False),
+    ("plate.nonlocal_onset", 0.0, 1.0, True),
     ("*", 0.0, float("inf"), False),  # moduli, strengths, energies, sizes: positive
 ]
 
