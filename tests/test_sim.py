@@ -6407,7 +6407,10 @@ def test_the_built_bridge_is_stress_free_seeded_per_body_and_off_at_zero():
             "s_K": [587802164.897002, 196558110037297.94],
             "s_lay": [6.497625127017404, 4266.049999999988],
             "a_r0": [-3706.8731248705303, 1382141.4668170507]}
-    m0 = build_model(simple_beam_bridge(), MAT, _built_sp(), seed=0)
+    # (recorded before this round's blocks of cells and shear-deformable plates: the piers
+    # one rigid body each and the plates Kirchhoff elements, as that code had them)
+    m0 = build_model(simple_beam_bridge(), MAT, _built_sp().updated(
+        {"block.cell_mm": 0.0, "plate.shear_deformable": 0}), seed=0)
     for k, (s1, s2) in want.items():
         a_ = getattr(m0, k)
         assert float(np.sum(a_)) == pytest.approx(s1, rel=1e-14, abs=1e-9), k
