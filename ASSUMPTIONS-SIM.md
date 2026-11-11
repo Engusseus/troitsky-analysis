@@ -196,7 +196,12 @@ between centroids holds more energy at its peak than G_v in shear, so past its p
 drops at once: its strength is right, its toughness too large); the pre-peak bend of the
 glue law (glue.prepeak_onset, glue.peak_slip_ratio) applies to the planes as to a `solid`
 face. A block that should stay rigid (a steel stand-in, a load hanger, the press's own
-parts in a rebuilt test) takes `kind: rigid` in the overrides.
+parts in a rebuilt test) takes `kind: rigid` in the overrides. The cells cost no time
+step: a cell is at least 15 mm along an axis it is cut along (an axis 1.5 cells long cut
+in two), and a wave along the grain crosses it in ~4 us, above standard's 3 us target
+(the stable-step estimate sees the planes' springs as it sees glue lines); on the
+synthetic beam bridge (two 0.8 kg piers of 27 cells) the time step stayed 3.00 us, the
+added mass went from 3.60 to 3.63 % and the time per step stayed the same.
 
 ## 3. Joints
 

@@ -415,24 +415,33 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
             fT[p] += m.c_area[i] * m.c_Ks[i] * dt
             capN[p] += m.c_area[i] * m.c_sig[i] / peak_over_avg
             capT[p] += m.c_area[i] * m.c_tau[i] / peak_over_avg
-        def name(pa) -> str:  # a plane inside a block: the block
-            return (m.bodies[pa.body_a].name if pa.kind == "block" else
-                    f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}")
+        # the planes inside a block (its cells): one limit per block and mode, its most
+        # loaded plane (its points hang on two nodes: no peak over the average to take out
+        # of its capacity)
+        worst_block: dict[tuple[str, str], tuple[float, np.ndarray]] = {}
+
+        def add_patch(pa, mode, ut):
+            if pa.kind != "block":
+                add(f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}", mode, ut,
+                    pa.centroid)
+                return
+            key = (m.bodies[pa.body_a].name, "block bearing" if mode == "bearing"
+                   else "block")
+            if ut > worst_block.get(key, (0.0, None))[0]:
+                worst_block[key] = (ut, pa.centroid)
 
         for p, pa in enumerate(m.patches):
             if capT[p] <= 0:
                 continue
-            # (a plane inside a block: its points hang on two nodes, no peak over the
-            # average to take out of its capacity)
             pk = peak_over_avg if pa.kind == "block" else 1.0
             ut = math.hypot(max(fN[p], 0.0) / max(capN[p] * pk, 1e-9),
                             float(np.linalg.norm(fT[p])) / (capT[p] * pk))
-            add(name(pa), {"solid": "wood", "block": "block"}.get(pa.kind, "glue"), ut,
-                pa.centroid)
+            add_patch(pa, "wood" if pa.kind == "solid" else "glue", ut)
         for p, pa in enumerate(m.patches):
             if uB[p] > 0:
-                add(name(pa), "block bearing" if pa.kind == "block" else "bearing", uB[p],
-                    pa.centroid)
+                add_patch(pa, "bearing", uB[p])
+        for (nm, mode), (ut, where) in worst_block.items():
+            add(nm, mode, ut, where)
     # members: fibre stresses, shear, buckling over the member's length
     if len(m.b_i):
         A = m.b_fA.sum(1)

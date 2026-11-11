@@ -1682,8 +1682,10 @@ def test_frame_plate_bends_like_a_beam(tmp_path):
     d = 0.5 * a**2 * (3 * Ls - 4 * a) / (6 * E * I) + 0.5 * a / (5 / 6 * G * T * H)
     k = {}
     for kind in ("frame", "shell"):
+        # (knife edges: rigid, as blocks were until round 27; 2 mm piers of wood cells
+        # would add 3 % of compliance)
         ov = {"bodies": {n: ({"layup": "14-ply UD", "butt_stagger_mm": 0, "kind": kind}
-                             if n == strip else {"kind": "block"}) for n in names}}
+                             if n == strip else {"kind": "rigid"}) for n in names}}
         rep = study.screen(cad, overrides=ov)
         k[kind] = rep.stiffness_kgf_per_mm * 9.80665 * d
         if kind == "frame":
@@ -2478,10 +2480,14 @@ def test_screen_takes_unglued_faces_as_bearing_only(tmp_path):
     cad = tmp_path / "b.stl"
     write_stl(simple_beam_bridge() + [box("Weight", (300, deck_top, -20),
                                           (340, deck_top + 20, 20))], cad, names=True)
-    glued = study.screen(cad)
-    dry = study.screen(cad, overrides={"glue": {"Deck* | Weight*": 0}})
-    assert any("Weight" in lm.part for lm in glued.limits)
-    assert not any("Weight" in lm.part for lm in dry.limits)
+    # (every limit: since round 28 the blocks' own planes are listed too, as the block,
+    # mode block, and the weight's joint is no longer among the 25 most loaded)
+    glued = study.screen(cad, n_limits=200)
+    dry = study.screen(cad, overrides={"glue": {"Deck* | Weight*": 0}}, n_limits=200)
+    assert any("Weight" in lm.part and not lm.mode.startswith("block")
+               for lm in glued.limits)
+    assert not any("Weight" in lm.part and not lm.mode.startswith("block")
+                   for lm in dry.limits)
     assert dry.stiffness_kgf_per_mm == pytest.approx(glued.stiffness_kgf_per_mm, rel=0.05)
 
 
@@ -2640,6 +2646,7 @@ def test_cut_ends_stand_off_their_seats_by_a_seeded_gap(tmp_path):
     perfect bridge (no seed) has none, and side-grain laps are cut flat."""
     from bridgesim.sim import solver as S
     from bridgesim.sim import study
+    from bridgesim.sim.crush import block_springs
     from bridgesim.sim.idealize import gap_strength
 
     assert gap_strength(0.1) == 1.0 and gap_strength(0.25) == pytest.approx(0.9)
@@ -2663,7 +2670,11 @@ def test_cut_ends_stand_off_their_seats_by_a_seeded_gap(tmp_path):
         for pa_ in m.patches:
             if "Post" in m.bodies[pa_.body_a].name + m.bodies[pa_.body_b].name:
                 post[np.asarray(pa_.springs, int)] = True
-        return dn, np.asarray(m.params["c_d0"]), post, np.asarray(m.c_tau)
+        # (the planes inside the piers carry the piers' own seeded strength since round
+        # 28, as a member's wood does: left out of the glue's comparison)
+        keep = ~block_springs(m)
+        return (dn[keep], np.asarray(m.params["c_d0"])[keep], post[keep],
+                np.asarray(m.c_tau)[keep])
 
     dn, d0, post, tau0 = build(None)
     assert post.any() and np.abs(dn).max() < 1e-6 and not d0.any()
@@ -3393,10 +3404,15 @@ def test_the_glue_is_as_strong_as_a_test_failing_when_the_crush_does():
     st.t_test = 6.0
     rate, tnow, tr, t0 = S_.glue_rate(m, st)
     assert (tnow, tr) == (6.0, tref) and np.all(t0 == -1.0)
-    assert np.allclose(rate[m.c_breakable], n) and np.allclose(rate[~m.c_breakable], 0.0)
+    # (the planes inside the piers are wood, round 28: the wood's exponent, as a solid face)
+    from bridgesim.sim.crush import block_springs
+
+    wood = block_springs(m)
+    assert wood.any() and np.allclose(rate[wood], SP["wood.rate_exponent"])
+    glue = m.c_breakable & ~wood
+    assert np.allclose(rate[glue], n) and np.allclose(rate[~m.c_breakable], 0.0)
     loaded = np.zeros(len(t0))  # loaded from the start: 6 s to failure
-    assert np.allclose(S_.glue_rate_factor(rate, tnow, tr, loaded)[m.c_breakable],
-                       10 ** n)
+    assert np.allclose(S_.glue_rate_factor(rate, tnow, tr, loaded)[glue], 10 ** n)
     assert np.all(S_.glue_rate_factor(rate, 0.0, tr, loaded) == 1.0)
     # one piece of wood: the wood's own exponent
     bodies = simple_beam_bridge()
@@ -3490,7 +3506,8 @@ def test_laps_are_capped_by_what_the_laminate_passes_on_and_short_overlaps_are_l
         p.strength_MPa == pytest.approx(min(2 * il, MAT.f_v_MPa.value)) for p in deck)
     # a pier block on a stringer's edge: no laminate to pass through, tau_g x size, at
     # most the stringer's shear strength along its grain (the force runs along it)
-    piers = [p for k, p in pair if "Pier" in k]
+    # (not the planes between the piers' own cells, round 28)
+    piers = [p for k, p in pair if "Pier" in k and p.kind != "block"]
     assert piers and all(p.strength_MPa == pytest.approx(MAT.f_v_MPa.value) for p in piers)
     h = 150.0
     bodies = simple_beam_bridge() + [box("Tongue (2-ply 0-90)", (500, h + 23.1, -75),
@@ -3892,6 +3909,15 @@ def test_a_face_pressed_across_the_grain_is_softer_than_end_grain():
     h_p = bearing_depth(math.sqrt(300.0), math.sqrt(300.0), 75.0, c, c)
     assert h_s == pytest.approx(25.0 * math.log(1 + 38.0 / 50.0), rel=1e-3)
     E_T = SP["wood.E_T_MPa"]
+    # (round 28: the pier is cells of wood; its face counts only the wood down to its top
+    # cell's centroid, 25 mm, the cells below joined by their own planes; the face spans
+    # the pier's 50 mm length, so it spreads only across it. A rigid pier, block.cell_mm
+    # 0, keeps round 27's depth)
+    h_c = bearing_depth(50.0, 6.0, 25.0, 0.0, c)
+    assert k_side == pytest.approx(1 / (1 / K + h_s / E_T + h_c / E_T), rel=0.05)
+    m = build_model(simple_beam_bridge() + [post], MAT, SP.updated({"block.cell_mm": 0}),
+                    Overrides.from_dict({"bodies": {"Pier L*": {"grain": "y"}}}), seed=None)
+    k_side, _ = kn("Pier R (block)", "Stringer Near (3-ply UD)")
     assert k_side == pytest.approx(1 / (1 / K + h_s / E_T + h_p / E_T), rel=0.05)
 
 
@@ -4363,8 +4389,9 @@ def test_the_synthetic_bridges_stand_on_blocks_of_cells(tmp_path):
     of the stringers' bending (~0.09 mm/N); one cell per pier (block.cell_mm 1000: the
     face's depth is half the pier, as round 27 took it under a face not glued behind)
     reads round 27 within 2 %; 20 mm cells read +2.7 % (1.11 -> 1.14 kgf/mm, round 28):
-    the stringers' ends sit on cells that spread their load over 50 mm at once and
-    restrain their turning more than round 27's 75 mm of wood under each face did; the
+    the stringers' glued ends turn the piers' top cells, and a pier of cells bends with
+    its bottom cells flat on the platform where a rigid pier rocks on its edge (the
+    contact is compression only), so the stringers' ends are held a little more; the
     truss on its support blocks within 1 %. The beam bridge settles under its own weight
     on the blocks' cells as on the rigid blocks."""
     from bridgesim.cad.synthetic import layered_truss
