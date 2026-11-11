@@ -42,7 +42,8 @@ class BodyInfo:
     chains: list = field(default_factory=list)  # a frame's beams, arm by arm
     butt_zones: list = field(default_factory=list)  # open butt joints at their places
     # the seeded differences of the built part from its drawing (round 28, idealize:
-    # thickness factor, twist (rad), placement shift (mm), fit error (mm), flatness (mm))
+    # thickness factor, twist (rad), placement shift (mm), lack of fit (mm), a plate's
+    # largest out-of-flatness at its nodes (mm) and its field, idealize.FlatField or None)
     built: dict = field(default_factory=dict)
 
 

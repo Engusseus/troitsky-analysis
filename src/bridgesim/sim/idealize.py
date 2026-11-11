@@ -2345,6 +2345,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             # joints where the zones put them: the same seeded offset)
             laminated = sh.layup.kind == "laminate"
             mfld = member_field(b.name, o, laminated, n_ply, Wp, L, f"buttpos:{b.name}")
+            # (the lack of fit shared over the elements by their drawn lengths: d_fit in all)
+            L_sum = float(sum(np.linalg.norm(bld.X[j_] - bld.X[i_])
+                              for i_, j_ in zip(ids[:-1], ids[1:], strict=True))) \
+                if d_fit else L
             for k_e, (a_, b_) in enumerate(zip(ids[:-1], ids[1:], strict=True)):
                 We = float(wid[k_e])
                 A_e = We * Tk if sh.fill < 0.75 else A_true * kT
@@ -2372,7 +2376,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                     Ein = twisted_frame(Ein, phi_tw * (sm_e / L - 0.5))
                 # lack of fit: the member's rest length, its length error spread over its
                 # elements (its mass stays the drawn element's)
-                dL_e = L0 * d_fit / L if d_fit else 0.0
+                dL_e = L0 * d_fit / L_sum if d_fit else 0.0
                 fs_e, eloc = np.ones(ny * nz), 1.0
                 if mfld is not None:
                     fs_e, eloc = mfld.element(st2[k_e] - s0, st2[k_e + 1] - s0,
@@ -2448,7 +2452,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                             for k_, p in enumerate(P2)])
             info.built = {"thickness_factor": kT,
                           "flatness_mm": float(np.abs(fl_off @ sh.n).max()) if len(P2)
-                          else 0.0}
+                          else 0.0, "flat_field": ff}
             body_nodes[bi] = ids
             # (which node a glue point or a contact hangs on: by the drawn plate)
             shell_tree[bi] = cKDTree(np.array([bld.X[i] for i in ids]) - fl_off)
