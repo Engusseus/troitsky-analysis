@@ -3992,11 +3992,11 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     c_rate = np.where(np.asarray(springs["breakable"], bool), c_rate, 0.0) \
         if len(sp_patch) else c_rate
     # each glue point's rise of its shear strength per MPa pressing it (glue.pressure_coeff:
-    # a glue line, a face through one piece of wood and a plane inside a block alike);
-    # ties none
+    # a glue line and a face through one piece of wood alike); ties none, and none for a
+    # plane inside a block: its f_v is the block-shear value, measured with the pressure
+    # that test puts across the sheared plane already in it
     c_mui = np.where(np.isin(kinds[np.where(sp_patch >= 0, sp_patch, len(patches))],
-                             ("glue", "solid", "block"))
-                     & np.asarray(springs["breakable"], bool),
+                             ("glue", "solid")) & np.asarray(springs["breakable"], bool),
                      float(sp.values.get("glue.pressure_coeff", 0.0)), 0.0) \
         if len(sp_patch) else np.zeros(0)
     model = Model(

@@ -1905,9 +1905,15 @@ def test_linear_screen_matches_beam_theory(tmp_path):
     rep = study.screen(cad, overrides=ov)
     E, I, Ls, S = E_SIM, 50 * T**3 / 12, 1090.0, 50 * T**2 / 6
     a = Ls / 2 - 100  # the plate's edges, 100 mm either side of mid-span
-    # deflection under each of two loads P/2 at a and Ls - a (unit P), plus shear
+    # deflection under each of two loads P/2 at a and Ls - a (unit P), plus shear: bent
+    # across its 14 plies the beam shears through its stack, the glue lines in series
+    # (since round 28: G_eff 347 MPa, not the in-plane 656)
+    from bridgesim.sim.materials import through_stack_shear_modulus
+
+    G_eff = through_stack_shear_modulus([0.0] * 14, G_SIM, SP["wood.G_rolling_MPa"],
+                                        SP["glue.lamination_K_s_N_per_mm3"], T)
     d = 0.5 * a**2 * (3 * Ls - 4 * a) / (6 * E * I) * 2 / 2 \
-        + 0.5 * a / (5 / 6 * G_SIM * 50 * T)
+        + 0.5 * a / (5 / 6 * G_eff * 50 * T)
     assert rep.stiffness_kgf_per_mm == pytest.approx(1 / d / 9.80665, rel=0.03)
     lim = {lm.mode: lm.load_kgf for lm in rep.limits}
     for mode, f in (("compression", MAT.f_c_MPa.value), ("tension", MAT.f_t_MPa.value)):
@@ -4858,8 +4864,11 @@ def test_pressure_coefficient_zero_is_round_27():
     rounding passes)."""
     from bridgesim.sim.idealize import build_model
 
+    # (the piers one rigid body each, as round 27: as cells of their wood, block.cell_mm,
+    # the planes between their cells are glue points too and would be in the sums)
     sp0 = SP.updated({"glue.pressure_coeff": 0.0, "glue.tau_peak_over_avg": 1.065,
-                      "scatter.glue_point_cov": 0.0, "glue.fillet_mm": 0.0})
+                      "scatter.glue_point_cov": 0.0, "glue.fillet_mm": 0.0,
+                      "block.cell_mm": 0.0})
     pins = {0: (18414.203755357616, 12153.374478536029, 238.57515707865358,
                 9703.113322084113),
             None: (23898.503428797623, 15773.01226300643, 309.59999999999997,
@@ -4877,9 +4886,12 @@ def test_pressure_coefficient_zero_is_round_27():
     r = lab.lap_shear(2.13, 0.5, 150.0, 140.0, 0.25, 1.2, rate_exponent=0.1,
                       test_time_s=20.0)
     assert r.peak == pytest.approx(426.3058969233287, rel=1e-7)
-    # the default switches it on for glue lines and solid faces, not for ties
+    # the default switches it on for glue lines and solid faces, not for ties, nor for
+    # the planes inside a block (their f_v is the block-shear value)
     m = build_model(simple_beam_bridge(), MAT, SP, seed=0)
-    assert np.all(m.c_mui[m.c_breakable] == SP["glue.pressure_coeff"])
+    inner = np.array([p_.kind == "block" for p_ in m.patches])[m.c_patch]
+    assert inner.any() and np.all(m.c_mui[inner] == 0.0)
+    assert np.all(m.c_mui[m.c_breakable & ~inner] == SP["glue.pressure_coeff"])
 
 
 def _glue_points(n: int = 6):
