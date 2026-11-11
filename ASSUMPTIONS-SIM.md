@@ -621,27 +621,31 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   (`bridgesim/sim/contact.py`). Since round 28 a member is a **box**: its rectangular
   section (the width and depth its fibres are laid over, so a tapered member or a frame's
   arm has its own per element) swept along each element's chord in the element's current
-  frame, its ends faces only where the member ends; a plate is a slab of its thickness.
-  The points that push on them: each member's section outline at every node and element
-  mid-point (its four corners and the middle of each side, more along a side longer than
-  an element; corners alone miss two members of one width lying flush), each plate node
-  (a sphere of half its thickness), each block corner. Until round 27 a member was a
-  capsule of the radius of the circle with its section's area (a 21 x 47 mm chord 6 mm
-  too slim one way and 7 mm too fat the other: a 20 x 10 mm member dropped on another
-  came to rest 3.6 mm above its face lying flat and 1.4 mm inside it on its edge; now
-  within a micron, `test_a_member_dropped_flat_rests_face_on_face`), and each point was
-  kept off every body it touched or came within 1 mm of at the start (with fat capsules,
-  many unglued neighbours) for the whole run, along that body's whole length. Now a
-  point never pushes on
-  its own body, nor on a body it shares a patch with (glue, a tie, one piece drawn as
-  two, a dry face) within the larger section depth of the two plus the patch's point
-  spacing of one of the patch's points: the patch's springs carry the contact there,
+  frame, its ends faces only where the member ends; a plate is a slab, its triangles
+  times its thickness, square-edged. The points that push on them: each member's section
+  outline at every node and element mid-point (its four corners and the middle of each
+  side, more along a side longer than an element; corners alone miss two members of one
+  width lying flush), a point on each face of a plate at each of its nodes and its
+  mid-surface at the nodes along its edges, each block corner. Until round 27 a plate's
+  slab had edges rounded by half its thickness and was touched by a sphere of that
+  radius at each node (a 50 mm pier read as a plate reached 25 mm past its top), and a
+  member was a capsule of the radius of the circle with its section's area (a 21 x 47 mm
+  chord 6 mm too slim one way and 7 mm too fat the other: a 20 x 10 mm member dropped on
+  another came to rest 3.6 mm above its face lying flat and 1.4 mm inside it on its
+  edge; now within a micron, `test_a_member_dropped_flat_rests_face_on_face`), and each
+  point was kept off every body it touched or came within 1 mm of at the start (with
+  fat capsules, many unglued neighbours) for the whole run, along that body's whole
+  length. Now a point never pushes on its own body, nor on a body it shares a patch
+  with (glue, a tie, one piece drawn as two, a dry face) within the larger section depth
+  of the two plus the patch's point spacing of one of the patch's points: the patch's
+  springs carry the contact there,
   and two members glued at one end still touch where they are bent together far from it
   (`test_contact_near_a_glued_patch_is_left_to_its_glue`). Every other pair starts
   force-free: a point drawn inside another body (an overlap in the CAD, a bowed member)
   is allowed that depth and pushes only beyond it, the allowance shrinking as it comes
   out (so a pair that separates later bears at its true surface); a pair drawn apart
-  pushes once its real gap has closed (the settled perfect bridge has no contact force,
+  pushes once its real gap has closed (no contact force on the perfect synthetic bridge
+  at the start, nor on the seeded one, leaning and bowed, while it settles:
   `test_no_part_contact_force_on_the_settled_bridge`). A point touching two elements of
   one body (at a joint between elements) is pushed by the deeper one only. The normal
   force is a soft penalty: 2000 N/mm a point, at most 0.2 m / dt^2 of the lighter of its
