@@ -24,7 +24,7 @@ relevant parts in your Design Validation (§10). Units: mm, N, MPa, s.
 |---|---|---|
 | extrusion at least 2x longer than its section, section no flatter than 1:4 (a deep cross-beam 221 x 88 x 63 mm is one) | **bar**: chain of corotational fibre beams on its centre line, ~25-30 mm elements (>= 4; no longer than 2x the member's depth at standard since round 21, for light members), real section and length, Timoshenko (shear-flexible) | members carry axial force + bending; buckling needs >= 4 elements |
 | slender but tapered extrusion (a wedge, a lip or filler cut along a diagonal: 40-75 % of its bounding box) | **tapered bar**: as above, each element with the width and centre offset of the profile at its position (same volume as the solid) | still a member; a rigid block would make the load path too stiff |
-| thin extrusion (width >= 3 x thickness) | **shell**: CST membrane + DKT bending triangles on the mid-surface, meshed from the real outline (holes > element size kept), integrated ply by ply (layered) | gussets, webs, decks, diaphragms |
+| thin extrusion (width >= 3 x thickness) | **shell**: CST membrane + shear-deformable bending triangles (DKMT since round 28; DKT before) on the mid-surface, meshed from the real outline (holes > element size kept), integrated ply by ply (layered) | gussets, webs, decks, diaphragms |
 | plate made of narrow arms (an L-shaped leg, an X, a curved rib, a strut-like plate): arms narrower than 1.6 standard shell elements, or 3 when they are slender (centre lines >= 4x their width, and 90 % of their length no wider than 3 elements: a 140 mm gusset with 60 mm tails is a plate, not a strut; it was a single beam until round 16), arms covering >= 80 % of the plate and carrying what is glued to it (a part glued off the arms, a wing of a hub plate, gets an arm of its own out to it, if that runs inside the plate) | **frame**: fibre beams along the centre lines of its arms (the medial axis of its outline, `sim/skeleton.py`), each with the arm's local width and the plate's thickness, plies stacked through the thickness: a UD frame's sticks along each arm (it is built arm by arm), a cross-ply or angle-ply frame a sheet cut to shape whose plies keep the plate's long axis in every arm (an arm at 45 degrees to a +-45 plate is 0/90; asked as `frame_plies:`, `grain: arm` if they were laid along each arm; `test_frame_plies_follow_the_sheet_or_the_arm`), or the span; butt joints per arm as for bars, arms sharing nodes where they meet, glue on rigid arms to the nearest node | a strip of constant-strain triangles one or two elements wide is 2-4x too stiff in in-plane bending, and a 20 mm thick plate is no thin plate; a beam is exact there (`test_frame_plate_bends_like_a_beam`, a strip 40 mm deep on knife edges, ~2.5 elements across: beam theory within 3 %, the same strip as shells 20 % too stiff; the 70 % reported until round 15 was mostly the strip's ends glued to 10 mm piers, which fix them partly, for frames as for shells since round 15). The `frame_plates` question lists them; a plate whose glued parts cannot be reached that way stays a shell and the `narrow_plates` question asks about it |
 | compact piece (less than 2x longer than its section, not thin), a body named a block, short toothpick | **block of cells** (since round 28): its bounding box in its own axes cut into rigid cells of about `block.cell_mm` (20 mm; 1 to 3 along each axis, none along an axis shorter than 1.5 cells), each with the mass and rotational inertia of its wood, joined across each plane between two cells by the wood itself (below); its faces bear at f_c90 unless its fibres are given along an axis, `grain: x | y | z` (a heel seat whose layers run along its post bears on end grain, Hankinson between). `kind: rigid` (or `block.cell_mm` 0) keeps **one rigid body** with its real mass and the mean of its principal moments of inertia, as every block was until round 27 (one value for all axes: the loading is quasi-static, kinetic energy below 5 % of the jack's work (on Bridge_v10 under 1 %), so a rotational inertia only enters the time step) | a block deforms and can split as its wood does (a rigid one neither bent nor broke: the stiffest and strongest idealisation in the load path, review item 12 of round 28); a question lists those in the load path |
 | floss (by name) | **cable**: tension only, snaps at its breaking load | §8.4.5 |
@@ -608,9 +608,10 @@ rebuilt published test is not wood: `kind: rigid` there.
   pressed line's shear stiffness (`glue.lamination_K_s_N_per_mm3`, 350 N/mm^3: a pressed
   PVAc line ~150 secant, 300-400 initially, Serrano 2000; the plates' own shear through
   their thickness added by geometry, ~70 N/mm^3 in all for two 2-ply 0/90 plates), as
-  strong as the glue lines inside one laminated member (where those split); the layered
-  shells themselves do not delaminate, so a bond line drawn inside one plate never fails
-  (below). A lamination covers most of the smaller plate: a short overlap of two plates
+  strong as the glue lines inside one laminated member (where those split); a bond line
+  drawn inside one plate fails only as the plate splits between its plies in out-of-plane
+  shear (since round 28, section 4), not under the in-plane shear a lap puts into one of
+  its plies (below). A lamination covers most of the smaller plate: a short overlap of two plates
   (a deck's tongue slid into its groove on build day) is a hand-made lap (the
   adversarial review of round 20), and in between, from 30 % to 70 % of the smaller
   plate covered (`LAMINATION_RAMP`), the joint's strength and stiffness go over linearly
@@ -631,8 +632,9 @@ rebuilt published test is not wood: `kind: rigid` there.
   member or plate puts its load into that ply, which hands (n - 1) / n of it to the
   others across its first glue line: the joint is no stronger than the laminate's
   interlaminar strength x n / (n - 1) (2 x the rolling shear of a 2-ply 0/90 gusset,
-  4 MPa since round 23: 8 MPa; 13/12 x 3.5 MPa for a 13-ply member). The layered shells do not
-  delaminate by themselves (no interlaminar failure in a shell element), so without this
+  4 MPa since round 23: 8 MPa; 13/12 x 3.5 MPa for a 13-ply member). The layered shells split
+  between their plies only in out-of-plane (bending) shear (since round 28, section 4), not
+  under a ply's in-plane load handed on to the next, so without this
   a gusset lap drawn at 5.1 MPa held on a 0/90 gusset of 2.5 MPa rolling shear (the
   adversarial review of round 20) (`test_laps_are_capped_by_what_the_laminate_passes_on`).
 * **One piece drawn as two bodies** (a tenon and its beam, a seat laminated with its
@@ -788,6 +790,80 @@ crack band, so until round 17 any plate crack was flagged, also one in fibre ten
 that the mesh resolves (`test_a_crack_is_flagged_only_past_the_crack_band_of_its_own_
 mode`). An element is removed only when every ply is torn wide open
 (twice the strain at which it carries nothing) or when it is distorted beyond 0.5 rad.
+
+**Plates in out-of-plane shear** (since round 28; `plate.shear_deformable` 0 gives round
+27's Kirchhoff element back, bit for bit). A stick plate is soft in transverse shear: a
+ply lying across the bending direction shears in rolling shear (`wood.G_rolling_MPa`,
+150 MPa against E_L 10.5 GPa) and the pressed glue lines between plies slip
+(`glue.lamination_K_s_N_per_mm3`), so a 6 mm 0/90/0 deck spanning 60 mm between
+stringers shears about half as much as it bends (ratio 12 D / (H L^2) = 0.51 in
+3-point bending), and the Kirchhoff element (DKT) was that much too stiff under the
+loading plate. The plate element is now the discrete Kirchhoff-Mindlin triangle (DKMT,
+Katili 1993, Int. J. Numer. Meth. Engng 36:1859; `shell.py`): the rotations are linear
+plus a quadratic bubble of the tangential rotation on each side, and each side is an
+exact Timoshenko beam element (derived for this code after Katili's construction; the
+paper's own formulas were not at hand, the tests below decide), its shear strain gamma_s,k = phi_k / (1 + phi_k) r_k
+(r_k the side's Kirchhoff residual, phi_k = 12 D_ss / (H_ss L_k^2) from the bending
+stiffness along the side and its shear compliance), the element's shear strain the mean
+of the lowest-order edge field through the three sides, constant. As the plate gets
+thin phi -> 0 and the element is DKT again (no shear locking); its bending energy is
+DKT's 3-point rule plus area x gamma . H gamma. It is written as a correction to DKT in
+the kernel (`kernels._shell_dkmt`: per element three side residuals, three factors, a
+2 x 2 shear stiffness). A variant whose sides are coupled through the element's full
+moment equilibrium (T = div(D kappa)) was tried and not adopted: it did not converge on
+meshes whose cells are all cut along one diagonal (+13 to +33 % in a strip's deflection
+at 32 cells). The laminate's transverse shear stiffness H (2 x 2, `materials.
+laminate_shear`): each ply's G_LT along its grain and the rolling shear modulus across it,
+turned into the element's axes, the plies in series through the thickness with a pressed
+glue line between each pair, H = kappa t^2 (sum t_i S_i + (n - 1) / K_s)^-1 with kappa =
+5/6 (`plate.shear_correction`; for a homogeneous section). For stick laminates the
+energy-consistent factor of cylindrical bending (Whitney 1973) is 0.70-0.83 for a UD
+stack, 0.60-0.68 along the outer plies of 0/90/0 and 0/90/0/90 stacks and 0.95-1.49
+across them and for a 2-ply 0/90: H of a cross-ply plate is uncertain by -28 % / +79 %,
+which matters for the stiffness, not for the split (below, set by the shear force). A
+strip in cylindrical 3-point bending follows Timoshenko beam theory with the laminate's
+D and H within 3 % at L / t = 20, 10 and 5 on two meshes (measured within 1 %), where
+DKT misses the shear part, 8-205 % of the bending deflection
+(`test_a_plate_strip_bends_like_a_timoshenko_beam`); a simply supported square plate,
+a / t = 10, under a central patch load is within 2 % of the Navier series of
+first-order shear deformation theory with 10 x 10 and 20 x 20 cells, where Kirchhoff
+plate theory reads 28-36 % less (`test_a_square_plate_under_a_patch_load_matches_the_
+mindlin_series`); within 1 % of DKT with sides 100 x the thickness
+(`test_dkmt_tends_to_dkt_for_a_thin_plate_and_switches_off`); constant curvature exact,
+and along each side a constant shear exact (`test_dkmt_patch_tests`); exactly 6
+zero-energy modes; the compiled kernel's tangent is the exact laminate stiffness
+(`test_dkmt_kernel_is_the_laminate_stiffness_and_matches_numpy`).
+**Plates split between their plies** as members do: each element's shear force Q = H
+gamma (N/mm) gives the interlaminar shear 1.5 |Q| / t on its glue planes, resolved along
+and across the grain of each ply next to them and compared, in a quadratic interaction,
+with f_v along the grain and the rolling shear `wood.f_rolling_MPa` across it, and with
+the bond line `glue.interlaminar_MPa` (x the body's glue_factor): the members' law
+(`idealize.interlaminar_strength`), the shear's direction now any. It is averaged over a
+disc one plate thickness across (`solver.plate_split_averaging`, at least the element
+itself), so a split does not start earlier the finer the mesh at the edge of a patch
+load. Where it reaches 1 the element splits at once (brittle, as a pressed line in a
+short-beam shear test) into two sub-laminates bending each about its own mid-plane:
+lever arms x 1/2 (bending stiffness x 1/4, coupling x 1/2), again in each part while the
+shear still reaches the strength, down to its separate plies (x 1/n); a single ply has
+no glue plane and fails across the grain as before. It keeps its membrane stiffness and
+strength and its transverse shear stiffness: the parts share the deflection, so their
+shear stiffnesses add to about the whole's (kappa G t); scaling it down with the lever
+arms, as was first proposed, would have made a split plate shear-softer than its
+unglued plies stacked. Reported as `plate_shear` (the plate split between its plies in
+out-of-plane shear; it keeps carrying in-plane load), wired as `member_shear`: it can
+govern or compete, counts as §12.5 shear for the strict reading, and its what-if is a
+thicker plate (`section_scale`). A 2-ply 0/90 strip in 3-point bending splits at the
+hand-calculated P = 4/3 b t f_rolling within 1 % on 2 and 1 mm elements, a long one
+breaks in bending first (`test_a_short_stick_plate_splits_in_rolling_shear_and_a_long_
+one_breaks_in_bending`). The element's own shear force is a discrete estimate: in that
+strip it is within 5 % of the beam's P / 2 with elements up to 1.5 t, -13 to +6 % with
+elements of 3-6 t (the bridge's plates have elements of at least 1.5 t, `idealize.
+THICK_H`). `screen` lists `plate interlaminar shear` (the element's value, not averaged).
+Not settled: a glued face on a plate already has the plate's own shear through its
+thickness in its glue line's slip (`idealize.shear_compliance`, t / 3G), and the DKMT
+plate now deforms in transverse shear under the moment the face's traction puts on it
+too, so a lap or lamination on a plate is somewhat softer than before (on the 10 mm
+truss the stiffness under the plate fell 1.5 %).
 
 **Scatter** (seeded, `--seed`; `--seed -1` for a perfect bridge): per stick, E (CoV 12 %)
 and strength (CoV 18 %), correlated (`scatter.E_strength_corr`, 0.7: stiffer wood is
@@ -1064,7 +1140,10 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
 * Stable time step from the true highest frequency of the model (Lanczos on the
   linearised system); light nodes that limit it get extra mass (selective mass scaling,
   reported, limited to 5 %; rotational inertia up to 50x). A run that ever diverges is
-  restarted with half the step.
+  restarted with half the step. The linearisation is of the kernels' own forces, and the
+  element estimates use each shell's stiffness with its transverse shear term (since
+  round 28), which only softens the element: the step of the synthetic bridge and of the
+  10 mm truss did not change with it (3.0 and 2.19 microseconds).
 * Damping: mass-proportional (alpha = 25 1/s; ~5 % of critical for the bridge's first
   modes), material damping beta = 0.1 dt (only for the highest, numerical frequencies)
   and contact damping. The loading plate is damped relative to the jack's motion, not
@@ -1241,7 +1320,10 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   energy conservation (kinetic + strain energy constant to 0.5 % in free vibration of a
   bridge with beams, shells and glue), DKT patch test, layered shell = exact laminate
   stiffness, exactly 6 rigid-body zero modes per shell element, mesh-independent fracture
-  energy of a plate strip, a member dropped on another stopped by contact, compiled
+  energy of a plate strip, the shear-deformable plate (since round 28: a strip against
+  Timoshenko beam theory within 3 %, a square plate against the Mindlin-plate series
+  within 5 %, patch tests, its kernel = the exact laminate stiffness, a stick plate's
+  split in a short-beam test at the hand-calculated load within 5 % on two meshes), a member dropped on another stopped by contact, compiled
   kernels identical to the NumPy reference (damage histories included).
 * **End to end** (CAD file -> crushing test -> report): a laminated beam on two narrow
   piers under the rigid plate has the stiffness of beam theory within 5 % (measured:
@@ -1266,10 +1348,11 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
 * Splitting of a member along the grain other than by shear, and knots (stick-to-stick
   variation inside one body is in the model since round 28: the stick field, section 4;
   a plate's butt joints are still one factor on its fibre tension strength, not resolved
-  joint by joint). A member that splits
+  joint by joint). A member or plate (since round 28) that splits
   in shear switches to its split section at once (no fracture energy for the split
   itself, as a pressed glue line fails brittly in a short-beam shear test; the energy it
-  releases goes into the dynamics and the damping); its axial strength is kept.
+  releases goes into the dynamics and the damping); its axial (in-plane) strength is
+  kept.
 * A plate or a block crushed at a glue line keeps its full section in the rest of the
   model: crushing is in the glue line between two parts (permanent set, compaction). A
   member crushed across its grain on its side is shallower there since round 28 (section
@@ -1277,10 +1360,14 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
 * The plates' plies crushing along their grain fall to their plateau over one more onset
   strain, not over a shortening set by the element's size as members' fibres do since
   round 28 (section 4): that needs a width per element in the shell kernel.
-* Thick plates that are not made of arms (a wide gusset 20 mm thick) use thin-plate
-  (Kirchhoff) elements with constant-strain membranes, at least 1.5 x their thickness in
-  size (a membrane with drilling rotations was tried and not adopted:
-  `validation/README.md` §3.4); plates of narrow arms are frames (section 2). Compact
+* Plates use constant-strain membranes (a membrane with drilling rotations was tried and
+  not adopted: `validation/README.md` §3.4), with elements at least 1.5 x their thickness
+  in size (`idealize.THICK_H`, set for the Kirchhoff element; since round 28 the bending
+  is shear-deformable, DKMT, section 4, so it could go, finer, after a mesh study); plates
+  of narrow arms are frames (section 2). The plates' transverse shear stiffness takes the
+  shear correction 5/6 of a homogeneous section (stick laminates: -28 % / +79 %, section
+  4); their out-of-plane shear failure is a split between plies, not a punching through
+  the thickness. Compact
   blocks (a node block, the block under the plate; slender or tapered pieces are bars)
   are no continuum: since round 28 they are a few rigid cells joined by their wood's
   stiffness and strength (section 2), which split only on the planes between their

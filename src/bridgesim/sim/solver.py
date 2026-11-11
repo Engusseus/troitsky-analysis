@@ -19,9 +19,12 @@ LS-DYNA and Abaqus/Explicit). Ingredients:
   splits (:func:`split_members`): its plies then bend each about its own axis, and it
   keeps its axial strength. An element bent or twisted past 1 rad at an end is removed
   (erosion, reported as such).
-* **shells**: corotational CST + DKT triangles with laminate stiffness; a ply strain
-  limit reached anywhere in an element cracks it (its stiffness falls to zero over a
-  small strain range); a node held only by broken elements becomes loose debris.
+* **shells**: corotational CST + DKMT (shear-deformable; DKT with plate.shear_deformable
+  0) triangles with laminate stiffness; a ply strain limit reached anywhere in an
+  element cracks it (its stiffness falls to zero over a small strain range); a node held
+  only by broken elements becomes loose debris. A plate whose out-of-plane shear,
+  averaged over its thickness, reaches the strength of its glue planes splits between
+  its plies (:func:`split_plates`), as members do.
 * **glue lines**: zero-thickness cohesive springs with a bilinear mixed-mode law
   (quadratic initiation, Benzeggagh-Kenane propagation). In compression they keep
   bearing (contact) and hold more in shear (tau + mu_i sigma_c, glue_forces); once
@@ -137,6 +140,12 @@ class State:
     b_rat3: np.ndarray = field(default_factory=lambda: np.zeros(0))
     # Timoshenko shear strain correction of each beam, bending about e3 and e2
     b_gam: np.ndarray = field(default_factory=lambda: np.zeros((0, 2)))
+    # shells split between their plies in out-of-plane shear (split_plates): factor on
+    # the through-thickness lever arms (1 intact, 1/2, ... 1/n_plies), the interlaminar
+    # shear over its strength of each element (before averaging) and whether it split
+    s_split: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    s_rat: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    s_shear: np.ndarray = field(default_factory=lambda: np.zeros(0, bool))
     sc: object | None = None  # self-contact (bridgesim.sim.contact.SelfContact)
     t: float = 0.0
     jack_y: float = 0.0
@@ -169,7 +178,9 @@ def initial_state(m: Model, jack_y: float) -> State:
         s_hist=np.zeros((len(m.s_nodes), 9 * m.s_lay.shape[1], 5)),
         s_gone=np.zeros(len(m.s_nodes), bool), b_s2=np.ones(nb), b_s3=np.ones(nb),
         b_rat2=np.zeros(nb), b_rat3=np.zeros(nb),
-        b_gam=np.zeros((nb, 2)), c_crush=np.zeros(nc), c_creep=np.zeros((nc, 3)))
+        b_gam=np.zeros((nb, 2)), c_crush=np.zeros(nc), c_creep=np.zeros((nc, 3)),
+        s_split=np.ones(len(m.s_nodes)), s_rat=np.zeros(len(m.s_nodes)),
+        s_shear=np.zeros(len(m.s_nodes), bool))
 
 
 # ----------------------------------------------------------------------------- kernels
@@ -380,12 +391,29 @@ _IB = np.array([2, 3, 4, 8, 9, 10, 14, 15, 16])
 _IR = np.array([5, 11, 17])
 
 
+def shell_shear_arrays(m: Model) -> tuple[np.ndarray, ...]:
+    """The DKMT arrays of the shells (s_R, s_KH, s_Gs, s_phi, s_H, s_fil), zeros (DKT,
+    no splitting) for a model built without them."""
+    from bridgesim.sim.shell import SHEAR_SHAPES
+
+    ns = len(m.s_nodes)
+    if m.s_H.shape[0] != ns:
+        for k, shp in SHEAR_SHAPES.items():
+            setattr(m, f"s_{k}", np.zeros((ns, *shp)))
+    return m.s_R, m.s_KH, m.s_Gs, m.s_phi, m.s_H, m.s_fil
+
+
 def shell_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
                  update: bool = True, beta: float = 0.0, dt: float = 1.0) -> None:
     """Layered shells (see :mod:`bridgesim.sim.shell`): forces integrated ply by ply with
-    a damage state per failure mode at every integration point."""
+    a damage state per failure mode at every integration point. A shear-deformable
+    element (s_H > 0) adds the DKMT correction to its curvatures and its transverse shear
+    force Q = H gamma (elastic), and records its interlaminar shear 1.5 |Q| / t over the
+    strength of its glue planes (resolved along and across each ply's grain) in
+    ``st.s_rat``; a split element (``st.s_split`` < 1) bends with its lever arms x s."""
     if len(m.s_nodes) == 0:
         return
+    sR, sKH, sGs, sphi, sH, sfil = shell_shear_arrays(m)
     sn = m.s_nodes
     ns = len(sn)
     x = st.x[sn]  # (ns, 3, 3)
@@ -410,6 +438,30 @@ def shell_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     emt = np.einsum("nik,nk->ni", m.s_Bm, dd[:, _IM])
     kap = np.einsum("ngik,nk->ngi", m.s_Bb, dloc[:, _IB])
     kapt = np.einsum("ngik,nk->ngi", m.s_Bb, dd[:, _IB])
+    # DKMT: the sides' share of their Kirchhoff residual that is shear, om = s^2 phi /
+    # (1 + s^2 phi) (0 for DKT), corrects the curvatures and gives the shear strain
+    shear = sH[:, 0] > 0.0
+    ssp = st.s_split if len(st.s_split) == ns else np.ones(ns)
+    s2 = (ssp * ssp)[:, None]
+    om = np.where(shear[:, None], s2 * sphi / (1.0 + s2 * sphi), 0.0)
+    rd = om * np.einsum("nkj,nj->nk", sR, dloc[:, _IB])
+    rw = om * np.einsum("nkj,nj->nk", sR, dd[:, _IB])
+    kap = kap + 1.5 * np.einsum("ngik,nk->ngi", sKH, rd)
+    kapt = kapt + 1.5 * np.einsum("ngik,nk->ngi", sKH, rw)
+    gd = np.einsum("nik,nk->ni", sGs, rd)
+    gw = np.einsum("nik,nk->ni", sGs, rw)
+    Qs = np.stack([sH[:, 0] * gw[:, 0] + sH[:, 2] * gw[:, 1],
+                   sH[:, 2] * gw[:, 0] + sH[:, 1] * gw[:, 1]], axis=1)
+    if update:
+        qd = np.stack([sH[:, 0] * gd[:, 0] + sH[:, 2] * gd[:, 1],
+                       sH[:, 2] * gd[:, 0] + sH[:, 1] * gd[:, 1]], axis=1)
+        rat = np.sqrt((qd**2).sum(1)) * sfil[:, 2]
+        for ll in range(m.s_lay.shape[1]):
+            c_, s_ = m.s_lay[:, ll, 2], m.s_lay[:, ll, 3]
+            tl = (c_ * qd[:, 0] + s_ * qd[:, 1]) * sfil[:, 0]
+            tt = (-s_ * qd[:, 0] + c_ * qd[:, 1]) * sfil[:, 1]
+            rat = np.where(ll < m.s_nl, np.maximum(rat, np.sqrt(tl * tl + tt * tt)), rat)
+        st.s_rat = np.where(st.s_gone | ~shear, 0.0, rat)
     q11, q22, q12, q66 = m.s_Q.T
     lim, rf, rc = m.s_lim, m.s_rf, _rc(m)
     nlay = m.s_lay.shape[1]
@@ -424,8 +476,9 @@ def shell_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
             zb, zt, cg, sg = m.s_lay[:, ll].T
             hh = zt - zb
             cc2, ss2, cs = cg * cg, sg * sg, cg * sg
-            for q, (z, wq) in enumerate(((zb, hh / 6), ((zb + zt) / 2, 4 * hh / 6),
-                                         (zt, hh / 6))):
+            for q, (z0, wq) in enumerate(((zb, hh / 6), ((zb + zt) / 2, 4 * hh / 6),
+                                          (zt, hh / 6))):
+                z = z0 * ssp  # a split plate's sub-laminates bend about their own planes
                 e1, e2, g12 = _ply_strain(em, kap[:, g], z, cc2, ss2, cs)
                 e1t, e2t, g12t = _ply_strain(emt, kapt[:, g], z, cc2, ss2, cs)
                 h = st.s_hist[:, (g * nlay + ll) * 3 + q]
@@ -465,6 +518,10 @@ def shell_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     f = np.zeros((ns, 18))
     f[:, _IM] = m.s_area[:, None] * np.einsum("nik,ni->nk", m.s_Bm, N.mean(axis=1))
     f[:, _IB] = (m.s_area / 3)[:, None] * np.einsum("ngik,ngi->nk", m.s_Bb, M)
+    if shear.any():  # DKMT: R^T om (1.5 A/3 sum_g KH_g^T M_g + A Gs^T Q)
+        coef = om * (1.5 * (m.s_area / 3)[:, None] * np.einsum("ngik,ngi->nk", sKH, M)
+                     + m.s_area[:, None] * np.einsum("nik,ni->nk", sGs, Qs))
+        f[:, _IB] += np.einsum("nkj,nk->nj", sR, coef)
     # drilling (Hughes-Brezzi): theta_z against the in-plane rigid rotation omega
     g = np.zeros((ns, 6))
     g[:, 0::2] = -0.5 * m.s_Bm[:, 1, 1::2]
@@ -878,6 +935,76 @@ def split_members(m: Model, st: State) -> None:
         st.b_shear |= f2 | f3
 
 
+def plate_split_averaging(m: Model):
+    """The averaging of the plates' split check (cached on the model), as
+    :func:`split_averaging` does for members: each shell element's interlaminar shear
+    over strength is averaged over a disc one plate thickness across (radius t / 2)
+    centred on it, each element of the same plate weighted by its area inside the disc
+    (4 x 4 sub-triangles each), at least the element itself: a plate splits where the
+    shear acts over its thickness, not where one small element resolves a peak at the
+    edge of a patch load (a local onset would come earlier the finer the mesh). With
+    elements larger than the thickness (the usual case) it is about the element itself.
+    Returns a sparse averaging matrix."""
+    ns = len(m.s_nodes)
+    W = getattr(m, "_psplit_W", None)
+    if W is not None and W.shape[0] == ns:
+        return W
+    from scipy.sparse import csr_matrix
+    from scipy.spatial import cKDTree
+
+    P = m.X[m.s_nodes]  # (ns, 3, 3)
+    c = P.mean(axis=1)
+    area = 0.5 * np.linalg.norm(np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]), axis=1)
+    k = 4  # sub-triangles' centroids of a k x k subdivision, in area coordinates
+    bary = []
+    for i in range(k):
+        for j in range(k - i):
+            bary.append(((i + 1 / 3), (j + 1 / 3), (k - i - j - 2 / 3)))
+            if i + j < k - 1:
+                bary.append(((i + 2 / 3), (j + 2 / 3), (k - i - j - 4 / 3)))
+    bary = np.array(bary) / k  # (k^2, 3)
+    pts = np.einsum("qa,nak->nqk", bary, P)
+    nq = len(bary)
+    rows, cols, vals = [], [], []
+    for bd in np.unique(m.s_body):
+        idx = np.where(m.s_body == bd)[0]
+        tree = cKDTree(pts[idx].reshape(-1, 3))
+        owner = np.repeat(np.arange(len(idx)), nq)
+        hits = tree.query_ball_point(c[idx], 0.5 * m.s_t[idx])
+        for a, (e, hit) in enumerate(zip(idx, hits, strict=True)):
+            ov = np.bincount(owner[np.asarray(hit, int)], minlength=len(idx)) \
+                * area[idx] / nq
+            ov[a] = max(ov[a], 1e-9)
+            near = np.nonzero(ov)[0]
+            rows += [e] * len(near)
+            cols += list(idx[near])
+            vals += list(ov[near] / ov[near].sum())
+    W = csr_matrix((vals, (rows, cols)), shape=(ns, ns))
+    m._psplit_W = W
+    return W
+
+
+def split_plates(m: Model, st: State) -> None:
+    """Plates split between their plies in out-of-plane shear, as members do
+    (:func:`split_members`): where the interlaminar shear 1.5 |Q| / t, averaged over a
+    plate thickness (:func:`plate_split_averaging`), reaches the strength of the glue
+    planes, the element splits along its most stressed one into two sub-laminates that
+    bend each about its own mid-plane (lever arms x 1/2, bending stiffness x 1/4), at
+    once (brittle, as a pressed line in a short-beam shear test), and again in each part
+    while the shear still reaches it, down to its separate plies (1/n). It keeps its
+    membrane stiffness and strength and its transverse shear stiffness (the parts share
+    the shear, each with its own: kappa G t in all). A single ply has no glue plane."""
+    if len(m.s_nodes) == 0 or len(st.s_split) != len(m.s_nodes) or \
+            len(st.s_rat) != len(m.s_nodes) or not st.s_rat.max() > 1.0:
+        return  # (a mean of values none above 1 is not above 1)
+    r = plate_split_averaging(m) @ st.s_rat
+    last = 1.0 / np.maximum(m.s_nply, 1.0)
+    f = ~st.s_gone & (st.s_split > last * (1.0 + 1e-9)) & (r > 1.0)
+    if f.any():
+        st.s_split = np.where(f, np.maximum(0.5 * st.s_split, last), st.s_split)
+        st.s_shear = st.s_shear | f
+
+
 def internal_and_contact(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarray,
                          update: bool = True) -> dict:
     if s.use_numba and K.HAVE_NUMBA:
@@ -1009,12 +1136,18 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
         ns = len(m.s_nodes)
         if st.work is None or st.work[0].shape[0] != ns:
             st.work = (np.zeros((ns, 3, 3)), np.zeros((ns, 3, 3)), np.zeros((ns, 18)),
-                       np.zeros((ns, 3, 3)), np.zeros((ns, 3)), np.zeros((ns, 60)))
+                       np.zeros((ns, 3, 3)), np.zeros((ns, 3)), np.zeros((ns, 72)))
         fe, me, wd, wR, wth, ws = st.work
+        if len(st.s_split) != ns:
+            st.s_split, st.s_rat = np.ones(ns), np.zeros(ns)
+            st.s_shear = np.zeros(ns, bool)
         K.shell_kernel(x, R, m.s_nodes, m.s_E0, m.s_P, m.s_Bm, m.s_Bb, m.s_area, m.s_kd,
                        m.s_lay, m.s_nl, m.s_Q, m.s_lim, m.s_rf, _rc(m), st.s_hist,
                        st.s_dmg, st.s_gone, F, Mo, update, fe, me,
-                       s.beta if update else 0.0, s.dt, st.s_prev, wd, wR, wth, ws)
+                       s.beta if update else 0.0, s.dt, st.s_prev, wd, wR, wth, ws,
+                       *shell_shear_arrays(m), st.s_split, st.s_rat)
+        if update:
+            split_plates(m, st)
     if len(m.c_a):
         K.glue_kernel(x, R, m.a_node, m.a_r0, m.c_a, m.c_b, m.c_area, m.c_n0, m.c_Kn,
                       m.c_Ks, m.c_sig, m.c_tau, m.c_GIc, m.c_GIIc, m.c_mu, m.c_breakable,
@@ -1056,6 +1189,8 @@ def internal_and_contact_numpy(m: Model, st: State, s: Settings, F: np.ndarray,
     if update and len(m.b_i):
         split_members(m, st)
     shell_forces(m, st, F, Mo, update, b, s.dt)
+    if update:
+        split_plates(m, st)
     glue_forces(m, st, F, Mo, update, b, s.dt)
     cable_forces(m, st, F, Mo, update)
     # contacts produce forces *on* nodes; convert to "internal" sign convention below

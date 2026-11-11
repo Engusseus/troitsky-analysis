@@ -155,7 +155,7 @@ class InspectReport(BaseModel):
 
 
 EventKind = Literal["member_fracture", "member_shear", "member_crushing", "member_erosion",
-                    "plate_crack", "bearing_crushing", "block_fracture",
+                    "plate_crack", "plate_shear", "bearing_crushing", "block_fracture",
                     "glue_damage",
                     "joint_cracking", "joint_failure", "floss_break", "criterion",
                     "instability", "numerical"]
@@ -172,7 +172,9 @@ class EventOut(BaseModel):
         "lines or grain), member_crushing (fibres folding in compression past f_c), "
         "member_erosion (an element bent or twisted past 1 rad removed, its section not "
         "cracked through), "
-        "plate_crack, bearing_crushing (the wood under a face pressed together, a member "
+        "plate_crack, plate_shear (the plate split between its plies in out-of-plane "
+        "shear: it bends as separate layers but keeps carrying in-plane load), "
+        "bearing_crushing (the wood under a face pressed together, a member "
         "end bearing on a knee or a tenon on its sill, has crushed by 0.1 mm on average: "
         "the face bears more than its grain can take), block_fracture (a compact block "
         "split inside: the wood between two of its cells let go over 90 % of the plane "
@@ -321,9 +323,9 @@ class CrushReport(BaseModel):
     n_events_total: int = 0
     Fu_first_joint_failure_kgf: float | None = Field(
         None, description="The highest jack load up to the moment the first glued joint "
-                          "separated (>= 90 % of its area let go), a member split in "
-                          "shear or a compact block split: what a strict judge who stops "
-                          "the test there reads (§12.5 "
+                          "separated (>= 90 % of its area let go), a member or plate "
+                          "split in shear or a compact block split: what a strict judge "
+                          "who stops the test there reads (§12.5 "
                           "counts joint failure as failure). It equals F_u when the first "
                           "joint goes at or after the peak.")
     warnings: list[str] = []
@@ -436,7 +438,8 @@ class MonteCarloReport(BaseModel):
     fidelity: str = "standard"
     Fu_strict_kgf: list[float] = Field([], description=(
         "The same runs judged strictly: the load when the first glued joint separated or a "
-        "member split (§12.5 'shear, including joint failure'), if that came before the "
+        "member or plate split (§12.5 'shear, including joint failure'), if that came before "
+        "the "
         "peak"))
     p50_strict_kgf: float | None = None
     recommended_prediction_strict_kgf: float | None = Field(
@@ -584,7 +587,9 @@ class ScreenLimit(BaseModel):
                                   "tension, compression, shear, buckling (Euler, the "
                                   "member's length, pinned), plate fibre tension, plate "
                                   "fibre crushing, plate across-grain tension, plate "
-                                  "across-grain crushing, plate shear, wood (a face "
+                                  "across-grain crushing, plate shear (in its plane), "
+                                  "plate interlaminar shear (out of its plane: 1.5 |Q| / t "
+                                  "on its glue planes, where it splits), wood (a face "
                                   "through one piece, glue override 'solid'), block (a "
                                   "plane between two cells of a compact block: its wood "
                                   "across it against its strength), block bearing (the "

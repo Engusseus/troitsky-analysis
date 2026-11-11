@@ -681,6 +681,7 @@ def _sequence(events: list) -> list[str]:
             continue
         seen.add(key)
         verb = {"member_fracture": "member broke", "member_shear": "member split in shear",
+                "plate_shear": "plate split between its plies in shear",
                 "member_crushing": "member crushing",
                 "bearing_crushing": "bearing face crushing",
                 "member_erosion": "member element removed (bent past 1 rad)",
@@ -858,7 +859,7 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
 
 MAJOR = ("bearing_crushing", "joint_cracking", "joint_failure", "member_fracture",
          "member_shear", "block_fracture",
-         "member_crushing", "member_erosion", "plate_crack", "floss_break")
+         "member_crushing", "member_erosion", "plate_crack", "plate_shear", "floss_break")
 
 
 def _failures(events, fail_t: float | None, limit: int = 60) -> list[EventOut]:
@@ -1083,7 +1084,7 @@ def _whatif(gov: list[EventOut], crushed: set | frozenset = frozenset()) -> dict
                 e.what not in crushed:
             glue[f"{_copies(e.parts[0])} | {_copies(e.parts[1])}"] = 1.5
         elif e.kind in ("member_shear", "member_fracture", "member_crushing",
-                        "member_erosion", "plate_crack"):
+                        "member_erosion", "plate_crack", "plate_shear"):
             for p in e.parts or [e.what]:
                 bodies[_copies(p)] = {"section_scale": 1.25}
         elif e.kind == "block_fracture":
@@ -1371,13 +1372,13 @@ def _fail_time(res: CrushResult) -> float | None:
 
 def _first_joint(res: CrushResult) -> float | None:
     """The strict reading: the highest load up to the first glued joint separating or
-    member splitting in shear, what a judge who stops the test there reads on the load
+    member or plate splitting in shear, what a judge who stops the test there reads on the load
     cell (its peak), not the load the moment it happens (on a falling branch when the
     joint goes after the peak)."""
     # a joint worth a few % of the load (MINOR_SHARE) letting go is not what a judge
     # stops the test for: it carried next to nothing
     hit = [e for e in res.events if e.kind in ("joint_failure", "member_shear",
-                                                "block_fracture")
+                                                "plate_shear", "block_fracture")
            and e.capacity_N >= MINOR_SHARE * res.Fu_N]
     if not hit:
         return None
@@ -3297,6 +3298,8 @@ MECHANISM_KEYS = {
     "member": ("material.f_t_MPa", "material.f_c_MPa", "material.f_v_MPa",
                "material.f_b_MPa"),
     "plate": ("material.f_t_MPa", "material.f_c_MPa", "wood.f_rolling_MPa"),
+    # a plate split between its plies (plate_shear): its glue planes' strength
+    "plate_shear": ("material.f_v_MPa", "wood.f_rolling_MPa", "glue.interlaminar_MPa"),
     "bearing": ("wood.f_c90_MPa",),
     "floss": ("floss.strand_break_N",),
 }
@@ -3307,6 +3310,8 @@ def _mechanism(governing: str) -> str:
     g = (governing or "").lower()
     if "floss" in g:
         return "floss"
+    if g.startswith("plate shear"):
+        return "plate_shear"
     for k in ("joint", "bearing", "plate", "member"):
         if g.startswith(k) or f" {k}" in g.split(":", 1)[0]:
             return k

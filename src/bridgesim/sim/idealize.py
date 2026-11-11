@@ -47,6 +47,7 @@ from bridgesim.sim.materials import (
     SimParams,
     inplane_split_strength,
     laminate,
+    laminate_shear,
     parse_layup,
     parse_override_layup,
     rect_torsion,
@@ -2583,6 +2584,18 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                     sE=sfld.log_sd(sp["scatter.E_cov"], (1.0 - r_ply) / n_pl, amp),
                     sS=sfld.log_sd(sp["scatter.strength_cov"], (1.0 - r_ply) / n_pl, amp),
                     rho_es=rho_es, cache={})
+            # shear-deformable plates (DKMT, since round 28): the laminate's transverse
+            # shear stiffness from its plies in series with their glue lines, and the
+            # strengths of its glue planes, where it splits (as a member's: the lower of
+            # the bond line and the plies next to it, along and across their grain; the
+            # wood's scatter on both, the body's glue_factor on the bond line)
+            shear_on = sp.values.get("plate.shear_deformable", 1.0) >= 0.5
+            il_pl = None
+            if shear_on and len(sh.layup.angles) >= 2:
+                gf_pl = max(float(o.get("glue_factor", 1.0)), 1e-3)
+                il_pl = tuple(v * Ef * Sf for v in (mat.f_v_MPa.value,
+                                                    il_strength["f_rolling"],
+                                                    il_strength["bond"] * gf_pl))
             for t3 in tri:
                 xy3 = P2[t3]
                 fs_e, eloc = 1.0, 1.0
@@ -2611,10 +2624,15 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                     angs = angs[::-1]
                 # (the element's modulus x eloc, its failure stresses kept but the fibres'
                 # x fs_e, with their fracture energy)
+                H_el = laminate_shear(
+                    ply, angs, T, sp.values.get("wood.G_rolling_MPa", 150.0),
+                    sp.values.get("glue.lamination_K_s_N_per_mm3", 350.0),
+                    sp.values.get("plate.shear_correction", 5.0 / 6.0), Ef * eloc) \
+                    if shear_on else None
                 ed = shellmod.element_data(Ploc[:, :2], angs, T, ply_s, Ef * eloc, Sf / eloc,
                                            (Gm[0] * fs_e, Gm[1], Gm[2]),
                                            lam_ref.E_x * Ef * T, kt=kt_pl * fs_e,
-                                           kc=kc_pl * fs_e)
+                                           kc=kc_pl * fs_e, H=H_el, interlaminar=il_pl)
                 if ed["snapback"]:
                     n_snap += 1
                     snap_excess = min(snap_excess, ed["excess"])
@@ -4271,7 +4289,7 @@ def _mesh_robust(poly, h: float, name: str, fixed=None):
                      f"({poly.area:.0f} mm^2){': ' + str(last) if last else ''}")
 
 
-THICK_H = 1.5  # smallest shell element / plate thickness (Kirchhoff plates)
+THICK_H = 1.5  # smallest shell element / plate thickness (set for Kirchhoff plates)
 
 #: a plate whose arms are narrower than this many shell elements (at the standard element
 #: size, so the choice is the same at every fidelity) is a frame of members along its
@@ -4372,7 +4390,9 @@ def _shell_h(sh: Shape) -> float:
     h = float(np.clip(math.sqrt(sh.poly.area) / 5, 10.0, 30.0))
     h = min(h, max(sh.Wp / 2.5, 6.0))
     # Kirchhoff (DKT) plates ignore shear deformation, which is only right for elements
-    # several times larger than the thickness: thick plates get coarse elements
+    # several times larger than the thickness: thick plates get coarse elements (kept
+    # since round 28, when the plates became shear-deformable, so the meshes stay those
+    # of round 27; finer would need a mesh study)
     return max(h, min(THICK_H * sh.T, 60.0))
 
 

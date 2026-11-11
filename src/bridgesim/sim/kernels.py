@@ -325,8 +325,63 @@ def _plateau(r, rc):
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
+def _shell_dkmt(e, d, w, lay, nl, sR, sKH, sGs, sphi, sH, sfil, split, rat, update):
+    """The DKMT part of a shear-deformable shell element (shell.py): each side's share of
+    its Kirchhoff residual that is shear, om_k = s^2 phi_k / (1 + s^2 phi_k), corrects the
+    curvatures at the 3 points (w[24:42], displacement and damped) and gives the constant
+    shear strain; returns the shear force (Q_x, Q_y) = H gamma from the damped dofs. With
+    ``update`` the interlaminar shear 1.5 |Q| / t over the glue planes' strength, along
+    and across each ply's grain and on the bond line, goes to rat[e]. Workspace: w[60:63]
+    om r (displacement), w[63:66] om r (damped), w[66:69] om."""
+    sp = split[e]
+    s2 = sp * sp
+    for k in range(3):
+        r0 = 0.0
+        r1 = 0.0
+        for a in range(3):
+            for i in range(3):
+                rr = sR[e, k, 3 * a + i]
+                r0 += rr * d[6 * a + 2 + i]
+                r1 += rr * w[6 * a + 2 + i]
+        ph = s2 * sphi[e, k]
+        om = ph / (1.0 + ph)
+        w[60 + k] = om * r0
+        w[63 + k] = om * r1
+        w[66 + k] = om
+    for g in range(3):
+        for i in range(3):
+            c0 = 0.0
+            c1 = 0.0
+            for k in range(3):
+                kh = sKH[e, g, i, k]
+                c0 += kh * w[60 + k]
+                c1 += kh * w[63 + k]
+            w[24 + 3 * g + i] += 1.5 * c0
+            w[33 + 3 * g + i] += 1.5 * c1
+    gx = sGs[e, 0, 0] * w[63] + sGs[e, 0, 1] * w[64] + sGs[e, 0, 2] * w[65]
+    gy = sGs[e, 1, 0] * w[63] + sGs[e, 1, 1] * w[64] + sGs[e, 1, 2] * w[65]
+    if update:
+        gx0 = sGs[e, 0, 0] * w[60] + sGs[e, 0, 1] * w[61] + sGs[e, 0, 2] * w[62]
+        gy0 = sGs[e, 1, 0] * w[60] + sGs[e, 1, 1] * w[61] + sGs[e, 1, 2] * w[62]
+        qx = sH[e, 0] * gx0 + sH[e, 2] * gy0
+        qy = sH[e, 2] * gx0 + sH[e, 1] * gy0
+        rr = math.sqrt(qx * qx + qy * qy) * sfil[e, 2]
+        for ll in range(nl[e]):
+            c = lay[e, ll, 2]
+            s = lay[e, ll, 3]
+            tl = (c * qx + s * qy) * sfil[e, 0]
+            tt = (-s * qx + c * qy) * sfil[e, 1]
+            v = math.sqrt(tl * tl + tt * tt)
+            if v > rr:
+                rr = v
+        rat[e] = rr
+    return sH[e, 0] * gx + sH[e, 2] * gy, sH[e, 2] * gx + sH[e, 1] * gy
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
 def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hist, dmg,
-               gone, update, fe, me, beta, dt, prev, wd, wR, wth, ws):
+               gone, update, fe, me, beta, dt, prev, wd, wR, wth, ws, sR, sKH, sGs, sphi,
+               sH, sfil, split, rat):
     d = wd[e]
     Rl = wR[e]
     th = wth[e]
@@ -338,6 +393,8 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
         for c in range(3):
             fe[e, a, c] = 0.0
             me[e, a, c] = 0.0
+    if update:
+        rat[e] = 0.0
     if gone[e]:
         return
     c0 = (x[n0, 0] + x[n1, 0] + x[n2, 0]) / 3.0
@@ -423,6 +480,14 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
             w[33 + 3 * g + i] = s1
     for k in range(42, 60):
         w[k] = 0.0
+    # shear-deformable (DKMT): curvature correction, shear force, split check
+    shear = sH[e, 0] > 0.0
+    qx = 0.0
+    qy = 0.0
+    if shear:
+        qx, qy = _shell_dkmt(e, d, w, lay, nl, sR, sKH, sGs, sphi, sH, sfil, split, rat,
+                             update)
+    sp = split[e]  # a split plate: lever arms x s (1 intact)
     q11 = Q[e, 0]
     q22 = Q[e, 1]
     q12 = Q[e, 2]
@@ -443,13 +508,13 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
             cs = c * s
             for q in range(3):
                 if q == 0:
-                    z = zb
+                    z = zb * sp
                     wq = hh / 6.0
                 elif q == 1:
-                    z = 0.5 * (zb + zt)
+                    z = 0.5 * (zb + zt) * sp
                     wq = 4.0 * hh / 6.0
                 else:
-                    z = zt
+                    z = zt * sp
                     wq = hh / 6.0
                 exx = w[18] + z * w[24 + 3 * g]
                 eyy = w[19] + z * w[25 + 3 * g]
@@ -539,6 +604,15 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
         om += -0.5 * Bm[e, 1, 2 * a + 1] * w[6 * a] + 0.5 * Bm[e, 0, 2 * a] * w[6 * a + 1]
     kde = kd[e] * max(0.0, 1.0 - 10.0 * dmg[e])  # a cracking element: no drilling stiffness
     sdr = (w[5] - om) + (w[11] - om) + (w[17] - om)
+    if shear:
+        # DKMT nodal forces: R^T om (1.5 A/3 sum_g KH_g^T M_g + A Gs^T Q), w[69:72]
+        for k in range(3):
+            mk = 0.0
+            for g in range(3):
+                mk += (sKH[e, g, 0, k] * w[51 + 3 * g] + sKH[e, g, 1, k] * w[52 + 3 * g]
+                       + sKH[e, g, 2, k] * w[53 + 3 * g])
+            w[69 + k] = w[66 + k] * (0.5 * ar * mk + ar * (sGs[e, 0, k] * qx
+                                                           + sGs[e, 1, k] * qy))
     for a in range(3):
         f0 = ar * (Bm[e, 0, 2 * a] * na0 + Bm[e, 1, 2 * a] * na1 + Bm[e, 2, 2 * a] * na2) \
             + kde * sdr * 0.5 * Bm[e, 1, 2 * a + 1]
@@ -559,6 +633,11 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
         f2 *= ar / 3.0
         m0 *= ar / 3.0
         m1 *= ar / 3.0
+        if shear:
+            for k in range(3):
+                f2 += sR[e, k, 3 * a] * w[69 + k]
+                m0 += sR[e, k, 3 * a + 1] * w[69 + k]
+                m1 += sR[e, k, 3 * a + 2] * w[69 + k]
         m2 = kde * (w[6 * a + 5] - om)
         fe[e, a, 0] = ax0 * f0 + y0 * f1 + z0 * f2
         fe[e, a, 1] = ax1 * f0 + y1 * f1 + z1 * f2
@@ -570,11 +649,13 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
 
 @njit(cache=True, fastmath=True, parallel=True, error_model="numpy")
 def shell_kernel(x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hist, dmg,
-                 gone, F, Mo, update, fe, me, beta, dt, prev, wd, wR, wth, ws):
+                 gone, F, Mo, update, fe, me, beta, dt, prev, wd, wR, wth, ws, sR, sKH, sGs,
+                 sphi, sH, sfil, split, rat):
     ns = sn.shape[0]
     for e in prange(ns):
         _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hist, dmg,
-                   gone, update, fe, me, beta, dt, prev, wd, wR, wth, ws)
+                   gone, update, fe, me, beta, dt, prev, wd, wR, wth, ws, sR, sKH, sGs, sphi,
+                   sH, sfil, split, rat)
     for e in range(ns):
         for a in range(3):
             nd = sn[e, a]

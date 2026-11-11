@@ -5481,3 +5481,405 @@ def test_the_synthetic_bridges_stand_on_blocks_of_cells(tmp_path):
     assert len(piers) == 54
     assert np.abs(res.frames[0].x[piers, 1] - X0[piers, 1]).max() < 1.0
     assert res.added_mass_frac < 0.05
+
+
+# ------------------------------------------- shear-deformable plates (DKMT), round 28
+
+_PLY = Ply(E_L=10500.0, E_T=500.0, G_LT=656.0, nu_LT=0.35, f_t=40.0, f_c=30.0, f_t90=1.5,
+           f_c90=6.0, f_v=8.0)
+_GR, _KL, _KAPPA = 150.0, 350.0, 5.0 / 6.0  # rolling shear, pressed glue line, kappa
+
+
+def _lam_DH(angles, t):
+    from bridgesim.sim.materials import laminate_shear
+
+    lam = laminate(_PLY, angles, t)
+    return lam, laminate_shear(_PLY, angles, t, _GR, _KL, _KAPPA)
+
+
+def _grid(Lx, Ly, nx, ny):
+    """A rectangle of right triangles (each cell cut along the same diagonal)."""
+    X = np.array([[x, y] for x in np.linspace(0, Lx, nx + 1)
+                  for y in np.linspace(0, Ly, ny + 1)])
+    tri = []
+    for i in range(nx):
+        for j in range(ny):
+            a = i * (ny + 1) + j
+            tri += [(a, a + ny + 1, a + ny + 2), (a, a + ny + 2, a + 1)]
+    return X, np.array(tri)
+
+
+def _plate_K(X, tri, lam, H):
+    """The bending block (w, theta_x, theta_y per node) of a flat symmetric laminate's
+    stiffness from the shell's own element (shell.local_stiffness; the element is written
+    in any in-plane axes, here the global ones). ``H`` None: DKT."""
+    from bridgesim.sim.shell import IB, local_stiffness
+
+    n = len(X)
+    K = np.zeros((3 * n, 3 * n))
+    for t3 in tri:
+        Ke = local_stiffness(X[t3], lam.A, lam.D, _PLY.E_L * lam.t, lam.B, H)
+        dofs = np.array([[3 * a, 3 * a + 1, 3 * a + 2] for a in t3]).ravel()
+        K[np.ix_(dofs, dofs)] += Ke[np.ix_(IB, IB)]
+    return K
+
+
+def _solve(K, F, fix):
+    free = np.setdiff1d(np.arange(len(F)), fix)
+    u = np.zeros(len(F))
+    u[free] = np.linalg.solve(K[np.ix_(free, free)], F[free])
+    return u
+
+
+def test_laminate_shear_stiffness_adds_plies_and_glue_lines_in_series():
+    """Hand calculation: one ply, H = kappa G t along and across its grain (656 and 150
+    MPa: H11 = 5/6 x 656 x 2 = 1093.3, H22 = 250 N/mm); a 2-ply 0/90 of 4 mm, plies and the
+    glue line in series, H11 = H22 = 5/6 x 16 / (2/656 + 2/150 + 1/350) = 693.0 N/mm; a ply
+    at 30 degrees turned into the axes, H^-1 = T^T diag(1/(kappa G_LT t), 1/(kappa G_R t))
+    T."""
+    from bridgesim.sim.materials import laminate_shear
+
+    H = laminate_shear(_PLY, [0.0], 2.0, _GR, _KL)
+    assert H == pytest.approx(np.diag([5 / 6 * 656 * 2, 5 / 6 * 150 * 2]), rel=1e-12)
+    H2 = laminate_shear(_PLY, [0.0, 90.0], 4.0, _GR, _KL)
+    h = 5 / 6 * 16 / (2 / 656 + 2 / 150 + 1 / 350)
+    assert h == pytest.approx(693.0, abs=0.1)
+    assert H2 == pytest.approx(np.diag([h, h]), rel=1e-12, abs=1e-9)
+    c, s = math.cos(math.radians(30)), math.sin(math.radians(30))
+    T = np.array([[c, s], [-s, c]])
+    want = np.linalg.inv(T.T @ np.diag([1 / (5 / 6 * 656 * 2), 1 / (5 / 6 * 150 * 2)]) @ T)
+    assert laminate_shear(_PLY, [30.0], 2.0, _GR, _KL) == pytest.approx(want, rel=1e-12)
+    # the stick scatter scales the wood, not the glue line
+    H3 = laminate_shear(_PLY, [0.0, 90.0], 4.0, _GR, _KL, E_factor=1.2)
+    assert H3[0, 0] == pytest.approx(5 / 6 * 16 / ((2 / 656 + 2 / 150) / 1.2 + 1 / 350))
+
+
+def test_dkmt_tends_to_dkt_for_a_thin_plate_and_switches_off():
+    """The DKMT element is DKT plus the sides' shear share phi / (1 + phi), phi = 12 D /
+    (H L^2) ~ (t / L)^2: for a 4 mm 0/90 sheet, element sides ~100 x its thickness, its
+    stiffness is DKT's within 1 % (0.03 % at 1000 x); the decomposition reproduces Batoz's
+    closed-form DKT operator exactly at phi = 0. With plate.shear_deformable 0 the model
+    has DKT elements (no shear data) and nothing splits: round 27's element (its
+    explicit crush was checked bit for bit against round 27's code)."""
+    from bridgesim.sim import shell as shellmod
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    lam, H = _lam_DH([0.0, 90.0], 4.0)
+    rng = np.random.default_rng(5)
+    for _ in range(4):
+        xy0 = rng.uniform(-0.2, 0.2, (3, 2)) + np.array([[0, 0], [1, 0], [0.4, 0.9]])
+        for size, tol in ((400.0, 0.01), (4000.0, 3e-4)):
+            xy = xy0 * size
+            Kd = shellmod.local_stiffness(xy, lam.A, lam.D, 1.0, lam.B)
+            Km = shellmod.local_stiffness(xy, lam.A, lam.D, 1.0, lam.B, H)
+            assert np.linalg.norm(Km - Kd) < tol * np.linalg.norm(Kd), size
+        Bb, Bs = shellmod.dkmt_operators(xy0, np.zeros(3))
+        for g, (s, e) in enumerate(shellmod._GP):
+            assert Bb[g] == pytest.approx(dkt_B(xy0, s, e)[0], abs=1e-12)
+        assert not Bs.any()
+    m = build_model(simple_beam_bridge(), MAT, SP,
+                    Overrides(params={"plate.shear_deformable": 0}), seed=0)
+    assert len(m.s_nodes) and not m.s_H.any() and not m.s_fil.any() and not m.s_phi.any()
+    m1 = build_model(simple_beam_bridge(), MAT, SP, Overrides(), seed=0)
+    assert (m1.s_H[:, 0] > 0).all() and np.array_equal(m.s_Bb, m1.s_Bb)
+    st = S.initial_state(m, 1e4)
+    st.x = m.X + np.random.default_rng(1).normal(0, 0.05, st.x.shape)
+    F, Mo = np.zeros((m.n_nodes, 3)), np.zeros((m.n_nodes, 3))
+    S.internal_and_contact(m, st, S.Settings(dt=3e-6), F, Mo)
+    assert (st.s_split == 1.0).all() and not st.s_rat.any() and not st.s_shear.any()
+
+
+def test_dkmt_patch_tests():
+    """Constant curvature (w quadratic, beta = -grad w): every side's Kirchhoff residual
+    r_k is zero, so the thick element (its sides' phi 4-18) reproduces it exactly with no
+    shear strain, as DKT. Constant transverse shear where the formulation claims it,
+    along each side: a Timoshenko beam state along side k (shear force Q, bending and
+    shear stiffness along it D_k, H_k: beta_s = a + b s + Q s^2 / (2 D_k), w' = Q / H_k -
+    beta_s) has r_k = Q / H_k (1 + phi_k) / phi_k, and the element gives exactly its shear
+    strain gamma_s,k = Q / H_k and its bubble dbeta_k = -Q L_k^2 / (8 D_k) (Katili's
+    sides are exact Timoshenko elements); a constant shear field's side values map back
+    to it exactly (the Raviart-Thomas mean)."""
+    from bridgesim.sim import shell as shellmod
+
+    lam, H = _lam_DH([0.0, 90.0, 0.0], 6.0)
+    xy = np.array([[0.3, 0.1], [10.2, 1.5], [3.1, 7.7]])
+    p = shellmod.dkmt_parts(xy)
+    phi = shellmod.side_phi(lam.D, H, p["t"], p["L"])
+    assert phi.min() > 1.0  # a thick element: shear matters
+    Bb, Bs = shellmod.dkmt_operators(xy, phi, p)
+
+    def dofs(f):
+        out = []
+        for x, y in xy:
+            w, wx, wy = f(x, y)
+            out += [w, wy, -wx]
+        return np.array(out)
+
+    for f, want in ((lambda x, y: (0.5 * x * x, x, 0), [-1, 0, 0]),
+                    (lambda x, y: (0.5 * y * y, 0, y), [0, -1, 0]),
+                    (lambda x, y: (x * y, y, x), [0, 0, -2]),
+                    (lambda x, y: (1 + 2 * x + 3 * y, 2, 3), [0, 0, 0])):
+        u = dofs(f)
+        for g in range(3):
+            assert Bb[g] @ u == pytest.approx(want, abs=1e-9)
+        assert Bs @ u == pytest.approx([0, 0], abs=1e-12)
+    Hi = np.linalg.inv(H)
+    om = phi / (1 + phi)
+    for k, (i, j) in enumerate(shellmod.SIDES):
+        c, s = p["t"][k]
+        Lk = p["L"][k]
+        Hk = 1 / float(p["t"][k] @ Hi @ p["t"][k])
+        Dk = phi[k] * Lk**2 * Hk / 12
+        Q, a, b = 3.7, 0.011, -0.0023
+        bs = [a, a + b * Lk + Q * Lk**2 / (2 * Dk)]
+        w = [0.4, 0.4 + (Q / Hk - a) * Lk - b * Lk**2 / 2 - Q * Lk**3 / (6 * Dk)]
+        u = np.zeros(9)
+        for node, wv, bv in ((i, w[0], bs[0]), (j, w[1], bs[1])):
+            u[3 * node: 3 * node + 3] = (wv, -bv * s, bv * c)  # theta_x = -beta_y
+        r = p["R"][k] @ u
+        assert om[k] * r == pytest.approx(Q / Hk, rel=1e-10)
+        assert -1.5 * r / (1 + phi[k]) == pytest.approx(-Q * Lk**2 / (8 * Dk), rel=1e-10)
+    g0 = np.array([0.37, -1.2])
+    assert p["Gs"] @ (p["t"] @ g0) == pytest.approx(g0, rel=1e-12)
+
+
+def test_dkmt_element_has_only_rigid_body_zero_modes():
+    """6 zero-energy modes per element whether thin or thick, any ply angle: the shear
+    term adds no mechanism and removes no rigid motion."""
+    from bridgesim.sim.materials import laminate_shear
+    from bridgesim.sim.shell import element_data
+
+    ply = Ply.from_material(MAT, SP)
+    rng = np.random.default_rng(3)
+    for _ in range(5):
+        xy = rng.uniform(-10, 10, (3, 2))
+        angs = list(rng.uniform(-90, 90, 3))
+        for t in (0.5, 3.6, 20.0):
+            H = laminate_shear(ply, angs, t, _GR, _KL)
+            ed = element_data(xy, angs, t, ply, 1.0, 1.0, (3.0, 0.3, 1.0), ply.E_L * t, H=H)
+            ev = np.linalg.eigvalsh(ed["K"])
+            assert (ev < 1e-8 * ev.max()).sum() == 6
+
+
+@pytest.mark.parametrize("angles", [[0.0, 0.0, 0.0], [0.0, 90.0, 0.0]])
+def test_a_plate_strip_bends_like_a_timoshenko_beam(angles):
+    """A strip (span L, width L/4, 6 mm, UD and 0/90/0 along it) on line supports with a
+    line load P at mid-span, in cylindrical bending (theta_x = 0): Timoshenko beam theory
+    with the laminate's D11 and H11 (per width b) gives the mid-span deflection
+    P L^3 / (48 D11 b) + P L / (4 H11 b). DKMT is within 3 % at L/t = 20, 10 and 5 on two
+    meshes (8 x 2 and 16 x 4 cells); DKT gives the bending part only, so it misses the
+    shear part ds / db = 12 D11 / (H11 L^2) (0/90/0: 0.13, 0.51, 2.05; UD: 0.08, 0.31,
+    1.25), by that hand-calculated amount (its own bending within 1.5 %)."""
+    t = 6.0
+    lam, H = _lam_DH(angles, t)
+    for Lt in (20, 10, 5):
+        L = Lt * t
+        b = L / 4
+        db = L**3 / (48 * lam.D[0, 0] * b)
+        ds = L / (4 * H[0, 0] * b)
+        for nx in (8, 16):
+            X, tri = _grid(L, b, nx, nx // 4)
+            mid = np.where(np.isclose(X[:, 0], L / 2))[0]
+            wts = np.full(len(mid), b / (nx // 4))
+            wts[np.isclose(X[mid, 1], 0) | np.isclose(X[mid, 1], b)] *= 0.5
+            F = np.zeros(3 * len(X))
+            F[3 * mid] = wts / b
+            ends = np.where(np.isclose(X[:, 0], 0) | np.isclose(X[:, 0], L))[0]
+            fix = np.r_[3 * ends, 3 * np.arange(len(X)) + 1]
+            d = _solve(_plate_K(X, tri, lam, H), F, fix)[3 * mid].mean()
+            assert d == pytest.approx(db + ds, rel=0.03), (Lt, nx)
+            d_kirchhoff = _solve(_plate_K(X, tri, lam, None), F, fix)[3 * mid].mean()
+            assert d_kirchhoff == pytest.approx(db, rel=0.015), (Lt, nx)
+
+
+def _navier_mindlin(D, H, a, P, u, nmax=199):
+    """Centre deflection of a simply supported (hard: w = 0 and no tangential rotation on
+    the edges) square plate of side a under a central patch u x u carrying P, by the
+    Navier series of first-order shear deformation theory for a specially orthotropic
+    laminate: w, beta_x, beta_y = sum W sin sin, X cos sin, Y sin cos over odd m, n, each
+    (W, X, Y) from the three equilibrium equations
+      [H11 al, D11 al^2 + D66 be^2 + H11, (D12 + D66) al be]
+      [H22 be, (D12 + D66) al be, D66 al^2 + D22 be^2 + H22]   (W, X, Y) = (0, 0, q_mn)
+      [H11 al^2 + H22 be^2, H11 al, H22 be]
+    with al = m pi / a, be = n pi / a and q_mn = 16 P / (pi^2 m n u^2) sin(m pi/2)
+    sin(n pi/2) sin(m pi u / 2a) sin(n pi u / 2a) (Reddy, Mechanics of Laminated Composite
+    Plates and Shells, 2004, ch. 6)."""
+    m = np.arange(1, nmax + 1, 2, dtype=float)
+    M, N = np.meshgrid(m, m, indexing="ij")
+    al, be = M * np.pi / a, N * np.pi / a
+    q = 16 * P / (np.pi**2 * M * N * u * u) * np.sin(M * np.pi / 2) * np.sin(N * np.pi / 2) \
+        * np.sin(M * np.pi * u / (2 * a)) * np.sin(N * np.pi * u / (2 * a))
+    K = np.zeros(M.shape + (3, 3))
+    K[..., 0, :] = np.stack([H[0, 0] * al, D[0, 0] * al**2 + D[2, 2] * be**2 + H[0, 0],
+                             (D[0, 1] + D[2, 2]) * al * be], -1)
+    K[..., 1, :] = np.stack([H[1, 1] * be, (D[0, 1] + D[2, 2]) * al * be,
+                             D[2, 2] * al**2 + D[1, 1] * be**2 + H[1, 1]], -1)
+    K[..., 2, :] = np.stack([H[0, 0] * al**2 + H[1, 1] * be**2, H[0, 0] * al,
+                             H[1, 1] * be], -1)
+    rhs = np.zeros(M.shape + (3,))
+    rhs[..., 2] = q
+    W = np.linalg.solve(K, rhs[..., None])[..., 0, 0]
+    return float((W * np.sin(M * np.pi / 2) * np.sin(N * np.pi / 2)).sum())
+
+
+def test_a_square_plate_under_a_patch_load_matches_the_mindlin_series():
+    """A simply supported square plate, a = 10 t (60 mm, 6 mm thick), loaded on a central
+    a/5 x a/5 patch: the DKMT centre deflection is within 5 % of the Navier series of
+    first-order shear deformation theory (_navier_mindlin; measured within 2 % with 10 x
+    10 and 20 x 20 cells), for a 0/90/0 and a UD laminate, where Kirchhoff plate theory
+    (the same series with H -> oo) reads 36 % and 28 % less; DKT follows the Kirchhoff
+    series, not the plate."""
+    t = 6.0
+    a, P = 10 * t, 1.0
+    u = a / 5
+    for angles in ([0.0, 90.0, 0.0], [0.0, 0.0, 0.0]):
+        lam, H = _lam_DH(angles, t)
+        w_m = _navier_mindlin(lam.D, H, a, P, u)
+        w_k = _navier_mindlin(lam.D, H * 1e9, a, P, u)
+        assert w_k < 0.75 * w_m  # shear matters at a / t = 10
+        for n in (10, 20):
+            X, tri = _grid(a, a, n, n)
+            F = np.zeros(3 * len(X))
+            for t3 in tri:
+                c = X[t3].mean(0)
+                if abs(c[0] - a / 2) < u / 2 and abs(c[1] - a / 2) < u / 2:
+                    p_ = X[t3]
+                    ar = 0.5 * abs((p_[1, 0] - p_[0, 0]) * (p_[2, 1] - p_[0, 1])
+                                   - (p_[2, 0] - p_[0, 0]) * (p_[1, 1] - p_[0, 1]))
+                    F[3 * np.asarray(t3)] += P / (u * u) * ar / 3
+            fix = []
+            for k, (x, y) in enumerate(X):
+                if np.isclose(x, 0) or np.isclose(x, a):
+                    fix += [3 * k, 3 * k + 1]
+                if np.isclose(y, 0) or np.isclose(y, a):
+                    fix += [3 * k, 3 * k + 2]
+            ctr = int(np.argmin(np.hypot(X[:, 0] - a / 2, X[:, 1] - a / 2)))
+            w = _solve(_plate_K(X, tri, lam, H), F, np.unique(fix))[3 * ctr]
+            assert w == pytest.approx(w_m, rel=0.05), (angles, n)
+            w_dkt = _solve(_plate_K(X, tri, lam, None), F, np.unique(fix))[3 * ctr]
+            assert w_dkt == pytest.approx(w_k, rel=0.05), (angles, n)
+
+
+def test_dkmt_kernel_is_the_laminate_stiffness_and_matches_numpy():
+    """The layered kernel (compiled and NumPy reference), linearised by finite
+    differences on one thick 0/90/0 element at 20/110 degrees to its axes, is the exact
+    laminate stiffness of shell.local_stiffness (A, B, D from classical lamination theory,
+    H, DKMT): intact, and split once (lever arms x 1/2: the bending stiffness a quarter, B
+    a half, the membrane and the shear stiffness kept). On the synthetic bridge, shear on
+    and some elements split, the compiled kernel equals the NumPy reference, its
+    interlaminar shear ratios included."""
+    from bridgesim.sim import shell as shellmod
+    from bridgesim.sim.idealize import build_model
+    from bridgesim.sim.materials import laminate_shear
+
+    pytest.importorskip("numba")
+    ply = Ply.from_material(MAT, SP)
+    P = np.array([[-5.0, -3.0, 0.0], [7.0, -3.0, 0.0], [-2.0, 6.0, 0.0]])
+    angles, t = [20.0, 110.0, 20.0], 6.0
+    H = laminate_shear(ply, angles, t, _GR, _KL)
+    lam = laminate(ply, angles, t)
+    ed = shellmod.element_data(P[:, :2], angles, t, ply, 1.0, 1e6, (8.0, 0.45, 1.3),
+                               ply.E_L * t, H=H, interlaminar=(8.0, 4.0, 3.5))
+    m = lab.blank_model(P.copy())
+    for k, v in shellmod.pack([ed]).items():
+        setattr(m, k, v)
+    m.s_nodes, m.s_E0, m.s_P = np.array([[0, 1, 2]]), np.eye(3)[None], P[None]
+    m.s_t, m.s_body = np.array([t]), np.zeros(1, int)
+    m.mass[:], m.rot_inertia[:] = 1.0, 1.0
+    for split in (1.0, 0.5):
+        Kref = shellmod.local_stiffness(P[:, :2], lam.A, lam.D * split**2, ply.E_L * t,
+                                        lam.B * split, H)
+        for numba_ in (True, False):
+            s = S.Settings(dt=1e-6, beta_frac=0.0, use_numba=numba_)
+            Kfd = np.zeros((18, 18))
+            for j in range(18):
+                st = S.initial_state(m, 1e12)
+                st.s_split[:] = split
+                du = np.zeros(18)
+                du[j] = 1e-7
+                du = du.reshape(3, 6)
+                st.x, st.R = m.X + du[:, :3], S.expmap(du[:, 3:])
+                F, Mo = np.zeros((3, 3)), np.zeros((3, 3))
+                S.internal_and_contact(m, st, s, F, Mo, update=False)
+                Kfd[:, j] = np.c_[F, Mo].ravel() / 1e-7
+            assert np.abs(Kfd - Kref).max() < 1e-6 * np.abs(Kref).max(), (split, numba_)
+    mb = build_model(simple_beam_bridge(), MAT, SP, seed=0)
+    rng = np.random.default_rng(1)
+    st = S.initial_state(mb, 1e4)
+    st.x += rng.normal(0, 0.01, st.x.shape)
+    st.R = S.expmap(rng.normal(0, 0.002, (mb.n_nodes, 3)))
+    st.v = rng.normal(0, 50, st.x.shape)
+    st.s_split[::3] = 0.5
+    st2 = S.initial_state(mb, 1e4)
+    for k in ("x", "R", "v", "w", "s_split"):
+        setattr(st2, k, getattr(st, k).copy())
+    s = S.Settings(dt=3e-6)
+    F, Mo = np.zeros((mb.n_nodes, 3)), np.zeros((mb.n_nodes, 3))
+    F2, Mo2 = F.copy(), Mo.copy()
+    S.internal_and_contact(mb, st, s, F, Mo)
+    S.internal_and_contact_numpy(mb, st2, s, F2, Mo2)
+    assert np.abs(F - F2).max() <= 1e-9 * np.abs(F2).max()
+    assert np.abs(Mo - Mo2).max() <= 1e-9 * np.abs(Mo2).max()
+    assert st.s_rat.max() > 0
+    np.testing.assert_allclose(st.s_rat, st2.s_rat, rtol=1e-8, atol=1e-14)
+
+
+def test_a_short_stick_plate_splits_in_rolling_shear_and_a_long_one_breaks_in_bending():
+    """A 2-ply 0/90 strip (4 mm, 8 mm wide, its 0 ply underneath) in three-point bending,
+    the explicit crush solver. The shear force is P / 2 on either side of the load, so
+    the glue plane between the plies carries 1.5 (P / 2) / (b t), along the 0 ply's grain
+    (f_v 8 MPa) and across the 90 ply's (rolling shear, here 1.0 MPa) under a bond line of
+    3.5 MPa: it splits at P = 4/3 b t f_rolling = 4/3 x 8 x 4 x 1.0 = 42.7 N. Short (span
+    12 mm, 3 t) it splits there within 5 % on 2 mm and 1 mm elements (measured +0.5 %
+    and -0.2 %), into its two plies (lever arms 1/2: a quarter of the bending stiffness,
+    the most a 2-ply plate splits); long (100 mm, 25 t) its fibres fail in bending first,
+    at a fraction of that load (the outer plies at f_t or f_c at M = P L / 4), its glue
+    plane under half its strength."""
+    sp = SP.updated({"wood.f_rolling_MPa": 1.0})
+    b, t = 8.0, 4.0
+    P_split = 4 / 3 * b * t * 1.0
+    loads = []
+    for h in (2.0, 1.0):
+        r = lab.shell_strip_bending(h, L=12.0, W=b, t=t, angles=(0.0, 90.0), sim_params=sp,
+                                    stop_at_split=True)
+        assert r.state.s_shear.any()
+        assert r.force[-1] == pytest.approx(P_split, rel=0.05), h
+        loads.append(r.force[-1])
+        assert (r.state.s_split[r.state.s_shear] == 0.5).all()
+    assert loads[0] == pytest.approx(loads[1], rel=0.05)
+    r = lab.shell_strip_bending(4.0, L=100.0, W=b, t=t, angles=(0.0, 90.0), sim_params=sp,
+                                rate=50.0, until=lambda st: bool(
+                                    (st.s_hist[:, :, :2] > 1.0).any()))
+    assert (r.state.s_hist[:, :, :2] > 1.0).any()
+    assert not r.state.s_shear.any() and r.state.s_rat.max() < 0.5
+    assert r.force[-1] < 0.5 * P_split
+
+
+def test_a_plate_split_governs_and_is_strengthened_by_a_thicker_plate():
+    """plate_shear is wired as member_shear: a break that governs, put down to a member
+    fracture in the same 2 ms (its stress wave), and a part whose what-if is a thicker
+    plate (section_scale); the failure sequence names it."""
+    from bridgesim.sim import study
+    from bridgesim.sim.crush import BREAKS, KGF, Event, attribute
+    from bridgesim.sim.report import EventOut
+
+    assert "plate_shear" in BREAKS and "plate_shear" in study.MAJOR
+
+    def ev(t, kgf, kind, what):
+        return Event(t, 100 * t, kgf * KGF, kind, what)
+
+    gov, _ = attribute([ev(0.2, 2000, "plate_shear", "Deck - L")], t_c=0.1999,
+                       peak=2000 * KGF, peak_travel=20.0, speed_mm_s=100.0)
+    assert gov.kind == "plate_shear" and gov.what == "Deck - L"
+    gov, _ = attribute([ev(0.2, 2000, "plate_shear", "Deck - L"),
+                        ev(0.2005, 1990, "member_fracture", "Chord - R")], t_c=0.1999,
+                       peak=2000 * KGF, peak_travel=20.0, speed_mm_s=100.0)
+    assert gov.kind == "member_fracture"
+    e = EventOut(t_s=0.0, jack_travel_mm=0.0, load_N=0.0, load_kgf=0.0, kind="plate_shear",
+                 what="Deck (2-ply 0-90) - L", parts=["Deck (2-ply 0-90) - L"])
+    wi = study._whatif([e])
+    assert list(wi["bodies"].values()) == [{"section_scale": 1.25}]
+    assert "plate split" in study._sequence([ev(0.2, 2000, "plate_shear", "Deck - L")])[0]
+    # a crush test that split a plate measures its glue planes (calibrate-bridge)
+    assert "glue.interlaminar_MPa" in study.MECHANISM_KEYS[study._mechanism(
+        "plate shear: Deck - L")]
