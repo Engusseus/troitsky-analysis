@@ -331,7 +331,9 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
   came back); of the breaks within half a period of the bridge's ringing (one moment:
   the load takes that long to fall), the joint that could carry the most among those
   sharing a part with the first to let go (one node; a joint on the other truss in the
-  same moment is the cascade). `competing`:
+  same moment is the cascade; since round 28 a joint whose glue was still intact when a
+  member broke in that moment is that member's cascade too: it neither governs nor
+  competes, and gets no glue what-if). `competing`:
   the other parts that broke within 10 % of F_u before the failure call. A joint whose glue can carry under 2 % of F_u neither governs nor
   competes (its break is a symptom). When it is not empty the failure could start at one of them on another
   seed or mesh, so run `diagnose` before redesigning around the `governing` part.

@@ -1430,3 +1430,238 @@ Not done, and why: physical tests (the -2 the user accepts); a U-frame verificat
 the portals' effect (Engesser / Holt; the adversarial review measured +10 to +19 % without
 the portals over every variant, the mechanism unverified); local plate refinement at small
 joints; competing model forms sampled by the Monte Carlo (the ambitious review's leap 6).
+
+### 3.21 Round 28: fourteen mechanisms the model did not have
+
+From a review of the model's physics (not of its evidence: no test was added to the
+comparison set, and the level of the published tests did not move): fourteen things a
+stick bridge does that the simulation could not do, or did with the wrong mechanics. Nine
+work packages, each with its own tests against hand calculations and a switch that gives
+round 27 back; mechanisms that need a value nobody has measured carry it as a labelled
+placeholder that `montecarlo --sample-placeholders` draws, and the two that compete with a
+law already fitted (what is inside one joint) are implemented and left off.
+
+* **What a glue line holds** (review items 2 and 10). A glue line pressed together holds
+  more in shear, a Mohr-Coulomb onset tau + mu_i sigma_c (`glue.pressure_coeff` 0.3,
+  assumed: timber reports the rise qualitatively, no slope for PVA laps on sticks could be
+  checked; drawn 50 %), its toughness in the same ratio so it lets go at the same slip;
+  until round 27 an intact line pressed together held exactly tau. The lap coupon's own
+  bending presses its overlap, so with the pressure counted the peak factor that makes it
+  reproduce tau_g is 1.04 (1.065 before): joints the pressure does not help are 2.3 %
+  weaker. Teams can measure the coefficient with laps clamped at 0, 1 and 2 MPa
+  (`clamp_pressure_MPa` in `glue_joint_template.csv`); `calibrate` fits it through the
+  simulated clamped lap, whose rise also holds the friction of the share already let go
+  (~0.28 per MPa at a coefficient of 0, so a plain slope of the data would overstate it).
+  Starved spots inside a joint (`scatter.glue_point_cov` over squares of
+  `scatter.glue_spot_mm`) and squeeze-out fillets along its exposed edges (`glue.fillet_mm`,
+  inspect's `exposed_perimeter_mm`) are implemented and tested but off, as alternative
+  readings of what `glue.weibull_m` fits; laps of three sizes or more with different
+  perimeter-to-area ratios let `calibrate` fit the size law and the fillet together. A
+  field of CoV 0.3 lowers a 20 x 10 mm lap by only ~0.5 % on average: laps shorter than
+  the glue's characteristic length share their load, so the field cannot explain the size
+  effect; fillets can.
+* **Member sections** (items 3, 4, 6 and 11). The sticks' scatter is a field per stick
+  (`scatter.stick_field` 1): a stick's log-variance is split into the share its body's
+  sticks have in common (`ply_corr` of it, one draw per body) and its own (one draw per
+  stick cell: along a member in stick lengths cut at each ply's butt joints, across it in
+  plies and stick widths, keyed on the body and the cell, so the same at every fidelity).
+  Each fibre takes the mean across its sticks of the weakest along its element, so a long
+  member in tension is as strong as its weakest section: with its joints lined up, 0.95 /
+  0.90 / 0.88 of a stick's mean at 2 / 5 / 10 sticks, the minimum of that many independent
+  sections; plates carry the field per element. A laminated member bent across its plies
+  shears through its stack, the plies and pressed glue lines in series (about 340 MPa for
+  2 mm UD sticks against the 656 used both ways until round 27; 142 for a 0/90/90/0
+  stack). The crushing fall takes a shortening, 5 (f_c/E) x `wood.crush_band_mm` (12.5 mm,
+  assumed, drawn 50 %) per integration length, rather than a fixed strain: a strut held
+  straight gives up 920 N mm from peak to plateau on 25, 12.5 and 6.25 mm elements against
+  924 by hand. A member crushed across its grain on a side face is squeezed by the crushed
+  depth there, areas kept.
+* **Plates in out-of-plane shear** (items 4 and 5). The plates were Kirchhoff elements
+  (DKT), so a stick plate, soft in transverse shear (rolling shear 150 MPa across a cross
+  ply, pressed glue lines between plies), was too stiff under the loading plate, and it
+  could not split between its plies. It is now a discrete Kirchhoff-Mindlin triangle: each
+  side an exact Timoshenko beam, a constant shear strain per element, and DKT again as the
+  plate gets thin. Its transverse shear stiffness comes from the plies in series with
+  their glue lines, shear correction 5/6 (`plate.shear_correction`; for stick laminates
+  the energy-consistent factor is 0.60-1.49). A strip in 3-point bending follows
+  Timoshenko theory within 1 % at L/t 20, 10 and 5, where DKT missed 8-205 %; a simply
+  supported plate under a patch load is within 2 % of the Mindlin series, where Kirchhoff
+  reads 28-36 % less. A variant coupling the sides through the element's full equilibrium
+  did not converge (+13 to +33 %) and was not adopted. A plate splits between its plies
+  where 1.5 |Q| / t, averaged over a plate thickness, reaches its glue planes' strength
+  (the members' law): lever arms x 1/2 down to its single plies, membrane and shear
+  stiffness kept; the new event `plate_shear`, whose what-if is a thicker plate. A 2-ply
+  0/90 strip in a short-beam test splits at the hand-calculated load within 1 % on two
+  meshes.
+* **Contact between parts** (item 7). A member's contact surface was a capsule of the
+  radius of the circle with its section's area: a 21 x 47 mm chord was 6 mm too slim one
+  way and 7 mm too fat the other, and a 20 x 10 mm member dropped on another rested 3.6 mm
+  above its face lying flat and 1.4 mm inside it on edge. Each element is now a box of its
+  real section touched by points on its section outline, and rests within a micron; a
+  plate is a square-edged slab touched by points on its faces. The body-wide exclusion of
+  everything a point touched at the start is gone: points are kept off only near a patch
+  the two bodies share, and every other pair starts from the penetration it was drawn
+  with. Faces drawn 0.8-3 mm apart, which were asked about and then had nothing, are dry
+  faces that bear once their gap closes, with a glued face's stiffness, crushing and
+  friction. Contact between parts has Coulomb friction (`contact.friction_parts` 0.4: dry
+  wood on wood 0.25-0.5, Bowden & Tabor 1950; drawn 30 %).
+* **Compact blocks are cells of their wood** (item 12). Until round 27 every compact piece
+  (a node block, a heel seat, a floor-beam stub, a support pier, the block under the
+  plate) was one rigid body: no compliance between its faces beyond its glue lines, and it
+  could not break inside. A block's bounding box is now cut in its own axes into rigid
+  cells of about `block.cell_mm` (20 mm; 1-3 per axis), each with the mass and inertia of
+  its wood, joined across each plane by cohesive points of the wood itself, K_n = E/h and
+  K_s = G/h over the distance between their centroids (a rigid-body-spring model, Kawai
+  1978), with the wood's strength across them (f_t90 x the size factor or f_t; f_v or the
+  mean of f_v and rolling shear, not the notched-beam f_v/1.5; crushing; the wood's
+  fracture energies and rate exponent; no glue scatter, gap, creep or pressure
+  coefficient: f_v is the block-shear value). A block pressed or sheared between two faces
+  has the compliance of its depth with 1, 2 or 3 cells (round 27 counted its depth under
+  each face); a block in double shear splits at f_v x A within 3 % in a crush. A plane
+  that lets go is the new event `block_fracture`. `kind: rigid` keeps one rigid body; the
+  rebuilt published tests use it for their steel load hangers and B's epoxy putty.
+* **The built bridge is not the drawn bridge** (item 8). Seeded per body, scaled by
+  `scatter.amplitude`, off at 0 and stress-free (nodes move, glue points stay, rigid arms
+  take up the difference): plates out of flat by L/250 of each free panel, held flat where
+  parts are glued on them (`scatter.plate_flatness`); members pre-twisted (0.1 rad/m per
+  stick, averaged over their plies); sticks 3 % thicker or thinner (CoV / sqrt(n)); members
+  0.3 mm off their drawn line in the plane of their glued faces; members fitted end to end
+  cut up to 0.05 mm (SD) long and locked in compression, ramped in with gravity (one-sided:
+  a member cut short is not pulled in, its glue fills the gap). Against hand values: a
+  strip's column amplification within 2 %, a twisted cantilever's out-of-plane deflection
+  +0.6 %, an eccentric column's secant formula -0.2 %, a three-bar lack of fit 0.07 %. The
+  five values are judgements until measured on a built bridge (straightedge, winding
+  sticks, calipers, a full-size print, feeler gauges); montecarlo draws them at 50 %.
+* **Slender struts and plies that buckle on their own** (item 9). Published test D's end
+  diagonals, single 108 mm sticks, carry 42-46 N at the model's peak (seed 0, fine) where
+  the builds' carried ~131 N, the statics of the rebuild's geometry at 45.5 kg. The strut
+  is not the cause: a single stick in the model buckles at Euler's load pinned (56.1
+  against 56.0 N) and fixed (within 5 % of 224 N), and with an L/400 bow at the
+  Perry-Robertson load (51.7 N). The rebuild's nodes are: an end diagonal's top is mitred
+  onto the next diagonal (25 mm^2 of end grain, no lap on the top chord, which starts at
+  the apex), and its foot lapped over 52 mm^2 on a single-stick chord whose twist holds it
+  at ~750 Nmm/rad (0.3 of the stick's 4EI/L). Its force enters 1 mm off its axis, so it
+  bends from the first newton and crushes at mid-length at 0.8 of its pinned Euler load;
+  held by rigid chords it still lets go at its laps (65-114 N). The builds' 131 N needs
+  ends held at K ~0.64 and about twice the lap area. So D reads low for its frozen
+  rebuild's half-node laps, not for the strut; neither was changed. Laminated bars can be
+  split into ply groups (`ply_groups: K`, and by themselves where the overrides declare
+  butt joints that stand open, 1 mm or more): each group is its own beam, glued to the
+  next by the lamination's own glue line, and a ply butted open ends at its joint, a real
+  gap. Split, a member keeps its axial stiffness exactly and buckles within 5 % of
+  Engesser's load with the through-stack shear modulus above; unglued, its plies buckle
+  one by one at 1/n^2 of that. A clamped 5-ply column with its outer plies butted open at
+  mid-length reads 4,797 / 4,834 N on two meshes, between its core buckling alone (2,590
+  N) and its net section crushing (5,238 N), against 3,159 with round 27's empirical net
+  zones. Published test B's rebuild gives no butt joints, so it does not split; with its
+  diagonal D3's outer plies butted open, as its test reports, it still fails first at a
+  putty joint (114.0 against 113.8 kgf).
+* **The wood on the test's clock, and a pumped jack** (item 14). Members and plates run on
+  the physical test time the glue already ran on, each element on its own clock from when
+  it first carried a tenth of its strength. Their strengths follow f(t) = f_ref (t /
+  t_ref)^-n (`wood.rate_exponent` 0.02, kept and re-sourced between the Madison curve's
+  ~6.3 % per decade under constant load, Aicher & Dill-Langer 1999, and ~1.2 % per decade
+  in ramp tests of lumber, Foschi & Barrett 1982 and Karacabeyli & Barrett 1993 as
+  tabulated by Wong 2020; `wood.coupon_time_s` 60 s), and their moduli an isochronous
+  creep law, E_ref (1 + phi(t_ref)) / (1 + phi(t)), phi = 0.04 (t / 60 s)^0.25 (assumed).
+  Creep lowers the modulus, not the strength. A hand-pumped jack (`crusher.stroke_mm`,
+  `stroke_time_s`, `pause_s`; off by default) advances in fast strokes and stands between
+  them while the glue and the wood creep; the simulated jack slows to each pause and
+  speeds up after it over a period of the bridge's ringing, and the load is read stroke
+  by stroke. Hand-checked: a held member breaks at t_ref 0.95^(-1/n) (780 s, within
+  0.1 %), a held cantilever creeps by 1 + phi (within 0.2 %), and a strut held at 90 % of
+  its buckling load buckles when its creeping modulus has fallen to 0.9 E0 (0.899).
+  Pumping the 10 mm truss (1 mm strokes of 0.5 s, 5.5 s pauses) relaxed its load 1.4-1.8 %
+  per pause and read F_u +2.1 %, mostly because the jack stood still after the first
+  joints let go and the bridge was not called failed at that fall: the failure call on
+  that truss is sensitive to the dynamics.
+* **Plates: where they start to crack and how they crush** (items 13 and 11). The crack
+  band made a plate crack's energy independent of the mesh, but not its onset: at a stress
+  raiser the first element cracked at a lower load the finer the mesh, and a plate pulled
+  through a third of its end peaked at 71.4, 54.1 and 43.0 N with 5, 2.5 and 1.25 mm
+  elements. A ply's point past its strength in a tension mode now waits until the strain
+  along the crack's path, averaged over 2 L_c each way (L_c = E G / (pi f^2): 16.7 mm in
+  fibre tension, 31.8 mm across the grain, 4.2 mm in shear with the placeholders), reaches
+  it too: the line method of the theory of critical distances, by which a sharp notch
+  starts at the fracture toughness and a hole as Whitney and Nuismer's average-stress
+  criterion. The point then softens from the stress it holds with the crack band's
+  energy. The line stops where the wood is no longer in tension in that mode, so a plate
+  bent in its plane is not held by its compressed side: a strip no deeper than its line
+  starts at an extreme-fibre stress of at most 2 f, a deeper one at 1 / (1 - 2 L_c / d)
+  (1.33 at four times the line, met exactly), its peak moment within 7 % between two
+  meshes and within 8 % of the local model's; eccentric tension lies between (1.45
+  against the method's 1.5). A cap on the hold at 2 f was tried and removed: at 1.25 mm it
+  bound at the grip's corners and brought the mesh dependence back (77.4 N). The same
+  plate peaks at 90.4, 90.6 and 87.2 N, its net section 90 N (the critical length across
+  the grain is larger than that plate, so the raiser does not weaken it). Uniform strips are unchanged within 1 %, a notched strip dissipates G_f
+  times its ligament within 8 %, and open holes read 7-11 % above the criterion, converged
+  to 1 %. A disc average was tried first and not adopted: it averaged the unloaded wood
+  beside a notch into the ligament, which then held 1.7-1.85 times its net section. Plies
+  crushing along their grain fall to their plateau over the members' shortening, 5 (f_c /
+  E) x `wood.crush_band_mm`, so a standard plate element falls over 3-4 onset strains
+  where round 27 had 1 (the same wood had two crushing laws); a strip's weak column gives
+  up 85.6 / 85.3 / 85.3 N mm at 10 / 5 / 2.5 mm elements against 86.5 by hand.
+* **What governed, when a member breaks and pulls a joint off** (found by the agent loop
+  through MCP, which CI skips for want of the `mcp` module and which had been failing
+  since before this round on an acknowledgement its bridge does not raise). A beam on two
+  piers broke in bending at its peak; 2.3 ms later the glue of its joint to a pier began
+  to fail, within the half period of ringing that counts as one moment, and the joint was
+  named as governing, so the strengthen step offered glue x 1.5, which changes F_u by
+  0.0 %, where the beam's section x 1.25 gives +77 %. A joint whose glue was still intact
+  when a member broke in that moment is now that member's cascade: it neither governs nor
+  competes, and gets no glue what-if. With the piers as cells the member's crushing reads
+  82 % of F_u on the smoothed load (100 % with rigid piers), below the 90 % that puts a
+  break near the peak, which is what had hidden the member. On that beam the stick field
+  alone lowers F_u by 9 % (245 against 223 kgf at quick, seed 1): the weakest section of
+  a 1.1 m beam of 20 plies.
+
+**Evidence.** Each package was measured alone against round 27 by the engineer who built
+it (same seed, same fidelity), then all nine together on the benchmark
+(`validation/benchmark.py`, seed 0, against round 27). Bridge_v10 was **not run**: its part
+file is not in the repository, so every Bridge_v10 figure in this file and in `AGENTS.md`
+is round 27's, and the first thing to do with round 28 on a team's bridge is to run the
+benchmark with `--cad` and read the drift. (The benchmark below was run before the
+change to what governs above, which moves labels only, not F_u.) The 10 mm truss at standard reads 45.78 kgf
+(46.4: -1.3 %), the same top chord / diagonal 5 joint governing; the published tests'
+seed 0 at fine A 37.08 (36.7: +1.0 %), B 114.39 (116.6: -1.9 %, the same putty joint), C
+40.43 (37.4: +8.1 %: the pressure on its diagonals' laps alone +6.9 %; the first break is
+still the foot of vertical 320, the label now at the top joint of the same vertical, which
+lets go 0.05 mm later), D 16.65 (17.9: -7.0 %, an end diagonal crushing; 16.70 with the
+member-section package alone). The 6 mm truss at fine reads 26.88 kgf (30.3: -11.3 %),
+member shear in floor beam 2 as before, flagged as before (a deck joint narrower than the
+deck's elements): the one case past the policy's 10 %. It was already at 26.37 with the first five packages (member sections, glue, contact, blocks, plate shear) and the later four moved it by +0.5 kgf; the plate shear alone had read +1.0 %. Alone, the packages moved the 10 mm truss by -0.3 %
+(glue), -0.3 % (blocks), -0.1 % (plate shear), 0.0 % (contact), -0.15 % (the built bridge,
+the governing label moving between two joints that already competed), +0.2 % (the wood's
+clock), +0.5 % then 0.0 % (the plates' onset before and after the tension cut), and C by
++6.9 % (glue), +0.6 % (contact), -0.1 % (blocks), +0.24 % (the built bridge), +0.03 % (the
+wood's clock). The step time: the beam kernel ~+15 % (per-fibre strengths), a force
+evaluation +3 to +5 % with plates (shear and the split averaging), ~+2 % for the nonlocal
+onset with no point held, contact 49 -> 29 us on the 10 mm truss and +14 % on C; the stable
+time step is unchanged (a member split into ply groups halves it). CI runs the full suite
+(the tests of rounds 1-27, each package's tests against hand values, and the regressions
+that switch each mechanism back to round 27, most of them bit for bit) on Python 3.11,
+3.12 and 3.13.
+
+Not done, and why. **Nothing was measured**: every new value is a placeholder with a prior,
+and section 5's list of experiments is longer, not shorter (clamped laps for
+`glue.pressure_coeff`; laps of three sizes for the size law against fillets; a short stack
+crushed past its peak for `wood.crush_band_mm`; a short-beam test of a stick plate on its
+flat for the plates' shear stiffness and split; a block in double shear; the five built
+differences on a real bridge; the jack's strokes from a video). The published tests' Monte
+Carlo (section 3.14) was not re-run: `published_check` and `uncertainty.published_bias` are
+round 27's, and with C up 8 % and D down 7 % on seed 0 their medians have moved by about
+that. The fidelity table (quick / standard / fine) was not re-run. Known open points, each
+in ASSUMPTIONS-SIM.md section 7: a glue line on a plate's face counts the plate's
+through-thickness slip partly twice (the glue spring and the shear-deformable element:
+-1.5 % stiffness on the 10 mm truss); a member's shear strengths scale with its strength
+factor over its stiffness factor, not with its strength factor as its tension and
+compression strengths do (round 27's, kept so the switches reproduce it); a member glued
+on both faces may have its depth counted under each face in the glue line's normal
+stiffness (fixed for blocks only); a free strut kinks as it crushes and that bending
+localisation still depends on the mesh; compact blocks are no contact surface; frames and
+plates are never split into ply groups, and a split member is built as drawn; the plates'
+nonlocal onset overshoots at notch roots (a ligament peaks at 1.07-1.09 of its net
+section, holes 7-11 % above the average-stress criterion) and has no bound at a singular
+corner; the wood's creep is linear in stress and its time laws do not reach the wood's
+bearing strength across the grain; `screen` reads nominal strengths at coupon time and
+local plate limits.
