@@ -76,6 +76,8 @@ class SimParams:
         for k, val in changes.items():
             v[k] = float(val)
             s[k] = source
+        if any(k.startswith("crusher.") for k in changes):
+            jack_strokes(v)  # a pumped jack whose pause would be negative: input error
         return SimParams(v, s, dict(self.notes), self.name)
 
     def assumed_keys(self) -> list[str]:
@@ -103,6 +105,13 @@ PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("*friction*", 0.0, 2.0, True),
     ("floss.strands", 1.0, 100.0, True),
     ("contact.seating_mm", 0.0, 10.0, True),
+    # the built bridge (round 28): a plate out of flat by a tenth of its span, a stick
+    # twisted by a radian per 100 mm, a third of its thickness, members 5 mm off, 2 mm long
+    ("scatter.plate_flatness", 0.0, 0.1, True),
+    ("scatter.twist_rad_per_m", 0.0, 10.0, True),
+    ("scatter.thickness_cov", 0.0, 0.3, True),
+    ("scatter.member_placement_mm", 0.0, 5.0, True),
+    ("scatter.fit_mm", 0.0, 2.0, True),
     ("scatter.*_cov", 0.0, 1.0, True),
     ("uncertainty.*_cov", 0.0, 1.0, True),
     ("uncertainty.mesh_bias_*", -0.5, 0.5, True),
@@ -118,12 +127,63 @@ PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("glue.weibull_m", 0.0, 100.0, True),
     ("glue.plate_edges_glued", 0.0, 1.0, True),
     ("glue.size_ref_mm2", 1.0, 1e6, True),
+    ("glue.pressure_coeff", 0.0, 1.0, True),
+    ("glue.fillet_mm", 0.0, 10.0, True),
+    ("glue.fillet_ref_perimeter_mm", 0.0, 1e4, True),
+    ("scatter.glue_spot_mm", 0.5, 1e3, True),
     ("scatter.lean_rad", 0.0, 0.1, True),
     ("scatter.*_corr", 0.0, 1.0, True),
     ("scatter.amplitude", 0.0, 10.0, True),
     ("wood.E_placeholder_MPa", 0.0, 1e6, True),
+    ("scatter.stick_field", 0.0, 1.0, True),
+    ("wood.crush_band_mm", 0.0, 1000.0, False),
+    ("block.cell_mm", 0.0, 1e4, True),  # 0: one rigid body
+    ("plate.shear_deformable", 0.0, 1.0, True),
+    ("plate.shear_correction", 0.0, 1.0, False),
+    # round 28: the wood's time effects and the pumped jack
+    ("wood.coupon_time_s", 0.1, 1e6, True),
+    ("wood.creep_coeff", 0.0, 2.0, True),
+    ("wood.creep_exponent", 0.0, 1.0, False),
+    ("crusher.stroke_mm", 0.0, 100.0, True),
+    ("crusher.stroke_time_s", 0.0, 3600.0, False),
+    ("crusher.pause_s", 0.0, 3600.0, True),
+    ("plate.nonlocal_onset", 0.0, 1.0, True),
     ("*", 0.0, float("inf"), False),  # moduli, strengths, energies, sizes: positive
 ]
+
+
+def jack_strokes(values: dict) -> tuple[float, float, float]:
+    """The pumped jack's protocol (stroke mm, stroke time s, pause s) from the simulation
+    values; stroke 0 (the default): a jack at the constant pace
+    crusher.test_rate_mm_per_min, (0, 0, 0). A hand-pumped jack advances
+    crusher.stroke_mm in crusher.stroke_time_s, then stands for the pause; the mean pace
+    is stroke / (stroke time + pause). With crusher.pause_s 0 the pause is the one that
+    keeps the mean pace at crusher.test_rate_mm_per_min: stroke x 60 / rate - stroke
+    time (a stroke time longer than that is an input error, ValueError); a pause given
+    sets the mean pace with the stroke and its time (the rate is then not used for the
+    jack). A pause of 0 left (strokes back to back): the constant pace."""
+    s = float(values.get("crusher.stroke_mm", 0.0))
+    if s <= 0.0:
+        return 0.0, 0.0, 0.0
+    ts = float(values.get("crusher.stroke_time_s", 0.0))
+    tp = float(values.get("crusher.pause_s", 0.0))
+    if ts <= 0.0:
+        raise ValueError("overrides: params.crusher.stroke_time_s must be > 0 with "
+                         f"crusher.stroke_mm = {s:g}")
+    if tp <= 0.0:
+        rate = float(values.get("crusher.test_rate_mm_per_min", 10.0))
+        tp = s * 60.0 / max(rate, 1e-9) - ts
+        if tp < -1e-9 * ts:
+            raise ValueError(
+                f"overrides: a pumped jack's stroke of {s:g} mm in {ts:g} s "
+                f"(crusher.stroke_mm, crusher.stroke_time_s) is slower than the mean pace "
+                f"crusher.test_rate_mm_per_min = {rate:g}: the pause between strokes would "
+                f"be negative ({tp:.3g} s); give a shorter stroke time, a longer stroke, a "
+                "slower mean pace, or the pause itself (crusher.pause_s)")
+        tp = max(tp, 0.0)
+    if tp <= 0.0:
+        return 0.0, 0.0, 0.0
+    return s, ts, tp
 
 
 def param_range_error(key: str, value) -> str | None:
@@ -377,6 +437,48 @@ def laminate(ply: Ply, angles: list[float], t: float) -> LaminateProps:
                          list(angles), ply, B)
 
 
+def laminate_shear(ply: Ply, angles: list[float], t: float, G_rolling: float,
+                   K_line: float, kappa: float = 5.0 / 6.0, E_factor: float = 1.0
+                   ) -> np.ndarray:
+    """Transverse (out-of-plane) shear stiffness H (2 x 2, N/mm) of a stick laminate of
+    thickness t in its reference axes: Q = H gamma, Q = (Q_xz, Q_yz) the shear forces per
+    unit width and gamma the mean shear strains through the thickness.
+
+    Each ply shears along its grain with G_13 = G_LT and across it with the rolling-shear
+    modulus G_23 = ``G_rolling`` (the R-T plane of a stick: Collins & Fink 2025 measured
+    183-200 MPa on birch), its compliance S_p = diag(1/G_13, 1/G_23) turned into the
+    reference axes (T^T S_p T); through the thickness the plies are in series, so their
+    compliances add weighted by thickness, with one glue line between each pair of plies
+    adding its slip 1 / K_line (``glue.lamination_K_s_N_per_mm3``, a pressed line):
+
+        H = kappa t^2 (sum_i t_i T_i^T S_i T_i + (n - 1) / K_line I)^-1
+
+    (the shear stress taken uniform for the series sum: tau = Q / t; a homogeneous plate
+    gives H = kappa G t). ``kappa`` is the shear correction factor, 5/6 for a homogeneous
+    section with a parabolic shear stress (Reissner 1945). For a laminate whose plies
+    differ in stiffness through the thickness the energy-consistent factor differs
+    (Whitney 1973, J. Compos. Mater. 7:192: the shear stress from the bending stress
+    gradient in cylindrical bending, its energy over that of this H with kappa = 1): with
+    the stick values (E_L 10.5, E_T 0.5, G_LT 0.66, rolling 0.15 GPa, lines 350 N/mm^3)
+    it is 0.83 for a UD stack (0.70-0.79 with its glue lines), 0.60-0.68 along the outer
+    plies of 0/90/0, 0/90/90/0 and 0/90/0/90 stacks (the soft cross plies near the middle
+    carry the peak shear) and 0.95-1.49 across the outer plies of 0/90/0 and 0/90/90/0
+    and for a 2-ply 0/90 (the soft plies where the shear is low). So H is a first-order
+    value, as the plate theory it feeds (first-order shear deformation): for cross plies
+    -28 % to +79 % from the energy-consistent one. ``E_factor`` scales the wood's moduli
+    (the stick scatter), not the glue lines."""
+    n = max(1, len(angles))
+    S = np.zeros((2, 2))
+    for th in angles:
+        c, s = math.cos(math.radians(th)), math.sin(math.radians(th))
+        T = np.array([[c, s], [-s, c]])
+        Sp = np.diag([1.0 / (ply.G_LT * E_factor), 1.0 / (G_rolling * E_factor)])
+        S += (t / n) * T.T @ Sp @ T
+    if n > 1 and K_line > 0:
+        S += (n - 1) / K_line * np.eye(2)
+    return kappa * t * t * np.linalg.inv(S)
+
+
 def ply_layers(angles: list[float], t: float, min_layers: int = 2
                ) -> list[tuple[float, float, float]]:
     """Through-thickness layers (z_bottom, z_top, angle) of a laminate for layered shell
@@ -427,6 +529,55 @@ def rect_torsion(w: float, t: float) -> tuple[float, float, float]:
     k3 = 1.0 if t >= w else short
     k2 = 1.0 if w >= t else short
     return J, 1.0 / (tau_per_T * k2), 1.0 / (tau_per_T * k3)
+
+
+def ply_shear_compliance(gn: float, gu: float, G_LT: float, G_roll: float) -> float:
+    """Shear compliance 1 / G (1/MPa) of a ply sheared in the plane of a force u and a
+    normal n, its grain meeting them at gn = |g . n| and gu = |g . u|: 1 / G_LT with the
+    grain along the force or along n, the rolling modulus across both (G_roll, wood.
+    G_rolling_MPa), in series between, 1 / G = (1 - a) / G_LT + a / G_roll with a = 1 -
+    gn^2 - gu^2 the share of the grain across both (as Hankinson's form): the rule
+    idealize.shear_compliance gives a glued face's parts."""
+    across = max(0.0, 1.0 - gn * gn - gu * gu)
+    return (1.0 - across) / G_LT + across / G_roll
+
+
+def shear_energy_weights(n: int) -> np.ndarray:
+    """The share of a rectangular section's shear strain energy in each of ``n`` equal
+    layers through its depth, the shear stress parabolic (tau ~ 4 x (1 - x), x the height
+    over the depth): w_i = int over layer i of (4 x (1 - x))^2 dx / (8/15)."""
+    x = np.linspace(0.0, 1.0, max(1, n) + 1)
+    F = 16.0 * (x**3 / 3.0 - x**4 / 2.0 + x**5 / 5.0)  # F(1) = 8/15
+    return np.diff(F) / F[-1]
+
+
+def through_stack_shear_modulus(angles: list[float], G_LT: float, G_roll: float,
+                                K_s: float, T: float) -> float:
+    """Shear modulus of a laminate sheared through its stack of plies (the shear stress
+    along the member on the planes between the plies: a member bent across its plies),
+    for Timoshenko's k G A with k = 5/6: the plies and the glue lines between them in
+    series, weighted by the shear strain energy of the parabolic stress through the depth
+    T (exact for k = 5/6),
+
+        1 / G_eff = sum_i w_i / G_i + (1 - n^-4) / (K_s t),  t = T / n,
+
+    w_i = shear_energy_weights(n) (1/n each for many plies), G_i of ply i at angle a_i
+    to the member sheared along it on the plane of the plies (ply_shear_compliance: G_LT
+    along the member, the rolling modulus G_roll across it, in series between), and the
+    n - 1 glue lines (shear stiffness K_s per mm^2, glue.lamination_K_s_N_per_mm3: a
+    pressed bond line and the fibres either side) at heights k t, where the energy
+    sum_k (4 x_k (1 - x_k))^2 = n (8/15) (1 - n^-4) (Euler-Maclaurin, exact for this
+    quartic): G_eff = 1 / (1 / G + 1 / (K_s t)) for many plies. A UD stack of 2 mm sticks
+    (G_LT 656, K_s 350): ~340 MPa, half the in-plane 656; one ply: no glue line."""
+    n = len(angles)
+    if n < 1 or T <= 0:
+        return G_LT
+    w = shear_energy_weights(n)
+    inv = sum(wi * ply_shear_compliance(0.0, abs(math.cos(math.radians(a))), G_LT, G_roll)
+              for wi, a in zip(w, angles, strict=True))
+    if n >= 2 and K_s > 0:
+        inv += (1.0 - n ** -4.0) / (K_s * T / n)
+    return 1.0 / inv
 
 
 def inplane_split_strength(angles: list[float], f_v: float, f_45: float) -> float:

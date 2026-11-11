@@ -10,21 +10,32 @@ LS-DYNA and Abaqus/Explicit). Ingredients:
   wood fibres with their own stress-strain law, integrated at two Gauss points. A fibre is
   linear elastic, softens to zero after reaching f_t in tension (fracture energy G_f,
   regularised by element length) and in compression bends over from the proportional
-  limit to f_c, then crushes with mild softening. Torsion is elastic. A member whose
+  limit to f_c, then crushes with mild softening over a shortening (wood.crush_band_mm,
+  regularised by element length too). Each fibre has its own strength, the sticks its
+  share of the section covers (the stick field, :mod:`bridgesim.sim.stickfield`), and
+  each bending direction its own shear stiffness (in the plane of the plies, and through
+  them with the glue lines in series). Torsion is elastic. A member whose
   shear, averaged over a section depth, passes the strength of its glue lines or grain
   splits (:func:`split_members`): its plies then bend each about its own axis, and it
   keeps its axial strength. An element bent or twisted past 1 rad at an end is removed
   (erosion, reported as such).
-* **shells**: corotational CST + DKT triangles with laminate stiffness; a ply strain
-  limit reached anywhere in an element cracks it (its stiffness falls to zero over a
-  small strain range); a node held only by broken elements becomes loose debris.
+* **shells**: corotational CST + DKMT (shear-deformable; DKT with plate.shear_deformable
+  0) triangles with laminate stiffness; a ply strain limit reached in an element cracks
+  it (its stiffness falls to zero over a strain range set by its size, the crack band),
+  once the strain averaged along the crack's path over the ply's critical distance has
+  reached it too (:func:`plate_nonlocal_onset`, plate.nonlocal_onset); a node held
+  only by broken elements becomes loose debris. A plate whose out-of-plane shear,
+  averaged over its thickness, reaches the strength of its glue planes splits between
+  its plies (:func:`split_plates`), as members do.
 * **glue lines**: zero-thickness cohesive springs with a bilinear mixed-mode law
   (quadratic initiation, Benzeggagh-Kenane propagation). In compression they keep
-  bearing (contact); once broken they slide with Coulomb friction.
+  bearing (contact) and hold more in shear (tau + mu_i sigma_c, glue_forces); once
+  broken they slide with Coulomb friction.
 * **floss**: tension-only cables that snap at their breaking load.
 * **contact**: penalty contact with friction against the base platform and the steel
-  loading plate (a rigid body free to tilt on the jack's hemisphere), and frictionless
-  contact between parts that meet during the collapse (:mod:`bridgesim.sim.contact`).
+  loading plate (a rigid body free to tilt on the jack's hemisphere), and between parts
+  that meet during the test (:mod:`bridgesim.sim.contact`: members as boxes of their
+  section, plates as slabs, with Coulomb friction).
   The jack rod above the plate is not a contact body (only drawn in the replay).
 * **gravity** on everything, and mass-proportional damping (bridges are lightly damped).
 
@@ -131,13 +142,32 @@ class State:
     b_rat3: np.ndarray = field(default_factory=lambda: np.zeros(0))
     # Timoshenko shear strain correction of each beam, bending about e3 and e2
     b_gam: np.ndarray = field(default_factory=lambda: np.zeros((0, 2)))
+    # shells split between their plies in out-of-plane shear (split_plates): factor on
+    # the through-thickness lever arms (1 intact, 1/2, ... 1/n_plies), the interlaminar
+    # shear over its strength of each element (before averaging) and whether it split
+    s_split: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    s_rat: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    s_shear: np.ndarray = field(default_factory=lambda: np.zeros(0, bool))
     sc: object | None = None  # self-contact (bridgesim.sim.contact.SelfContact)
+    # each beam's rest length while a run brings the members' lack of fit in (Model.b_dL:
+    # the crush ramps it with gravity as the bridge settles); empty: the model's b_L0
+    b_L0: np.ndarray = field(default_factory=lambda: np.zeros(0))
     t: float = 0.0
     jack_y: float = 0.0
     jack_v: float = 0.0  # jack speed (mm/s, negative = down)
     jack_force: float = 0.0
     jack_lat: np.ndarray = field(default_factory=lambda: np.zeros(2))
     work_ext: float = 0.0
+    # the plates' nonlocal onset (plate.nonlocal_onset, plate_nonlocal_onset; empty when
+    # off): per point and tension mode (fibre, across the grain, shear) the ratio its
+    # softening started from (0: not started; 1: as a local onset), the point's strains
+    # e1, e2, g12 in its ply's axes, each element's mean of them per ply and level
+    # (ns, layers, 3 levels, 3), and whether a point of it is held past its own strength
+    s_hon: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, 3)))
+    s_ept: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, 3)))
+    s_ec: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, 3, 3)))
+    s_wait: np.ndarray = field(default_factory=lambda: np.zeros(0, bool))
+    s_nlec: bool = False  # the element means (s_ec) are written this step: a point is held
 
 
 def _d0(m: Model, nc: int) -> np.ndarray:
@@ -163,7 +193,9 @@ def initial_state(m: Model, jack_y: float) -> State:
         s_hist=np.zeros((len(m.s_nodes), 9 * m.s_lay.shape[1], 5)),
         s_gone=np.zeros(len(m.s_nodes), bool), b_s2=np.ones(nb), b_s3=np.ones(nb),
         b_rat2=np.zeros(nb), b_rat3=np.zeros(nb),
-        b_gam=np.zeros((nb, 2)), c_crush=np.zeros(nc), c_creep=np.zeros((nc, 3)))
+        b_gam=np.zeros((nb, 2)), c_crush=np.zeros(nc), c_creep=np.zeros((nc, 3)),
+        s_split=np.ones(len(m.s_nodes)), s_rat=np.zeros(len(m.s_nodes)),
+        s_shear=np.zeros(len(m.s_nodes), bool))
 
 
 # ----------------------------------------------------------------------------- kernels
@@ -179,6 +211,53 @@ def _apply(F: np.ndarray, Mo: np.ndarray, nodes: np.ndarray, arm: np.ndarray,
            f: np.ndarray) -> None:
     np.add.at(F, nodes, f)
     np.add.at(Mo, nodes, np.cross(arm, f))
+
+
+def beam_fs(m: Model) -> np.ndarray:
+    """Each beam fibre's strength factor (nb, nf): the sticks its area covers (the stick
+    field, idealize); ones for a model that has none (a coupon, round 27's)."""
+    if m.b_fs.shape != m.b_fA.shape:
+        m.b_fs = np.ones_like(m.b_fA)
+    return m.b_fs
+
+
+def beam_L0(m: Model, st: State) -> np.ndarray:
+    """Each beam's rest length now (mm): the model's (its drawn length plus its member's lack
+    of fit, Model.b_dL), or the one a run is bringing the lack of fit in with
+    (``st.b_L0``, crush.py's settling)."""
+    return st.b_L0 if st.b_L0.shape == m.b_L0.shape else m.b_L0
+
+
+def fit_ramp(m: Model, st: State, g: float) -> None:
+    """Bring a share ``g`` (0..1) of the members' lack of fit in (Model.b_dL): the rest
+    lengths b_L0 - (1 - g) b_dL; at 1 the model's own. A model without any lack of fit is
+    left alone (bit for bit)."""
+    dL = m.b_dL
+    if dL.shape != m.b_L0.shape or g >= 1.0 or not dL.any():
+        if st.b_L0.size:
+            st.b_L0 = np.zeros(0)
+        return
+    st.b_L0 = m.b_L0 - (1.0 - max(g, 0.0)) * dL
+
+
+def beam_kGA3(m: Model) -> np.ndarray:
+    """Each beam's shear stiffness k G A for shear along e3, through its plies (N): b_kGA
+    (one value both ways) for a model that has none."""
+    return m.b_kGA3 if m.b_kGA3.shape == m.b_kGA.shape else m.b_kGA
+
+
+def crush_band(m: Model) -> float:
+    """wood.crush_band_mm: the gauge length the fibres' crushing fall is set on (0: the
+    fixed-strain fall of round 27, for a model built without it)."""
+    return float(m.params.get("crush_band_mm", 0.0))
+
+
+def crush_fall(ec0, lch, cband: float):
+    """The strain over which a crushed fibre falls to its plateau (kernels.crush_fall):
+    5 ec0 cband / lch, at least ec0; cband <= 0: 5 ec0."""
+    if cband <= 0.0:
+        return 5.0 * ec0
+    return np.maximum(5.0 * ec0 * cband / lch, ec0)
 
 
 def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
@@ -198,7 +277,7 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     Et = np.transpose(E, (0, 2, 1))
     th_i = logvec(Et @ Ti)
     th_j = logvec(Et @ Tj)
-    L0 = m.b_L0
+    L0 = beam_L0(m, st)
     eps0 = (l - L0) / L0
     N = np.zeros_like(l)
     Mzi = np.zeros_like(l)
@@ -206,22 +285,27 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     Myi = np.zeros_like(l)
     Myj = np.zeros_like(l)
     E_ = m.b_E[:, None]
-    ft = m.b_ft[:, None]
-    fc = m.b_fc[:, None]
+    # each fibre's strengths: the sticks its area covers (stick field), f_t, f_c and G_f
+    # scaled alike, so the tension softening width is the element's
+    fs = beam_fs(m)
+    ft = m.b_ft[:, None] * fs
+    fc = m.b_fc[:, None] * fs
     et0 = ft / E_
     lch = (0.5 * L0)[:, None]
-    eu = np.maximum(et0 + 2 * m.b_Gf[:, None] / (ft * lch), 1.5 * et0)
+    eu = np.maximum(et0 + 2 * m.b_Gf[:, None] / (m.b_ft[:, None] * lch), 1.5 * et0)
     soft = m.params.get("crush_softening", 0.3)
     kap = float(m.params.get("fc_proportional", 1.0))
     ec0 = fc / E_
-    # Timoshenko shear flexibility (see kernels.beam_kernel)
+    fall = crush_fall(ec0, lch, crush_band(m))
+    # Timoshenko shear flexibility (see kernels.beam_kernel): shear along e2 in the plane
+    # of the plies (b_kGA), along e3 through them (b_kGA3)
     EIz = (m.b_E[:, None] * m.b_fA * m.b_fy**2).sum(1) * st.b_s2**2
     EIy = (m.b_E[:, None] * m.b_fA * m.b_fz**2).sum(1) * st.b_s3**2
-    kGA = m.b_kGA
-    pos = kGA > 0
-    kGAs = np.where(pos, kGA, 1.0)
+    kGA, kGA3 = m.b_kGA, beam_kGA3(m)
+    pos, pos3 = kGA > 0, kGA3 > 0
+    kGAs, kGA3s = np.where(pos, kGA, 1.0), np.where(pos3, kGA3, 1.0)
     phz = np.where(pos, 12 * EIz / (kGAs * L0**2), 0.0)
-    phy = np.where(pos, 12 * EIy / (kGAs * L0**2), 0.0)
+    phy = np.where(pos3, 12 * EIy / (kGA3s * L0**2), 0.0)
     gz = 0.5 * phz / (1 + phz) * (th_i[:, 2] + th_j[:, 2]) + st.b_gam[:, 0]
     gy = 0.5 * phy / (1 + phy) * (th_i[:, 1] + th_j[:, 1]) + st.b_gam[:, 1]
     bzi, bzj = th_i[:, 2] - gz, th_j[:, 2] - gz
@@ -246,7 +330,7 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
         rising = q < qp
         u = np.sqrt(np.where(rising, q / np.maximum(qp, 1e-30), 1.0))
         fce = np.where(rising, fc * (1 - (1 - kap) * (1 - u) ** 2),
-                       fc * (1 - soft * np.clip((q - qp) / (5 * ec0), 0, 1)))
+                       fc * (1 - soft * np.clip((q - qp) / fall, 0, 1)))
         over = sig < -fce
         Et = np.where(over, np.where(rising, (1 - u) * E_, 0.0),
                       np.where(ee > 0, (1 - dm2) * E_, E_))
@@ -269,8 +353,8 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     if update:
         st.b_gam[:, 0] += np.where(pos, ((Mzi + Mzj) / L0 - kGA * gz)
                                    / (kGAs + 12 * EIzt / L0**2), 0)
-        st.b_gam[:, 1] += np.where(pos, ((Myi + Myj) / L0 - kGA * gy)
-                                   / (kGAs + 12 * EIyt / L0**2), 0)
+        st.b_gam[:, 1] += np.where(pos3, ((Myi + Myj) / L0 - kGA3 * gy)
+                                   / (kGA3s + 12 * EIyt / L0**2), 0)
     sj = (st.b_s2 * st.b_s3) ** 2
     T = sj * m.b_GJ / L0 * (th_j[:, 0] - th_i[:, 0])
     D = np.c_[l - L0, th_i, th_j]
@@ -322,9 +406,279 @@ def _soft(r: np.ndarray, rf: np.ndarray) -> np.ndarray:
     return np.where(r > 1.0, np.minimum(d, 1.0), 0.0)
 
 
-def _plateau(r: np.ndarray, rc: float) -> np.ndarray:
-    u = np.minimum(np.maximum(r - 1.0, 0.0), 1.0)
+def _plateau(r: np.ndarray, rc: float, wc=1.0) -> np.ndarray:
+    u = np.minimum(np.maximum((r - 1.0) / wc, 0.0), 1.0)
     return np.where(r > 1.0, 1.0 - (1.0 - (1.0 - rc) * u) / np.maximum(r, 1.0), 0.0)
+
+
+def _soft_on(r: np.ndarray, ron: np.ndarray, rf: np.ndarray) -> np.ndarray:
+    """kernels._soft_on: linear softening from ron x the strength (the ratio a point
+    stood at when the average around it reached 1) to nothing at rf / ron (at least 1.05
+    ron); 0 while held (ron 0); ron 1 is _soft."""
+    ro = np.maximum(ron, 1e-300)
+    re = np.maximum(rf / ro, 1.05 * ro)
+    d = 1.0 - ro * (re - r) / (np.maximum(r, 1e-300) * (re - ro))
+    d = np.where(r > ro, np.minimum(d, 1.0), 0.0)
+    return np.where(ron <= 0.0, 0.0, np.where(ron == 1.0, _soft(r, rf), d))
+
+
+def shell_crush_fall(m: Model) -> np.ndarray:
+    """How many onset strains f_c / E a ply crushing along its grain takes to fall to its
+    plateau, per element: 5 x wood.crush_band_mm / l_c (l_c its crack band, sqrt(2 x
+    area)), at least 1 (steeper would snap back within the element), so the shortening
+    from peak to plateau is 5 (f_c / E) x the band on any mesh fine enough, as for the
+    members (crush_fall); crush_band_mm 0 (or absent): 1 on every mesh, round 27's law.
+    Cached on the model for its band."""
+    band = crush_band(m)
+    ns = len(m.s_nodes)
+    c = getattr(m, "_s_wc", None)
+    if c is not None and c[0] == band and len(c[1]) == ns:
+        return c[1]
+    w = np.ones(ns) if band <= 0.0 else np.maximum(5.0 * band / np.maximum(m.s_lc, 1e-9),
+                                                    1.0)
+    m._s_wc = (band, w)
+    return w
+
+
+# Half-length of the line the plates' nonlocal onset averages over / L_c, L_c = E G /
+# (pi f^2) of the mode: the line method of the theory of critical distances (Taylor 2007,
+# The Theory of Critical Distances, Elsevier): a notch fails when the stress averaged
+# over 2 L_c ahead of its root along the crack's path reaches the strength. A line
+# centred on each point and normalised by the length of wood on it is that average at
+# a notch root (the wood behind the root is not there): for a sharp notch's field,
+# sigma = K / sqrt(2 pi r), the mean over [0, 2 L_c] is K / sqrt(pi L_c), the strength
+# exactly at K = K_c = sqrt(E G) (linear elastic fracture mechanics); for a hole it is
+# Whitney & Nuismer's average-stress criterion with a_0 = 2 L_c; a uniform field
+# averages to itself (test_the_nonlocal_line_reproduces_the_onset_of_a_sharp_notch).
+NL_HALF_LENGTH = 2.0
+
+
+def nonlocal_on(m: Model) -> bool:
+    """plate.nonlocal_onset (m.params plate_nonlocal) and shells to apply it to."""
+    return float(m.params.get("plate_nonlocal", 0.0)) >= 0.5 and len(m.s_nodes) > 0
+
+
+def _locate(tri2: np.ndarray, pts: np.ndarray, k: int = 12) -> np.ndarray:
+    """The triangle (rows of ``tri2``, (n, 3, 2)) each point of ``pts`` (m, 2) lies in,
+    -1 for none: barycentric test of the k nearest by centroid."""
+    from scipy.spatial import cKDTree
+
+    if not len(pts):
+        return np.zeros(0, int)
+    k = min(k, len(tri2))
+    _, cand = cKDTree(tri2.mean(axis=1)).query(pts, k=k)
+    cand = np.asarray(cand).reshape(len(pts), k)
+    out = np.full(len(pts), -1)
+    a, b, c = tri2[cand, 0], tri2[cand, 1], tri2[cand, 2]  # (m, k, 2)
+    v0, v1, v2 = b - a, c - a, pts[:, None, :] - a
+    den = v0[..., 0] * v1[..., 1] - v1[..., 0] * v0[..., 1]
+    u = (v2[..., 0] * v1[..., 1] - v1[..., 0] * v2[..., 1]) / np.where(den != 0, den, 1e-300)
+    v = (v0[..., 0] * v2[..., 1] - v2[..., 0] * v0[..., 1]) / np.where(den != 0, den, 1e-300)
+    tol = -1e-9
+    inside = (u >= tol) & (v >= tol) & (u + v <= 1.0 - tol)
+    has = inside.any(axis=1)
+    first = np.argmax(inside, axis=1)
+    out[has] = cand[np.arange(len(pts))[has], first[has]]
+    return out
+
+
+def plate_nonlocal_averaging(m: Model):
+    """The lines of the plates' nonlocal onset (cached on the model), the line method of
+    the theory of critical distances: for each element, ply and tension mode j (fibre
+    tension, across the grain, in-plane shear) a line through its centroid in the
+    direction that mode's crack runs (across the ply's grain for fibre tension, along it
+    across the grain and in shear), of half-length R_j = NL_HALF_LENGTH x L_c,j, sampled
+    at a quarter of an element or finer: the element each sample lies in, in order along
+    the line (-1 where there is no wood of the plate: past a free edge, in a notch or a
+    hole, or an element of the plate facing the other way or with other plies), so each
+    element counts by its length on the line. L_c = E G / (pi f^2) = rf l_c / (2 pi) (E,
+    G and f the ply's, its scatter and butt-joint factors included; the median over the
+    plate's elements within the crack band of the mode). The onset pass averages along
+    the part of the line that is wood in tension in the mode (plate_nonlocal_onset). An
+    element whose own chord holds the whole line keeps its own value (an element longer
+    than 2 R_j along the line: the mode stays local there). Returns (W, nlon, lines): W
+    a sparse matrix whose row (j x layers + ply) x ns + e holds the weights of the whole
+    line, normalised by the wood on it (the line uncut); nlon (ns, 3, layers) whether a
+    row takes in other elements; lines (ptr, el): row r's samples are el[ptr[r]:ptr[r +
+    1]] (an odd number, the element's centroid the middle one; none for a local row)."""
+    ns = len(m.s_nodes)
+    nlay = m.s_lay.shape[1] if ns else 1
+    cached = getattr(m, "_pnl", None)
+    if cached is not None and cached[0] == ns:
+        return cached[1:]
+    from scipy.sparse import csr_matrix
+
+    P = m.X[m.s_nodes]  # (ns, 3, 3)
+    cr = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
+    nrm = cr / np.maximum(np.linalg.norm(cr, axis=1), 1e-300)[:, None]
+    Lc = m.s_rf * m.s_lc[:, None] / (2.0 * math.pi)
+    nlon = np.zeros((ns, 3, nlay), bool)
+    rows, cols, vals = [], [], []
+    samples: dict[int, np.ndarray] = {}
+    for bd in np.unique(m.s_body):
+        idx = np.where(m.s_body == bd)[0]
+        # the plate's plane: the first element's initial axes
+        ax = m.s_E0[idx[0]]
+        o = P[idx[0], 0]
+        tri2 = np.einsum("nak,kc->nac", P[idx] - o, ax[:, :2])
+        cen2 = tri2.mean(axis=1)
+        h_med = float(np.median(m.s_lc[idx]))
+        # each ply's grain in the plane: (cos, sin) in its element's axes
+        exe = np.einsum("nk,kc->nc", m.s_E0[idx][:, :, 0], ax[:, :2])
+        eye = np.einsum("nk,kc->nc", m.s_E0[idx][:, :, 1], ax[:, :2])
+        for j in range(3):
+            ok = m.s_rf[idx, j] > 1.0501  # within the crack band of the mode
+            if not ok.any():
+                continue
+            R = NL_HALF_LENGTH * float(np.median(Lc[idx[ok], j]))
+            if R <= 0.0:
+                continue
+            n_s = int(min(400, max(9, math.ceil(2.0 * R / (min(h_med, R) / 4.0)))))
+            n_s += 1 - n_s % 2  # odd: the centroid itself is a sample
+            ts = np.linspace(-R, R, n_s)
+            for ll in range(nlay):
+                act = np.where(m.s_nl[idx] > ll)[0]
+                if not len(act):
+                    continue
+                c_, s_ = m.s_lay[idx[act], ll, 2], m.s_lay[idx[act], ll, 3]
+                g = c_[:, None] * exe[act] + s_[:, None] * eye[act]  # the grain, 2D
+                d = np.c_[-g[:, 1], g[:, 0]] if j == 0 else g  # the crack's path
+                d /= np.maximum(np.linalg.norm(d, axis=1), 1e-300)[:, None]
+                pts = cen2[act][:, None, :] + ts[None, :, None] * d[:, None, :]
+                hit = _locate(tri2, pts.reshape(-1, 2)).reshape(len(act), n_s)
+                for a_, row in zip(act, hit, strict=True):
+                    e = idx[a_]
+                    gl = idx[np.maximum(row, 0)]
+                    gl = np.where((row >= 0) & (nrm[gl] @ nrm[e] > 0.0)
+                                  & (m.s_nl[gl] == m.s_nl[e]), gl, -1)
+                    near, cnt = np.unique(gl[gl >= 0], return_counts=True)
+                    if len(near) < 2:
+                        continue  # the line is all its own: local
+                    r_ = (j * nlay + ll) * ns + e
+                    nlon[e, j, ll] = True
+                    samples[r_] = gl
+                    rows.extend([r_] * len(near))
+                    cols.extend(near.tolist())
+                    vals.extend((cnt / cnt.sum()).tolist())
+    W = csr_matrix((np.asarray(vals, float), (np.asarray(rows, int), np.asarray(cols, int))),
+                   shape=(3 * nlay * ns, ns))
+    W.sum_duplicates()
+    W.sort_indices()
+    nr = 3 * nlay * ns
+    lens = np.zeros(nr, np.int64)
+    for r_, gl in samples.items():
+        lens[r_] = len(gl)
+    ptr = np.zeros(nr + 1, np.int64)
+    ptr[1:] = np.cumsum(lens)
+    el = np.full(int(ptr[-1]), -1, np.int64)
+    for r_, gl in samples.items():
+        el[ptr[r_]:ptr[r_ + 1]] = gl
+    m._pnl = (ns, W, nlon, (ptr, el))
+    return W, nlon, (ptr, el)
+
+
+def nonlocal_state(m: Model, st: State) -> bool:
+    """Size the nonlocal onset's state arrays for the model (empty when it is off);
+    returns whether it is on."""
+    on = nonlocal_on(m)
+    ns = len(m.s_nodes)
+    nl = m.s_lay.shape[1] if ns else 0
+    if on and st.s_hon.shape[:2] != (ns, 9 * nl):
+        st.s_hon = np.zeros((ns, 9 * nl, 3))
+        st.s_ept = np.zeros((ns, 9 * nl, 3))
+        st.s_ec = np.zeros((ns, nl, 3, 3))
+        st.s_wait = np.zeros(ns, bool)
+    return on
+
+
+# (No cap on how far a point is held past its own strength: a cap at 2, the line's value
+# for a small beam in pure bending, bound at the corners of the plate pulled through a
+# third of its end on 1.25 mm elements, a raiser's own singular strain, and brought the
+# mesh dependence back there: 90.4 / 90.6 / 77.4 N with 5 / 2.5 / 1.25 mm elements, 87.2
+# at 1.25 mm without it.)
+
+
+def _tension_mean(row, ec, gone, e, ll, q, j):
+    """Mean strain e1, e2 or g12 (mode j) of ply ll at level q along a line's samples
+    ``row`` (element per sample, -1 no wood; the middle one the element e itself): from
+    the middle outward each way, up to the first sample that is not wood or whose
+    element's mean is not in tension in the mode (the opposite sign of e's own in shear),
+    so the average is over the stretch of the crack's path in tension through e."""
+    n = len(row)
+    c = n // 2
+    s0 = 1.0
+    if j == 2 and ec[e, ll, q, 2] < 0.0:
+        s0 = -1.0
+    tot = ec[e, ll, q, j]
+    cnt = 1
+    for step in (1, -1):
+        k = c + step
+        while 0 <= k < n:
+            o = row[k]
+            if o < 0 or gone[o]:
+                break
+            v = ec[o, ll, q, j]
+            if o != e and v * s0 <= 0.0:
+                break
+            tot += v
+            cnt += 1
+            k += step
+    return tot / cnt
+
+
+def plate_nonlocal_onset(m: Model, st: State, compiled: bool = False) -> None:
+    """The plates' nonlocal onset (plate.nonlocal_onset; since round 28): a point of a
+    ply whose own strain has passed its onset in a tension mode (fibre tension, across
+    the grain, in-plane shear) is held elastic (the kernel flags its element in
+    ``st.s_wait``) until the strain that drives that mode, averaged along the line of
+    ``plate_nonlocal_averaging`` through its element over the stretch in tension in that
+    mode (from the element outward each way up to the first wood not in tension, or no
+    wood: a crack starts in, and runs through, wood under tension, not because of nor
+    held back by wood compressed; each element's mean over its three points, of the same
+    ply at the same level, the element's own variation about its mean kept), reaches the
+    onset too; from then it softens from the ratio it stands at, hon = max(h / r_nl, 1)
+    (``_soft_on``: the stress it holds then, falling to nothing with the crack band's
+    energy G per unit crack area).
+    An element longer than the line stays local; a uniform field averages to itself.
+    Called after the shell forces on each step that updates the history; ``compiled``:
+    kernels.nonlocal_onset_kernel. The kernel writes the element means only on the steps
+    this asks for them (``st.s_nlec``: while a point is held), so a hold is decided from
+    the step after it starts."""
+    if not nonlocal_on(m) or not len(st.s_wait):
+        return
+    if not st.s_wait.any():
+        st.s_nlec = False
+        return
+    if not st.s_nlec:  # the means were not written this step: from the next one
+        st.s_nlec = True
+        return
+    _, nlon, (ptr, el) = plate_nonlocal_averaging(m)
+    if compiled:
+        K.nonlocal_onset_kernel(st.s_wait, st.s_gone, nlon, st.s_ec, st.s_ept, st.s_hist,
+                                st.s_hon, m.s_lim, m.s_nl, ptr, el)
+        return
+    ns = len(m.s_nodes)
+    nlay = st.s_ec.shape[1]
+    for e in np.where(st.s_wait & ~st.s_gone)[0]:
+        for j in range(3):
+            kk = 2 * j  # the mode's history and strength: fibre t 0, across t 2, shear 4
+            for ll in range(int(m.s_nl[e])):
+                if not nlon[e, j, ll]:
+                    continue
+                r0 = (j * nlay + ll) * ns + e
+                row = el[ptr[r0]:ptr[r0 + 1]]
+                for q in range(3):
+                    dl = _tension_mean(row, st.s_ec, st.s_gone, e, ll, q, j) \
+                        - st.s_ec[e, ll, q, j]
+                    for g in range(3):
+                        p = (g * nlay + ll) * 3 + q
+                        h = st.s_hist[e, p, kk]
+                        if st.s_hon[e, p, j] > 0.0 or h < 1.0:
+                            continue
+                        v = st.s_ept[e, p, j] + dl
+                        r = (abs(v) if j == 2 else v) / m.s_lim[e, kk]
+                        if r >= 1.0:
+                            st.s_hon[e, p, j] = max(h / r, 1.0)
 
 
 def _ply_strain(e, k, z, cc2, ss2, cs):
@@ -341,12 +695,29 @@ _IB = np.array([2, 3, 4, 8, 9, 10, 14, 15, 16])
 _IR = np.array([5, 11, 17])
 
 
+def shell_shear_arrays(m: Model) -> tuple[np.ndarray, ...]:
+    """The DKMT arrays of the shells (s_R, s_KH, s_Gs, s_phi, s_H, s_fil), zeros (DKT,
+    no splitting) for a model built without them."""
+    from bridgesim.sim.shell import SHEAR_SHAPES
+
+    ns = len(m.s_nodes)
+    if m.s_H.shape[0] != ns:
+        for k, shp in SHEAR_SHAPES.items():
+            setattr(m, f"s_{k}", np.zeros((ns, *shp)))
+    return m.s_R, m.s_KH, m.s_Gs, m.s_phi, m.s_H, m.s_fil
+
+
 def shell_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
                  update: bool = True, beta: float = 0.0, dt: float = 1.0) -> None:
     """Layered shells (see :mod:`bridgesim.sim.shell`): forces integrated ply by ply with
-    a damage state per failure mode at every integration point."""
+    a damage state per failure mode at every integration point. A shear-deformable
+    element (s_H > 0) adds the DKMT correction to its curvatures and its transverse shear
+    force Q = H gamma (elastic), and records its interlaminar shear 1.5 |Q| / t over the
+    strength of its glue planes (resolved along and across each ply's grain) in
+    ``st.s_rat``; a split element (``st.s_split`` < 1) bends with its lever arms x s."""
     if len(m.s_nodes) == 0:
         return
+    sR, sKH, sGs, sphi, sH, sfil = shell_shear_arrays(m)
     sn = m.s_nodes
     ns = len(sn)
     x = st.x[sn]  # (ns, 3, 3)
@@ -371,8 +742,40 @@ def shell_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     emt = np.einsum("nik,nk->ni", m.s_Bm, dd[:, _IM])
     kap = np.einsum("ngik,nk->ngi", m.s_Bb, dloc[:, _IB])
     kapt = np.einsum("ngik,nk->ngi", m.s_Bb, dd[:, _IB])
+    # DKMT: the sides' share of their Kirchhoff residual that is shear, om = s^2 phi /
+    # (1 + s^2 phi) (0 for DKT), corrects the curvatures and gives the shear strain
+    shear = sH[:, 0] > 0.0
+    ssp = st.s_split if len(st.s_split) == ns else np.ones(ns)
+    s2 = (ssp * ssp)[:, None]
+    om = np.where(shear[:, None], s2 * sphi / (1.0 + s2 * sphi), 0.0)
+    rd = om * np.einsum("nkj,nj->nk", sR, dloc[:, _IB])
+    rw = om * np.einsum("nkj,nj->nk", sR, dd[:, _IB])
+    kap = kap + 1.5 * np.einsum("ngik,nk->ngi", sKH, rd)
+    kapt = kapt + 1.5 * np.einsum("ngik,nk->ngi", sKH, rw)
+    gd = np.einsum("nik,nk->ni", sGs, rd)
+    gw = np.einsum("nik,nk->ni", sGs, rw)
+    Qs = np.stack([sH[:, 0] * gw[:, 0] + sH[:, 2] * gw[:, 1],
+                   sH[:, 2] * gw[:, 0] + sH[:, 1] * gw[:, 1]], axis=1)
+    if update:
+        qd = np.stack([sH[:, 0] * gd[:, 0] + sH[:, 2] * gd[:, 1],
+                       sH[:, 2] * gd[:, 0] + sH[:, 1] * gd[:, 1]], axis=1)
+        rat = np.sqrt((qd**2).sum(1)) * sfil[:, 2]
+        for ll in range(m.s_lay.shape[1]):
+            c_, s_ = m.s_lay[:, ll, 2], m.s_lay[:, ll, 3]
+            tl = (c_ * qd[:, 0] + s_ * qd[:, 1]) * sfil[:, 0]
+            tt = (-s_ * qd[:, 0] + c_ * qd[:, 1]) * sfil[:, 1]
+            rat = np.where(ll < m.s_nl, np.maximum(rat, np.sqrt(tl * tl + tt * tt)), rat)
+        st.s_rat = np.where(st.s_gone | ~shear, 0.0, rat)
     q11, q22, q12, q66 = m.s_Q.T
     lim, rf, rc = m.s_lim, m.s_rf, _rc(m)
+    wc = shell_crush_fall(m)
+    nlo = nonlocal_state(m, st)
+    nlon = plate_nonlocal_averaging(m)[1] if nlo else np.zeros((ns, 3, 1), bool)
+    nle = nlo and update and st.s_nlec  # the element means asked for (a point is held)
+    if nlo and update:
+        st.s_wait[:] = False
+    if nle:
+        st.s_ec[:] = 0.0
     nlay = m.s_lay.shape[1]
     N = np.zeros((ns, 3, 3))
     M = np.zeros((ns, 3, 3))
@@ -385,8 +788,9 @@ def shell_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
             zb, zt, cg, sg = m.s_lay[:, ll].T
             hh = zt - zb
             cc2, ss2, cs = cg * cg, sg * sg, cg * sg
-            for q, (z, wq) in enumerate(((zb, hh / 6), ((zb + zt) / 2, 4 * hh / 6),
-                                         (zt, hh / 6))):
+            for q, (z0, wq) in enumerate(((zb, hh / 6), ((zb + zt) / 2, 4 * hh / 6),
+                                          (zt, hh / 6))):
+                z = z0 * ssp  # a split plate's sub-laminates bend about their own planes
                 e1, e2, g12 = _ply_strain(em, kap[:, g], z, cc2, ss2, cs)
                 e1t, e2t, g12t = _ply_strain(emt, kapt[:, g], z, cc2, ss2, cs)
                 h = st.s_hist[:, (g * nlay + ll) * 3 + q]
@@ -398,16 +802,38 @@ def shell_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
                                     np.where(e2 > 0, 0, -e2 / lim[:, 3]),
                                     np.abs(g12) / lim[:, 4]], axis=1)
                     h[:] = np.where(upd, np.maximum(h, new), h)
+                pp = (g * nlay + ll) * 3 + q
                 dft = _soft(h[:, 0], rf[:, 0])
                 dmt = _soft(h[:, 2], rf[:, 1])
                 ds = _soft(h[:, 4], rf[:, 2])
-                d1 = np.where(e1t >= 0, dft, _plateau(h[:, 1], rc))
+                o = np.ones((ns, 3))
+                if nlo:  # nonlocal onset: held, or softening from the onset ratio hon
+                    nlp = nlon[:, :, ll]
+                    o = np.where(nlp, st.s_hon[:, pp], 1.0)
+                    dft = np.where(nlp[:, 0], _soft_on(h[:, 0], o[:, 0], rf[:, 0]), dft)
+                    dmt = np.where(nlp[:, 1], _soft_on(h[:, 2], o[:, 1], rf[:, 1]), dmt)
+                    ds = np.where(nlp[:, 2], _soft_on(h[:, 4], o[:, 2], rf[:, 2]), ds)
+                    if update:
+                        ok = act & ~st.s_gone
+                        held = ok & (nlp & (o <= 0.0) & (h[:, [0, 2, 4]] >= 1.0)).any(1)
+                        st.s_ept[:, pp] = np.where(held[:, None],
+                                                   np.stack([e1, e2, g12], 1), st.s_ept[:, pp])
+                        st.s_wait |= held
+                        if nle:
+                            st.s_ec[:, ll, q] += np.where(
+                                ok[:, None], np.stack([e1, e2, g12], 1) / 3.0, 0.0)
+                d1 = np.where(e1t >= 0, dft, _plateau(h[:, 1], rc, wc))
                 d2 = np.where(e2t >= 0, dmt, _plateau(h[:, 3], 1.0))
                 dsh = 1 - (1 - ds) * (1 - dft) * (1 - dmt)
                 cr = np.maximum(np.maximum(dft, dmt), ds)
                 mincr = np.where(act, np.minimum(mincr, cr), mincr)
-                op = np.maximum(np.maximum(h[:, 0] / rf[:, 0], h[:, 2] / rf[:, 1]),
-                                h[:, 4] / rf[:, 2])
+                if nlo:  # wide open: twice the strain its softening ends at (rf / hon)
+                    op = np.maximum(np.maximum(h[:, 0] * o[:, 0] / rf[:, 0],
+                                               h[:, 2] * o[:, 1] / rf[:, 1]),
+                                    h[:, 4] * o[:, 2] / rf[:, 2])
+                else:
+                    op = np.maximum(np.maximum(h[:, 0] / rf[:, 0], h[:, 2] / rf[:, 1]),
+                                    h[:, 4] / rf[:, 2])
                 all_open &= ~act | (op >= 2.0)
                 k1, k2 = 1 - d1, 1 - d2
                 s1 = k1 * q11 * e1t + k1 * k2 * q12 * e2t
@@ -426,6 +852,10 @@ def shell_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     f = np.zeros((ns, 18))
     f[:, _IM] = m.s_area[:, None] * np.einsum("nik,ni->nk", m.s_Bm, N.mean(axis=1))
     f[:, _IB] = (m.s_area / 3)[:, None] * np.einsum("ngik,ngi->nk", m.s_Bb, M)
+    if shear.any():  # DKMT: R^T om (1.5 A/3 sum_g KH_g^T M_g + A Gs^T Q)
+        coef = om * (1.5 * (m.s_area / 3)[:, None] * np.einsum("ngik,ngi->nk", sKH, M)
+                     + m.s_area[:, None] * np.einsum("nik,ni->nk", sGs, Qs))
+        f[:, _IB] += np.einsum("nkj,nk->nj", sR, coef)
     # drilling (Hughes-Brezzi): theta_z against the in-plane rigid rotation omega
     g = np.zeros((ns, 6))
     g[:, 0::2] = -0.5 * m.s_Bm[:, 1, 1::2]
@@ -514,8 +944,26 @@ def glue_rate_factor(rate, tnow: float, tref: float, t0: np.ndarray) -> np.ndarr
     return np.exp(-rate * np.log(np.maximum(tl, tref / RATE_RANGE) / tref))
 
 
+def glue_pressure(m: Model) -> np.ndarray:
+    """Each glue point's rise of its shear strength per MPa of pressure across it
+    (``Model.c_mui``, glue.pressure_coeff; none where the model does not give one)."""
+    nc = len(m.c_a)
+    mui = getattr(m, "c_mui", None)
+    return mui if mui is not None and len(mui) == nc else np.zeros(nc)
+
+
 def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
                 update: bool = True, beta: float = 0.0, dt: float = 1.0) -> None:
+    """Cohesive glue springs (the NumPy reference of kernels.glue_kernel): a trilinear
+    mixed-mode law (quadratic onset, linear softening to G_c), the wood under the line
+    crushing, creep in shear, a strength that depends on the line's own time under load
+    (glue_rate), friction on the debonded share. Pressed together (normal traction
+    sigma_c = -t_n > 0, the pressure the line carries after the wood's crushing), a line
+    holds more in shear, a Mohr-Coulomb onset: tau_eff = tau rs + mu_i sigma_c (mu_i =
+    ``glue_pressure``, rs the rate factor, which scales the cohesive tau only), and its
+    toughness in the same ratio, G_c tau_eff / (tau rs), so it lets go at about the same
+    slip (exactly for the bilinear law: 2 G_c / tau); once debonded it slides at the
+    friction mu sigma_c as before."""
     if len(m.c_a) == 0:
         return
     pa, arm_a = _attach_pos(m, st, m.c_a)
@@ -572,6 +1020,15 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     Gn = Kn * dnp**2
     B = Gs / np.maximum(Gs + Gn, 1e-30)
     Gc = m.c_GIc + (m.c_GIIc - m.c_GIc) * B**2
+    mui = glue_pressure(m)
+    if (mui > 0.0).any():
+        # pressed together: tau_eff = tau rs + mu_i sigma_c (pressed, dnp = 0 and the
+        # onset dm0 is the shear onset), the toughness in the same ratio
+        tc = m.c_tau * rs
+        on = (mui > 0.0) & (dn < 0.0) & (tc > 1e-12)
+        pr = np.where(on, 1.0 + mui * (-Kn * dn) / np.where(on, tc, 1.0), 1.0)
+        dm0 = dm0 * pr
+        Gc = Gc * pr
     Keff = np.where(dm > 1e-12, (Gn + Gs) / np.maximum(dm**2, 1e-30), Ks)
     dmax = np.maximum(st.c_dmax, dm)
     d = trilinear_damage(dmax, np.maximum(dm0, 1e-12), Keff, Gc, *glue_shape(m))
@@ -583,9 +1040,10 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
             go = (m.c_breakable & (d < 0.999))[:, None]
             st.c_creep = np.where(go, cfac * ds + (st.c_creep - cfac * ds) * cdec,
                                   st.c_creep)
-    # a debonded pair that has turned, parted or passed through stops acting as contact
+    # a debonded pair that has turned, parted (3 mm from where it was drawn: a dry face
+    # drawn apart starts open by its gap) or passed through stops acting as contact
     gone = m.c_breakable & (d >= 0.999) & ((nn < 1.6) | (st.c_crush < -cdep)
-                                           | (dn**2 + s**2 > 9.0))
+                                           | ((dn - glue_gap0(m))**2 + s**2 > 9.0))
     live = st.c_alive & ~gone
     if update:
         st.c_alive = live
@@ -811,6 +1269,76 @@ def split_members(m: Model, st: State) -> None:
         st.b_shear |= f2 | f3
 
 
+def plate_split_averaging(m: Model):
+    """The averaging of the plates' split check (cached on the model), as
+    :func:`split_averaging` does for members: each shell element's interlaminar shear
+    over strength is averaged over a disc one plate thickness across (radius t / 2)
+    centred on it, each element of the same plate weighted by its area inside the disc
+    (4 x 4 sub-triangles each), at least the element itself: a plate splits where the
+    shear acts over its thickness, not where one small element resolves a peak at the
+    edge of a patch load (a local onset would come earlier the finer the mesh). With
+    elements larger than the thickness (the usual case) it is about the element itself.
+    Returns a sparse averaging matrix."""
+    ns = len(m.s_nodes)
+    W = getattr(m, "_psplit_W", None)
+    if W is not None and W.shape[0] == ns:
+        return W
+    from scipy.sparse import csr_matrix
+    from scipy.spatial import cKDTree
+
+    P = m.X[m.s_nodes]  # (ns, 3, 3)
+    c = P.mean(axis=1)
+    area = 0.5 * np.linalg.norm(np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]), axis=1)
+    k = 4  # sub-triangles' centroids of a k x k subdivision, in area coordinates
+    bary = []
+    for i in range(k):
+        for j in range(k - i):
+            bary.append(((i + 1 / 3), (j + 1 / 3), (k - i - j - 2 / 3)))
+            if i + j < k - 1:
+                bary.append(((i + 2 / 3), (j + 2 / 3), (k - i - j - 4 / 3)))
+    bary = np.array(bary) / k  # (k^2, 3)
+    pts = np.einsum("qa,nak->nqk", bary, P)
+    nq = len(bary)
+    rows, cols, vals = [], [], []
+    for bd in np.unique(m.s_body):
+        idx = np.where(m.s_body == bd)[0]
+        tree = cKDTree(pts[idx].reshape(-1, 3))
+        owner = np.repeat(np.arange(len(idx)), nq)
+        hits = tree.query_ball_point(c[idx], 0.5 * m.s_t[idx])
+        for a, (e, hit) in enumerate(zip(idx, hits, strict=True)):
+            ov = np.bincount(owner[np.asarray(hit, int)], minlength=len(idx)) \
+                * area[idx] / nq
+            ov[a] = max(ov[a], 1e-9)
+            near = np.nonzero(ov)[0]
+            rows += [e] * len(near)
+            cols += list(idx[near])
+            vals += list(ov[near] / ov[near].sum())
+    W = csr_matrix((vals, (rows, cols)), shape=(ns, ns))
+    m._psplit_W = W
+    return W
+
+
+def split_plates(m: Model, st: State) -> None:
+    """Plates split between their plies in out-of-plane shear, as members do
+    (:func:`split_members`): where the interlaminar shear 1.5 |Q| / t, averaged over a
+    plate thickness (:func:`plate_split_averaging`), reaches the strength of the glue
+    planes, the element splits along its most stressed one into two sub-laminates that
+    bend each about its own mid-plane (lever arms x 1/2, bending stiffness x 1/4), at
+    once (brittle, as a pressed line in a short-beam shear test), and again in each part
+    while the shear still reaches it, down to its separate plies (1/n). It keeps its
+    membrane stiffness and strength and its transverse shear stiffness (the parts share
+    the shear, each with its own: kappa G t in all). A single ply has no glue plane."""
+    if len(m.s_nodes) == 0 or len(st.s_split) != len(m.s_nodes) or \
+            len(st.s_rat) != len(m.s_nodes) or not st.s_rat.max() > 1.0:
+        return  # (a mean of values none above 1 is not above 1)
+    r = plate_split_averaging(m) @ st.s_rat
+    last = 1.0 / np.maximum(m.s_nply, 1.0)
+    f = ~st.s_gone & (st.s_split > last * (1.0 + 1e-9)) & (r > 1.0)
+    if f.any():
+        st.s_split = np.where(f, np.maximum(0.5 * st.s_split, last), st.s_split)
+        st.s_shear = st.s_shear | f
+
+
 def internal_and_contact(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarray,
                          update: bool = True) -> dict:
     if s.use_numba and K.HAVE_NUMBA:
@@ -863,6 +1391,17 @@ def _glue_crush(m: Model) -> tuple[np.ndarray, float, float, float]:
         float(m.params.get("bearing_cap", 1e30))
 
 
+def glue_gap0(m: Model) -> np.ndarray:
+    """How far apart each glue point's two sides were drawn (mm): a dry face drawn apart
+    (idealize: a near miss not glued, a cut end's fit-up gap too wide for the glue) bears
+    only once that gap has closed; 0 for the rest."""
+    g = m.params.get("c_gap0")
+    if g is None or len(g) != len(m.c_a):
+        g = np.zeros(len(m.c_a))
+        m.params["c_gap0"] = g
+    return g
+
+
 def _glue_fc90(m: Model) -> np.ndarray:
     """Crushing strength of the wood at each glue point (MPa), by grain direction."""
     f = m.params.get("glue_fc")
@@ -912,38 +1451,51 @@ def _cd(m: Model, key: str, s: Settings, update: bool) -> np.ndarray:
     return c
 
 
+_NO_NLON = np.zeros((0, 3, 1), bool)  # the nonlocal onset off: no element averages
+
+
 def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarray,
                    update: bool) -> dict:
     F[:] = 0
     Mo[:] = 0
     x, R = st.x, st.R
     if len(m.b_i):
-        K.beam_kernel(x, R, m.b_i, m.b_j, m.b_L0, m.b_E0, m.b_fy, m.b_fz, m.b_fA, m.b_E,
-                      m.b_ft, m.b_fc, m.b_Gf, m.b_GJ, m.b_A, m.b_fv, m.b_fv3, m.b_Wt,
-                      m.b_nply, m.b_kGA, st.b_gam, st.b_s2, st.b_s3,
+        K.beam_kernel(x, R, m.b_i, m.b_j, beam_L0(m, st), m.b_E0, m.b_fy, m.b_fz, m.b_fA,
+                      m.b_E, m.b_ft, m.b_fc, beam_fs(m), m.b_Gf, m.b_GJ, m.b_A, m.b_fv, m.b_fv3,
+                      m.b_Wt, m.b_nply, m.b_kGA, beam_kGA3(m), st.b_gam, st.b_s2, st.b_s3,
                       float(m.params.get("crush_softening", 0.3)), st.eps_p, st.dmg_t,
                       st.b_alive, st.b_fractured, st.b_shear, F, Mo, update,
                       s.beta if update else 0.0, s.dt, st.b_prev, st.b_rat2, st.b_rat3,
-                      float(m.params.get("fc_proportional", 1.0)))
+                      float(m.params.get("fc_proportional", 1.0)), crush_band(m))
         if update:
             split_members(m, st)
     if len(m.s_nodes):
         ns = len(m.s_nodes)
         if st.work is None or st.work[0].shape[0] != ns:
             st.work = (np.zeros((ns, 3, 3)), np.zeros((ns, 3, 3)), np.zeros((ns, 18)),
-                       np.zeros((ns, 3, 3)), np.zeros((ns, 3)), np.zeros((ns, 60)))
+                       np.zeros((ns, 3, 3)), np.zeros((ns, 3)), np.zeros((ns, 72)))
         fe, me, wd, wR, wth, ws = st.work
+        if len(st.s_split) != ns:
+            st.s_split, st.s_rat = np.ones(ns), np.zeros(ns)
+            st.s_shear = np.zeros(ns, bool)
+        nlo = nonlocal_state(m, st)
+        nlon = plate_nonlocal_averaging(m)[1] if nlo else _NO_NLON
         K.shell_kernel(x, R, m.s_nodes, m.s_E0, m.s_P, m.s_Bm, m.s_Bb, m.s_area, m.s_kd,
                        m.s_lay, m.s_nl, m.s_Q, m.s_lim, m.s_rf, _rc(m), st.s_hist,
                        st.s_dmg, st.s_gone, F, Mo, update, fe, me,
-                       s.beta if update else 0.0, s.dt, st.s_prev, wd, wR, wth, ws)
+                       s.beta if update else 0.0, s.dt, st.s_prev, wd, wR, wth, ws,
+                       *shell_shear_arrays(m), st.s_split, st.s_rat, shell_crush_fall(m),
+                       nlo, nlon, st.s_hon, st.s_ept, st.s_ec, st.s_wait, st.s_nlec)
+        if update:
+            plate_nonlocal_onset(m, st, compiled=True)
+            split_plates(m, st)
     if len(m.c_a):
         K.glue_kernel(x, R, m.a_node, m.a_r0, m.c_a, m.c_b, m.c_area, m.c_n0, m.c_Kn,
                       m.c_Ks, m.c_sig, m.c_tau, m.c_GIc, m.c_GIIc, m.c_mu, m.c_breakable,
                       st.c_dmax, st.c_d, st.c_slip, F, Mo, update,
                       s.beta if update else 0.0, s.dt, st.c_prev, st.c_alive, st.c_crush,
                       _glue_fc90(m), *_glue_crush(m), st.c_creep, *glue_creep(m, st),
-                      *glue_shape(m), *glue_rate(m, st))
+                      *glue_shape(m), *glue_rate(m, st), glue_pressure(m), glue_gap0(m))
     if len(m.k_a):
         K.cable_kernel(x, R, m.a_node, m.a_r0, m.k_a, m.k_b, m.k_L0, m.k_EA, m.k_Fb,
                        st.k_alive, F, Mo, update)
@@ -978,6 +1530,9 @@ def internal_and_contact_numpy(m: Model, st: State, s: Settings, F: np.ndarray,
     if update and len(m.b_i):
         split_members(m, st)
     shell_forces(m, st, F, Mo, update, b, s.dt)
+    if update:
+        plate_nonlocal_onset(m, st)
+        split_plates(m, st)
     glue_forces(m, st, F, Mo, update, b, s.dt)
     cable_forces(m, st, F, Mo, update)
     # contacts produce forces *on* nodes; convert to "internal" sign convention below

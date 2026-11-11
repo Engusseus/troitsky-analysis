@@ -38,7 +38,14 @@ from bridgesim.materials import load_material
 from bridgesim.rules import RuleSet, evaluate_values
 from bridgesim.schema import Material
 from bridgesim.sim import lab as labmod
-from bridgesim.sim.crush import KGF, MINOR_SHARE, CrushOptions, CrushResult, run_crush
+from bridgesim.sim.crush import (
+    KGF,
+    MINOR_SHARE,
+    CrushOptions,
+    CrushResult,
+    glue_intact_at,
+    run_crush,
+)
 from bridgesim.sim.idealize import Overrides, _group, build_model
 from bridgesim.sim.materials import SimParams
 from bridgesim.sim.model import Model
@@ -299,6 +306,8 @@ def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: Sim
     # weak joints: a bar whose joints are much weaker in shear than the bar in tension
     by_body: dict[int, list] = {}
     for p in model.patches:
+        if getattr(p, "plies", None) is not None:  # a split member's own lamination
+            continue
         by_body.setdefault(p.body_a, []).append(p)
         by_body.setdefault(p.body_b, []).append(p)
     weak_seen: set[str] = set()
@@ -455,18 +464,34 @@ def _body_reports(model: Model) -> list[BodyReport]:
             length_mm=round(b.length_mm, 1), section_mm=b.section_mm,
             thickness_mm=round(b.thickness_mm, 2), E_eff_MPa=round(b.E_eff_MPa, 1),
             f_t_eff_MPa=round(b.f_t_eff_MPa, 2), f_c_eff_MPa=round(b.f_c_eff_MPa, 2),
-            butt_zones_mm=list(getattr(b, "butt_zones", []) or []), why=why))
+            butt_zones_mm=list(getattr(b, "butt_zones", []) or []),
+            ply_groups=[[int(a) + 1, int(z)] for a, z in getattr(b, "ply_groups", [])],
+            why=why))
     return out
 
 
-def _time_at_peak(curve, sp: SimParams, fallback: float, Fu_kgf: float | None = None
-                  ) -> float:
+def _time_at_peak(curve, sp: SimParams, fallback: float, Fu_kgf: float | None = None,
+                  clock: dict | None = None) -> float:
     """When the real test reaches the reported F_u: the jack's travel where the reported
     curve first reaches F_u (``Fu_kgf``; its highest point without it: a load climbing
     again after the failure call, on the platform, is not F_u) at the real jack speed
     (crusher.test_rate_mm_per_min); the time the glue's strength was taken at moment by
-    moment (solver.glue_rate)."""
+    moment (solver.glue_rate). A pumped jack (crusher.stroke_mm > 0, round 28): the
+    crush's own test-time clock there (``clock``: the crush's curve with its ``t_test``),
+    its strokes at their pace and the pauses between them."""
+    from bridgesim.sim.materials import jack_strokes
+
     try:
+        if clock is not None and jack_strokes(sp.values)[0] > 0 and clock.get("t_test"):
+            F = np.asarray(clock["force"], float) / KGF
+            tt = np.asarray(clock["t_test"], float)
+            if len(F) == len(tt) and len(F):
+                i = int(np.argmax(F))
+                if Fu_kgf:
+                    hit = np.where(F >= 0.995 * Fu_kgf)[0]
+                    if len(hit):
+                        i = int(hit[0])
+                return float(tt[i])
         L = np.asarray(curve.load_kgf, float)
         x = np.asarray(curve.jack_travel_mm, float)
         rate = float(sp.values.get("crusher.test_rate_mm_per_min", 0.0)) / 60.0
@@ -505,8 +530,10 @@ def _joint_reports(model: Model, mat: Material) -> list[JointReport]:
     return [JointReport(a=model.bodies[p.body_a].name, b=model.bodies[p.body_b].name,
                         kind=p.kind, area_mm2=round(p.area_mm2, 1),
                         lamination=p.lamination,
-                        shear_capacity_N=round(patch_capacity_N(model, p, mat), 1))
-            for p in model.patches]
+                        shear_capacity_N=round(patch_capacity_N(model, p, mat), 1),
+                        exposed_perimeter_mm=round(float(getattr(p, "exposed_mm", 0.0)), 1))
+            for p in model.patches  # (not the planes inside blocks or split members)
+            if p.kind != "block" and getattr(p, "plies", None) is None]
 
 
 def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
@@ -541,7 +568,12 @@ def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
         assumed_parameters=_assumed(mat, sp),
         model={"nodes": int(model.n_nodes), "beam_elements": int(len(model.b_i)),
                "shell_elements": int(len(model.s_nodes)), "glue_points": int(len(model.c_a)),
-               "glued_patches": len(model.patches), "floss_cables": int(len(model.k_a)),
+               "glued_patches": sum(p.kind not in ("dry", "block")
+                                    and getattr(p, "plies", None) is None
+                                    for p in model.patches),
+               "block_cells": int(sum((model.params.get("block_cells") or {}).values())),
+               "block_planes": int(model.params.get("block_faces", 0)),
+               "floss_cables": int(len(model.k_a)),
                "platform_contact_points": int(len(model.p_att)),
                "plate_contact_points": int(len(model.q_att))},
         warnings=list(model.notes))
@@ -677,10 +709,12 @@ def _sequence(events: list) -> list[str]:
             continue
         seen.add(key)
         verb = {"member_fracture": "member broke", "member_shear": "member split in shear",
+                "plate_shear": "plate split between its plies in shear",
                 "member_crushing": "member crushing",
                 "bearing_crushing": "bearing face crushing",
                 "member_erosion": "member element removed (bent past 1 rad)",
                 "plate_crack": "plate cracked", "joint_failure": "glued joint separated",
+                "block_fracture": "block split inside",
                 "joint_cracking": "glued joint cracking",
                 "floss_break": "floss snapped", "criterion": "§12.5 failure criterion",
                 "instability": "instability", "numerical": "numerical problem"}.get(
@@ -784,7 +818,8 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
         competing=list(getattr(res, "competing", [])),
         deflection_at_Fu_mm=round(res.deflection_at_Fu_mm, 2),
         test_time_at_Fu_s=round(_time_at_peak(curve, sp, getattr(res, "test_time_at_Fu_s",
-                                                                   0.0), res.Fu_kgf), 1),
+                                                                   0.0), res.Fu_kgf,
+                                              clock=res.curve), 1),
         mass_kg=round(mass, 3), efficiency_kgf_per_kg=round(res.Fu_kgf / mass, 2),
         criteria=_criteria(res.criteria),
         failures=_failures(res.events, _fail_time(res)),
@@ -852,8 +887,8 @@ def crush(cad: str | Path, overrides=None, material=None, sim_params=None, rules
 
 
 MAJOR = ("bearing_crushing", "joint_cracking", "joint_failure", "member_fracture",
-         "member_shear",
-         "member_crushing", "member_erosion", "plate_crack", "floss_break")
+         "member_shear", "block_fracture",
+         "member_crushing", "member_erosion", "plate_crack", "plate_shear", "floss_break")
 
 
 def _failures(events, fail_t: float | None, limit: int = 60) -> list[EventOut]:
@@ -1067,8 +1102,10 @@ def _copies(name: str) -> str:
 def _whatif(gov: list[EventOut], crushed: set | frozenset = frozenset()) -> dict:
     """Overrides that strengthen the parts that broke at the peak, on every copy of them:
     a joint's glue (a bigger glued area or a gusset), a member's section or a plate's
-    thickness. A joint whose face crushed first (``crushed``) gets none: it bears, and
-    more glue does not change what its grain can take."""
+    thickness, a compact block's strength (it split inside: it stands for a bigger
+    block or its grain turned along the force; no glue changes it). A joint whose face
+    crushed first (``crushed``) gets none: it bears, and more glue does not change what
+    its grain can take."""
     bodies: dict[str, dict] = {}
     glue: dict[str, float] = {}
     for e in gov:
@@ -1076,9 +1113,12 @@ def _whatif(gov: list[EventOut], crushed: set | frozenset = frozenset()) -> dict
                 e.what not in crushed:
             glue[f"{_copies(e.parts[0])} | {_copies(e.parts[1])}"] = 1.5
         elif e.kind in ("member_shear", "member_fracture", "member_crushing",
-                        "member_erosion", "plate_crack"):
+                        "member_erosion", "plate_crack", "plate_shear"):
             for p in e.parts or [e.what]:
                 bodies[_copies(p)] = {"section_scale": 1.25}
+        elif e.kind == "block_fracture":
+            for p in e.parts or [e.what]:
+                bodies[_copies(p)] = {"strength_factor": 1.25}
     return {k: v for k, v in (("bodies", bodies), ("glue", glue)) if v}
 
 
@@ -1131,6 +1171,12 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
         lead = [e.model_copy(update={"kind": "joint_failure"}) for e in pool
                 if e.what == part and e.kind in ("joint_cracking", "glue_damage")][:1]
     near = [e for e in broke if e.load_kgf >= 0.9 * rep.Fu_kgf and e not in lead]
+    if lead and lead[0].kind.startswith("member_"):
+        # a joint whose glue was still intact when the governing member broke is its
+        # cascade (crush.glue_intact_at): its strength was never reached before that
+        # break, so more glue there cannot raise F_u and it gets no glue what-if
+        late = glue_intact_at(pool, lead[0].t_s, when=lambda e: e.t_s)
+        near = [e for e in near if not (e.kind.startswith("joint") and e.what in late)]
     # every joint of the governing part that broke with it (a diagonal's foot and both
     # its gusset laps: strengthening one leaves the others), then the others, up to 3
     lead_parts = set(lead[0].parts) if lead else set()
@@ -1200,8 +1246,14 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
                           f"({e.load_kgf / max(rep.Fu_kgf, 1e-9):.0%} of F_u)" for e in gov)
             + bear
             + ". The bridge failed there: strengthen it (glued area, a gusset, a deeper "
-              "member). Try it first as a what-if (`overrides`: 1.5x the glue of a joint "
-              "that separated, 1.25x the section of a part that broke, on every copy of "
+              "member" + ("; a block that split: a bigger block, or its sticks' grain "
+                          "along the force (grain), not more glue"
+                          if any(e.kind == "block_fracture" for e in gov) else "")
+            + "). Try it first as a what-if (`overrides`: 1.5x the glue of a joint "
+              "that separated, 1.25x the section of a part that broke"
+            + (", 1.25x the strength of a block that split"
+               if any(e.kind == "block_fracture" for e in gov) else "")
+            + ", on every copy of "
               "it; with your own overrides: whatif.yaml in the output folder) with ab on "
               "the same seeds; if it helps, make the change in the CAD and compare the two "
               "files",
@@ -1355,12 +1407,13 @@ def _fail_time(res: CrushResult) -> float | None:
 
 def _first_joint(res: CrushResult) -> float | None:
     """The strict reading: the highest load up to the first glued joint separating or
-    member splitting in shear, what a judge who stops the test there reads on the load
+    member or plate splitting in shear, what a judge who stops the test there reads on the load
     cell (its peak), not the load the moment it happens (on a falling branch when the
     joint goes after the peak)."""
     # a joint worth a few % of the load (MINOR_SHARE) letting go is not what a judge
     # stops the test for: it carried next to nothing
-    hit = [e for e in res.events if e.kind in ("joint_failure", "member_shear")
+    hit = [e for e in res.events if e.kind in ("joint_failure", "member_shear",
+                                                "plate_shear", "block_fracture")
            and e.capacity_N >= MINOR_SHARE * res.Fu_N]
     if not hit:
         return None
@@ -1509,7 +1562,7 @@ def _quality(res: CrushResult, mat: Material, sp: SimParams, rc: dict | None = N
                    speed_mm_s=getattr(res, "speed_mm_s", 0.0), rate_check=rc,
                    fundamental_period_ms=round(1000 * float(
                        res.model.params.get("period_s", 0.0)), 2),
-                   holds=getattr(res, "holds", 0),
+                   holds=getattr(res, "holds", 0), pauses=getattr(res, "pauses", 0),
                    hold_time_s=round(getattr(res, "hold_time_s", 0.0), 4),
                    min_fidelity=min_fid)
 
@@ -1810,7 +1863,8 @@ def _crush_material(mat: Material, sp: SimParams) -> Material:
 def _wood_law(sp: SimParams) -> dict:
     """The fibre law's compression parameters of the bridge, for the coupon models."""
     return {"fc_prop": sp.values.get("wood.fc_proportional", 1.0),
-            "crush_softening": sp["wood.crush_softening"]}
+            "crush_softening": sp["wood.crush_softening"],
+            "crush_band_mm": sp.values.get("wood.crush_band_mm", 0.0)}
 
 
 def coupon_K_s(sp: SimParams, t: float, G: float) -> float:
@@ -1829,24 +1883,38 @@ def glue_line_K_s(sp: SimParams, k_lap: float, t: float, G: float) -> float:
 
 
 def _lap(sp: SimParams, tau_peak: float, overlap: float, width: float, E: float,
-         t: float = 2.0, G: float | None = None):
+         t: float = 2.0, G: float | None = None, clamp_MPa: float = 0.0,
+         exposed_mm: float | None = None):
     """The simulated single-lap joint with the bridge model's glue: its peel strength the
     lower of peel_to_shear x the shear strength and the sticks' tension across the grain
     (as every glue line of the bridge); its shear stiffness the glue line's in series with
-    the sticks' shear through their thickness (coupon_K_s; G: E / 16 unless given)."""
+    the sticks' shear through their thickness (coupon_K_s; G: E / 16 unless given); the
+    lap size effect and the squeeze-out fillets of its exposed outline (``exposed_mm``,
+    default its two ends, 2 x width: two sticks of one width; glue.fillet_mm); pressed
+    by ``clamp_MPa`` while it is pulled, it holds more (glue.pressure_coeff)."""
     G = E / 16.0 if G is None else G
-    from bridgesim.sim.idealize import lap_size_factor
+    from bridgesim.sim.idealize import fillet_factor, lap_size_factor
 
     tau_peak = tau_peak * lap_size_factor(overlap * width,
                                           sp.values.get("glue.size_ref_mm2", 200.0),
                                           sp.values.get("glue.weibull_m", 10.0),
                                           sp.values.get("glue.size_cap_mm2", 3000.0))
+    fil = float(sp.values.get("glue.fillet_mm", 0.0))
+    ff = 1.0
+    if fil > 0:  # (its toughness with it, as the bridge's joints: the same slip at let-go)
+        ff = fillet_factor(2.0 * width if exposed_mm is None else exposed_mm,
+                           overlap * width, fil, sp.values.get("glue.size_ref_mm2", 200.0),
+                           sp.values.get("glue.fillet_ref_perimeter_mm", 20.0))
+        tau_peak *= ff
     peel = min(sp["glue.peel_to_shear"] * tau_peak, sp["wood.f_t90_MPa"]) / max(tau_peak,
                                                                                 1e-12)
     return labmod.lap_shear(tau_peak, peel, sp["glue.K_n_N_per_mm3"],
-                            coupon_K_s(sp, t, G), sp["glue.G_Ic_N_per_mm"],
-                            sp["glue.G_IIc_N_per_mm"], overlap=overlap, width=width, t=t,
-                            E=E, **glue_law(sp))
+                            coupon_K_s(sp, t, G), sp["glue.G_Ic_N_per_mm"] * ff,
+                            sp["glue.G_IIc_N_per_mm"] * ff, overlap=overlap, width=width, t=t,
+                            E=E, **glue_law(sp),
+                            pressure_coeff=float(sp.values.get("glue.pressure_coeff", 0.0)),
+                            clamp_MPa=clamp_MPa,
+                            friction=float(sp.values.get("glue.friction", 0.4)))
 
 
 def glue_law(sp: SimParams) -> dict:
@@ -1881,6 +1949,15 @@ def lab(material=None, sim_params=None, csv_dir: str | Path | None = None) -> La
     tests.append({"test": f"single-lap glue joint {ov:g} x {wd:g} mm", "peak_N": round(g.peak, 1),
                   "tau_avg_MPa": round(g.peak / (ov * wd), 3),
                   "material_tau_g_MPa": mat.glue.tau_g_MPa.value})
+    # the same lap clamped while it is pulled (glue.pressure_coeff: a pressed line holds
+    # more; the share of it already let go slides at glue.friction x the pressure)
+    p_c = 1.0
+    gc = _lap(sp, tau_peak, ov, wd, E, t=st.thickness_mm, clamp_MPa=p_c)
+    tests.append({"test": f"single-lap glue joint {ov:g} x {wd:g} mm clamped at {p_c:g} MPa",
+                  "peak_N": round(gc.peak, 1), "tau_avg_MPa": round(gc.peak / (ov * wd), 3),
+                  "rise_over_unclamped_MPa": round((gc.peak - g.peak) / (ov * wd), 3),
+                  "pressure_coeff": sp.values.get("glue.pressure_coeff", 0.0),
+                  "friction": sp.values.get("glue.friction", 0.4)})
     col = labmod.euler_column(E=E, L=st.length_mm, b=st.width_mm, t=st.thickness_mm)
     pcr = math.pi**2 * E * I / st.length_mm**2
     tests.append({"test": "one stick as a pin-ended column (L/1000 bow)",
@@ -1897,6 +1974,138 @@ def _float(r: dict, k: str) -> float | None:
         return float(v)
     except ValueError:
         return None
+
+
+def _lap_key(r: dict, ov: float, w: float) -> tuple[float, float, float, float]:
+    """A lap coupon's kind: its overlap and width (mm), the pressure it was clamped at
+    while pulled (clamp_pressure_MPa; blank: 0) and its exposed outline, where a fillet
+    can form (exposed_perimeter_mm; blank: its two ends, 2 x width, two sticks of one
+    width lapped side by side)."""
+    p = _float(r, "clamp_pressure_MPa") or 0.0
+    pe = _float(r, "exposed_perimeter_mm")
+    return (float(ov), float(w), max(float(p), 0.0),
+            float(pe) if pe is not None and pe >= 0 else 2.0 * float(w))
+
+
+def fit_size_and_fillet(laps: list[tuple[float, float, float]], ref_mm2: float = 200.0,
+                        ref_exposed_mm: float = 20.0, cap_mm2: float = 3000.0
+                        ) -> tuple[float, float, float] | None:
+    """The Weibull modulus of the lap size law and the fillet width that together
+    explain laps of three sizes or more ((area mm^2, exposed outline mm, strength MPa)
+    per lap): tau = tau_ref (A / A_ref)^(-1/m) (1 + f P_e / A) / (1 + f P_ref / A_ref)
+    (idealize.lap_size_factor, fillet_factor), least squares on log tau, 1/m in [0, 1]
+    and f in [0, 5] mm. The size law sees a lap's area, the fillet its exposed outline
+    over its area, so laps with different perimeter-to-area ratios at one area (a wide
+    20 x 30 mm lap beside a 20 x 10) tell them apart. Returns (m, f, tau_ref): m = 0 when
+    the data show no size effect (the law's off value); None with fewer than three
+    sizes."""
+    from scipy.optimize import least_squares
+
+    from bridgesim.sim.idealize import fillet_factor, lap_size_factor
+
+    if len({(round(a, 1), round(p, 1)) for a, p, _t in laps}) < 3:
+        return None
+    A = np.array([x[0] for x in laps], float)
+    P = np.array([x[1] for x in laps], float)
+    y = np.log(np.array([x[2] for x in laps], float))
+
+    def model(th):
+        k, f = th[1], th[2]
+        s = np.array([lap_size_factor(a, ref_mm2, 1.0 / k if k > 1e-9 else 0.0, cap_mm2)
+                      for a in A])
+        fl = np.array([fillet_factor(p, a, f, ref_mm2, ref_exposed_mm)
+                       for a, p in zip(A, P, strict=True)])
+        return th[0] + np.log(s) + np.log(fl)
+
+    best = None
+    for k0 in (0.02, 0.1, 0.3):  # a few starts: the problem is small but not convex
+        for f0 in (0.0, 0.5, 2.0):
+            r = least_squares(lambda th: model(th) - y, [float(np.mean(y)), k0, f0],
+                              bounds=([-np.inf, 0.0, 0.0], [np.inf, 1.0, 5.0]))
+            if best is None or r.cost < best.cost - 1e-12:
+                best = r
+    t0, k, f = (float(v) for v in best.x)
+    # (m above 100, the parameter's range, is no size effect worth the name: off)
+    return (1.0 / k if k >= 0.01 else 0.0), f, float(np.exp(t0))
+
+
+def _fit_lap_laws(joints: list, sp: SimParams, sp_fit: SimParams, E: float,
+                  params: dict, log: list) -> SimParams:
+    """What the lap coupons (``joints``: (lap kind, load N), _lap_key) tell besides tau_g,
+    fitted before it: with laps of three or more sizes pulled unclamped, the size law's
+    Weibull modulus and the fillet width together (fit_size_and_fillet); with laps of one
+    size pulled at two or more clamp pressures, the pressure coefficient, through the
+    simulated clamped lap: the share of a lap already let go at its peak slides at
+    glue.friction x the pressure, so a clamped lap's strength rises faster than the
+    coefficient alone (with the shipped values ~0.28 per MPa at a coefficient of 0, ~0.4
+    more per unit of it), and the slope of the measured strengths over the pressure is
+    matched by the simulated one. Returns ``sp_fit`` with what was fitted (also put in
+    ``params``)."""
+    from bridgesim.sim.idealize import fillet_factor, lap_size_factor
+
+    upd: dict[str, float] = {}
+    free = [(kd[0] * kd[1], kd[3], F_ / (kd[0] * kd[1])) for kd, F_ in joints if kd[2] == 0]
+    sizes = {(round(a, 1), round(p, 1)) for a, p, _t in free}
+    sf = fit_size_and_fillet(free, sp.values.get("glue.size_ref_mm2", 200.0),
+                             sp.values.get("glue.fillet_ref_perimeter_mm", 20.0),
+                             sp.values.get("glue.size_cap_mm2", 3000.0))
+    if sf is not None:
+        m_w, f_w, _t = sf
+        upd["glue.weibull_m"], upd["glue.fillet_mm"] = round(m_w, 3), round(f_w, 3)
+        log.append(f"glue.weibull_m = {m_w:.1f} (0: no size effect) and glue.fillet_mm = "
+                   f"{f_w:.2f} fitted together to {len(free)} unclamped laps of "
+                   f"{len(sizes)} sizes (the size law sees a lap's area, the fillet its "
+                   "exposed outline over its area)")
+    elif len(sizes) == 2:
+        log.append("laps of two sizes: the size law and the fillets are not told apart "
+                   "(three sizes or more with different perimeter-to-area ratios, "
+                   "glue.fillet_mm): glue.weibull_m and glue.fillet_mm kept")
+    sp_fit = sp_fit.updated(upd, source="measured") if upd else sp_fit
+    # the pressure: the lap kind pulled at the most clamp pressures (then the most laps)
+    groups: dict[tuple, list] = {}
+    for kd, F_ in joints:
+        groups.setdefault((kd[0], kd[1], kd[3]), []).append((kd[2], F_ / (kd[0] * kd[1])))
+    cand = [g for g in groups.items() if len({p for p, _t in g[1]}) >= 2]
+    if cand:
+        (ov, w, pe), rows = max(cand, key=lambda g: (len({p for p, _t in g[1]}), len(g[1])))
+        x = np.array([p for p, _t in rows], float)
+        y = np.array([t for _p, t in rows], float)
+        b, a = (float(v) for v in np.polyfit(x, y, 1))
+        p0, p1 = float(x.min()), float(x.max())
+        ratio = sp.values.get("glue.tau_peak_over_avg", 1.065)
+        # the coupon's own size law and fillet out of its level (a, at the clamp p0)
+        lvl = lap_size_factor(ov * w, sp_fit.values.get("glue.size_ref_mm2", 200.0),
+                              sp_fit.values.get("glue.weibull_m", 10.0),
+                              sp_fit.values.get("glue.size_cap_mm2", 3000.0))
+        if sp_fit.values.get("glue.fillet_mm", 0.0) > 0:
+            lvl *= fillet_factor(pe, ov * w, sp_fit["glue.fillet_mm"],
+                                 sp_fit.values.get("glue.size_ref_mm2", 200.0),
+                                 sp_fit.values.get("glue.fillet_ref_perimeter_mm", 20.0))
+        tp = max(a, 1e-3) * ratio / max(lvl, 1e-9)
+
+        def slope(mu: float) -> float:
+            s2 = sp_fit.updated({"glue.pressure_coeff": mu})
+            lo = _lap(s2, tp, ov, w, E, clamp_MPa=p0, exposed_mm=pe).peak
+            hi = _lap(s2, tp, ov, w, E, clamp_MPa=p1, exposed_mm=pe).peak
+            return (hi - lo) / (ov * w) / (p1 - p0)
+
+        s0, s1 = slope(0.0), slope(0.5)
+        d_s = (s1 - s0) / 0.5
+        mu = min(max((b - s0) / d_s, 0.0), 1.0) if d_s > 1e-9 else 0.0
+        if 0.0 < mu < 1.0:
+            mu = min(max(mu + (b - slope(mu)) / d_s, 0.0), 1.0)
+        upd_p = {"glue.pressure_coeff": round(mu, 4)}
+        sp_fit = sp_fit.updated(upd_p, source="measured")
+        upd.update(upd_p)
+        log.append(f"glue.pressure_coeff = {mu:.3f} from {len(rows)} {ov:g} x {w:g} mm laps "
+                   f"clamped at {p0:g}-{p1:g} MPa: their strength rose {b:.3f} MPa per MPa; "
+                   f"the simulated lap rises {s0:.3f} per MPa at a coefficient of 0 (the "
+                   f"share already let go slides at glue.friction "
+                   f"{sp.values.get('glue.friction', 0.4):g} x the pressure)"
+                   + (": the data rise no faster than that friction alone gives "
+                      "(glue.friction lower?)" if b <= s0 else ""))
+    params.update(upd)
+    return sp_fit
 
 
 def at_coupon_time(F: float, r: dict, sp: SimParams) -> float:
@@ -1952,6 +2161,7 @@ def _lab_gaps(d: Path, mat: Material, sp: SimParams) -> list[RealityGap]:
     rows = _coupon_rows(d, "glue_joint")
     if rows:
         mets = []
+        laps: dict = {}
         for r in rows:
             ov, w, Ff = _float(r, "overlap_mm"), _float(r, "width_mm"), _float(
                 r, "failure_load_N")
@@ -1961,7 +2171,13 @@ def _lab_gaps(d: Path, mat: Material, sp: SimParams) -> list[RealityGap]:
             Ff = at_coupon_time(Ff, r, sp)
             tau_peak = mat.glue.tau_g_MPa.value * sp.values.get("glue.tau_peak_over_avg",
                                                                  1.065)
-            sim = _lap(sp, tau_peak, ov, w, mat.E_MPa.value)
+            # each lap simulated at its own size, exposed outline and clamp (laps of one
+            # kind share one simulation)
+            key = _lap_key(r, ov, w)
+            if key not in laps:
+                laps[key] = _lap(sp, tau_peak, ov, w, mat.E_MPa.value, clamp_MPa=key[2],
+                                 exposed_mm=key[3])
+            sim = laps[key]
             mets.append(GapMetric(name=f"{r['specimen']} joint strength",
                                   simulated=round(sim.peak * faces, 1), measured=Ff,
                                   error=(sim.peak * faces - Ff) / Ff, unit="N"))
@@ -2060,23 +2276,25 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
                          and k.startswith("glue.")}, source="measured") \
         if any(k.startswith("glue.") and k in sp.values for k in params) else sp
     if _coupon_rows(d, "glue_joint"):
-        joints = []
+        joints = []  # (lap kind: overlap, width, clamp MPa, exposed mm; load N)
         for r in _coupon_rows(d, "glue_joint"):
             ov, w, Ff = _float(r, "overlap_mm"), _float(r, "width_mm"), _float(
                 r, "failure_load_N")
             faces = _float(r, "faces") or 1
             if ov and w and Ff:
-                joints.append((ov, w, at_coupon_time(Ff, r, sp) / faces))
+                joints.append((_lap_key(r, ov, w), at_coupon_time(Ff, r, sp) / faces))
         if joints:
-            tau = float(np.mean([F_ / (ov * w) for ov, w, F_ in joints]))
-            ratio = sp.values.get("glue.tau_peak_over_avg", 1.065)
             E = changes.get("E_MPa", mat.E_MPa.value)
-            # inverse fit through the simulated lap joint of each measured geometry
+            sp_fit = _fit_lap_laws(joints, sp, sp_fit, E, params, log)
+            tau = float(np.mean([F_ / (kd[0] * kd[1]) for kd, F_ in joints]))
+            ratio = sp.values.get("glue.tau_peak_over_avg", 1.065)
+            # inverse fit through the simulated lap joint of each measured geometry and
+            # clamp (laps of one kind share one simulation)
             for _ in range(3):
-                errs = []
-                for ov, w, F_ in joints:
-                    sim = _lap(sp_fit, tau * ratio, ov, w, E)
-                    errs.append(F_ / max(sim.peak, 1e-9))
+                sims = {kd: _lap(sp_fit, tau * ratio, kd[0], kd[1], E, clamp_MPa=kd[2],
+                                 exposed_mm=kd[3]).peak for kd in dict.fromkeys(
+                                     kd for kd, _F in joints)}
+                errs = [F_ / max(sims[kd], 1e-9) for kd, F_ in joints]
                 k = float(np.mean(errs))
                 tau *= k
                 if abs(k - 1) < 0.005:
@@ -2087,7 +2305,9 @@ def calibrate(csv_dir: str | Path, material=None, sim_params=None
             log.append(f"tau_g = {tau:.2f} MPa from {len(joints)} joints (so the simulated "
                        "lap joints of the measured overlaps break at the measured loads)")
             if len(joints) >= 3:
-                tj = [F_ / (ov * w) for ov, w, F_ in joints]
+                # the scatter about each lap's own kind (its size and clamp taken out)
+                tj = [F_ / (kd[0] * kd[1]) for kd, F_ in joints] \
+                    if len({kd for kd, _F in joints}) == 1 else errs
                 params["scatter.glue_cov"] = float(np.std(tj, ddof=1) / np.mean(tj))
     log += coupon_files(d)[1] if d.is_dir() else []
     if not changes and not params:
@@ -2422,7 +2642,9 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
              "percentiles." if n < 20 else "")
     if drawn:
         rep.note = ("The spread covers member bow, stick-to-stick and joint-to-joint "
-                    "scatter, plate placement and the placeholder material values "
+                    "scatter, the built bridge's differences from its drawing (plates out "
+                    "of flat, members twisted, thicker or thinner, off their place, cut "
+                    "long or short), plate placement and the placeholder material values "
                     f"({', '.join(sorted(drawn))}), each drawn per run around its "
                     "placeholder (lognormal, with the spread of the literature or "
                     "craft-stick range of each: 20-50 %; a Latin hypercube, so each "
@@ -2431,7 +2653,10 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
                     "only a validation test can narrow." + small)
     else:
         rep.note = ("The spread covers member bow, stick-to-stick and joint-to-joint "
-                    "scatter and plate placement. It does not cover the material values "
+                    "scatter, the built bridge's differences from its drawing (plates out "
+                    "of flat, members twisted, thicker or thinner, off their place, cut "
+                    "long or short) and plate placement. It does not cover the material "
+                    "values "
                     "themselves: "
                     + (f"{len(assumed)} are still placeholders, which can move F_u by tens "
                        "of % (bridgesim sensitivity shows which); measure them, or add "
@@ -2459,9 +2684,11 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
     rigid = sorted({b for r in res for b in r.get("rigid_under_plate", [])})
     if rigid:
         rep.note += (" The part(s) under the loading plate " + ", ".join(rigid)
-                     + " are rigid blocks in the model: they cannot bend, shear or crush, "
-                     "so a failure there is missing from every run (check them by hand, "
-                     "or model them as members: kind: bar, with axis: the direction each spans).")
+                     + " are compact blocks in the model: a rigid one cannot bend, shear "
+                     "or crush, and one cut into cells (block.cell_mm) splits only between "
+                     "its cells and does not bend as a member, so a failure there may be "
+                     "missing from every run (check them by hand, or model them as "
+                     "members: kind: bar, with axis: the direction each spans).")
     if out_dir:
         (Path(out_dir) / "montecarlo.json").write_text(rep.model_dump_json(indent=2),
                                                       encoding="utf-8")
@@ -2538,8 +2765,11 @@ def draw_placeholders(overrides: dict | None, drawn: dict[str, float], seed: int
             prm[k] = round(min(max(v + sd * z[k], lo), hi), 6)
             continue
         x = v * float(np.exp(z[k] * PLACEHOLDER_PRIORS.get(k, PLACEHOLDER_COV)))
-        if k in ("glue.end_grain_factor", "glue.prepeak_onset") or k.endswith("_efficiency"):
-            x = min(x, 1.0)  # end grain never glues better than side grain; shares
+        if k in ("glue.end_grain_factor", "glue.prepeak_onset", "glue.pressure_coeff") \
+                or k.endswith("_efficiency"):
+            # end grain never glues better than side grain; shares; the pressure
+            # coefficient's range (0-1)
+            x = min(x, 1.0)
         elif k == "glue.peak_slip_ratio":
             x = max(x, 1.0)  # the peak is never before the straight line reaches it
         prm[k] = round(x, 6)
@@ -2893,6 +3123,32 @@ PLACEHOLDER_PRIORS = {
     "glue.G_Ic_N_per_mm": 0.45, "glue.gap_fill_mm": 0.40, "glue.coupon_time_s": 0.40,
     "scatter.glue_bridge_cov": 0.40, "scatter.E_cov": 0.30, "scatter.strength_cov": 0.30,
     "wood.crush_softening": 0.30,
+    # round 28: the gauge length of the crushing fall (a kink band's width, millimetres to
+    # a few centimetres in wood; nothing measured on sticks)
+    "wood.crush_band_mm": 0.50,
+    # round 28: how much more a glue line pressed together holds in shear (nothing
+    # measures it for PVA laps on sticks: 0.13-0.69 around the assumed 0.3, at most 1).
+    # Not drawn: the within-joint field and the fillet (scatter.glue_point_cov,
+    # glue.fillet_mm), off by default as alternatives to the size law that glue.weibull_m
+    # fits; drawn around 0 they would stay 0, and switched on without refitting m they
+    # count the same observation twice
+    "glue.pressure_coeff": 0.50,
+    # round 28: friction between parts that come into contact (dry wood on wood 0.25-0.5,
+    # wet 0.2, Bowden & Tabor 1950: the contact between parts was frictionless until
+    # then)
+    "contact.friction_parts": 0.30,
+    # round 28, the built bridge (judgements, nothing measured on stick bridges: about a
+    # factor of 2 either way at 90 %): the plates' out-of-flatness, the sticks' twist and
+    # thickness scatter, how far members land off their drawn place, their lack of fit
+    "scatter.plate_flatness": 0.50, "scatter.twist_rad_per_m": 0.50,
+    "scatter.thickness_cov": 0.50, "scatter.member_placement_mm": 0.50,
+    "scatter.fit_mm": 0.50,
+    # round 28: the wood's duration of load (n ~0.005 in ramp tests of lumber to ~0.028
+    # on the Madison curve), its creep after a minute (~0.02-0.08: a relative creep of
+    # ~1 after a year with powers 0.2-0.33, at moderate stress; more near the strength)
+    # and the power of its creep in time, and the coupons' time both take the wood from
+    "wood.rate_exponent": 0.50, "wood.creep_coeff": 0.50, "wood.creep_exponent": 0.20,
+    "wood.coupon_time_s": 0.40,
 }
 # placeholders drawn additively, value + sd x z within (low, high): the wood's moisture
 # above its coupons' (percentage points; members laminated in the last days before the
@@ -2980,12 +3236,36 @@ SENSITIVITY_MORE = {
                           "an edge-notched stick pulled apart (K_Ic, G = K^2 / E)"),
     "wood.densification_strain": ("how far crushed wood compacts",
                                   "press a stick stack flat and record the curve"),
+    "wood.crush_band_mm": ("how much shortening a member or a plate crushing in "
+                           "compression takes to lose its strength",
+                           "a short glued stack crushed past its peak "
+                           "(stick_compression_template.csv): the shortening to its plateau"),
     "contact.seating_mm": ("how far the bearing faces bed in",
                            "the soft start of your crush-test curve"),
     "scatter.support_level_mm": ("how far the support corners are out of level",
                                  "the gap under the corner that rocks on a flat table"),
+    "contact.friction_parts": ("friction between parts that come into contact",
+                               "the angle a stick starts to slide down another"),
+    # round 28: the built bridge
+    "scatter.plate_flatness": ("how flat the stick plates are built (a share of each free "
+                               "panel's span)",
+                               "a straightedge across each free panel of the built plates, "
+                               "feeler gauges under it"),
+    "scatter.twist_rad_per_m": ("how twisted the sticks are",
+                                "winding sticks across a member's ends, or a stick's corner "
+                                "standing off a flat table"),
+    "scatter.thickness_cov": ("how much the sticks' thickness varies",
+                              "50 sticks measured with calipers, three points each"),
+    "scatter.member_placement_mm": ("how far members land off their drawn place",
+                                    "the built bridge on a full-size print of the drawing"),
+    "scatter.fit_mm": ("how far members fitted end to end were cut long or short",
+                       "a member against its gap before gluing (feeler gauges)"),
     "floss.strand_break_N": ("breaking load of one floss strand",
                              "hang weights on a strand"),
+    "glue.pressure_coeff": ("how much more a glue line holds in shear while a thrust "
+                            "presses it together (knee and heel laps)",
+                            "laps pulled while clamped at 0, 1 and 2 MPa "
+                            "(glue_joint_template.csv, clamp_pressure_MPa)"),
 }
 
 
@@ -3084,6 +3364,8 @@ MECHANISM_KEYS = {
     "member": ("material.f_t_MPa", "material.f_c_MPa", "material.f_v_MPa",
                "material.f_b_MPa"),
     "plate": ("material.f_t_MPa", "material.f_c_MPa", "wood.f_rolling_MPa"),
+    # a plate split between its plies (plate_shear): its glue planes' strength
+    "plate_shear": ("material.f_v_MPa", "wood.f_rolling_MPa", "glue.interlaminar_MPa"),
     "bearing": ("wood.f_c90_MPa",),
     "floss": ("floss.strand_break_N",),
 }
@@ -3094,6 +3376,8 @@ def _mechanism(governing: str) -> str:
     g = (governing or "").lower()
     if "floss" in g:
         return "floss"
+    if g.startswith("plate shear"):
+        return "plate_shear"
     for k in ("joint", "bearing", "plate", "member"):
         if g.startswith(k) or f" {k}" in g.split(":", 1)[0]:
             return k

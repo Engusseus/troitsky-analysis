@@ -56,9 +56,22 @@ def _log3(R, out):
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
-def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv3, Wt, nply,
-                kGA, gam, s2, s3, soft, eps_p, dmg_t, alive, fractured, shear, F, Mo, update,
-                beta, dt, prev, rat2, rat3, kap):
+def crush_fall(ec0, lch, cband):
+    """The strain over which a fibre crushed past f_c falls to its plateau: the shortening
+    5 ec0 cband over a Gauss length lch (cband = wood.crush_band_mm, the reference gauge
+    length: a kink band takes a shortening, not a strain), never steeper than one onset
+    strain ec0 (a fall over less than soft x ec0 would snap back within the element);
+    cband <= 0: the fixed strain 5 ec0 of round 27."""
+    if cband <= 0.0:
+        return 5.0 * ec0
+    w = 5.0 * ec0 * cband / lch
+    return w if w > ec0 else ec0
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
+def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, fs, Gf, GJ, Ar, fv, fv3, Wt,
+                nply, kGA, kGA3, gam, s2, s3, soft, eps_p, dmg_t, alive, fractured, shear, F,
+                Mo, update, beta, dt, prev, rat2, rat3, kap, cband):
     nb = bi.shape[0]
     nf = fA.shape[1]
     Ti = np.empty((3, 3))
@@ -114,17 +127,17 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
         L = L0[e]
         eps0 = (l - L) / L
         E_ = Em[e]
-        et0 = ft[e] / E_
         lch = 0.5 * L
-        eu = et0 + 2.0 * Gf[e] / (ft[e] * lch)
-        if eu < 1.5 * et0:
-            eu = 1.5 * et0
-        ec0 = fc[e] / E_
+        # tension softening over 2 G_f / (f_t lch) past the onset (crack band); a fibre's
+        # strength factor fs scales its f_t and G_f alike, so the width is the element's
+        wt = 2.0 * Gf[e] / (ft[e] * lch)
         # Timoshenko shear flexibility: a constant shear strain gz (gy) takes part of the
         # end rotations, so the fibres bend by th - g. phi = 12 EI / (k G A L^2); the
         # elastic split phi/(2(1+phi)) (th_i + th_j) is exact (interdependent
         # interpolation), gam[e] corrects it when the fibres are no longer elastic so the
-        # shear force k G A g stays equal to the bending shear (M_i + M_j) / L.
+        # shear force k G A g stays equal to the bending shear (M_i + M_j) / L. Shear along
+        # e2 (bending about e3) runs in the plane of the plies (kGA), along e3 (bending
+        # about e2) through the stack of plies and the glue lines between them (kGA3)
         EIz = 0.0
         EIy = 0.0
         for f in range(nf):
@@ -134,7 +147,8 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
         phy = 0.0
         if kGA[e] > 0.0:
             phz = 12.0 * EIz / (kGA[e] * L * L)
-            phy = 12.0 * EIy / (kGA[e] * L * L)
+        if kGA3[e] > 0.0:
+            phy = 12.0 * EIy / (kGA3[e] * L * L)
         gz = 0.5 * phz / (1.0 + phz) * (thi[2] + thj[2]) + gam[e, 0]
         gy = 0.5 * phy / (1.0 + phy) * (thi[1] + thj[1]) + gam[e, 1]
         bzi = thi[2] - gz
@@ -165,6 +179,14 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
                 ep = eps_p[e, g, f]
                 dm = dmg_t[e, g, f]
                 ee = eps - ep
+                # the fibre's own strengths: the sticks its area covers (stick field)
+                fsf = fs[e, f]
+                fcf = fc[e] * fsf
+                et0 = ft[e] * fsf / E_
+                eu = et0 + wt
+                if eu < 1.5 * et0:
+                    eu = 1.5 * et0
+                ec0 = fcf / E_
                 if ee > et0:
                     dn = eu * (ee - et0) / (ee * (eu - et0))
                     if dn > 1.0:
@@ -177,19 +199,20 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
                     sig = E_ * ee
                 # compression: linear to kap f_c, then rising smoothly to f_c (wood's
                 # proportional limit; the plastic strain at f_c is (1 - kap) f_c / E),
-                # then crushing down to (1 - soft) f_c over 5 more f_c / E
+                # then crushing down to (1 - soft) f_c over the shortening 5 (f_c / E)
+                # cband in its Gauss length (crush_fall)
                 q = -ep
                 qp = (1.0 - kap) * ec0
                 hard = 0.0
                 if q < qp:
                     u = math.sqrt(q / qp) if q > 0.0 else 0.0
-                    fce = fc[e] * (1.0 - (1.0 - kap) * (1.0 - u) * (1.0 - u))
+                    fce = fcf * (1.0 - (1.0 - kap) * (1.0 - u) * (1.0 - u))
                     hard = 1.0 - u  # tangent on the rising curve: (1 - u) E
                 else:
-                    r = (q - qp) / (5.0 * ec0)
+                    r = (q - qp) / crush_fall(ec0, lch, cband)
                     if r > 1.0:
                         r = 1.0
-                    fce = fc[e] * (1.0 - soft * r)
+                    fce = fcf * (1.0 - soft * r)
                 Et = E_ if ee <= 0.0 else (1.0 - dm) * E_
                 if sig < -fce:
                     ep = eps + fce / E_
@@ -215,11 +238,12 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
             Mzj += 0.5 * Mz * (-2.0 + 6.0 * xi)
             Myi += 0.5 * My * (-4.0 + 6.0 * xi)
             Myj += 0.5 * My * (-2.0 + 6.0 * xi)
+        # one Newton step on the shear equilibrium, with the fibres' current tangent
+        # (k G A (1 + phi) while elastic)
         if update and kGA[e] > 0.0:
-            # one Newton step on the shear equilibrium, with the fibres' current tangent
-            # (k G A (1 + phi) while elastic)
             gam[e, 0] += ((Mzi + Mzj) / L - kGA[e] * gz) / (kGA[e] + 12.0 * EIzt / (L * L))
-            gam[e, 1] += ((Myi + Myj) / L - kGA[e] * gy) / (kGA[e] + 12.0 * EIyt / (L * L))
+        if update and kGA3[e] > 0.0:
+            gam[e, 1] += ((Myi + Myj) / L - kGA3[e] * gy) / (kGA3[e] + 12.0 * EIyt / (L * L))
         sj = (s2[e] * s3[e]) ** 2
         T = sj * GJ[e] / L * (thj[0] - thi[0])
         if beta > 0.0:
@@ -289,20 +313,98 @@ def _soft(r, rf):
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
-def _plateau(r, rc):
+def _soft_on(r, ron, rf):
+    """Damage of a linear-softening mode whose onset the nonlocal measure set (solver.
+    plate_nonlocal_onset): 0 while held (ron 0: the point's own ratio r has passed 1 but
+    the average around it has not); from ron, the ratio it stood at when the average
+    reached 1 (at least 1), the stress falls linearly from ron x the strength to nothing
+    at r_end = rf / ron, so the element still dissipates G per unit crack area (the area
+    under the softening, ron r_end / 2, is rf / 2 as for an onset at 1); ron 1 is _soft
+    exactly. r_end is kept above 1.05 ron (a snap-back within the element otherwise)."""
+    if ron <= 0.0:
+        return 0.0
+    if ron == 1.0:
+        return _soft(r, rf)
+    if r <= ron:
+        return 0.0
+    re = rf / ron
+    if re < 1.05 * ron:
+        re = 1.05 * ron
+    d = 1.0 - ron * (re - r) / (r * (re - ron))
+    return 1.0 if d > 1.0 else d
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
+def _plateau(r, rc, wc):
     """Secant damage of a crushing mode: the stress falls from the strength to the plateau
-    rc x strength over one more onset strain, then stays there."""
+    rc x strength over ``wc`` more onset strains (the element's crushing fall,
+    solver.shell_crush_fall; 1 as until round 27), then stays there."""
     if r <= 1.0:
         return 0.0
-    u = r - 1.0
+    u = (r - 1.0) / wc
     if u > 1.0:
         u = 1.0
     return 1.0 - (1.0 - (1.0 - rc) * u) / r
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
+def _shell_dkmt(e, d, w, lay, nl, sR, sKH, sGs, sphi, sH, sfil, split, rat, update):
+    """The DKMT part of a shear-deformable shell element (shell.py): each side's share of
+    its Kirchhoff residual that is shear, om_k = s^2 phi_k / (1 + s^2 phi_k), corrects the
+    curvatures at the 3 points (w[24:42], displacement and damped) and gives the constant
+    shear strain; returns the shear force (Q_x, Q_y) = H gamma from the damped dofs. With
+    ``update`` the interlaminar shear 1.5 |Q| / t over the glue planes' strength, along
+    and across each ply's grain and on the bond line, goes to rat[e]. Workspace: w[60:63]
+    om r (displacement), w[63:66] om r (damped), w[66:69] om."""
+    sp = split[e]
+    s2 = sp * sp
+    for k in range(3):
+        r0 = 0.0
+        r1 = 0.0
+        for a in range(3):
+            for i in range(3):
+                rr = sR[e, k, 3 * a + i]
+                r0 += rr * d[6 * a + 2 + i]
+                r1 += rr * w[6 * a + 2 + i]
+        ph = s2 * sphi[e, k]
+        om = ph / (1.0 + ph)
+        w[60 + k] = om * r0
+        w[63 + k] = om * r1
+        w[66 + k] = om
+    for g in range(3):
+        for i in range(3):
+            c0 = 0.0
+            c1 = 0.0
+            for k in range(3):
+                kh = sKH[e, g, i, k]
+                c0 += kh * w[60 + k]
+                c1 += kh * w[63 + k]
+            w[24 + 3 * g + i] += 1.5 * c0
+            w[33 + 3 * g + i] += 1.5 * c1
+    gx = sGs[e, 0, 0] * w[63] + sGs[e, 0, 1] * w[64] + sGs[e, 0, 2] * w[65]
+    gy = sGs[e, 1, 0] * w[63] + sGs[e, 1, 1] * w[64] + sGs[e, 1, 2] * w[65]
+    if update:
+        gx0 = sGs[e, 0, 0] * w[60] + sGs[e, 0, 1] * w[61] + sGs[e, 0, 2] * w[62]
+        gy0 = sGs[e, 1, 0] * w[60] + sGs[e, 1, 1] * w[61] + sGs[e, 1, 2] * w[62]
+        qx = sH[e, 0] * gx0 + sH[e, 2] * gy0
+        qy = sH[e, 2] * gx0 + sH[e, 1] * gy0
+        rr = math.sqrt(qx * qx + qy * qy) * sfil[e, 2]
+        for ll in range(nl[e]):
+            c = lay[e, ll, 2]
+            s = lay[e, ll, 3]
+            tl = (c * qx + s * qy) * sfil[e, 0]
+            tt = (-s * qx + c * qy) * sfil[e, 1]
+            v = math.sqrt(tl * tl + tt * tt)
+            if v > rr:
+                rr = v
+        rat[e] = rr
+    return sH[e, 0] * gx + sH[e, 2] * gy, sH[e, 2] * gx + sH[e, 1] * gy
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
 def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hist, dmg,
-               gone, update, fe, me, beta, dt, prev, wd, wR, wth, ws):
+               gone, update, fe, me, beta, dt, prev, wd, wR, wth, ws, sR, sKH, sGs, sphi,
+               sH, sfil, split, rat, wc, nlo, nlon, hon, ept, ec, wait, ecw):
     d = wd[e]
     Rl = wR[e]
     th = wth[e]
@@ -314,6 +416,21 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
         for c in range(3):
             fe[e, a, c] = 0.0
             me[e, a, c] = 0.0
+    if update:
+        rat[e] = 0.0
+    # nonlocal onset (plate.nonlocal_onset; solver.plate_nonlocal_onset): with update,
+    # whether a point is held past its own strength (wait) and its strains then (ept),
+    # and, on the steps the onset pass asks for them (ecw), the element's mean strain of
+    # each ply at each level (ec) for the averaging
+    nlx = nlo and update
+    nle = nlx and ecw
+    if nlx:
+        wait[e] = False
+    if nle:
+        for ll in range(ec.shape[1]):
+            for q in range(3):
+                for c in range(3):
+                    ec[e, ll, q, c] = 0.0
     if gone[e]:
         return
     c0 = (x[n0, 0] + x[n1, 0] + x[n2, 0]) / 3.0
@@ -399,6 +516,14 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
             w[33 + 3 * g + i] = s1
     for k in range(42, 60):
         w[k] = 0.0
+    # shear-deformable (DKMT): curvature correction, shear force, split check
+    shear = sH[e, 0] > 0.0
+    qx = 0.0
+    qy = 0.0
+    if shear:
+        qx, qy = _shell_dkmt(e, d, w, lay, nl, sR, sKH, sGs, sphi, sH, sfil, split, rat,
+                             update)
+    sp = split[e]  # a split plate: lever arms x s (1 intact)
     q11 = Q[e, 0]
     q22 = Q[e, 1]
     q12 = Q[e, 2]
@@ -419,13 +544,13 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
             cs = c * s
             for q in range(3):
                 if q == 0:
-                    z = zb
+                    z = zb * sp
                     wq = hh / 6.0
                 elif q == 1:
-                    z = 0.5 * (zb + zt)
+                    z = 0.5 * (zb + zt) * sp
                     wq = 4.0 * hh / 6.0
                 else:
-                    z = zt
+                    z = zt * sp
                     wq = hh / 6.0
                 exx = w[18] + z * w[24 + 3 * g]
                 eyy = w[19] + z * w[25 + 3 * g]
@@ -463,11 +588,40 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
                 hft = hist[e, p, 0]
                 hmt = hist[e, p, 2]
                 hs = hist[e, p, 4]
-                dft = _soft(hft, rf[e, 0])
-                dmt = _soft(hmt, rf[e, 1])
-                ds = _soft(hs, rf[e, 2])
-                d1 = dft if e1t >= 0.0 else _plateau(hist[e, p, 1], rc)
-                d2 = dmt if e2t >= 0.0 else _plateau(hist[e, p, 3], 1.0)
+                if nle:
+                    ec[e, ll, q, 0] += e1 / 3.0
+                    ec[e, ll, q, 1] += e2 / 3.0
+                    ec[e, ll, q, 2] += g12 / 3.0
+                # the tension modes' softening ends at rf / ron (ron 1: rf, local onset)
+                o0 = 1.0
+                o1 = 1.0
+                o2 = 1.0
+                held = False
+                if nlo and nlon[e, 0, ll]:
+                    o0 = hon[e, p, 0]
+                    dft = _soft_on(hft, o0, rf[e, 0])
+                    held = o0 <= 0.0 and hft >= 1.0
+                else:
+                    dft = _soft(hft, rf[e, 0])
+                if nlo and nlon[e, 1, ll]:
+                    o1 = hon[e, p, 1]
+                    dmt = _soft_on(hmt, o1, rf[e, 1])
+                    held = held or (o1 <= 0.0 and hmt >= 1.0)
+                else:
+                    dmt = _soft(hmt, rf[e, 1])
+                if nlo and nlon[e, 2, ll]:
+                    o2 = hon[e, p, 2]
+                    ds = _soft_on(hs, o2, rf[e, 2])
+                    held = held or (o2 <= 0.0 and hs >= 1.0)
+                else:
+                    ds = _soft(hs, rf[e, 2])
+                if nlx and held:
+                    wait[e] = True
+                    ept[e, p, 0] = e1
+                    ept[e, p, 1] = e2
+                    ept[e, p, 2] = g12
+                d1 = dft if e1t >= 0.0 else _plateau(hist[e, p, 1], rc, wc[e])
+                d2 = dmt if e2t >= 0.0 else _plateau(hist[e, p, 3], 1.0, 1.0)
                 dsh = 1.0 - (1.0 - ds) * (1.0 - dft) * (1.0 - dmt)
                 cr = dft
                 if dmt > cr:
@@ -477,11 +631,18 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
                 if cr < mincr:
                     mincr = cr
                 if all_open:
-                    op = hft / rf[e, 0]
-                    if hmt / rf[e, 1] > op:
-                        op = hmt / rf[e, 1]
-                    if hs / rf[e, 2] > op:
-                        op = hs / rf[e, 2]
+                    if nlo:  # wide open: twice the strain its softening ends at
+                        op = hft * o0 / rf[e, 0]
+                        if hmt * o1 / rf[e, 1] > op:
+                            op = hmt * o1 / rf[e, 1]
+                        if hs * o2 / rf[e, 2] > op:
+                            op = hs * o2 / rf[e, 2]
+                    else:
+                        op = hft / rf[e, 0]
+                        if hmt / rf[e, 1] > op:
+                            op = hmt / rf[e, 1]
+                        if hs / rf[e, 2] > op:
+                            op = hs / rf[e, 2]
                     if op < 2.0:
                         all_open = False
                 k1 = 1.0 - d1
@@ -515,6 +676,15 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
         om += -0.5 * Bm[e, 1, 2 * a + 1] * w[6 * a] + 0.5 * Bm[e, 0, 2 * a] * w[6 * a + 1]
     kde = kd[e] * max(0.0, 1.0 - 10.0 * dmg[e])  # a cracking element: no drilling stiffness
     sdr = (w[5] - om) + (w[11] - om) + (w[17] - om)
+    if shear:
+        # DKMT nodal forces: R^T om (1.5 A/3 sum_g KH_g^T M_g + A Gs^T Q), w[69:72]
+        for k in range(3):
+            mk = 0.0
+            for g in range(3):
+                mk += (sKH[e, g, 0, k] * w[51 + 3 * g] + sKH[e, g, 1, k] * w[52 + 3 * g]
+                       + sKH[e, g, 2, k] * w[53 + 3 * g])
+            w[69 + k] = w[66 + k] * (0.5 * ar * mk + ar * (sGs[e, 0, k] * qx
+                                                           + sGs[e, 1, k] * qy))
     for a in range(3):
         f0 = ar * (Bm[e, 0, 2 * a] * na0 + Bm[e, 1, 2 * a] * na1 + Bm[e, 2, 2 * a] * na2) \
             + kde * sdr * 0.5 * Bm[e, 1, 2 * a + 1]
@@ -535,6 +705,11 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
         f2 *= ar / 3.0
         m0 *= ar / 3.0
         m1 *= ar / 3.0
+        if shear:
+            for k in range(3):
+                f2 += sR[e, k, 3 * a] * w[69 + k]
+                m0 += sR[e, k, 3 * a + 1] * w[69 + k]
+                m1 += sR[e, k, 3 * a + 2] * w[69 + k]
         m2 = kde * (w[6 * a + 5] - om)
         fe[e, a, 0] = ax0 * f0 + y0 * f1 + z0 * f2
         fe[e, a, 1] = ax1 * f0 + y1 * f1 + z1 * f2
@@ -546,11 +721,13 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
 
 @njit(cache=True, fastmath=True, parallel=True, error_model="numpy")
 def shell_kernel(x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hist, dmg,
-                 gone, F, Mo, update, fe, me, beta, dt, prev, wd, wR, wth, ws):
+                 gone, F, Mo, update, fe, me, beta, dt, prev, wd, wR, wth, ws, sR, sKH, sGs,
+                 sphi, sH, sfil, split, rat, wc, nlo, nlon, hon, ept, ec, wait, ecw):
     ns = sn.shape[0]
     for e in prange(ns):
         _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hist, dmg,
-                   gone, update, fe, me, beta, dt, prev, wd, wR, wth, ws)
+                   gone, update, fe, me, beta, dt, prev, wd, wR, wth, ws, sR, sKH, sGs, sphi,
+                   sH, sfil, split, rat, wc, nlo, nlon, hon, ept, ec, wait, ecw)
     for e in range(ns):
         for a in range(3):
             nd = sn[e, a]
@@ -560,6 +737,69 @@ def shell_kernel(x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, his
             Mo[nd, 0] += me[e, a, 0]
             Mo[nd, 1] += me[e, a, 1]
             Mo[nd, 2] += me[e, a, 2]
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
+def _tension_mean(el, a, n, ec, gone, e, ll, q, j):
+    """solver._tension_mean on the samples el[a:a + n]: the mean strain of mode j along
+    the line from its middle outward each way, up to the first sample that is no wood or
+    whose element is not in tension in the mode (in shear: the sign opposite e's own)."""
+    c = n // 2
+    s0 = 1.0
+    if j == 2 and ec[e, ll, q, 2] < 0.0:
+        s0 = -1.0
+    tot = ec[e, ll, q, j]
+    cnt = 1
+    for step in (1, -1):
+        k = c + step
+        while 0 <= k < n:
+            o = el[a + k]
+            if o < 0 or gone[o]:
+                break
+            v = ec[o, ll, q, j]
+            if o != e and v * s0 <= 0.0:
+                break
+            tot += v
+            cnt += 1
+            k += step
+    return tot / cnt
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
+def nonlocal_onset_kernel(wait, gone, nlon, ec, ept, hist, hon, lim, nl, ptr, el):
+    """Compiled solver.plate_nonlocal_onset (the NumPy reference there): for each held
+    element, mode j (fibre tension, across the grain, shear: the strain e1, e2, g12 of
+    the ply) and ply whose line takes in other elements (nlon), each level's mean strain
+    along the line's stretch in tension (row (j x layers + ply) x ns + e of the samples
+    ptr, el) less the element's own, added to each held point's strain; where that
+    averaged ratio has reached 1 the point's onset is set, hon = max(h / r_nl, 1)."""
+    ns = wait.shape[0]
+    nlay = ec.shape[1]
+    for e in range(ns):
+        if not wait[e] or gone[e]:
+            continue
+        for j in range(3):
+            kh = 2 * j  # the history (and strength) of the mode: 0, 2, 4
+            for ll in range(nl[e]):
+                if not nlon[e, j, ll]:
+                    continue
+                r0 = (j * nlay + ll) * ns + e
+                a = ptr[r0]
+                n = ptr[r0 + 1] - a
+                for q in range(3):
+                    dl = _tension_mean(el, a, n, ec, gone, e, ll, q, j) - ec[e, ll, q, j]
+                    for g in range(3):
+                        p = (g * nlay + ll) * 3 + q
+                        h = hist[e, p, kh]
+                        if hon[e, p, j] > 0.0 or h < 1.0:
+                            continue
+                        v = ept[e, p, j] + dl
+                        if j == 2:
+                            v = abs(v)
+                        r = v / lim[e, kh]
+                        if r >= 1.0:
+                            o_ = h / r
+                            hon[e, p, j] = o_ if o_ > 1.0 else 1.0
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
@@ -616,7 +856,10 @@ def _trilinear_damage(dmx, dm0, keff, Gc, ga, gp):
 def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GIIc, mu,
                 breakable, dmax, dd, slip, F, Mo, update, beta, dt, prev, alive, crush,
                 fc90, cdep, eps_d, E_d, fcap, creep, cfac, cdec, ga, gp, crate, tnow,
-                tref, t0):
+                tref, t0, mui, gap0):
+    """``mui``: each point's rise of its shear strength per MPa pressing it (a
+    Mohr-Coulomb onset, glue.pressure_coeff; see solver.glue_forces). ``gap0``: the gap
+    each point's faces were drawn with (solver.glue_gap0)."""
     nc = ca.shape[0]
     pa = np.empty(3)
     pb = np.empty(3)
@@ -697,6 +940,7 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
                 dm0 = ds0
             if update and tnow > 0.0 and t0[i] < 0.0 and dm > 0.1 * dm0:  # RATE_LOAD
                 t0[i] = tnow
+            rs = 1.0
             if crate[i] != 0.0 and tnow > 0.0 and tref > 0.0:
                 tl = tnow - t0[i] if t0[i] >= 0.0 else 0.0
                 tmin = tref / RATE_RANGE
@@ -708,6 +952,17 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
             Gn = kn * dnp * dnp
             B = Gs / (Gs + Gn) if Gs + Gn > 1e-30 else 0.0
             Gc = GIc[i] + (GIIc[i] - GIc[i]) * B * B
+            # pressed together, the line holds more in shear (Mohr-Coulomb onset):
+            # tau + mui sigma_c, sigma_c the pressure it carries (after the wood's crushing
+            # above; the rate factor is on the cohesive tau only); the toughness in the
+            # same ratio, so it lets go at about the same slip (glue_forces). Pressed, the
+            # line does not open (dnp = 0), so its onset dm0 is the shear onset ds0
+            if mui[i] > 0.0 and dn < 0.0:
+                tc = tau[i] * rs
+                if tc > 1e-12:
+                    pr = 1.0 + mui[i] * (-kn * dn) / tc
+                    dm0 *= pr
+                    Gc *= pr
             keff = (Gn + Gs) / (dm * dm) if dm > 1e-12 else ks
             dmx = dmax[i] if dmax[i] > dm else dm
             dnew = _trilinear_damage(dmx, dm0 if dm0 > 1e-12 else 1e-12, keff, Gc, ga, gp)
@@ -718,9 +973,11 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
                 if cfac > 0.0 and d < 0.999:
                     for k in range(3):
                         creep[i, k] = cfac * ds[k] + (creep[i, k] - cfac * ds[k]) * cdec
-            # a debonded pair that has turned, parted, or crushed through its whole depth:
-            # the two points no longer face each other, so the pair stops acting
-            if d >= 0.999 and (nn < 1.6 or crush[i] < -cdep[i] or dn * dn + s2 > 9.0):
+            # a debonded pair that has turned, parted (3 mm from where it was drawn: a
+            # dry face drawn apart by gap0 starts that far open), or crushed through its
+            # whole depth: the two points no longer face each other, so the pair stops
+            if d >= 0.999 and (nn < 1.6 or crush[i] < -cdep[i]
+                               or (dn - gap0[i]) ** 2 + s2 > 9.0):
                 if update:
                     alive[i] = False
                 continue

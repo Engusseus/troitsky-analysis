@@ -39,8 +39,10 @@ class BodyReport(BaseModel):
                                                        "(shells), unit vector")
     kind: Literal["bar", "shell", "frame", "block", "cable", "ignore"] = Field(
         description="bar = fibre beam member, shell = plate, frame = plate of narrow arms "
-                    "modelled as members along its arms, block = rigid piece, "
-                    "cable = floss, ignore = left out.")
+                    "modelled as members along its arms, block = compact piece (a few "
+                    "rigid cells of its wood joined by the wood's own stiffness and "
+                    "strength, block.cell_mm; one rigid body with block.cell_mm 0 or "
+                    "kind: rigid), cable = floss, ignore = left out.")
     layup: str
     layup_source: Literal["name", "override", "default"]
     mass_g: float
@@ -57,17 +59,25 @@ class BodyReport(BaseModel):
         "net section, centred this far from the member's end (butt_stagger_mm and a "
         "seeded offset, or the designer's butt_at). Empty: joints that bear, the member's "
         "factors (E_eff, f_t_eff, f_c_eff) over its length"))
+    ply_groups: list[list[int]] = Field([], description=(
+        "A laminated member split into ply groups (overrides ply_groups, or by itself "
+        "where its butt joints stand open): each group's first and last ply (from 1, "
+        "through the thickness), each group its own beam glued to the next along the "
+        "member, a group whose plies are butted open ending at its joint. Empty: one "
+        "fibre beam through the whole stack"))
     why: str = ""
 
 
 class JointReport(BaseModel):
     a: str
     b: str
-    kind: Literal["glue", "tie", "bonded", "solid"] = Field(description=(
+    kind: Literal["glue", "tie", "bonded", "solid", "dry"] = Field(description=(
         "glue (a glued joint), tie (a floss knot), bonded (bodies that overlap in the "
         "CAD), solid (two bodies of one piece of wood, glue override 'solid': the face "
         "between them breaks at the wood's shear strength f_v / 1.5 averaged, as a "
-        "notched end, and its tension across the grain)"))
+        "notched end, and its tension across the grain), dry (two faces drawn apart, "
+        "0.8-3 mm, or left unglued by the overrides: no glue; they bear on each other, "
+        "with friction, once the gap has closed)"))
     area_mm2: float
     lamination: bool = Field(False, description=(
         "Two plates glued face to face (a deck's plies drawn as separate bodies): glued "
@@ -79,6 +89,10 @@ class JointReport(BaseModel):
         "crossed-lap factor, the end-grain share, the fit-up gaps, the seed's scatter and "
         "glue_factor; glue.interlaminar_MPa for a lamination, f_v / 1.5 for a solid "
         "face), dry points left out"))
+    exposed_perimeter_mm: float = Field(0.0, description=(
+        "The length of the joint's outline where one part's face goes on past the "
+        "other's edge, where squeeze-out can form a fillet (glue.fillet_mm: the joint "
+        "then holds as a lap of area + fillet x this); flush edges not counted"))
 
 
 class RuleLine(BaseModel):
@@ -147,7 +161,7 @@ class InspectReport(BaseModel):
 
 
 EventKind = Literal["member_fracture", "member_shear", "member_crushing", "member_erosion",
-                    "plate_crack", "bearing_crushing",
+                    "plate_crack", "plate_shear", "bearing_crushing", "block_fracture",
                     "glue_damage",
                     "joint_cracking", "joint_failure", "floss_break", "criterion",
                     "instability", "numerical"]
@@ -164,9 +178,13 @@ class EventOut(BaseModel):
         "lines or grain), member_crushing (fibres folding in compression past f_c), "
         "member_erosion (an element bent or twisted past 1 rad removed, its section not "
         "cracked through), "
-        "plate_crack, bearing_crushing (the wood under a face pressed together, a member "
+        "plate_crack, plate_shear (the plate split between its plies in out-of-plane "
+        "shear: it bends as separate layers but keeps carrying in-plane load), "
+        "bearing_crushing (the wood under a face pressed together, a member "
         "end bearing on a knee or a tenon on its sill, has crushed by 0.1 mm on average: "
-        "the face bears more than its grain can take), "
+        "the face bears more than its grain can take), block_fracture (a compact block "
+        "split inside: the wood between two of its cells let go over 90 % of the plane "
+        "between them, along its grain or across it; what = the block), "
         "glue_damage (a joint's glue starts to soften), "
         "joint_cracking (>= 30 % of a joint's glued area has let go), joint_failure "
         "(>= 90 %: separated), floss_break, criterion (§12.5), instability, numerical"))
@@ -242,6 +260,10 @@ class Quality(BaseModel):
     holds: int = Field(0, description="Times the jack was slowed to 2 % while something "
                                       "was breaking, until it stopped (quasi-static failure)")
     hold_time_s: float = 0.0
+    pauses: int = Field(0, description=(
+        "A hand-pumped jack (crusher.stroke_mm > 0, since round 28): the pauses it stood "
+        "still between strokes (crusher.pause_s of test time each, the bridge creeping "
+        "under its load); 0 with a jack at a constant pace"))
     min_fidelity: str = Field("quick", description=(
         "The coarsest fidelity whose mesh is fine enough for the members that fail "
         "(elements at most 3x their depth, 1.5x below 10 mm): run diagnose, montecarlo, "
@@ -296,8 +318,11 @@ class CrushReport(BaseModel):
     deflection_at_Fu_mm: float
     test_time_at_Fu_s: float = Field(0.0, description=(
         "When the real test would reach F_u (s): the jack's travel to the peak at "
-        "crusher.test_rate_mm_per_min. The glue's strength is taken at this time to "
-        "failure (glue.rate_exponent, against its coupons' glue.coupon_time_s)"))
+        "crusher.test_rate_mm_per_min (a hand-pumped jack, crusher.stroke_mm > 0: its "
+        "strokes at their own pace and the pauses between them). The glue's strength is "
+        "taken at this time to failure (glue.rate_exponent, against its coupons' "
+        "glue.coupon_time_s), each line's and, since round 28, each member's and plate's "
+        "(wood.rate_exponent, wood.creep_coeff) at its own time under load"))
     mass_kg: float
     efficiency_kgf_per_kg: float = Field(description="§12.6: Fu / mass")
     criteria: Criteria = Field(description="First time each §12.5 failure criterion "
@@ -311,8 +336,9 @@ class CrushReport(BaseModel):
     n_events_total: int = 0
     Fu_first_joint_failure_kgf: float | None = Field(
         None, description="The highest jack load up to the moment the first glued joint "
-                          "separated (>= 90 % of its area let go) or a member split in "
-                          "shear: what a strict judge who stops the test there reads (§12.5 "
+                          "separated (>= 90 % of its area let go), a member or plate "
+                          "split in shear or a compact block split: what a strict judge "
+                          "who stops the test there reads (§12.5 "
                           "counts joint failure as failure). It equals F_u when the first "
                           "joint goes at or after the peak.")
     warnings: list[str] = []
@@ -425,7 +451,8 @@ class MonteCarloReport(BaseModel):
     fidelity: str = "standard"
     Fu_strict_kgf: list[float] = Field([], description=(
         "The same runs judged strictly: the load when the first glued joint separated or a "
-        "member split (§12.5 'shear, including joint failure'), if that came before the "
+        "member or plate split (§12.5 'shear, including joint failure'), if that came before "
+        "the "
         "peak"))
     p50_strict_kgf: float | None = None
     recommended_prediction_strict_kgf: float | None = Field(
@@ -573,7 +600,13 @@ class ScreenLimit(BaseModel):
                                   "tension, compression, shear, buckling (Euler, the "
                                   "member's length, pinned), plate fibre tension, plate "
                                   "fibre crushing, plate across-grain tension, plate "
-                                  "across-grain crushing, plate shear")
+                                  "across-grain crushing, plate shear (in its plane), "
+                                  "plate interlaminar shear (out of its plane: 1.5 |Q| / t "
+                                  "on its glue planes, where it splits), wood (a face "
+                                  "through one piece, glue override 'solid'), block (a "
+                                  "plane between two cells of a compact block: its wood "
+                                  "across it against its strength), block bearing (the "
+                                  "same plane pressed: where the block's wood crushes)")
     utilisation: float = Field(description="At the reference load (1 = at its limit)")
     load_kgf: float = Field(description="Plate load at which it reaches its limit if the "
                                         "bridge stayed linear")

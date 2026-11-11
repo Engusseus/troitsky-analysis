@@ -39,8 +39,20 @@ class BodyInfo:
     centroid_mm: tuple = (0.0, 0.0, 0.0)
     bbox_mm: tuple | None = None
     axis: tuple | None = None
-    chains: list = field(default_factory=list)  # a frame's beams, arm by arm
+    chains: list = field(default_factory=list)  # a frame's beams, arm by arm (a member
+    #                                              split into ply groups: group by group)
     butt_zones: list = field(default_factory=list)  # open butt joints at their places
+    # a compact block cut into cells (idealize.BlockLattice): its frame (centre, axes, lo,
+    # size, k), the cell of each lattice cell (group) and each cell's node (nodes)
+    cells: dict = field(default_factory=dict)
+    # the seeded differences of the built part from its drawing (round 28, idealize:
+    # thickness factor, twist (rad), placement shift (mm), lack of fit (mm), a plate's
+    # largest out-of-flatness at its nodes (mm) and its field, idealize.FlatField or None)
+    built: dict = field(default_factory=dict)
+    # a laminated member split into ply groups (round 28): each group's plies (first,
+    # last + 1), each group its own chain of beams joined to its neighbours by lamination
+    # glue points; empty: one fibre beam through the whole stack
+    ply_groups: list = field(default_factory=list)
 
 
 @dataclass
@@ -54,7 +66,9 @@ class Patch:
     normal: np.ndarray  # from A towards B
     springs: list[int] = field(default_factory=list)
     kind: str = "glue"  # "glue", "tie" (floss knot), "bonded" (bodies overlap in CAD),
-    # "solid" (two bodies of one piece of wood: the wood's strength across the face)
+    # "solid" (two bodies of one piece of wood: the wood's strength across the face),
+    # "dry" (faces drawn apart, not glued: they bear once their gap has closed),
+    # "block" (a plane between two cells of one compact block: not a joint of the bridge)
     polygon: np.ndarray | None = None  # (k, 3) outline
     strength_MPa: float = 0.0  # average shear strength of its face (before scatter and
     # glue factors): tau_g x the lap size factor, the interlaminar strength of a
@@ -65,6 +79,15 @@ class Patch:
     # hang on that plate's nodes by rigid arms: above ~3 the joint is coarser than the
     # plate's mesh can follow; 0: no plate)
     mesh_ratio: float = 0.0
+    # the length of its outline where one part's face goes on past the other's edge (a
+    # squeeze-out fillet can form there; flush edges and plate laminations not counted)
+    exposed_mm: float = 0.0
+    split: str = ""  # a block's plane: "along" its grain (fibres in it) or "across" it
+    # the glue line between two ply groups of one member split into ply groups (round
+    # 28; body_a == body_b): the plies either side, ((first, last + 1), (first, last +
+    # 1)); None for a joint between two parts. Not a joint: it is the member's own
+    # lamination, its parting a split of the member (member_shear)
+    plies: tuple | None = None
 
 
 @dataclass
@@ -94,7 +117,8 @@ class Model:
     b_nply: np.ndarray  # plies stacked through e3 (the parts a glue-line split leaves)
     b_Wt: np.ndarray  # (nb, 2) torsional moduli T / tau (mm^3) on the planes normal to
     #                  e2 and on those normal to e3 (materials.rect_torsion)
-    b_kGA: np.ndarray  # shear stiffness k G A (N); 0 = no shear deformation (Euler-Bernoulli)
+    b_kGA: np.ndarray  # shear stiffness k G A (N) for shear along e2 (in the plane of the
+    #                   plies); 0 = no shear deformation (Euler-Bernoulli); along e3: b_kGA3
     b_body: np.ndarray
     # shells
     # (layered: each ply group is integrated through its thickness at 3 points, at each
@@ -167,6 +191,33 @@ class Model:
     # per glue point: the exponent n of its strength's dependence on the time to failure,
     # tau(t) = tau(t_ref) (t / t_ref)^-n (glue.rate_exponent; the wood's for a solid face)
     c_rate: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    # beams (round 28): each fibre's strength factor (nb, nf) on f_t, f_c and G_f of its
+    # element (the sticks its area covers: idealize.stick_field; empty: ones), and the
+    # shear stiffness k G A (N) for shear along e3, through the plies (empty: b_kGA)
+    b_fs: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
+    b_kGA3: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    # per glue point: the rise of its shear strength per MPa pressing it, tau + mu_i
+    # sigma_c (glue.pressure_coeff, a glue line's or a solid face's; 0 for ties and
+    # unbreakable points; empty: none)
+    c_mui: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    # shear-deformable shells (DKMT, shell.py; zeros for a DKT element, s_H[:, 0] == 0):
+    # side residuals (ns, 3, 9), curvature of the unit side bubbles at the 3 points
+    # (ns, 3, 3, 3), side-to-element shear (ns, 2, 3), the sides' phi (ns, 3), the
+    # transverse shear stiffness H11, H22, H12 (ns, 3, N/mm), 1.5 / (t f) of the glue
+    # planes' strengths along and across a ply's grain and of the bond line (ns, 3; zero:
+    # it cannot split) and the plies (ns,)
+    s_R: np.ndarray = field(default_factory=lambda: np.zeros((0, 3, 9)))
+    s_KH: np.ndarray = field(default_factory=lambda: np.zeros((0, 3, 3, 3)))
+    s_Gs: np.ndarray = field(default_factory=lambda: np.zeros((0, 2, 3)))
+    s_phi: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    s_H: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    s_fil: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    s_nply: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    # beams (round 28): the share of each element's rest length b_L0 that is the member's
+    # lack of fit (mm; idealize, scatter.fit_mm): b_L0 = drawn length + b_dL, the member
+    # cut long (+) or short (-) and forced into place. The crush brings it in with gravity
+    # while the bridge settles (crush.py); empty: none
+    b_dL: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
     @property
     def n_nodes(self) -> int:

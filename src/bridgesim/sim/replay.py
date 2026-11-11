@@ -66,14 +66,26 @@ def build_skin(model: Model, bodies: list[CadBody], max_edge: float = 20.0) -> d
         if info.kind in ("ignore", "cable") or not info.nodes:
             continue
         V, T = b.mesh.vertices, b.mesh.triangles
-        if info.kind in ("bar", "shell", "frame"):
+        cells = getattr(info, "cells", None)
+        if info.kind in ("bar", "shell", "frame") or (info.kind == "block" and cells):
             V, T = _subdivide(V, T, max_edge)
         nodes = np.array(info.nodes)
         XN = model.X[nodes]
         nv = len(V)
         idx = np.zeros((nv, 3), int)
         w = np.zeros((nv, 3))
-        if info.kind == "block" or len(nodes) == 1:
+        if info.kind == "block" and cells:  # a block of cells: each point on its cell
+            q = (V - cells["centre"]) @ np.asarray(cells["axes"]).T
+            ii = np.clip(np.floor((q - cells["lo"]) / cells["size"]).astype(int), 0,
+                         np.asarray(cells["k"]) - 1)
+            g = np.asarray(cells["group"])[ii[:, 0], ii[:, 1], ii[:, 2]]
+            cn = np.asarray(cells["nodes"])
+            out = g < 0  # a lattice cell outside the solid: the nearest cell
+            if out.any():
+                g[out] = cKDTree(model.X[cn]).query(V[out])[1]
+            idx[:, 0] = cn[g]
+            w[:, 0] = 1.0
+        elif info.kind == "block" or len(nodes) == 1:
             idx[:, 0] = nodes[0]
             w[:, 0] = 1.0
         elif info.kind == "bar":
@@ -138,6 +150,11 @@ def replay_html(res: CrushResult, bodies: list[CadBody], title: str = "Crush tes
     # body state per frame: 0 ok, 1 damaged glue, 2 cracked/broken
     nb = len(m.bodies)
     bstate = np.zeros((len(frames), nb), np.uint8)
+    # (a face with no glue, dry from the start, is not a joint that has let go)
+    d0 = np.asarray(m.params.get("c_d0", np.zeros(len(m.c_a))), float)
+    glued = np.bincount(m.c_patch, weights=(d0 < 1.0).astype(float),
+                        minlength=len(m.patches)) > 0 \
+        if len(m.c_patch) and len(d0) == len(m.c_patch) else np.ones(len(m.patches), bool)
     for fi, f in enumerate(frames):
         if len(m.b_body):
             cracked = f.beam_state > 0
@@ -145,10 +162,12 @@ def replay_html(res: CrushResult, bodies: list[CadBody], title: str = "Crush tes
         if len(m.s_body):
             bstate[fi, np.unique(m.s_body[f.shell_state > 0])] = 2
         if len(m.patches):
-            for pid in np.where(f.patch_damage >= 0.3)[0]:  # joint cracking
+            for pid in np.where((f.patch_damage >= 0.3) & glued)[0]:  # joint cracking
                 p = m.patches[pid]
+                # (a plane inside a block: the block cracked)
+                st_ = 2 if p.kind == "block" else 1
                 for bb in (p.body_a, p.body_b):
-                    bstate[fi, bb] = max(bstate[fi, bb], 1)
+                    bstate[fi, bb] = max(bstate[fi, bb], st_)
     # glue points
     ga = m.c_a
     gp_node = m.a_node[ga]

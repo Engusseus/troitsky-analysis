@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from bridgesim.sim import solver as S
 from bridgesim.sim.model import Model
 
 KGF = 9.80665
@@ -109,9 +110,12 @@ def _beam_K(m: Model) -> np.ndarray:
     put(0, 0, ka); put(6, 6, ka); put(0, 6, -ka)  # noqa: E702
     kt = m.b_GJ / L
     put(3, 3, kt); put(9, 9, kt); put(3, 9, -kt)  # noqa: E702
-    for I_, (v, r, sg) in ((Iz, (1, 5, 1.0)), (Iy, (2, 4, -1.0))):
+    from bridgesim.sim.solver import beam_kGA3
+
+    # shear along e2 (bending about e3) in the plane of the plies, along e3 through them
+    for I_, kGA, (v, r, sg) in ((Iz, m.b_kGA, (1, 5, 1.0)), (Iy, beam_kGA3(m), (2, 4, -1.0))):
         EI = E * I_
-        phi = np.where(m.b_kGA > 0, 12 * EI / np.maximum(m.b_kGA, 1e-30) / L**2, 0.0)
+        phi = np.where(kGA > 0, 12 * EI / np.maximum(kGA, 1e-30) / L**2, 0.0)
         a = 12 * EI / L**3 / (1 + phi)
         b = 6 * EI / L**2 / (1 + phi) * sg
         c = (4 + phi) * EI / L / (1 + phi)
@@ -202,8 +206,10 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
     # sticks (as the platform's contacts do: a loading bar resting on two chords is held
     # in place, not left free to slide, which left the linear system all but singular
     # and a published truss's period at 5.7 s: the realism review of round 21), and
-    # open freely
-    for i in np.where(unglued)[0]:
+    # open freely; a dry face drawn apart (a near miss, a fit-up gap too wide to glue)
+    # stays open in a linear solve: its gap is far more than the screen's load closes
+    gap0 = S.glue_gap0(m)
+    for i in np.where(unglued & (gap0 <= 0.0))[0]:
         na, Ta = _att_T(m, int(m.c_a[i]))
         nb, Tb = _att_T(m, int(m.c_b[i]))
         if na == nb:
@@ -377,10 +383,14 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
     out: list[Limit] = []
     lim_load = load_N / KGF
 
-    def add(part, mode, util, where):
+    def add(part, mode, util, where, scale=None):
+        """``scale``: the multiple of the load at which it reaches its limit, where that
+        is not 1 / util (a capacity that grows with the load)."""
         if util > 1e-9 and math.isfinite(util):
-            out.append(Limit(part, mode, float(util), float(lim_load / util),
-                             tuple(round(float(v), 1) for v in where)))
+            lim = lim_load / util if scale is None else lim_load * scale
+            if math.isfinite(lim):
+                out.append(Limit(part, mode, float(util), float(lim),
+                                 tuple(round(float(v), 1) for v in where)))
 
     # glued joints: the resultant over the joint against its capacity
     if len(m.c_a):
@@ -388,6 +398,14 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
         fT = np.zeros((len(m.patches), 3))
         capN = np.zeros(len(m.patches))
         capT = np.zeros(len(m.patches))
+        # pressed together a glue line holds more in shear, mu_i x the pressure it
+        # carries (glue.pressure_coeff, solver.glue_forces), which grows with the load,
+        # no further than the wood under it bears (glue_fc, as the crush caps it): per
+        # joint, its points' (mu_i A / peak, pressure at this load, that cap)
+        press: dict[int, list] = {}
+        mui = getattr(m, "c_mui", None)
+        if mui is None or len(mui) != len(m.c_a):
+            mui = np.zeros(len(m.c_a))
         # bearing: the wood under a face pressed together (glued or dry) starting to
         # crush where its pressure first reaches what the grain there takes (Hankinson,
         # glue_fc): the peak over the face's glue points, as a face pressed off-centre
@@ -397,6 +415,7 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
         if len(fc) != len(m.c_a):
             fc = np.zeros(len(m.c_a))
         unglued = _unglued(m)
+        gap0 = S.glue_gap0(m)
         for i in range(len(m.c_a)):
             if not m.c_breakable[i]:
                 continue
@@ -406,8 +425,8 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
             nrm = m.c_n0[i] / max(np.linalg.norm(m.c_n0[i]), 1e-12)
             dn = float(d @ nrm)
             p = int(m.c_patch[i])
-            if fc[i] > 0:
-                uB[p] = max(uB[p], m.c_Kn[i] * max(-dn, 0.0) / fc[i])
+            if fc[i] > 0:  # (a dry face bears once its drawn gap has closed)
+                uB[p] = max(uB[p], m.c_Kn[i] * max(-dn - gap0[i], 0.0) / fc[i])
             if unglued[i]:
                 continue
             dt = d - dn * nrm
@@ -415,17 +434,83 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
             fT[p] += m.c_area[i] * m.c_Ks[i] * dt
             capN[p] += m.c_area[i] * m.c_sig[i] / peak_over_avg
             capT[p] += m.c_area[i] * m.c_tau[i] / peak_over_avg
+            if mui[i] > 0 and dn < 0:
+                press.setdefault(p, []).append((m.c_area[i] * mui[i] / peak_over_avg,
+                                                m.c_Kn[i] * -dn,
+                                                fc[i] if fc[i] > 0 else math.inf))
+        # the planes inside a block (its cells): one limit per block and mode, its most
+        # loaded plane (its points hang on two nodes: no peak over the average to take out
+        # of its capacity)
+        worst_block: dict[tuple[str, str], tuple] = {}
+
+        def add_patch(pa, mode, ut, scale=None):
+            if pa.kind != "block":
+                add(f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}", mode, ut,
+                    pa.centroid, scale)
+                return
+            key = (m.bodies[pa.body_a].name, "block bearing" if mode == "bearing"
+                   else "block")
+            if ut > worst_block.get(key, (0.0, None, None))[0]:
+                worst_block[key] = (ut, pa.centroid, scale)
+
+        # the glue lines inside a member split into ply groups (round 28): their most
+        # loaded point against its own strength, as the member's split check (its glue
+        # lines in shear), not the resultant over the line, which bending sums to ~0
+        ply_if = [getattr(pa, "plies", None) is not None for pa in m.patches]
+        worst_if: dict[int, tuple] = {}
         for p, pa in enumerate(m.patches):
-            if capT[p] <= 0:
+            if not ply_if[p]:
                 continue
-            ut = math.hypot(max(fN[p], 0.0) / max(capN[p], 1e-9),
-                            float(np.linalg.norm(fT[p])) / capT[p])
-            add(f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
-                "wood" if pa.kind == "solid" else "glue", ut, pa.centroid)
+            for i in pa.springs:
+                ua, ub = (u[m.a_node[a], :3] + np.cross(u[m.a_node[a], 3:], m.a_r0[a])
+                          for a in (int(m.c_a[i]), int(m.c_b[i])))
+                d = ub - ua
+                nrm = m.c_n0[i] / max(np.linalg.norm(m.c_n0[i]), 1e-12)
+                dn = float(d @ nrm)
+                ts = float(np.linalg.norm(d - dn * nrm)) * m.c_Ks[i]
+                ut = math.hypot(max(dn, 0.0) * m.c_Kn[i] / max(m.c_sig[i], 1e-9),
+                                ts / max(m.c_tau[i], 1e-9))
+                if ut > worst_if.get(pa.body_a, (0.0,))[0]:
+                    worst_if[pa.body_a] = (ut, m.X[m.a_node[m.c_a[i]]] + m.a_r0[m.c_a[i]])
+        for bd, (ut, where) in worst_if.items():
+            add(m.bodies[bd].name, "shear", ut, where)
         for p, pa in enumerate(m.patches):
-            if uB[p] > 0:
-                add(f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}", "bearing",
-                    uB[p], pa.centroid)
+            if capT[p] <= 0 or ply_if[p]:
+                continue
+            pk = peak_over_avg if pa.kind == "block" else 1.0
+            a_ = max(fN[p], 0.0) / max(capN[p] * pk, 1e-9)
+            b_ = float(np.linalg.norm(fT[p]))
+            pts = np.array(press.get(p, np.zeros((0, 3))), float).reshape(-1, 3)
+
+            def cap(lam, c_=capT[p] * pk, pts=pts, pk=pk):
+                """The joint's shear capacity at lam x this load."""
+                return c_ + pk * float(
+                    (pts[:, 0] * np.minimum(lam * pts[:, 1], pts[:, 2])).sum())
+
+            ut = math.hypot(a_, b_ / cap(1.0))
+            scale = None
+            if len(pts):
+                # the load multiple lam where lam hypot(a, b / cap(lam)) = 1: it rises
+                # with lam (the pressure's share saturates where the wood crushes); none
+                # if the joint is pressed and not sheared or pulled
+                def g(lam, a_=a_, b_=b_, cap=cap):
+                    return lam * math.hypot(a_, b_ / cap(lam))
+
+                lo, hi = 0.0, 1.0 / max(ut, 1e-12)
+                while g(hi) < 1.0 and hi < 1e12:
+                    lo, hi = hi, 2.0 * hi
+                if g(hi) < 1.0:
+                    continue  # never at its limit in the linear screen
+                for _ in range(60):
+                    mid = 0.5 * (lo + hi)
+                    lo, hi = (mid, hi) if g(mid) < 1.0 else (lo, mid)
+                scale = hi
+            add_patch(pa, "wood" if pa.kind == "solid" else "glue", ut, scale)
+        for p, pa in enumerate(m.patches):
+            if uB[p] > 0 and not ply_if[p]:
+                add_patch(pa, "bearing", uB[p])
+        for (nm, mode), (ut, where, scale) in worst_block.items():
+            add(nm, mode, ut, where, scale)
     # members: fibre stresses, shear, buckling over the member's length
     if len(m.b_i):
         A = m.b_fA.sum(1)
@@ -463,6 +548,26 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
                 continue
             info = m.bodies[bd]
             sel = np.where(m.b_body == bd)[0]
+            if info.kind == "bar" and getattr(info, "ply_groups", None):
+                # a member split into ply groups (round 28) buckles as one while its glue
+                # lines hold: its groups' compressions summed against the composite
+                # section's Euler load (each group's own I plus its area x its offset
+                # from the stack's centroid squared: an upper bound, the glue lines'
+                # slip not counted, which the crush follows)
+                chs = [np.asarray(g, int) for g in info.chains if len(g)]
+                Nt = sum(float(Nel[g].min()) for g in chs)
+                if Nt < 0:
+                    e3 = m.b_E0[chs[0][0]][:, 2]
+                    zg = np.array([float(m.X[m.b_i[g[0]]] @ e3) for g in chs])
+                    EA = np.array([float((m.b_E[g] * A[g]).mean()) for g in chs])
+                    zc = float((EA * zg).sum() / max(EA.sum(), 1e-12))
+                    EIy = sum(float((m.b_E[g] * Iy[g]).mean()) + EA[k] * (zg[k] - zc) ** 2
+                              for k, g in enumerate(chs))
+                    EIz = sum(float((m.b_E[g] * Iz[g]).mean()) for g in chs)
+                    Lm = max(info.length_mm, max(float(m.b_L0[g].sum()) for g in chs))
+                    ut = -Nt / max(math.pi**2 * min(EIy, EIz) / Lm**2, 1e-9)
+                    add(info.name, "buckling", ut, m.X[np.r_[m.b_i[sel], m.b_j[sel]]].mean(0))
+                continue
             # a member buckles over its length (pinned); a frame arm by arm, each between
             # its junctions with its own compression
             groups = [np.asarray(g, int) for g in getattr(info, "chains", []) if len(g)] \
@@ -483,17 +588,36 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
                 add(info.name, "buckling", best[0], best[1])
     # plates: ply strains at each element's centre against the ply's limits
     if len(m.s_nodes):
+        from bridgesim.sim.solver import shell_shear_arrays
+
+        sR, _sKH, sGs, sphi, sH, sfil = shell_shear_arrays(m)
         worst_s: dict[tuple, tuple] = {}
         names = ("plate fibre tension", "plate fibre crushing", "plate across-grain "
-                 "tension", "plate across-grain crushing", "plate shear")
+                 "tension", "plate across-grain crushing", "plate shear",
+                 "plate interlaminar shear")
+        ib = np.array([2, 3, 4, 8, 9, 10, 14, 15, 16])
         for e in range(len(m.s_nodes)):
             T = _block(m.s_E0[e].T, 6)
             dg = np.concatenate([u[nd] for nd in m.s_nodes[e]])
             dl = T @ dg
-            Rr = shellmod.recovery(m.s_P[e][:, :2])
+            dkmt = sH[e, 0] > 0
+            Rr = shellmod.recovery(m.s_P[e][:, :2], sphi[e] if dkmt else None)
             eps = Rr @ dl
             lim = m.s_lim[e]
-            ut = np.zeros(5)
+            ut = np.zeros(6)
+            if dkmt and sfil[e, 2] > 0:
+                # out-of-plane shear (DKMT): 1.5 |Q| / t over the glue planes' strength,
+                # along and across each ply's grain and on the bond line (as the crush)
+                om = sphi[e] / (1.0 + sphi[e])
+                gm = sGs[e] @ (om * (sR[e] @ dl[ib]))
+                qx = sH[e, 0] * gm[0] + sH[e, 2] * gm[1]
+                qy = sH[e, 2] * gm[0] + sH[e, 1] * gm[1]
+                r_il = math.hypot(qx, qy) * sfil[e, 2]
+                for ll in range(int(m.s_nl[e])):
+                    c_, s_ = m.s_lay[e, ll, 2], m.s_lay[e, ll, 3]
+                    r_il = max(r_il, math.hypot((c_ * qx + s_ * qy) * sfil[e, 0],
+                                                (-s_ * qx + c_ * qy) * sfil[e, 1]))
+                ut[5] = r_il
             for ll in range(int(m.s_nl[e])):
                 zb, zt, c, s = m.s_lay[e, ll]
                 for z in (zb, zt):
@@ -501,12 +625,13 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
                     e1 = ex * c * c + ey_ * s * s + gxy * c * s
                     e2 = ex * s * s + ey_ * c * c - gxy * c * s
                     g12 = 2 * (ey_ - ex) * c * s + gxy * (c * c - s * s)
-                    ut = np.maximum(ut, [max(e1, 0) / lim[0], max(-e1, 0) / lim[1],
-                                         max(e2, 0) / lim[2], max(-e2, 0) / lim[3],
-                                         abs(g12) / lim[4]])
+                    ut[:5] = np.maximum(ut[:5], [max(e1, 0) / lim[0],
+                                                 max(-e1, 0) / lim[1],
+                                                 max(e2, 0) / lim[2], max(-e2, 0) / lim[3],
+                                                 abs(g12) / lim[4]])
             bd = int(m.s_body[e])
             ctr = m.X[m.s_nodes[e]].mean(0)
-            for k in range(5):
+            for k in range(6):
                 if ut[k] > worst_s.get((bd, k), (0,))[0]:
                     worst_s[(bd, k)] = (ut[k], ctr)
         for (bd, k), (ut, ctr) in worst_s.items():
