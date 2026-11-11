@@ -438,16 +438,33 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
                 press.setdefault(p, []).append((m.c_area[i] * mui[i] / peak_over_avg,
                                                 m.c_Kn[i] * -dn,
                                                 fc[i] if fc[i] > 0 else math.inf))
+        # the planes inside a block (its cells): one limit per block and mode, its most
+        # loaded plane (its points hang on two nodes: no peak over the average to take out
+        # of its capacity)
+        worst_block: dict[tuple[str, str], tuple] = {}
+
+        def add_patch(pa, mode, ut, scale=None):
+            if pa.kind != "block":
+                add(f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}", mode, ut,
+                    pa.centroid, scale)
+                return
+            key = (m.bodies[pa.body_a].name, "block bearing" if mode == "bearing"
+                   else "block")
+            if ut > worst_block.get(key, (0.0, None, None))[0]:
+                worst_block[key] = (ut, pa.centroid, scale)
+
         for p, pa in enumerate(m.patches):
             if capT[p] <= 0:
                 continue
-            a_ = max(fN[p], 0.0) / max(capN[p], 1e-9)
+            pk = peak_over_avg if pa.kind == "block" else 1.0
+            a_ = max(fN[p], 0.0) / max(capN[p] * pk, 1e-9)
             b_ = float(np.linalg.norm(fT[p]))
             pts = np.array(press.get(p, np.zeros((0, 3))), float).reshape(-1, 3)
 
-            def cap(lam, c_=capT[p], pts=pts):
+            def cap(lam, c_=capT[p] * pk, pts=pts, pk=pk):
                 """The joint's shear capacity at lam x this load."""
-                return c_ + float((pts[:, 0] * np.minimum(lam * pts[:, 1], pts[:, 2])).sum())
+                return c_ + pk * float(
+                    (pts[:, 0] * np.minimum(lam * pts[:, 1], pts[:, 2])).sum())
 
             ut = math.hypot(a_, b_ / cap(1.0))
             scale = None
@@ -455,7 +472,7 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
                 # the load multiple lam where lam hypot(a, b / cap(lam)) = 1: it rises
                 # with lam (the pressure's share saturates where the wood crushes); none
                 # if the joint is pressed and not sheared or pulled
-                def g(lam, a_=a_, b_=b_):
+                def g(lam, a_=a_, b_=b_, cap=cap):
                     return lam * math.hypot(a_, b_ / cap(lam))
 
                 lo, hi = 0.0, 1.0 / max(ut, 1e-12)
@@ -467,12 +484,12 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
                     mid = 0.5 * (lo + hi)
                     lo, hi = (mid, hi) if g(mid) < 1.0 else (lo, mid)
                 scale = hi
-            add(f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
-                "wood" if pa.kind == "solid" else "glue", ut, pa.centroid, scale)
+            add_patch(pa, "wood" if pa.kind == "solid" else "glue", ut, scale)
         for p, pa in enumerate(m.patches):
             if uB[p] > 0:
-                add(f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}", "bearing",
-                    uB[p], pa.centroid)
+                add_patch(pa, "bearing", uB[p])
+        for (nm, mode), (ut, where, scale) in worst_block.items():
+            add(nm, mode, ut, where, scale)
     # members: fibre stresses, shear, buckling over the member's length
     if len(m.b_i):
         A = m.b_fA.sum(1)

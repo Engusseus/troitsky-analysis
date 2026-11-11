@@ -119,6 +119,10 @@ floss:
   strand_EA_N: {value: 300, source: assumed,
                note: "Axial stiffness of one strand (load / strain). From the same hanging test."}
 
+block:
+  cell_mm: {value: 20, source: numerical,
+            note: "Size of the cells a compact block (a node block, a heel seat, a support pier, the block under the plate) is cut into, since round 28: its bounding box cut by planes normal to its axes, 1 to 3 cells along each (none along an axis shorter than 1.5 cells), each cell a rigid node with its own mass and inertia, neighbouring cells joined across the plane between them by the wood itself (K_n = E / h, K_s = G / h over the distance h between their centroids, the wood's strength and fracture energies across the plane: a rigid-body-spring model, Kawai 1978), so a block deforms and can split (block_fracture). 0: one rigid body, as until round 27 (kind: rigid does that for one part). A numerical choice, not a material value: smaller cells resolve where a block splits but cost time step (see ASSUMPTIONS-SIM.md section 2)."}
+
 contact:
   friction_platform: {value: 0.2, source: assumed,
                       note: "Wood on the crusher's steel base platform: how freely the supports slide. Wood on steel, static 0.19 and kinetic 0.17 (chestnut at 12 % moisture, CoV 22-40 %; 0.1-0.25 for spruce and pine in the literature it cites: Villar-Garcia et al. 2022, Forests 13:1078); 0.35 until round 24 (the literature review of round 24). Drawn by montecarlo (30 %)."}

@@ -664,10 +664,22 @@ def _backward_mean(t: np.ndarray, raw: np.ndarray, period_s: float) -> np.ndarra
     return (cf[hi] - cf[lo]) / np.maximum(cw[hi] - cw[lo], 1e-300)
 
 
+def block_springs(m: Model) -> np.ndarray:
+    """Whether each glue point lies on a plane inside a compact block cut into cells (a
+    patch of kind 'block': the wood between two of its cells), not on a joint of the
+    bridge."""
+    nc, npa = len(m.c_a), len(m.patches)
+    if not nc or not npa:
+        return np.zeros(nc, bool)
+    kind = np.array([p.kind == "block" for p in m.patches] + [False])
+    pt = np.asarray(m.c_patch, int)
+    return kind[np.where((pt >= 0) & (pt < npa), pt, npa)]
+
+
 MINOR_SHARE = 0.02  # a joint that can carry less than this share of F_u never governs
 CRUSH_EVENT_MM = 0.1  # a face's wood crushed this deep on average: bearing_crushing
 BREAKS = ("joint_failure", "joint_cracking", "member_fracture", "member_shear",
-          "plate_crack", "floss_break", "member_crushing", "member_erosion")
+          "plate_crack", "floss_break", "member_crushing", "member_erosion", "block_fracture")
 
 
 def major_breaks(events: list[Event], t_call: float, peak: float) -> list[Event]:
@@ -880,6 +892,34 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     tied[spring_nodes.ravel()] = True
     tied[cable_nodes.ravel()] = True
     blk &= tied
+    # the planes inside compact blocks cut into cells (idealize.block_lattice): a cell
+    # hangs on its neighbours through them, so a piece of a block is held while one of
+    # its cells still has a spring (or floss) to another part; a whole block that has
+    # come off is debris, as a rigid block is
+    inner = block_springs(m)
+    inner_any = bool(inner.any())
+    cell_node = np.zeros(m.n_nodes, bool)
+    cell_node[spring_nodes[inner].ravel()] = True
+    cell_any = bool(cell_node.any())
+    held_cache: list = [None, None]  # (live springs and cables at the last check, held)
+
+    def held_cells() -> np.ndarray:
+        # (springs and floss only ever stop acting: their counts tell a change)
+        key = (int(np.count_nonzero(st.c_alive)), int(np.count_nonzero(st.k_alive)))
+        if held_cache[0] == key:
+            return held_cache[1]
+        held = np.zeros(m.n_nodes, bool)
+        held[spring_nodes[st.c_alive & ~inner].ravel()] = True
+        held[cable_nodes[st.k_alive].ravel()] = True
+        li = spring_nodes[st.c_alive & inner]
+        for _ in range(m.n_nodes):
+            h0 = held.copy()
+            via = held[li[:, 0]] | held[li[:, 1]]
+            held[li[via].ravel()] = True
+            if (held == h0).all():
+                break
+        held_cache[0], held_cache[1] = key, held
+        return held
 
     # developer aid: BRIDGESIM_DUMP_UNSTABLE=path keeps the last state before any node
     # first moved faster than 20 m/s
@@ -899,6 +939,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             con = np.zeros(m.n_nodes, bool)
             con[spring_nodes[st.c_alive].ravel()] = True
             con[cable_nodes[st.k_alive].ravel()] = True
+            if cell_any:
+                con[cell_node] = held_cells()[cell_node]
             newly |= blk & ~con & ~st.loose
         if newly.any():
             st.loose |= newly
@@ -1013,6 +1055,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     patch_of = m.c_patch
     n_patch = len(m.patches)
     prev_patch_broken = np.zeros(n_patch, bool)
+    prev_block_split = np.zeros(n_patch, bool)  # planes inside blocks let go
     ga_, gp_ = S.glue_shape(m)
     d_peak = 1.0 - 1.0 / gp_ if gp_ > 1.0 else 0.0  # a glue point's damage at its peak
     prev_patch_started = np.zeros(n_patch, bool)
@@ -1039,6 +1082,9 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     m.params["s_crack_mode"] = crack_mode
     # faces with no glue at all: no glue event, no joint failure
     glued_patch = patch_area > 0 if len(patch_of) else np.ones(n_patch, bool)
+    # the planes inside compact blocks: a block splitting (block_fracture), not a joint
+    in_block = np.array([p.kind == "block" for p in m.patches], bool)
+    joint_patch = glued_patch & ~in_block
     peak = 0.0
     peak_travel = 0.0
     peak_test_t = 0.0
@@ -1081,7 +1127,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     ke_q = 0.0  # kinetic energy of the bridge under steady loading (full jack speed)
     recent: list[tuple[float, float]] = []  # (t, load) over the last half settle window
     major = ("joint_cracking", "joint_failure", "plate_crack", "member_fracture",
-             "member_shear", "floss_break", "member_erosion")
+             "member_shear", "floss_break", "member_erosion", "block_fracture")
     # the jack travel over which the bridge beds in: its bearing faces seating and the
     # support corner that stood off the platform coming down (0.2 mm margin)
     lift = np.asarray(m.params.get("p_lift", np.zeros(0)), float)
@@ -1111,6 +1157,11 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         st.t_test += st.creep_dt
         do_step(1.0, opt.alpha if fail_at is None else opt.alpha_collapse)
         k += 1
+        if inner_any and k % 25 == 0:
+            # the planes inside a block are wood, not glue lines: the kernels' glue creep
+            # (glue.creep_factor) is taken back out of them (it builds up by under 1e-4
+            # of their slip in 25 steps at 10 mm/min, ~4e-4 at published test C's 0.5)
+            st.c_creep[inner] = 0.0
         travel = jack0 - st.jack_y
         raw = st.jack_force
         work += 0.5 * (raw + last_force) * v * dt
@@ -1150,7 +1201,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                 np.maximum.at(pdmg, patch_of, d_post * wet)
                 pfrac = np.bincount(patch_of, weights=m.c_area * wet * (st.c_d >= 0.999),
                                     minlength=n_patch) / np.maximum(patch_area, 1e-12)
-            curve["glue_broken"].append(int(((pfrac >= JOINT_FAILED) & glued_patch).sum()))
+            curve["glue_broken"].append(int(((pfrac >= JOINT_FAILED) & joint_patch).sum()))
             # each joint's glued area let go so far (damage-weighted), for what governs
             glue_hist.append((np.bincount(patch_of, weights=m.c_area * wet * d_post,
                                           minlength=n_patch) if len(patch_of)
@@ -1228,6 +1279,18 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             started = (pdmg > 0.0) & glued_patch
             cracked = (pfrac >= JOINT_CRACKED) & glued_patch
             broken = (pfrac >= JOINT_FAILED) & glued_patch
+            # a plane inside a block letting go: the block has split there
+            split_now = broken & in_block
+            for pid in np.where(split_now & ~prev_block_split)[0]:
+                pa = m.patches[pid]
+                ev("block_fracture", m.bodies[pa.body_a].name,
+                   f"a compact block split inside, {pa.split or 'along'} its grain (the "
+                   f"wood between two of its cells let go over {pfrac[pid]:.0%} of the "
+                   f"{pa.area_mm2:.0f} mm^2 plane between them)", pa.centroid,
+                   fraction=float(pfrac[pid]), capacity=float(patch_cap[pid]))
+            started &= ~in_block
+            cracked &= ~in_block
+            broken &= ~in_block
             for pid in np.where(started & ~prev_patch_started)[0]:
                 pa = m.patches[pid]
                 ev("glue_damage", f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
@@ -1253,6 +1316,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             prev_a = st.b_alive.copy()
             prev_k = st.k_alive.copy()
             prev_patch_started, prev_patch_broken = started, broken
+            prev_block_split = split_now
             prev_patch_cracked = cracked | broken
             # ---- hold the jack while something is breaking (quasi-static failure)
             if opt.hold_on_failure and fail_at is None and len(events) > n_seen:
@@ -1302,7 +1366,9 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                                            "load_N": force, "part": "press frame"}
                     ev("criterion", "contact", "the bridge touches the press uprights")
             if criteria["joint_or_shear"] is None:
-                hit = [e for e in events if e.kind in ("joint_failure", "member_shear")]
+                # (a compact block splitting is a split of the wood, as a member's)
+                hit = [e for e in events if e.kind in ("joint_failure", "member_shear",
+                                                       "block_fracture")]
                 if hit:
                     criteria["joint_or_shear"] = {"t_s": hit[0].t, "load_N": hit[0].force_N,
                                                   "travel_mm": hit[0].travel_mm,
@@ -1454,8 +1520,10 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         k = int(np.argmax(lost)) if len(lost) else -1
         if k >= 0 and lost[k] >= 0.2:
             pa = m.patches[k]
-            glue_fall = (f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
-                         float(lost[k]))
+            glue_fall = ((f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
+                          float(lost[k]), "joint failure", "its glue") if not in_block[k]
+                         else (m.bodies[pa.body_a].name, float(lost[k]), "block fracture",
+                               "the wood across a plane inside it"))
     governing = fail_mode
     if fail_mode in ("contact", "deflection") and first_major is not None \
             and first_major.force_N >= 0.9 * peak:
@@ -1469,9 +1537,9 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         governing = f"{first_major.kind.replace('_', ' ')}: {first_major.what}"
         fail_detail = f"{governing}. " + fail_detail
     elif fail_mode == "collapse" and glue_fall:
-        governing = f"joint failure: {glue_fall[0]}"
-        fail_detail = (f"{governing}: {glue_fall[1]:.0%} of its glue let go as the load "
-                       "fell. " + fail_detail)
+        governing = f"{glue_fall[2]}: {glue_fall[0]}"
+        fail_detail = (f"{governing}: {glue_fall[1]:.0%} of {glue_fall[3]} let go as the "
+                       "load fell. " + fail_detail)
     elif fail_mode == "collapse":
         soft = list(dict.fromkeys(e.what for e in before if e.kind == "glue_damage"
                                   and e.force_N >= 0.9 * peak))

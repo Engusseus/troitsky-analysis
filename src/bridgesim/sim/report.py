@@ -39,8 +39,10 @@ class BodyReport(BaseModel):
                                                        "(shells), unit vector")
     kind: Literal["bar", "shell", "frame", "block", "cable", "ignore"] = Field(
         description="bar = fibre beam member, shell = plate, frame = plate of narrow arms "
-                    "modelled as members along its arms, block = rigid piece, "
-                    "cable = floss, ignore = left out.")
+                    "modelled as members along its arms, block = compact piece (a few "
+                    "rigid cells of its wood joined by the wood's own stiffness and "
+                    "strength, block.cell_mm; one rigid body with block.cell_mm 0 or "
+                    "kind: rigid), cable = floss, ignore = left out.")
     layup: str
     layup_source: Literal["name", "override", "default"]
     mass_g: float
@@ -153,7 +155,7 @@ class InspectReport(BaseModel):
 
 
 EventKind = Literal["member_fracture", "member_shear", "member_crushing", "member_erosion",
-                    "plate_crack", "bearing_crushing",
+                    "plate_crack", "bearing_crushing", "block_fracture",
                     "glue_damage",
                     "joint_cracking", "joint_failure", "floss_break", "criterion",
                     "instability", "numerical"]
@@ -172,7 +174,9 @@ class EventOut(BaseModel):
         "cracked through), "
         "plate_crack, bearing_crushing (the wood under a face pressed together, a member "
         "end bearing on a knee or a tenon on its sill, has crushed by 0.1 mm on average: "
-        "the face bears more than its grain can take), "
+        "the face bears more than its grain can take), block_fracture (a compact block "
+        "split inside: the wood between two of its cells let go over 90 % of the plane "
+        "between them, along its grain or across it; what = the block), "
         "glue_damage (a joint's glue starts to soften), "
         "joint_cracking (>= 30 % of a joint's glued area has let go), joint_failure "
         "(>= 90 %: separated), floss_break, criterion (§12.5), instability, numerical"))
@@ -317,8 +321,9 @@ class CrushReport(BaseModel):
     n_events_total: int = 0
     Fu_first_joint_failure_kgf: float | None = Field(
         None, description="The highest jack load up to the moment the first glued joint "
-                          "separated (>= 90 % of its area let go) or a member split in "
-                          "shear: what a strict judge who stops the test there reads (§12.5 "
+                          "separated (>= 90 % of its area let go), a member split in "
+                          "shear or a compact block split: what a strict judge who stops "
+                          "the test there reads (§12.5 "
                           "counts joint failure as failure). It equals F_u when the first "
                           "joint goes at or after the peak.")
     warnings: list[str] = []
@@ -579,7 +584,11 @@ class ScreenLimit(BaseModel):
                                   "tension, compression, shear, buckling (Euler, the "
                                   "member's length, pinned), plate fibre tension, plate "
                                   "fibre crushing, plate across-grain tension, plate "
-                                  "across-grain crushing, plate shear")
+                                  "across-grain crushing, plate shear, wood (a face "
+                                  "through one piece, glue override 'solid'), block (a "
+                                  "plane between two cells of a compact block: its wood "
+                                  "across it against its strength), block bearing (the "
+                                  "same plane pressed: where the block's wood crushes)")
     utilisation: float = Field(description="At the reference load (1 = at its limit)")
     load_kgf: float = Field(description="Plate load at which it reaches its limit if the "
                                         "bridge stayed linear")
