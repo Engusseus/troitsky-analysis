@@ -109,9 +109,12 @@ def _beam_K(m: Model) -> np.ndarray:
     put(0, 0, ka); put(6, 6, ka); put(0, 6, -ka)  # noqa: E702
     kt = m.b_GJ / L
     put(3, 3, kt); put(9, 9, kt); put(3, 9, -kt)  # noqa: E702
-    for I_, (v, r, sg) in ((Iz, (1, 5, 1.0)), (Iy, (2, 4, -1.0))):
+    from bridgesim.sim.solver import beam_kGA3
+
+    # shear along e2 (bending about e3) in the plane of the plies, along e3 through them
+    for I_, kGA, (v, r, sg) in ((Iz, m.b_kGA, (1, 5, 1.0)), (Iy, beam_kGA3(m), (2, 4, -1.0))):
         EI = E * I_
-        phi = np.where(m.b_kGA > 0, 12 * EI / np.maximum(m.b_kGA, 1e-30) / L**2, 0.0)
+        phi = np.where(kGA > 0, 12 * EI / np.maximum(kGA, 1e-30) / L**2, 0.0)
         a = 12 * EI / L**3 / (1 + phi)
         b = 6 * EI / L**2 / (1 + phi) * sg
         c = (4 + phi) * EI / L / (1 + phi)

@@ -1053,7 +1053,13 @@ def test_simply_supported_beam_matches_beam_theory(tmp_path):
                             / (6 * E * I * Ls))
         return out
 
-    shear = 0.5 * a / (5 / 6 * G_SIM * 50 * T)  # Timoshenko: constant under the plate
+    # Timoshenko: constant under the plate; bent across its 14 plies, the beam shears
+    # through its stack, the glue lines in series (since round 28: G_eff 347 MPa, not 656)
+    from bridgesim.sim.materials import through_stack_shear_modulus
+
+    G_eff = through_stack_shear_modulus([0.0] * 14, G_SIM, SP["wood.G_rolling_MPa"],
+                                        SP["glue.lamination_K_s_N_per_mm3"], T)
+    shear = 0.5 * a / (5 / 6 * G_eff * 50 * T)
     k_theory = 1 / (defl(x).mean() + shear) / 9.80665
     assert k_sim == pytest.approx(k_theory, rel=0.05)
     mor = rep.Fu_kgf * 9.80665 * 0.5 * a / (50 * T**2 / 6)
@@ -2118,23 +2124,27 @@ def test_frame_plies_follow_the_sheet_or_the_arm():
 def test_stick_scatter_is_correlated_and_averaged_by_lamination():
     """Each body's stiffness and strength factors: the strength has the stated CoV and
     the stated correlation with the stiffness; a member of n plies averages its partly
-    alike sticks (CoV x sqrt((1 + (n - 1) rho) / n)); the amplitude scales both."""
+    alike sticks (CoV x sqrt((1 + (n - 1) rho) / n)); the amplitude scales both. (One
+    factor per body: scatter.stick_field 0, round 27's; the stick field since round 28:
+    test_the_stick_field_splits_the_scatter_between_body_and_sticks.)"""
     from bridgesim.sim.idealize import stick_factors
+
+    sp0 = SP.updated({"scatter.stick_field": 0})
 
     def stats(n, sp):
         f = np.log(np.array([stick_factors(0, f"Body {i}", n, sp) for i in range(4000)]))
         cov = np.sqrt(np.exp(f.var(0)) - 1)
         return cov, float(np.corrcoef(f.T)[0, 1])
 
-    cov, r = stats(1, SP)
+    cov, r = stats(1, sp0)
     assert cov == pytest.approx([SP["scatter.E_cov"], SP["scatter.strength_cov"]], rel=0.05)
     assert r == pytest.approx(SP["scatter.E_strength_corr"], abs=0.03)
-    cov10, r10 = stats(10, SP)
+    cov10, r10 = stats(10, sp0)
     k = math.sqrt((1 + 9 * SP["scatter.ply_corr"]) / 10)
     assert cov10 == pytest.approx(cov * k, rel=0.03) and r10 == pytest.approx(r, abs=1e-9)
-    cov_a, _ = stats(1, SP.updated({"scatter.amplitude": 0.1}))
+    cov_a, _ = stats(1, sp0.updated({"scatter.amplitude": 0.1}))
     assert cov_a == pytest.approx(0.1 * cov, rel=0.05)
-    assert stick_factors(None, "Body 1", 1, SP) == (1.0, 1.0)
+    assert stick_factors(None, "Body 1", 1, sp0) == (1.0, 1.0)
 
 
 def test_wood_softens_before_it_crushes():
@@ -4098,3 +4108,354 @@ def test_a_small_joint_on_a_plate_gets_its_own_grid_and_a_coarse_plate_is_flagge
     q = study._quality(res, MAT, SP)
     assert any("narrower than the elements" in r for r in q.reasons)
     assert q.min_fidelity == "fine"
+
+
+# ------------------------------------------------------------- round 28: member sections
+
+
+def test_the_stick_field_splits_the_scatter_between_body_and_sticks():
+    """A stick's log-variance s^2 = ln(1 + CoV^2) is split into the share its body's
+    sticks have in common, rho s^2 (rho = scatter.ply_corr 0.3: stick_factors, one draw
+    per body), and its own, (1 - rho) s^2 (one draw per stick cell): each lognormal of
+    mean 1, stiffness and strength correlated by scatter.E_strength_corr (0.7) in both,
+    so one stick keeps CoV 0.12 / 0.18 and correlation 0.7. Over 4000 bodies (cells):
+    common log-sd sqrt(0.3 ln(1 + 0.18^2)) = 0.0978 in strength, 0.0656 in E; a cell's
+    0.149 / 0.100. The perfect bridge (seed None) draws nothing."""
+    from bridgesim.sim import stickfield as sf
+    from bridgesim.sim.idealize import stick_factors
+
+    rho, r_es = SP["scatter.ply_corr"], SP["scatter.E_strength_corr"]
+    sE, sS = (math.sqrt(math.log(1 + SP[k] ** 2)) for k in ("scatter.E_cov",
+                                                             "scatter.strength_cov"))
+    com = np.array([stick_factors(0, f"Body {i}", 7, SP) for i in range(4000)])
+    lE, lS = (sf.log_sd(SP[k], 1 - rho, 1.0) for k in ("scatter.E_cov",
+                                                       "scatter.strength_cov"))
+    zz = np.array([sf.cell_z(0, f"Body {i}", (i % 13, i % 5, i % 7), r_es)
+                   for i in range(4000)])
+    loc = np.exp(zz * [lE, lS] - 0.5 * np.array([lE, lS]) ** 2)
+    for f, share in ((com, rho), (loc, 1 - rho), (com * loc, 1.0)):
+        lg = np.log(f)
+        assert f.mean(0) == pytest.approx([1.0, 1.0], abs=0.01)
+        assert lg.std(0) == pytest.approx([math.sqrt(share) * sE, math.sqrt(share) * sS],
+                                          rel=0.05)
+        assert np.corrcoef(lg.T)[0, 1] == pytest.approx(r_es, abs=0.03)
+    cov = np.sqrt(np.exp(np.log(com * loc).var(0)) - 1)  # one stick: its CoV as before
+    assert cov == pytest.approx([SP["scatter.E_cov"], SP["scatter.strength_cov"]], rel=0.05)
+    assert stick_factors(None, "Body 1", 7, SP) == (1.0, 1.0)
+
+
+def test_the_stick_field_is_drawn_per_stick_not_per_element():
+    """The cells are physical: a member's plies through its thickness, its sticks across
+    its width, each ply cut every stick length at its butt joints (the brick pattern from
+    the seeded offset the butt zones use), each cell drawn from the stream of the body and
+    its indices. Each fibre's factor is the mean across the sticks its area covers of the
+    weakest along its element, so an element halved keeps its cells: a fine element
+    inside a coarse one that holds no butt joint has the same factors, one inside a coarse
+    element that does at least the coarse one's (the coarse element takes the weaker side
+    of the joint). The model's b_fs is the field's own; with scatter.stick_field 0 or
+    seed None every fibre has its element's strength."""
+    import zlib
+
+    from bridgesim.sim import stickfield as sf
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    # 997.4 mm long, 6 mm thick (y, its 3 plies), one 10 mm stick wide (z): 125 elements
+    # at standard, 250 at x0.375, each coarse element two fine ones
+    name = "Strand (3-ply UD)"
+    bodies = simple_beam_bridge() + [box(name, (-498.7, 200, -5), (498.7, 206, 5))]
+    out = {}
+    for scale in (1.0, 0.375):
+        m = build_model(bodies, MAT, SP, Overrides(), seed=4, mesh_scale=scale)
+        e = np.array({b.name: b for b in m.bodies}[name].beams)
+        u = np.round(m.b_E0[e[0]][:, 0])  # along x, from the member's start
+        s = (m.X - m.X[m.b_i[e[0]]]) @ u
+        out[scale] = (s[m.b_i[e]], s[m.b_j[e]], m.b_fs[e])
+        assert m.b_fs[e].std() > 0.01  # the sticks differ
+    Ls, rho = MAT.stick.length_mm, SP["scatter.ply_corr"]
+    off = float(np.random.default_rng([4, zlib.crc32(f"buttpos:{name}".encode())]
+                                      ).uniform(0, Ls))
+    mf = sf.MemberField(4, name, 3, 1, sf.ply_joints(3, 997.4, Ls, Ls / 2, off), 997.4,
+                        sf.log_sd(SP["scatter.E_cov"], 1 - rho, 1.0),
+                        sf.log_sd(SP["scatter.strength_cov"], 1 - rho, 1.0),
+                        SP["scatter.E_strength_corr"])
+    a, b, fs = out[1.0]
+    W = sf.fibre_weights(5, 3, 1, 3)  # 5 fibres across its width, 3 through its plies
+    for k in range(len(a)):
+        np.testing.assert_allclose(fs[k], mf.element(a[k], b[k], W)[0], rtol=1e-12)
+    joints = np.unique(np.concatenate(mf.joints))
+    af, bf, fsf = out[0.375]
+    assert len(af) == 2 * len(a)
+    same = inside = 0
+    for k in range(len(af)):
+        within = (a <= af[k] + 1e-6) & (bf[k] <= b + 1e-6)
+        if not within.any():
+            continue  # it straddles two coarse elements
+        c = int(np.argmax(within))
+        inside += 1
+        assert (fs[c] <= fsf[k] + 1e-12).all()
+        if not ((joints > a[c]) & (joints < b[c])).any():
+            np.testing.assert_array_equal(fs[c], fsf[k])
+            same += 1
+    assert inside > 0.5 * len(af) and same > 0.5 * inside
+    for sp_, seed in ((SP.updated({"scatter.stick_field": 0}), 4), (SP, None)):
+        assert (build_model(bodies, MAT, sp_, Overrides(), seed=seed).b_fs == 1.0).all()
+
+
+def test_a_long_member_is_as_strong_as_its_weakest_section():
+    """A member in tension is as strong as its weakest section. With its plies' butt
+    joints lined up (butt_stagger_mm 0) a member k sticks long has k independent sections,
+    each the mean of its 3 plies' sticks (their own share of the scatter, log-sd 0.149:
+    the section's CoV 8.7 %), so its mean strength over many bodies is the mean of the
+    smallest of k draws of one section's strength, which the one-stick members' own
+    distribution gives (E[min_k] = int (1 - F(x))^k dx over its empirical F): 0.95 at 2
+    sticks, 0.90 at 5, 0.88 at 10, of a stick's mean (the body's common factor, rho s^2,
+    moves the member as a whole on top). In the brick pattern (every other ply cut at
+    each joint, the default) a 3-ply member 10 sticks long has twice as many sections and
+    reads 0.85; 13 plies average more, 0.91. Its 23 mm elements never straddle a joint
+    here, so the weakest element is the weakest section."""
+    from bridgesim.sim import stickfield as sf
+
+    Ls, rho = MAT.stick.length_mm, SP["scatter.ply_corr"]
+    sE = sf.log_sd(SP["scatter.E_cov"], 1 - rho, 1.0)
+    sS = sf.log_sd(SP["scatter.strength_cov"], 1 - rho, 1.0)
+
+    def strength(k, i, stagger=0.0, n=3):
+        L = k * Ls
+        mf = sf.MemberField(0, f"Member {k}:{stagger}:{n}:{i}", n, 1,
+                            sf.ply_joints(n, L, Ls, stagger, 0.0), L, sE, sS,
+                            SP["scatter.E_strength_corr"])
+        W = sf.fibre_weights(3, 5, 1, n)
+        edges = np.linspace(0, L, 5 * k + 1)
+        return min(float(mf.element(a, b, W)[0].mean())
+                   for a, b in zip(edges[:-1], edges[1:], strict=True))
+
+    one = np.sort([strength(1, i) for i in range(3000)])
+    assert one.mean() == pytest.approx(1.0, abs=0.005)
+    assert one.std() == pytest.approx(math.sqrt((math.exp(sS**2) - 1) / 3), rel=0.05)
+
+    def expected_min(k):  # E[min of k iid] over the one-stick members' distribution
+        surv = 1.0 - np.arange(1, len(one)) / len(one)
+        return float(one[0] + (np.diff(one) * surv**k).sum())
+
+    for k, want, n in ((2, 0.952, 600), (5, 0.901, 800), (10, 0.878, 800)):
+        got = float(np.mean([strength(k, i) for i in range(n)]))
+        assert got == pytest.approx(expected_min(k), abs=0.008), k
+        assert got == pytest.approx(want, abs=0.01), k
+    brick = float(np.mean([strength(10, i, Ls / 2) for i in range(400)]))
+    deep = float(np.mean([strength(10, i, Ls / 2, 13) for i in range(150)]))
+    assert brick == pytest.approx(0.854, abs=0.01) and deep == pytest.approx(0.907, abs=0.01)
+
+
+def test_with_the_stick_field_off_the_model_is_round_27s():
+    """scatter.stick_field 0 gives the model round 27 built, bit for bit: each body one
+    stiffness and one strength factor, every fibre at its element's strength (the sums
+    of the synthetic bridge's arrays at seed 0 and seed None as round 27 built them); the
+    perfect bridge (seed None) is the same with the field on."""
+    from bridgesim.sim.idealize import build_model
+
+    want = {0: {"b_E": 2237124.035253168, "b_ft": 3056.5502360732344,
+                "b_fc": 8166.720162008172, "b_GJ": 174621741.5909483,
+                "b_kGA": 15135103.482930474, "s_lim": 11.300558825096171,
+                "s_K": 558611408.9419043},
+            None: {"b_E": 2422241.1276578186, "b_ft": 2943.9999999999995, "b_fc": 7866.0,
+                   "b_GJ": 189071306.55228245, "b_kGA": 16387500.000000004,
+                   "s_lim": 10.726003469935472, "s_K": 653420818.2046883}}
+    for sp_, seed in ((SP.updated({"scatter.stick_field": 0}), 0), (SP, None)):
+        m = build_model(simple_beam_bridge(), MAT, sp_, seed=seed)
+        for k, v in want[seed].items():
+            assert float(np.sum(getattr(m, k))) == pytest.approx(v, rel=1e-14), k
+        assert (m.b_fs == 1.0).all()
+
+
+def test_plates_carry_the_stick_field_on_their_fibres():
+    """A plate's elements read the stick cells under them (one stick long along its main
+    grain and one wide across, each the mean of its 2 plies: log-sd 0.106 in strength):
+    the fibres' failure stresses vary element to element, in tension and compression by
+    the same factor, the failure stresses across the grain not at all; elements over one
+    cell share it."""
+    from bridgesim.sim.idealize import build_model
+
+    m = build_model(simple_beam_bridge(), MAT, SP, seed=2)
+    deck = np.array({b.name: b for b in m.bodies}["Deck (2-ply 0-90)"].shells)
+    lim, Q = m.s_lim[deck], m.s_Q[deck]
+    np.testing.assert_allclose(lim[:, 0] / lim[:, 1], lim[0, 0] / lim[0, 1], rtol=1e-9)
+    np.testing.assert_allclose(lim[:, 3] * Q[:, 1], lim[0, 3] * Q[0, 1], rtol=1e-9)
+    sig = np.log(lim[:, 1] * Q[:, 0])  # the fibres' crushing stress
+    assert 0.03 < sig.std() < 0.2 and np.log(Q[:, 0]).std() > 0.02
+    assert len(np.unique(np.round(sig, 12))) < len(sig)
+    m0 = build_model(simple_beam_bridge(), MAT, SP.updated({"scatter.stick_field": 0}),
+                     seed=2)
+    assert np.ptp(m0.s_lim[deck, 1] * m0.s_Q[deck, 0]) < 1e-9
+
+
+def test_a_member_bent_through_its_plies_shears_on_its_glue_lines():
+    """Bent across its plies a laminated member shears through its stack: the plies and
+    the pressed glue lines between them in series (glue.lamination_K_s_N_per_mm3 = K),
+    1 / G_eff = sum w_i / G_i + (1 - n^-4) / (K t), w_i the plies' shares of the shear
+    energy. By hand, 25 UD plies of 2 mm (G 625, K 350): 1 / G = 1/625 + (1 - 25^-4) /
+    700 = 0.0016 + 0.0014286, G_eff = 330.2 MPa (3 plies: 332.1); 4 plies 0/90/90/0, the
+    outer plies' weights 0.1035 each, the inner 0.3965 (int of (4x(1-x))^2 over each
+    quarter / (8/15)), the cross plies in rolling shear (150): 1 / G = 0.2070/625 +
+    0.7930/150 + (1 - 1/256)/700 = 0.0003313 + 0.0052865 + 0.0014230, G_eff = 142.0 MPa.
+    A deep beam (span 200, 20 wide, 50 deep) bent through its plies (along e3, the
+    stacking direction) is as stiff as Timoshenko's beam with G_eff (within 1 %), bent in
+    their plane (along e2) with the laminate's G as before; the model stacks a bar's plies
+    along e3 and gives it 5/6 G_eff A there, a block-like bar the same both ways."""
+    from bridgesim.sim.idealize import Overrides, build_model
+    from bridgesim.sim.lab import BeamSpec, add_beam_line, blank_model, drive
+    from bridgesim.sim.materials import shear_energy_weights, through_stack_shear_modulus
+
+    G, Gr, K = 625.0, 150.0, 350.0
+    assert through_stack_shear_modulus([0.0] * 25, G, Gr, K, 50.0) == pytest.approx(
+        330.2, abs=0.05)
+    assert through_stack_shear_modulus([0.0] * 3, G, Gr, K, 6.0) == pytest.approx(
+        332.1, abs=0.05)
+    assert shear_energy_weights(4) == pytest.approx([0.1035, 0.3965, 0.3965, 0.1035],
+                                                    abs=1e-4)
+    assert through_stack_shear_modulus([0.0, 90.0, 90.0, 0.0], G, Gr, K, 8.0) == \
+        pytest.approx(142.0, abs=0.05)
+    assert through_stack_shear_modulus([0.0], G, Gr, K, 2.0) == G  # one ply: no glue line
+
+    pytest.importorskip("numba")
+    E, span, b, d = 10000.0, 200.0, 20.0, 50.0
+    Geff = through_stack_shear_modulus([0.0] * 25, G, Gr, K, d)
+
+    def k_sim(up, b_e2, d_e3):
+        n_el = 8
+        X = np.c_[np.linspace(0, span, n_el + 1), np.zeros((n_el + 1, 2))]
+        m = blank_model(X)
+        add_beam_line(m, list(range(n_el + 1)), BeamSpec(b=b_e2, d=d_e3, E=E, G=G), up=up)
+        m.b_kGA3 = np.full(n_el, 5 / 6 * Geff * b * d)
+        r = drive(m, {0: "xyz", n_el: "yz"}, n_el // 2, 1, 20.0, sign=-1.0, max_disp=0.2,
+                  stop_drop=-1e9, slow_disp=0.05, slow_rate=5.0)
+        sel = r.disp > 0.05
+        return np.polyfit(r.disp[sel], r.force[sel], 1)[0]
+
+    def k_timo(Gs):  # loaded along its 50 mm depth
+        return 1 / (span**3 / (48 * E * b * d**3 / 12) + span / (4 * 5 / 6 * Gs * b * d))
+
+    # e3 = up = Y, the load's direction: bent through the stack, b_kGA3
+    assert k_sim((0, 1, 0), b, d) == pytest.approx(k_timo(Geff), rel=0.01)
+    # e3 = Z: loaded along e2 (Y), in the plane of the plies, b_kGA (G) as before
+    assert k_sim((0, 0, 1), d, b) == pytest.approx(k_timo(G), rel=0.01)
+    # the model: a bar's plies stacked along e3 (its 6 mm thickness, z), 5/6 G_eff A
+    bodies = simple_beam_bridge() + [box("Strand (3-ply UD)", (-500, 200, -3), (500, 220, 3)),
+                                     box("Plank (block)", (-500, 230, -3), (500, 250, 3))]
+    m = build_model(bodies, MAT, SP, Overrides.from_dict(
+        {"bodies": {"Plank*": {"kind": "bar"}}}), seed=None)
+    info = {bb.name: bb for bb in m.bodies}
+    e = np.array(info["Strand (3-ply UD)"].beams)
+    assert np.abs(m.b_E0[e][:, :, 2] @ [0.0, 0.0, 1.0]).min() > 0.999
+    assert np.ptp(m.b_fz[e], axis=1).max() < 6.0 < np.ptp(m.b_fy[e], axis=1).min()
+    G_m = MAT.G_MPa.value
+    G3 = through_stack_shear_modulus([0.0] * 3, G_m, SP["wood.G_rolling_MPa"],
+                                     SP["glue.lamination_K_s_N_per_mm3"], 6.0)
+    np.testing.assert_allclose(m.b_kGA[e], 5 / 6 * G_m * 120.0, rtol=1e-9)
+    np.testing.assert_allclose(m.b_kGA3[e], 5 / 6 * G3 * 120.0, rtol=1e-9)
+    p = np.array(info["Plank (block)"].beams)
+    assert info["Plank (block)"].kind == "bar" and len(p)
+    np.testing.assert_allclose(m.b_kGA3[p], m.b_kGA[p], rtol=1e-12)
+
+
+def test_crushing_takes_the_same_shortening_on_any_mesh(monkeypatch):
+    """A strut (100 mm, 10 x 10, E 7100, f_c 30, elastic to f_c, held straight) with one
+    element 5 % weaker at mid-length crushes there: its fibres fall from f_c to the plateau
+    0.7 f_c
+    over the shortening w = 5 (f_c / E) x wood.crush_band_mm (12.5 mm) in each of its two
+    Gauss lengths (L / 2), so the work the strut takes from its peak to the plateau is the
+    same with 25, 12.5 and 6.25 mm elements. By hand: the plastic work A 2 w (f + 0.7 f)
+    / 2 = 100 x 2 x 0.25088 x 24.225 = 1215.5 N mm (f = 28.5 MPa, w = 5 x 28.5 / 7100 x
+    12.5 = 0.25088 mm), less the elastic energy the strut gives back as the load falls,
+    (F_p^2 - F_pl^2) L / (2 E A) = 291.7 N mm: 923.8 N mm. Until round 27 the fall took
+    the fixed strain 5 f_c / E, its work in proportion to the element; the 25 mm element
+    is that law's (crush_band_mm 0), curve for curve. Compiled = NumPy."""
+    from bridgesim.sim.lab import BeamSpec, add_beam_line, blank_model, drive
+
+    pytest.importorskip("numba")
+    E, f, A, Lt = 7100.0, 30.0, 100.0, 100.0
+
+    def run(h, band):
+        n = int(round(Lt / h))
+        X = np.c_[np.linspace(0, Lt, n + 1), np.zeros((n + 1, 2))]
+        m = blank_model(X)
+        add_beam_line(m, list(range(n + 1)), BeamSpec(b=10, d=10, E=E, ft=40, fc=f, fv=1e9),
+                      up=(0, 1, 0))
+        m.b_fc[n // 2] *= 0.95
+        m.params.update(fc_proportional=1.0, crush_band_mm=band)
+        # held straight (every node against moving sideways and turning): the axial law
+        # alone; a free strut kinks in the element that crushes (its fibres crush unevenly)
+        fixed = {k: "yzr" for k in range(n + 1)} | {0: "xyzr"}
+        return drive(m, fixed, n, 0, 8.0, max_disp=1.0, sign=-1.0, stop_drop=0.0,
+                     record_every=10)
+
+    fp = 0.95 * f * A
+    w = 5 * 0.95 * f / E * 12.5
+    want = A * 2 * w * 1.7 * 0.95 * f / 2 - (fp**2 - (0.7 * fp) ** 2) * Lt / (2 * E * A)
+    assert want == pytest.approx(923.8, abs=0.1)
+    curves = {}
+    for h in (25.0, 12.5, 6.25):
+        r = curves[h] = run(h, 12.5)
+        i0 = int(np.argmax(r.force))
+        i1 = i0 + int(np.argmax(r.force[i0:] <= 0.7 * fp * 1.002))
+        assert r.peak == pytest.approx(fp, rel=0.01)
+        assert r.force[-1] == pytest.approx(0.7 * fp, rel=0.01)  # the plateau
+        work = float(np.trapezoid(r.force[i0:i1 + 1], r.disp[i0:i1 + 1]))
+        assert work == pytest.approx(want, rel=0.04), h
+    old = run(25.0, 0.0)
+    np.testing.assert_allclose(old.force, curves[25.0].force, rtol=1e-9, atol=1e-9)
+    monkeypatch.setattr(S.K, "HAVE_NUMBA", False)
+    np.testing.assert_allclose(run(12.5, 12.5).force, curves[12.5].force, rtol=1e-6,
+                               atol=1e-6 * fp)
+
+
+def test_a_member_crushed_on_its_side_gets_shallower():
+    """A knee (its grain upright: end grain, as strong as f_c) pressed on a chord's side
+    crushes the chord across its grain: the chord's elements under it get shallower by
+    the crushed depth c (the crushed volume over the face's area in each element), their
+    fibres mapped from [-d/2, d/2] to the d - c left, areas kept: the second moment about
+    the new centroid A (d - c)^2 / 12, the centroid c / 2 away from the crushed face (by
+    hand, the 5-ply chord 10 deep and 20 wide crushed 0.5 mm: I about its axis = 200 x
+    9.5^2 / 12 + 200 x 0.25^2 = 1516.67 mm^4 against 1666.67). The crushed volume is the
+    same on two meshes (a glue row on a node shared half and half); a joint that has not
+    crushed changes nothing, bit for bit."""
+    from bridgesim.sim import sections
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    bodies = simple_beam_bridge() + [box("Chord (5-ply UD)", (-300, 200, -10), (300, 210, 10)),
+                                     box("Knee (block)", (-20, 210, -10), (20, 240, 10))]
+    ov = Overrides.from_dict({"bodies": {"Knee*": {"grain": "y"}}})
+    for scale in (1.0, 0.5):
+        m = build_model(bodies, MAT, SP, ov, seed=None, mesh_scale=scale)
+        names = [b.name for b in m.bodies]
+        knee = next(k for k, p in enumerate(m.patches)
+                    if {names[p.body_a], names[p.body_b]} == {"Chord (5-ply UD)",
+                                                               "Knee (block)"})
+        share = m.params["patch_crush_share"][knee]
+        side = 0 if names[m.patches[knee].body_a].startswith("Chord") else 1
+        assert share[side] == pytest.approx(1.0) and share[1 - side] == 0.0
+        fm = sections.face_map(m)
+        st = S.initial_state(m, 1e4)
+        fy, fz = m.b_fy.copy(), m.b_fz.copy()
+        assert sections.squeeze(m, st, fm) == 0  # nothing crushed: nothing touched
+        assert (m.b_fy == fy).all() and (m.b_fz == fz).all()
+        sel = m.c_patch == knee
+        st.c_crush[sel] = -0.5
+        assert sections.squeeze(m, st, fm) > 0
+        c = sections.crushed_depths(m, st, fm)
+        vol = (c * m.b_L0[:, None] * fm.sec[:, [1, 1, 0, 0]]).sum()
+        assert vol == pytest.approx(0.5 * m.c_area[sel].sum(), rel=1e-9)  # 800 mm^2
+        e = np.where(c.max(1) > 0)[0]
+        chord = np.array({b.name: b for b in m.bodies}["Chord (5-ply UD)"].beams)
+        assert set(e) <= set(chord) and len(e) == round(40 / m.b_L0[e[0]])
+        nrm = m.b_E0[e][:, :, 2] @ [0.0, 1.0, 0.0]  # e3 along the crushed face's normal
+        for k_, ee in enumerate(e):
+            A = m.b_fA[ee].sum()
+            assert c[ee, 3 if nrm[k_] < 0 else 2] == pytest.approx(0.5)
+            zc = (m.b_fA[ee] * m.b_fz[ee]).sum() / A
+            assert zc * nrm[k_] == pytest.approx(-0.25)  # down, away from the knee
+            assert (m.b_fA[ee] * (m.b_fz[ee] - zc) ** 2).sum() == pytest.approx(
+                A * 9.5**2 / 12, rel=1e-9)
+            assert (m.b_fA[ee] * m.b_fz[ee] ** 2).sum() == pytest.approx(1516.667, abs=1e-3)
+            np.testing.assert_array_equal(m.b_fy[ee], fy[ee])  # its width is kept
+        rest = np.setdiff1d(np.arange(len(m.b_i)), e)
+        assert (m.b_fz[rest] == fz[rest]).all()

@@ -1810,7 +1810,8 @@ def _crush_material(mat: Material, sp: SimParams) -> Material:
 def _wood_law(sp: SimParams) -> dict:
     """The fibre law's compression parameters of the bridge, for the coupon models."""
     return {"fc_prop": sp.values.get("wood.fc_proportional", 1.0),
-            "crush_softening": sp["wood.crush_softening"]}
+            "crush_softening": sp["wood.crush_softening"],
+            "crush_band_mm": sp.values.get("wood.crush_band_mm", 0.0)}
 
 
 def coupon_K_s(sp: SimParams, t: float, G: float) -> float:
@@ -2893,6 +2894,9 @@ PLACEHOLDER_PRIORS = {
     "glue.G_Ic_N_per_mm": 0.45, "glue.gap_fill_mm": 0.40, "glue.coupon_time_s": 0.40,
     "scatter.glue_bridge_cov": 0.40, "scatter.E_cov": 0.30, "scatter.strength_cov": 0.30,
     "wood.crush_softening": 0.30,
+    # round 28: the gauge length of the crushing fall (a kink band's width, millimetres to
+    # a few centimetres in wood; nothing measured on sticks)
+    "wood.crush_band_mm": 0.50,
 }
 # placeholders drawn additively, value + sd x z within (low, high): the wood's moisture
 # above its coupons' (percentage points; members laminated in the last days before the
@@ -2980,6 +2984,10 @@ SENSITIVITY_MORE = {
                           "an edge-notched stick pulled apart (K_Ic, G = K^2 / E)"),
     "wood.densification_strain": ("how far crushed wood compacts",
                                   "press a stick stack flat and record the curve"),
+    "wood.crush_band_mm": ("how much shortening a member crushing in compression takes to "
+                           "lose its strength",
+                           "a short glued stack crushed past its peak "
+                           "(stick_compression_template.csv): the shortening to its plateau"),
     "contact.seating_mm": ("how far the bearing faces bed in",
                            "the soft start of your crush-test curve"),
     "scatter.support_level_mm": ("how far the support corners are out of level",

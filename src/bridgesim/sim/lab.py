@@ -47,7 +47,11 @@ def blank_model(X: np.ndarray, nf: int = 15) -> Model:
         k_Fb=z(0), k_body=z(0, int), p_att=z(0, int), p_support=z(0, bool),
         q_att=z(0, int), plate_node=-1, plate_half=np.ones(3), jack_xz=z(2),
         jack_radius=0.0, frame_x=(-1e9, 1e9), bodies=[], patches=[], table_y=-1e9,
-        params={"crush_softening": 0.3})
+        params={"crush_softening": 0.3, "crush_band_mm": CRUSH_BAND_MM})
+
+
+#: the crushing fall's gauge length of a coupon model (wood.crush_band_mm's shipped value)
+CRUSH_BAND_MM = 12.5
 
 
 @dataclass
@@ -214,13 +218,16 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
 def three_point_bending(E: float, ft: float, fc: float, span: float = 100.0,
                         b: float = 10.0, t: float = 2.0, Gf: float = 3.0, n_el: int = 16,
                         rate: float = 50.0, fc_prop: float = 1.0,
-                        crush_softening: float = 0.3) -> TestResult:
+                        crush_softening: float = 0.3,
+                        crush_band_mm: float = CRUSH_BAND_MM) -> TestResult:
     """A stick (b x t) simply supported over ``span``, loaded at mid-span (vertical Y).
     ``fc_prop``: the proportional limit in compression (wood.fc_proportional; 1 =
-    elastic-perfectly plastic)."""
+    elastic-perfectly plastic); ``crush_band_mm`` (wood.crush_band_mm) the gauge length
+    of the crushing fall."""
     X = np.c_[np.linspace(0, span, n_el + 1), np.zeros(n_el + 1), np.zeros(n_el + 1)]
     m = blank_model(X)
-    m.params.update(fc_proportional=fc_prop, crush_softening=crush_softening)
+    m.params.update(fc_proportional=fc_prop, crush_softening=crush_softening,
+                    crush_band_mm=crush_band_mm)
     add_beam_line(m, list(range(n_el + 1)), BeamSpec(b=b, d=t, E=E, ft=ft, fc=fc, Gf=Gf),
                   up=(0, 1, 0))
     mid = n_el // 2
@@ -416,6 +423,7 @@ def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2
     m.s_body = np.zeros(len(nodes), int)
     m.params["crush_softening"] = sp["wood.crush_softening"]
     m.params["fc_proportional"] = sp.values.get("wood.fc_proportional", 1.0)
+    m.params["crush_band_mm"] = sp.values.get("wood.crush_band_mm", 0.0)
     left = [nid(0, j) for j in range(ny + 1)]
     right = [nid(nx, j) for j in range(ny + 1)
              if abs(ys[j] - W / 2) <= grip * W / 2 + 1e-9]

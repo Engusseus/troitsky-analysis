@@ -48,6 +48,7 @@ from bridgesim.sim.materials import (
     parse_layup,
     parse_override_layup,
     rect_torsion,
+    through_stack_shear_modulus,
 )
 from bridgesim.sim.materials import fibre_spread as _exact
 from bridgesim.sim.model import G_MM_S2, TONNE_PER_KG, BodyInfo, Model, Patch
@@ -739,25 +740,34 @@ def copies_glob(name: str) -> str:
 
 def stick_factors(seed: int | None, name: str, n_plies: int, sp: SimParams
                   ) -> tuple[float, float]:
-    """The seeded stiffness and strength factors of a body (lognormal, mean 1): a
-    member of n plies averages its sticks, which are partly alike (``scatter.ply_corr``
-    rho), so both vary by CoV x sqrt((1 + (n - 1) rho) / n); and a stiffer body is
-    stronger, the two correlated by ``scatter.E_strength_corr`` (in log terms). Each
-    draw comes from a stream named after the body; ``scatter.amplitude`` scales both."""
+    """The seeded stiffness and strength factors of a body (lognormal, mean 1), a stiffer
+    body stronger, the two correlated by ``scatter.E_strength_corr`` (in log terms). Each
+    draw comes from a stream named after the body; ``scatter.amplitude`` scales both.
+
+    With the stick field (``scatter.stick_field`` 1, since round 28) this is the part its
+    sticks share, which are partly alike (``scatter.ply_corr`` rho): log-variance rho s^2,
+    s^2 = ln(1 + CoV^2) of one stick; each stick adds its own, (1 - rho) s^2
+    (stickfield), so one stick varies by CoV, a member of n plies by about CoV x sqrt((1
+    + (n - 1) rho) / n). Without it (0, round 27) one factor for the whole body, a member
+    of n plies averaging its sticks: CoV x sqrt((1 + (n - 1) rho) / n)."""
     if seed is None:
         return 1.0, 1.0
+    from bridgesim.sim.stickfield import field_on, log_sd
+
     amp = float(sp.values.get("scatter.amplitude", 1.0))
     r_p = float(sp.values.get("scatter.ply_corr", 0.0))
     n = max(1, int(n_plies))
     k_lam = math.sqrt((1 + (n - 1) * r_p) / n)
     rho = float(sp.values.get("scatter.E_strength_corr", 0.0))
+    shared = field_on(sp)
 
     def z(key):
         return float(np.random.default_rng(
             [int(seed), zlib.crc32(key.encode("utf-8"))]).standard_normal())
 
     def ln(cov, zz):
-        s_ = math.sqrt(math.log(1 + (cov * k_lam) ** 2)) * amp
+        s_ = log_sd(cov, r_p, amp) if shared else \
+            math.sqrt(math.log(1 + (cov * k_lam) ** 2)) * amp
         return math.exp(s_ * zz - 0.5 * s_ * s_)
 
     zE, zS = z(f"E:{name}"), z(f"S:{name}")
@@ -1543,7 +1553,59 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     frame_h: dict[int, float] = {}
     beams: dict[str, list] = {k: [] for k in ("i", "j", "L0", "E0", "fy", "fz", "fA", "E",
                                               "ft", "fc", "Gf", "GJ", "A", "fv", "fv3",
-                                              "nply", "Wt", "kGA", "body")}
+                                              "nply", "Wt", "kGA", "body", "fs", "kGA3",
+                                              "sec")}
+    # the stick field (stickfield, scatter.stick_field): each stick's own share of the
+    # scatter, (1 - rho) s^2 of a stick's log-variance, drawn per stick cell
+    from bridgesim.sim import stickfield as sfld
+
+    fld_on = seed is not None and sfld.field_on(sp)
+    r_ply = float(sp.values.get("scatter.ply_corr", 0.0))
+    rho_es = float(sp.values.get("scatter.E_strength_corr", 0.0))
+    W_cache: dict[tuple[int, int, int, int], np.ndarray] = {}
+
+    def fibre_W(ny_: int, nz_: int, cols: int, rows: int) -> np.ndarray:
+        k_ = (ny_, nz_, cols, rows)
+        if k_ not in W_cache:
+            W_cache[k_] = sfld.fibre_weights(ny_, nz_, cols, rows)
+        return W_cache[k_]
+
+    def member_field(key: str, o: dict, laminated: bool, n_rows: int, width: float,
+                     L: float, off_key: str):
+        """The stick cells of a member (or a frame's arm) ``L`` long: its plies through its
+        thickness, sticks across its width, each ply cut at its butt joints (the brick
+        pattern, butt_stagger_mm or butt_at, from the seeded offset the butt zones use);
+        a part not laid from sticks (a block, a toothpick) is one cell. None without the
+        field."""
+        if not fld_on:
+            return None
+        Ls_ = mat.stick.length_mm
+        if laminated:
+            st_ = o.get("butt_stagger_mm")
+            stag = Ls_ / 2 if st_ is None else float(st_)
+            r_o = rng_for(off_key)
+            off_ = Ls_ / 2 if r_o is None else float(r_o.uniform(0.0, Ls_))
+            joints = sfld.ply_joints(n_rows, L, Ls_, stag, off_, butt_at_of(o.get("butt_at")))
+            cols = max(1, int(round(width / mat.stick.width_mm)))
+        else:
+            n_rows, cols, joints = 1, 1, [np.zeros(0)]
+        return sfld.MemberField(
+            seed, key, n_rows, cols, joints, L,
+            sfld.log_sd(sp["scatter.E_cov"], 1.0 - r_ply, amp),
+            sfld.log_sd(sp["scatter.strength_cov"], 1.0 - r_ply, amp), rho_es)
+
+    def stack_kGA(lam_, laminated: bool, Ef_: float, A_: float, T_: float) -> float:
+        """k G A for shear along e3, through the plies (materials.
+        through_stack_shear_modulus: the plies and the pressed glue lines in series, a ply
+        across the member in rolling shear); a part without plies shears as one piece."""
+        if not laminated or len(lam_.angles) < 2:
+            return 5 / 6 * lam_.G_xy * Ef_ * A_
+        G3 = through_stack_shear_modulus(
+            lam_.angles, ply.G_LT * Ef_, g_roll_b * Ef_,
+            sp.values.get("glue.lamination_K_s_N_per_mm3", 200.0), T_)
+        return 5 / 6 * G3 * A_
+
+    g_roll_b = float(sp.values.get("wood.G_rolling_MPa", 150.0))
     shells: dict[str, list] = {k: [] for k in ("nodes", "E0", "P", "t", "el", "body")}
     n_snap = 0
     snap_el: list[bool] = []  # per shell element: larger than its crack band
@@ -1700,6 +1762,13 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             proxy = SimpleNamespace(layup=sh.layup, Wp=ch_w[ci], T=T)
             kt_fv[ci] = _laminated_member(b.name, proxy, lam0, ch_len[ci], mat, o, questions,
                                           **il_strength)
+        # the stick cells of each arm (keyed on the arm, as its bow), its elements located
+        # by their distance along the arm
+        laminated = sh.layup.kind == "laminate"
+        arm_fld = {ci: member_field(f"{b.name}:{ci}", o, laminated, len(sh.layup.angles),
+                                    ch_w[ci], ch_len[ci], f"buttpos:{b.name}:{ci}")
+                   for ci in range(len(chains))}
+        along = dict.fromkeys(range(len(chains)), 0.0)
         for a_, b_, We, L0, ci in elems:
             e1v = (bld.X[b_] - bld.X[a_]) / L0
             e2v = np.cross(sh.n, e1v)
@@ -1718,6 +1787,12 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             FY, FZ = np.meshgrid(gy, gz, indexing="ij")
             A_e = We * T
             J, Wt2, Wt3 = rect_torsion(We, T)
+            fs_e, eloc = np.ones(ny * nz), 1.0
+            if arm_fld[ci] is not None:
+                mf = arm_fld[ci]
+                fs_e, eloc = mf.element(along[ci], along[ci] + L0,
+                                        fibre_W(ny, nz, mf.n_cols, mf.n_rows))
+            along[ci] += L0
             beams["i"].append(a_)
             beams["j"].append(b_)
             beams["L0"].append(L0)
@@ -1725,17 +1800,20 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             beams["fy"].append(FY.ravel())
             beams["fz"].append(FZ.ravel())
             beams["fA"].append(np.full(ny * nz, A_e / (ny * nz)))
-            beams["E"].append(lam.E_x * Ef)
+            beams["E"].append(lam.E_x * Ef * eloc)
             beams["ft"].append(lam.f_t * Ef * Sf * kt)
             beams["fc"].append(lam.f_c * Ef * Sf * kc)
             beams["Gf"].append(G_f * Sf)
-            beams["GJ"].append(lam.G_xy * Ef * J)
+            beams["GJ"].append(lam.G_xy * Ef * J * eloc)
             beams["A"].append(A_e)
             beams["fv"].append(fv_in * Sf)
             beams["fv3"].append(fv_lam * Sf)
             beams["nply"].append(float(max(2, len(lam.angles))))
             beams["Wt"].append((Wt2, Wt3))
-            beams["kGA"].append(5 / 6 * lam.G_xy * Ef * A_e)
+            beams["kGA"].append(5 / 6 * lam.G_xy * Ef * A_e * eloc)
+            beams["kGA3"].append(stack_kGA(lam, laminated, Ef * eloc, A_e, T))
+            beams["fs"].append(fs_e)
+            beams["sec"].append((We, T, 0.0))
             beams["body"].append(bi)
             info.beams.append(len(beams["i"]) - 1)
             while len(info.chains) <= ci:
@@ -1914,6 +1992,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             kc_z = min(1.0, kc / max(net_min, 1e-9))
             if zones:
                 info.butt_zones = [round(float(xc), 1) for xc, _c in zones]
+            # the member's stick cells (its plies, its sticks across, cut at the butt
+            # joints where the zones put them: the same seeded offset)
+            laminated = sh.layup.kind == "laminate"
+            mfld = member_field(b.name, o, laminated, n_ply, Wp, L, f"buttpos:{b.name}")
             for k_e, (a_, b_) in enumerate(zip(ids[:-1], ids[1:], strict=True)):
                 We = float(wid[k_e])
                 A_e = We * T if sh.fill < 0.75 else A_true
@@ -1937,6 +2019,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 e3v /= np.linalg.norm(e3v)
                 e2v = np.cross(e3v, e1v)
                 Ein = np.stack([e1v, e2v, e3v], axis=1)
+                fs_e, eloc = np.ones(ny * nz), 1.0
+                if mfld is not None:
+                    fs_e, eloc = mfld.element(st2[k_e] - s0, st2[k_e + 1] - s0,
+                                              fibre_W(ny, nz, mfld.n_cols, mfld.n_rows))
                 beams["i"].append(a_)
                 beams["j"].append(b_)
                 beams["L0"].append(L0)
@@ -1944,17 +2030,20 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 beams["fy"].append(FY.ravel())
                 beams["fz"].append(FZ.ravel())
                 beams["fA"].append(fA)
-                beams["E"].append(lam.E_x * Ef * kE)
+                beams["E"].append(lam.E_x * Ef * kE * eloc)
                 beams["ft"].append(lam.f_t * Ef * Sf * kt_e)
                 beams["fc"].append(lam.f_c * Ef * Sf * kc_e)
                 beams["Gf"].append(G_f * Sf)
-                beams["GJ"].append(lam.G_xy * Ef * J)
+                beams["GJ"].append(lam.G_xy * Ef * J * eloc)
                 beams["A"].append(A_e)
                 beams["fv"].append(fv_in * Sf)
                 beams["fv3"].append(fv_lam * Sf)
                 beams["nply"].append(float(max(2, len(lam.angles))))
                 beams["Wt"].append((Wt2, Wt3))
-                beams["kGA"].append(5 / 6 * lam.G_xy * Ef * A_e)
+                beams["kGA"].append(5 / 6 * lam.G_xy * Ef * A_e * eloc)
+                beams["kGA3"].append(stack_kGA(lam, laminated, Ef * eloc, A_e, T))
+                beams["fs"].append(fs_e)
+                beams["sec"].append((We, T, float(off[k_e])))
                 beams["body"].append(bi)
                 info.beams.append(len(beams["i"]) - 1)
                 # lumped mass
@@ -2021,8 +2110,29 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 mat.f_v_MPa.value, il_strength["f_rolling"], il_strength["bond"],
                 il_strength["butt_eff"])
             kc_pl = butt_compression(b.name, kt_pl, o)
+            # the stick field: cells one stick long along the main grain and one wide
+            # across, each the mean of its plies, read by each element at seven points
+            n_pl = len(sh.layup.angles) if sh.layup.kind == "laminate" else 1
+            a2_ = np.array([-g2[1], g2[0]])
+            Ls_ = mat.stick.length_mm
+            if fld_on:
+                st_ = o.get("butt_stagger_mm")
+                r_o = rng_for(f"buttpos:{b.name}")
+                pf = dict(
+                    a_min=float((pc @ g2).min()), c_min=float((pc @ a2_).min()), Ls=Ls_,
+                    ws=float(mat.stick.width_mm), stagger=Ls_ / 2 if st_ is None
+                    else float(st_), offset=float(r_o.uniform(0.0, Ls_)),
+                    long_along=bool(np.ptp(pc @ g2) > 1.02 * Ls_) and
+                    sh.layup.kind == "laminate",
+                    sE=sfld.log_sd(sp["scatter.E_cov"], (1.0 - r_ply) / n_pl, amp),
+                    sS=sfld.log_sd(sp["scatter.strength_cov"], (1.0 - r_ply) / n_pl, amp),
+                    rho_es=rho_es, cache={})
             for t3 in tri:
                 xy3 = P2[t3]
+                fs_e, eloc = 1.0, 1.0
+                if fld_on:
+                    fs_e, eloc = sfld.plate_cells(seed, b.name, sfld.triangle_samples(xy3),
+                                                  g2, **pf)
                 X3 = np.array([bld.X[ids[k]] for k in t3])
                 ex = X3[1] - X3[0]
                 ex /= np.linalg.norm(ex)
@@ -2043,8 +2153,12 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 angs = [gang + a for a in sh.layup.angles]
                 if float(ez @ sh.n) < 0:  # plies listed from the -n face up
                     angs = angs[::-1]
-                ed = shellmod.element_data(Ploc[:, :2], angs, T, ply_s, Ef, Sf, Gm,
-                                           lam_ref.E_x * Ef * T, kt=kt_pl, kc=kc_pl)
+                # (the element's modulus x eloc, its failure stresses kept but the fibres'
+                # x fs_e, with their fracture energy)
+                ed = shellmod.element_data(Ploc[:, :2], angs, T, ply_s, Ef * eloc, Sf / eloc,
+                                           (Gm[0] * fs_e, Gm[1], Gm[2]),
+                                           lam_ref.E_x * Ef * T, kt=kt_pl * fs_e,
+                                           kc=kc_pl * fs_e)
                 if ed["snapback"]:
                     n_snap += 1
                     snap_excess = min(snap_excess, ed["excess"])
@@ -2521,6 +2635,26 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         dims = [x for x in (sh.T, sh.Wp) if x and x > 0]
         return max(0.5, min(ext, zone * min(dims)) if dims else ext)
 
+    # which side's wood takes a joint's crush (sim.sections: a member crushed across its
+    # grain on its side gets shallower there): the weaker side, as the crush depth is
+    # taken (both alike: half each), a member (bar, frame) only, by its side grain's share
+    crush_share: dict[int, tuple[float, float]] = {}
+
+    def crush_sides(ia_: int, ib_: int, fa_: float, fb_: float, ea_: float, eb_: float
+                    ) -> tuple[float, float]:
+        weak = (fa_ <= 1.05 * min(fa_, fb_), fb_ <= 1.05 * min(fa_, fb_))
+        out = []
+        for side, (bi_, e_) in enumerate(((ia_, ea_), (ib_, eb_))):
+            ok = weak[side] and shapes[bi_].kind in ("bar", "frame")
+            out.append(max(0.0, 1.0 - e_) / sum(weak) if ok else 0.0)
+        return out[0], out[1]
+
+    def patch_share(n: int) -> np.ndarray:
+        out = np.zeros((n, 2))
+        for k_, v_ in crush_share.items():
+            out[k_] = v_
+        return out
+
     springs: dict[str, list] = {k: [] for k in ("a", "b", "area", "n0", "Kn", "Ks", "sig",
                                                 "tau", "GIc", "GIIc", "mu", "patch",
                                                 "breakable", "d0", "fc", "cdep")}
@@ -2582,6 +2716,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         fa, ea = bearing_at(ia, cen, na, k_patch, float(area))
         fb, eb = bearing_at(ib, cen, -na, k_patch, float(area))
         f_bear = min(fa, fb)
+        crush_share[pid] = crush_sides(ia, ib, fa, fb, ea, eb)
         # the depth of wood that can crush: the weaker side's extent along the normal,
         # at most a few times its thickness (the zone a local load compacts)
         c_dep = min(crush_depth(i, na) for i, f in ((ia, fa), (ib, fb))
@@ -3163,6 +3298,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         b_nply=arr(beams["nply"]),
         b_Wt=arr(beams["Wt"], (0, 2)), b_kGA=arr(beams["kGA"]),
         b_body=arr(beams["body"], dtype=int),
+        b_fs=arr(beams["fs"], (0, nf)), b_kGA3=arr(beams["kGA3"]),
         s_nodes=arr(shells["nodes"], (0, 3), int),
         s_E0=arr(shells["E0"], (0, 3, 3)), s_P=arr(shells["P"], (0, 3, 3)),
         s_t=arr(shells["t"]), s_body=arr(shells["body"], dtype=int),
@@ -3206,6 +3342,12 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 "densification_strain": sp.values.get("wood.densification_strain", 0.45),
                 "densified_E": sp["wood.E_T_MPa"],
                 "bearing_cap": float(ply.f_c),
+                "crush_band_mm": sp.values.get("wood.crush_band_mm", 0.0),
+                # each beam's section (width along e2, depth along e3, centre along e2)
+                # and each joint's share of its crush on either side's member, crushed
+                # across its grain on its side (sections: the member gets shallower)
+                "b_section_mm": arr(beams["sec"], (0, 3)),
+                "patch_crush_share": patch_share(len(patches)),
                 "plate_offset_mm": [float(off[0]), float(off[1])],
                 "seed": seed},
         questions=_merge_butt_questions(questions), notes=notes)

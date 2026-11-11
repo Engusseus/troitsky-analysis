@@ -823,6 +823,11 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     P = m.plate_node
     seat_y0 = m.X[P, 1] + m.plate_half[1]
     st = S.initial_state(m, jack_y=seat_y0 + 50.0)
+    # members crushed across their grain on a side get shallower (sections): the glue
+    # points on their side faces, from the pristine sections at every (re)start
+    from bridgesim.sim import sections
+
+    fmap = sections.face_map(m)
     if opt.self_contact:
         from bridgesim.sim import contact
 
@@ -928,6 +933,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             S.rotate(st, dt, s.use_numba)
         st.t += dt
         steps += 1
+        if fmap is not None and steps % sections.EVERY == 0:
+            sections.squeeze(m, st, fmap)
         if steps % 2000 == 0:
             S.reorthonormalize(st)
         if dump_path and steps % 200 == 0:
@@ -997,10 +1004,11 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     prev_s = st.s_dmg > 0.5
     prev_k = st.k_alive.copy()
     # a member crushing: a fibre's plastic strain in compression past f_c by its onset
-    # strain (past the rising curve's (1 - kap) f_c / E)
+    # strain (past the rising curve's (1 - kap) f_c / E), each fibre at its own f_c (the
+    # stick field)
     kap = float(m.params.get("fc_proportional", 1.0))
-    crush_eps = -(2.0 - kap) * np.asarray(m.b_fc) / np.maximum(np.asarray(m.b_E), 1e-9) \
-        if len(m.b_i) else np.zeros(0)
+    crush_eps = -(2.0 - kap) * (np.asarray(m.b_fc) / np.maximum(np.asarray(m.b_E), 1e-9)
+                                )[:, None] * S.beam_fs(m) if len(m.b_i) else np.zeros((0, 1))
     prev_c = np.zeros(len(m.b_i), bool)
     patch_of = m.c_patch
     n_patch = len(m.patches)
@@ -1197,7 +1205,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                 ev("floss_break", m.bodies[m.k_body[c]].name, "floss snapped",
                    mid([m.a_node[m.k_a[c]], m.a_node[m.k_b[c]]]))
             if len(m.b_i):
-                crushed = (st.eps_p.reshape(len(m.b_i), -1).min(1) <= crush_eps) & st.b_alive
+                crushed = (st.eps_p.min(1) <= crush_eps).any(1) & st.b_alive
                 for e in np.where(crushed & ~prev_c)[0]:
                     ev("member_crushing", m.bodies[m.b_body[e]].name,
                        "member crushing in compression (its fibres fold past f_c)",

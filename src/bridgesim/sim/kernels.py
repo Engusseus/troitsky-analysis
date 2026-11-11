@@ -56,9 +56,22 @@ def _log3(R, out):
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
-def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv3, Wt, nply,
-                kGA, gam, s2, s3, soft, eps_p, dmg_t, alive, fractured, shear, F, Mo, update,
-                beta, dt, prev, rat2, rat3, kap):
+def crush_fall(ec0, lch, cband):
+    """The strain over which a fibre crushed past f_c falls to its plateau: the shortening
+    5 ec0 cband over a Gauss length lch (cband = wood.crush_band_mm, the reference gauge
+    length: a kink band takes a shortening, not a strain), never steeper than one onset
+    strain ec0 (a fall over less than soft x ec0 would snap back within the element);
+    cband <= 0: the fixed strain 5 ec0 of round 27."""
+    if cband <= 0.0:
+        return 5.0 * ec0
+    w = 5.0 * ec0 * cband / lch
+    return w if w > ec0 else ec0
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
+def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, fs, Gf, GJ, Ar, fv, fv3, Wt,
+                nply, kGA, kGA3, gam, s2, s3, soft, eps_p, dmg_t, alive, fractured, shear, F,
+                Mo, update, beta, dt, prev, rat2, rat3, kap, cband):
     nb = bi.shape[0]
     nf = fA.shape[1]
     Ti = np.empty((3, 3))
@@ -114,17 +127,17 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
         L = L0[e]
         eps0 = (l - L) / L
         E_ = Em[e]
-        et0 = ft[e] / E_
         lch = 0.5 * L
-        eu = et0 + 2.0 * Gf[e] / (ft[e] * lch)
-        if eu < 1.5 * et0:
-            eu = 1.5 * et0
-        ec0 = fc[e] / E_
+        # tension softening over 2 G_f / (f_t lch) past the onset (crack band); a fibre's
+        # strength factor fs scales its f_t and G_f alike, so the width is the element's
+        wt = 2.0 * Gf[e] / (ft[e] * lch)
         # Timoshenko shear flexibility: a constant shear strain gz (gy) takes part of the
         # end rotations, so the fibres bend by th - g. phi = 12 EI / (k G A L^2); the
         # elastic split phi/(2(1+phi)) (th_i + th_j) is exact (interdependent
         # interpolation), gam[e] corrects it when the fibres are no longer elastic so the
-        # shear force k G A g stays equal to the bending shear (M_i + M_j) / L.
+        # shear force k G A g stays equal to the bending shear (M_i + M_j) / L. Shear along
+        # e2 (bending about e3) runs in the plane of the plies (kGA), along e3 (bending
+        # about e2) through the stack of plies and the glue lines between them (kGA3)
         EIz = 0.0
         EIy = 0.0
         for f in range(nf):
@@ -134,7 +147,8 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
         phy = 0.0
         if kGA[e] > 0.0:
             phz = 12.0 * EIz / (kGA[e] * L * L)
-            phy = 12.0 * EIy / (kGA[e] * L * L)
+        if kGA3[e] > 0.0:
+            phy = 12.0 * EIy / (kGA3[e] * L * L)
         gz = 0.5 * phz / (1.0 + phz) * (thi[2] + thj[2]) + gam[e, 0]
         gy = 0.5 * phy / (1.0 + phy) * (thi[1] + thj[1]) + gam[e, 1]
         bzi = thi[2] - gz
@@ -165,6 +179,14 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
                 ep = eps_p[e, g, f]
                 dm = dmg_t[e, g, f]
                 ee = eps - ep
+                # the fibre's own strengths: the sticks its area covers (stick field)
+                fsf = fs[e, f]
+                fcf = fc[e] * fsf
+                et0 = ft[e] * fsf / E_
+                eu = et0 + wt
+                if eu < 1.5 * et0:
+                    eu = 1.5 * et0
+                ec0 = fcf / E_
                 if ee > et0:
                     dn = eu * (ee - et0) / (ee * (eu - et0))
                     if dn > 1.0:
@@ -177,19 +199,20 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
                     sig = E_ * ee
                 # compression: linear to kap f_c, then rising smoothly to f_c (wood's
                 # proportional limit; the plastic strain at f_c is (1 - kap) f_c / E),
-                # then crushing down to (1 - soft) f_c over 5 more f_c / E
+                # then crushing down to (1 - soft) f_c over the shortening 5 (f_c / E)
+                # cband in its Gauss length (crush_fall)
                 q = -ep
                 qp = (1.0 - kap) * ec0
                 hard = 0.0
                 if q < qp:
                     u = math.sqrt(q / qp) if q > 0.0 else 0.0
-                    fce = fc[e] * (1.0 - (1.0 - kap) * (1.0 - u) * (1.0 - u))
+                    fce = fcf * (1.0 - (1.0 - kap) * (1.0 - u) * (1.0 - u))
                     hard = 1.0 - u  # tangent on the rising curve: (1 - u) E
                 else:
-                    r = (q - qp) / (5.0 * ec0)
+                    r = (q - qp) / crush_fall(ec0, lch, cband)
                     if r > 1.0:
                         r = 1.0
-                    fce = fc[e] * (1.0 - soft * r)
+                    fce = fcf * (1.0 - soft * r)
                 Et = E_ if ee <= 0.0 else (1.0 - dm) * E_
                 if sig < -fce:
                     ep = eps + fce / E_
@@ -215,11 +238,12 @@ def beam_kernel(x, R, bi, bj, L0, E0, fy, fz, fA, Em, ft, fc, Gf, GJ, Ar, fv, fv
             Mzj += 0.5 * Mz * (-2.0 + 6.0 * xi)
             Myi += 0.5 * My * (-4.0 + 6.0 * xi)
             Myj += 0.5 * My * (-2.0 + 6.0 * xi)
+        # one Newton step on the shear equilibrium, with the fibres' current tangent
+        # (k G A (1 + phi) while elastic)
         if update and kGA[e] > 0.0:
-            # one Newton step on the shear equilibrium, with the fibres' current tangent
-            # (k G A (1 + phi) while elastic)
             gam[e, 0] += ((Mzi + Mzj) / L - kGA[e] * gz) / (kGA[e] + 12.0 * EIzt / (L * L))
-            gam[e, 1] += ((Myi + Myj) / L - kGA[e] * gy) / (kGA[e] + 12.0 * EIyt / (L * L))
+        if update and kGA3[e] > 0.0:
+            gam[e, 1] += ((Myi + Myj) / L - kGA3[e] * gy) / (kGA3[e] + 12.0 * EIyt / (L * L))
         sj = (s2[e] * s3[e]) ** 2
         T = sj * GJ[e] / L * (thj[0] - thi[0])
         if beta > 0.0:

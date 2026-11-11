@@ -94,7 +94,8 @@ class Model:
     b_nply: np.ndarray  # plies stacked through e3 (the parts a glue-line split leaves)
     b_Wt: np.ndarray  # (nb, 2) torsional moduli T / tau (mm^3) on the planes normal to
     #                  e2 and on those normal to e3 (materials.rect_torsion)
-    b_kGA: np.ndarray  # shear stiffness k G A (N); 0 = no shear deformation (Euler-Bernoulli)
+    b_kGA: np.ndarray  # shear stiffness k G A (N) for shear along e2 (in the plane of the
+    #                   plies); 0 = no shear deformation (Euler-Bernoulli); along e3: b_kGA3
     b_body: np.ndarray
     # shells
     # (layered: each ply group is integrated through its thickness at 3 points, at each
@@ -167,6 +168,11 @@ class Model:
     # per glue point: the exponent n of its strength's dependence on the time to failure,
     # tau(t) = tau(t_ref) (t / t_ref)^-n (glue.rate_exponent; the wood's for a solid face)
     c_rate: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    # beams (round 28): each fibre's strength factor (nb, nf) on f_t, f_c and G_f of its
+    # element (the sticks its area covers: idealize.stick_field; empty: ones), and the
+    # shear stiffness k G A (N) for shear along e3, through the plies (empty: b_kGA)
+    b_fs: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
+    b_kGA3: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
     @property
     def n_nodes(self) -> int:

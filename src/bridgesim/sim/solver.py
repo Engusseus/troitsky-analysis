@@ -10,7 +10,11 @@ LS-DYNA and Abaqus/Explicit). Ingredients:
   wood fibres with their own stress-strain law, integrated at two Gauss points. A fibre is
   linear elastic, softens to zero after reaching f_t in tension (fracture energy G_f,
   regularised by element length) and in compression bends over from the proportional
-  limit to f_c, then crushes with mild softening. Torsion is elastic. A member whose
+  limit to f_c, then crushes with mild softening over a shortening (wood.crush_band_mm,
+  regularised by element length too). Each fibre has its own strength, the sticks its
+  share of the section covers (the stick field, :mod:`bridgesim.sim.stickfield`), and
+  each bending direction its own shear stiffness (in the plane of the plies, and through
+  them with the glue lines in series). Torsion is elastic. A member whose
   shear, averaged over a section depth, passes the strength of its glue lines or grain
   splits (:func:`split_members`): its plies then bend each about its own axis, and it
   keeps its axial strength. An element bent or twisted past 1 rad at an end is removed
@@ -181,6 +185,34 @@ def _apply(F: np.ndarray, Mo: np.ndarray, nodes: np.ndarray, arm: np.ndarray,
     np.add.at(Mo, nodes, np.cross(arm, f))
 
 
+def beam_fs(m: Model) -> np.ndarray:
+    """Each beam fibre's strength factor (nb, nf): the sticks its area covers (the stick
+    field, idealize); ones for a model that has none (a coupon, round 27's)."""
+    if m.b_fs.shape != m.b_fA.shape:
+        m.b_fs = np.ones_like(m.b_fA)
+    return m.b_fs
+
+
+def beam_kGA3(m: Model) -> np.ndarray:
+    """Each beam's shear stiffness k G A for shear along e3, through its plies (N): b_kGA
+    (one value both ways) for a model that has none."""
+    return m.b_kGA3 if m.b_kGA3.shape == m.b_kGA.shape else m.b_kGA
+
+
+def crush_band(m: Model) -> float:
+    """wood.crush_band_mm: the gauge length the fibres' crushing fall is set on (0: the
+    fixed-strain fall of round 27, for a model built without it)."""
+    return float(m.params.get("crush_band_mm", 0.0))
+
+
+def crush_fall(ec0, lch, cband: float):
+    """The strain over which a crushed fibre falls to its plateau (kernels.crush_fall):
+    5 ec0 cband / lch, at least ec0; cband <= 0: 5 ec0."""
+    if cband <= 0.0:
+        return 5.0 * ec0
+    return np.maximum(5.0 * ec0 * cband / lch, ec0)
+
+
 def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
                 update: bool = True, beta: float = 0.0, dt: float = 1.0) -> dict:
     if len(m.b_i) == 0:
@@ -206,22 +238,27 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     Myi = np.zeros_like(l)
     Myj = np.zeros_like(l)
     E_ = m.b_E[:, None]
-    ft = m.b_ft[:, None]
-    fc = m.b_fc[:, None]
+    # each fibre's strengths: the sticks its area covers (stick field), f_t, f_c and G_f
+    # scaled alike, so the tension softening width is the element's
+    fs = beam_fs(m)
+    ft = m.b_ft[:, None] * fs
+    fc = m.b_fc[:, None] * fs
     et0 = ft / E_
     lch = (0.5 * L0)[:, None]
-    eu = np.maximum(et0 + 2 * m.b_Gf[:, None] / (ft * lch), 1.5 * et0)
+    eu = np.maximum(et0 + 2 * m.b_Gf[:, None] / (m.b_ft[:, None] * lch), 1.5 * et0)
     soft = m.params.get("crush_softening", 0.3)
     kap = float(m.params.get("fc_proportional", 1.0))
     ec0 = fc / E_
-    # Timoshenko shear flexibility (see kernels.beam_kernel)
+    fall = crush_fall(ec0, lch, crush_band(m))
+    # Timoshenko shear flexibility (see kernels.beam_kernel): shear along e2 in the plane
+    # of the plies (b_kGA), along e3 through them (b_kGA3)
     EIz = (m.b_E[:, None] * m.b_fA * m.b_fy**2).sum(1) * st.b_s2**2
     EIy = (m.b_E[:, None] * m.b_fA * m.b_fz**2).sum(1) * st.b_s3**2
-    kGA = m.b_kGA
-    pos = kGA > 0
-    kGAs = np.where(pos, kGA, 1.0)
+    kGA, kGA3 = m.b_kGA, beam_kGA3(m)
+    pos, pos3 = kGA > 0, kGA3 > 0
+    kGAs, kGA3s = np.where(pos, kGA, 1.0), np.where(pos3, kGA3, 1.0)
     phz = np.where(pos, 12 * EIz / (kGAs * L0**2), 0.0)
-    phy = np.where(pos, 12 * EIy / (kGAs * L0**2), 0.0)
+    phy = np.where(pos3, 12 * EIy / (kGA3s * L0**2), 0.0)
     gz = 0.5 * phz / (1 + phz) * (th_i[:, 2] + th_j[:, 2]) + st.b_gam[:, 0]
     gy = 0.5 * phy / (1 + phy) * (th_i[:, 1] + th_j[:, 1]) + st.b_gam[:, 1]
     bzi, bzj = th_i[:, 2] - gz, th_j[:, 2] - gz
@@ -246,7 +283,7 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
         rising = q < qp
         u = np.sqrt(np.where(rising, q / np.maximum(qp, 1e-30), 1.0))
         fce = np.where(rising, fc * (1 - (1 - kap) * (1 - u) ** 2),
-                       fc * (1 - soft * np.clip((q - qp) / (5 * ec0), 0, 1)))
+                       fc * (1 - soft * np.clip((q - qp) / fall, 0, 1)))
         over = sig < -fce
         Et = np.where(over, np.where(rising, (1 - u) * E_, 0.0),
                       np.where(ee > 0, (1 - dm2) * E_, E_))
@@ -269,8 +306,8 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     if update:
         st.b_gam[:, 0] += np.where(pos, ((Mzi + Mzj) / L0 - kGA * gz)
                                    / (kGAs + 12 * EIzt / L0**2), 0)
-        st.b_gam[:, 1] += np.where(pos, ((Myi + Myj) / L0 - kGA * gy)
-                                   / (kGAs + 12 * EIyt / L0**2), 0)
+        st.b_gam[:, 1] += np.where(pos3, ((Myi + Myj) / L0 - kGA3 * gy)
+                                   / (kGA3s + 12 * EIyt / L0**2), 0)
     sj = (st.b_s2 * st.b_s3) ** 2
     T = sj * m.b_GJ / L0 * (th_j[:, 0] - th_i[:, 0])
     D = np.c_[l - L0, th_i, th_j]
@@ -919,12 +956,12 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
     x, R = st.x, st.R
     if len(m.b_i):
         K.beam_kernel(x, R, m.b_i, m.b_j, m.b_L0, m.b_E0, m.b_fy, m.b_fz, m.b_fA, m.b_E,
-                      m.b_ft, m.b_fc, m.b_Gf, m.b_GJ, m.b_A, m.b_fv, m.b_fv3, m.b_Wt,
-                      m.b_nply, m.b_kGA, st.b_gam, st.b_s2, st.b_s3,
+                      m.b_ft, m.b_fc, beam_fs(m), m.b_Gf, m.b_GJ, m.b_A, m.b_fv, m.b_fv3,
+                      m.b_Wt, m.b_nply, m.b_kGA, beam_kGA3(m), st.b_gam, st.b_s2, st.b_s3,
                       float(m.params.get("crush_softening", 0.3)), st.eps_p, st.dmg_t,
                       st.b_alive, st.b_fractured, st.b_shear, F, Mo, update,
                       s.beta if update else 0.0, s.dt, st.b_prev, st.b_rat2, st.b_rat3,
-                      float(m.params.get("fc_proportional", 1.0)))
+                      float(m.params.get("fc_proportional", 1.0)), crush_band(m))
         if update:
             split_members(m, st)
     if len(m.s_nodes):

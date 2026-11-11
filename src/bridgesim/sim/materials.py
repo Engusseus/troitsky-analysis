@@ -122,6 +122,8 @@ PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("scatter.*_corr", 0.0, 1.0, True),
     ("scatter.amplitude", 0.0, 10.0, True),
     ("wood.E_placeholder_MPa", 0.0, 1e6, True),
+    ("scatter.stick_field", 0.0, 1.0, True),
+    ("wood.crush_band_mm", 0.0, 1000.0, False),
     ("*", 0.0, float("inf"), False),  # moduli, strengths, energies, sizes: positive
 ]
 
@@ -427,6 +429,55 @@ def rect_torsion(w: float, t: float) -> tuple[float, float, float]:
     k3 = 1.0 if t >= w else short
     k2 = 1.0 if w >= t else short
     return J, 1.0 / (tau_per_T * k2), 1.0 / (tau_per_T * k3)
+
+
+def ply_shear_compliance(gn: float, gu: float, G_LT: float, G_roll: float) -> float:
+    """Shear compliance 1 / G (1/MPa) of a ply sheared in the plane of a force u and a
+    normal n, its grain meeting them at gn = |g . n| and gu = |g . u|: 1 / G_LT with the
+    grain along the force or along n, the rolling modulus across both (G_roll, wood.
+    G_rolling_MPa), in series between, 1 / G = (1 - a) / G_LT + a / G_roll with a = 1 -
+    gn^2 - gu^2 the share of the grain across both (as Hankinson's form): the rule
+    idealize.shear_compliance gives a glued face's parts."""
+    across = max(0.0, 1.0 - gn * gn - gu * gu)
+    return (1.0 - across) / G_LT + across / G_roll
+
+
+def shear_energy_weights(n: int) -> np.ndarray:
+    """The share of a rectangular section's shear strain energy in each of ``n`` equal
+    layers through its depth, the shear stress parabolic (tau ~ 4 x (1 - x), x the height
+    over the depth): w_i = int over layer i of (4 x (1 - x))^2 dx / (8/15)."""
+    x = np.linspace(0.0, 1.0, max(1, n) + 1)
+    F = 16.0 * (x**3 / 3.0 - x**4 / 2.0 + x**5 / 5.0)  # F(1) = 8/15
+    return np.diff(F) / F[-1]
+
+
+def through_stack_shear_modulus(angles: list[float], G_LT: float, G_roll: float,
+                                K_s: float, T: float) -> float:
+    """Shear modulus of a laminate sheared through its stack of plies (the shear stress
+    along the member on the planes between the plies: a member bent across its plies),
+    for Timoshenko's k G A with k = 5/6: the plies and the glue lines between them in
+    series, weighted by the shear strain energy of the parabolic stress through the depth
+    T (exact for k = 5/6),
+
+        1 / G_eff = sum_i w_i / G_i + (1 - n^-4) / (K_s t),  t = T / n,
+
+    w_i = shear_energy_weights(n) (1/n each for many plies), G_i of ply i at angle a_i
+    to the member sheared along it on the plane of the plies (ply_shear_compliance: G_LT
+    along the member, the rolling modulus G_roll across it, in series between), and the
+    n - 1 glue lines (shear stiffness K_s per mm^2, glue.lamination_K_s_N_per_mm3: a
+    pressed bond line and the fibres either side) at heights k t, where the energy
+    sum_k (4 x_k (1 - x_k))^2 = n (8/15) (1 - n^-4) (Euler-Maclaurin, exact for this
+    quartic): G_eff = 1 / (1 / G + 1 / (K_s t)) for many plies. A UD stack of 2 mm sticks
+    (G_LT 656, K_s 350): ~340 MPa, half the in-plane 656; one ply: no glue line."""
+    n = len(angles)
+    if n < 1 or T <= 0:
+        return G_LT
+    w = shear_energy_weights(n)
+    inv = sum(wi * ply_shear_compliance(0.0, abs(math.cos(math.radians(a))), G_LT, G_roll)
+              for wi, a in zip(w, angles, strict=True))
+    if n >= 2 and K_s > 0:
+        inv += (1.0 - n ** -4.0) / (K_s * T / n)
+    return 1.0 / inv
 
 
 def inplane_split_strength(angles: list[float], f_v: float, f_45: float) -> float:
