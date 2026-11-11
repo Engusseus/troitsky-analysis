@@ -4156,8 +4156,8 @@ def test_block_cell_mm_zero_is_the_rigid_block_of_round_27():
             assert m0.mass[nd] == pytest.approx(rho * cad.mesh.volume, rel=1e-12)
             assert m0.rot_inertia[nd] == pytest.approx(
                 rho * float(np.mean(np.linalg.eigvalsh(cad.mesh.inertia))), rel=1e-12)
-    opt = CrushOptions(speed_mm_s=300, max_travel_mm=3.0, auto_speed=False,
-                       hold_on_failure=False)
+    opt = CrushOptions(speed_mm_s=300, max_travel_mm=0.5, auto_speed=False,
+                       hold_on_failure=False, settle_s=0.002, settle_max_s=0.004)
     r0 = run_crush(build_model(simple_beam_bridge(), MAT, sp0, seed=0, mesh_scale=1.6), opt)
     rr = run_crush(mr, opt)
     assert r0.Fu_N == rr.Fu_N and r0.steps == rr.steps
@@ -4383,6 +4383,14 @@ def test_the_synthetic_bridges_stand_on_blocks_of_cells(tmp_path):
     assert k["beam", 1000.0] <= k["beam", 20.0] <= 1.05 * k["beam", 0.0]
     assert k["truss", 20.0] == pytest.approx(k["truss", 0.0], rel=0.01)
     m = build_model(simple_beam_bridge(), MAT, SP, seed=0, mesh_scale=1.6)
-    res = run_crush(m, CrushOptions(speed_mm_s=300, max_travel_mm=1.0, auto_speed=False))
-    assert res.settle_sag_mm < 2.0 and res.criteria["instability"] is None
+    X0 = m.X.copy()
+    res = run_crush(m, CrushOptions(speed_mm_s=300, max_travel_mm=0.2, auto_speed=False))
+    # its stringers and deck sag 5.6 mm under their own weight on rigid piers (round 27);
+    # the piers' cells stand: they go down no more than the support corner lifted off the
+    # platform (scatter.support_level_mm 0.5) and the seating (contact.seating_mm 0.3)
+    # (and slide out on it a little, as the rigid piers do, as the stringers sag)
+    assert 4.0 < res.settle_sag_mm < 8.0 and res.criteria["instability"] is None
+    piers = [n for b in m.bodies if b.kind == "block" for n in b.nodes]
+    assert len(piers) == 54
+    assert np.abs(res.frames[0].x[piers, 1] - X0[piers, 1]).max() < 1.0
     assert res.added_mass_frac < 0.05
