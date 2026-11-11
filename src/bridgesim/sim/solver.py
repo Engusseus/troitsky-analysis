@@ -20,8 +20,10 @@ LS-DYNA and Abaqus/Explicit). Ingredients:
   keeps its axial strength. An element bent or twisted past 1 rad at an end is removed
   (erosion, reported as such).
 * **shells**: corotational CST + DKMT (shear-deformable; DKT with plate.shear_deformable
-  0) triangles with laminate stiffness; a ply strain limit reached anywhere in an
-  element cracks it (its stiffness falls to zero over a small strain range); a node held
+  0) triangles with laminate stiffness; a ply strain limit reached in an element cracks
+  it (its stiffness falls to zero over a strain range set by its size, the crack band),
+  once the strain averaged along the crack's path over the ply's critical distance has
+  reached it too (:func:`plate_nonlocal_onset`, plate.nonlocal_onset); a node held
   only by broken elements becomes loose debris. A plate whose out-of-plane shear,
   averaged over its thickness, reaches the strength of its glue planes splits between
   its plies (:func:`split_plates`), as members do.
