@@ -147,10 +147,11 @@ class JackProtocol:
     stroke the test time runs at that pace, the loading fast), then stands for
     ``pause_s`` while the bridge carries its load. The simulated jack keeps its own
     speed (the fidelity's, slowed for a bridge that rings slowly); at each stroke's end it
-    slows to a stop over the hold ramp (:meth:`start_pause` starts slowing so that it
-    stops there) and stands while the pause's test time passes, spread evenly over
-    ``spread_s`` of simulated time (PAUSE_PERIODS periods of the bridge's ringing: it
-    follows the creep and relaxation quasi-statically), then speeds up again. So at a
+    slows to a stop over PAUSE_RAMP_PERIODS periods of the bridge's ringing
+    (:meth:`start_pause` starts slowing so that it stops there) and stands while the
+    pause's test time passes, spread evenly over ``spread_s`` of simulated time
+    (PAUSE_PERIODS periods: it follows the creep and relaxation quasi-statically), then
+    speeds up again over as long. So at a
     travel x after k pauses the test time is x stroke_time / stroke + k pause, the hand
     timetable (``test_the_pumped_jacks_clock_follows_its_timetable``)."""
 
@@ -1225,11 +1226,12 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         v_b = opt.speed_mm_s  # the jack's speed, before the start and the holds
         if rings_slowly:  # its jack speeds up as the travel grows (jack_speed)
             v_b = jack_speed(opt.max_speed_mm_s, T1, jack0 - st.jack_y)
-        # a pumped jack's stroke ends: it slows to a stop over pause_ramp (at the speed
-        # it will have half way through, still starting up on the first stroke) and
-        # stands while the bridge creeps
+        # a pumped jack's stroke ends: it slows to a stop over pause_ramp and stands
+        # while the bridge creeps (still starting up on the first stroke, its speed
+        # rising as it slows: over a linear slowing it covers what the speed a third of
+        # the way through would cover)
         proto.start_pause(jack0 - st.jack_y,
-                          v_b * min(1.0, (tl + 0.5 * pause_ramp) / ramp) * throttle,
+                          v_b * min(1.0, (tl + pause_ramp / 3.0) / ramp) * throttle,
                           throttle, pause_ramp)
         target = 0.0 if proto.pausing else \
             (opt.hold_speed_frac if st.t < hold_until else 1.0)

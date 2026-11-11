@@ -780,12 +780,17 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   within a stroke) plus the pauses: at travel x after k pauses, x stroke time / stroke + k
   pause (`test_the_pumped_jacks_clock_follows_its_timetable`). The simulated jack keeps
   its own speed and logic (the fidelity's, slowed for a bridge that rings slowly): at
-  each stroke's end it slows to a stop over the hold ramp (started so that it stops
-  there), stands while the pause's test time passes, spread evenly over two of the
+  each stroke's end it slows to a stop over one period of the bridge's ringing
+  (`crush.PAUSE_RAMP_PERIODS`, started so that it stops there: a stop over a hold's 2 ms
+  rang the 10 mm truss, period 33 ms, by up to 60 % of its load in round 28's first
+  try), stands while the pause's test time passes, spread evenly over two of the
   bridge's periods (`crush.PAUSE_PERIODS`: the glue's and the wood's creep and their rate
-  laws' clocks follow it quasi-statically), and speeds up again; the reading is cut at a
-  pause's start as at a break, so the load relaxing in the pause reads in time and F_u is
-  the highest stroke's end. The glue's Kelvin element is integrated exactly over any
+  laws' clocks follow it quasi-statically), and speeds up again over a period. The
+  reading is cut where the jack stands and where it moves again: the pause is read in
+  time (its load relaxing), each stroke along the travel (a stretch read in time never
+  runs past the next cut: strokes shorter than a period otherwise merged the pauses
+  into one hold, each stroke's end read half a period late, ~20 % low,
+  `test_a_pumped_jacks_load_reads_each_stroke_and_each_pause`). The glue's Kelvin element is integrated exactly over any
   step of test time (an exponential update), so a pause's creep is the analytical one
   however it is split (`test_a_pumped_jacks_pause_lets_the_glue_creep_as_a_kelvin_
   element`); the wood's creep law is a function of each element's time, with no step to
