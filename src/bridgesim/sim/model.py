@@ -65,6 +65,9 @@ class Patch:
     # hang on that plate's nodes by rigid arms: above ~3 the joint is coarser than the
     # plate's mesh can follow; 0: no plate)
     mesh_ratio: float = 0.0
+    # the length of its outline where one part's face goes on past the other's edge (a
+    # squeeze-out fillet can form there; flush edges and plate laminations not counted)
+    exposed_mm: float = 0.0
 
 
 @dataclass
@@ -167,6 +170,10 @@ class Model:
     # per glue point: the exponent n of its strength's dependence on the time to failure,
     # tau(t) = tau(t_ref) (t / t_ref)^-n (glue.rate_exponent; the wood's for a solid face)
     c_rate: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    # per glue point: the rise of its shear strength per MPa pressing it, tau + mu_i
+    # sigma_c (glue.pressure_coeff, a glue line's or a solid face's; 0 for ties and
+    # unbreakable points; empty: none)
+    c_mui: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
     @property
     def n_nodes(self) -> int:

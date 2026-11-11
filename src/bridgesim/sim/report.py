@@ -79,6 +79,10 @@ class JointReport(BaseModel):
         "crossed-lap factor, the end-grain share, the fit-up gaps, the seed's scatter and "
         "glue_factor; glue.interlaminar_MPa for a lamination, f_v / 1.5 for a solid "
         "face), dry points left out"))
+    exposed_perimeter_mm: float = Field(0.0, description=(
+        "The length of the joint's outline where one part's face goes on past the "
+        "other's edge, where squeeze-out can form a fillet (glue.fillet_mm: the joint "
+        "then holds as a lap of area + fillet x this); flush edges not counted"))
 
 
 class RuleLine(BaseModel):

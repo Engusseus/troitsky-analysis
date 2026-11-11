@@ -310,6 +310,32 @@ expected: its buckling needs a kink at the joint or unglued outer plies as well.
   every one to t_ref (`test_the_glue_is_as_strong_as_a_test_failing_when_the_crush_does`).
 * A broken glue line keeps **bearing in compression** and **slides with friction**
   (mu = 0.4): pieces still lean on each other after the glue lets go.
+* **A glue line pressed together holds more in shear** (since round 28): its onset is a
+  Mohr-Coulomb one, tau_eff = tau + mu_i sigma_c, sigma_c the pressure the line carries
+  (after the wood under it has crushed, so never more than the wood bears), tau the
+  point's strength as above (glue or the wood beside it, scatter, size effect; the rate
+  factor multiplies tau only), mu_i = `glue.pressure_coeff` (0.3, assumed: timber
+  literature reports that compression across the shear plane raises the shear strength,
+  qualitatively, but no slope for PVA laps on sticks could be checked; below the debonded
+  friction 0.4; range 0-1; drawn by montecarlo, 50 %). Its toughness rises in the same
+  ratio, G_c tau_eff / tau, so it lets go at about the same slip (exactly for the bilinear
+  law, 2 G_c / tau); once let go it slides at 0.4 sigma_c as before. Until round 27 the
+  onset used only the opening and the friction acted on the debonded share alone (Alfano
+  & Sacco 2006): an intact line pressed together held exactly tau whatever the clamping.
+  It matters where a thrust clamps a lap: knee and heel laps, a diagonal's foot on its
+  seat. Glue lines and faces through one piece of wood (`solid`) alike; ties none. The
+  lap coupon's own bending presses the middle of its overlap, so with mu_i on it read
+  2.4 % above tau_g at the round-27 peak factor: `glue.tau_peak_over_avg` is 1.04 since
+  round 28 (1.065 with mu_i 0, round 27 with both). `screen` gives a pressed joint the
+  same capacity, growing with the load as its pressure does, no further than the wood
+  bears. Measure it with laps pulled while clamped at 0, 1 and 2 MPa
+  (`glue_joint_template.csv`, `clamp_pressure_MPa`): `calibrate` fits it through the
+  simulated clamped lap, whose rise per MPa also holds the friction of the share already
+  let go at its peak (~0.28 per MPa at mu_i 0), and `bridgesim lab` shows a lap clamped
+  at 1 MPa (`test_a_clamped_lap_holds_tau_plus_mu_i_times_the_pressure`: the 20 x 10 mm
+  lap, friction off, holds tau + mu_i p within 3 % at 1 and 2 MPa;
+  `test_a_pressed_glue_line_takes_proportionally_more_work_to_separate`;
+  `test_pressure_coefficient_zero_is_round_27`).
 * The wood at a glue line **crushes** when the joint is pressed together, at the
   strength of each side for the direction of the joint (Hankinson's formula between f_c
   along the grain and f_c90 across it, averaged over the plies; the weaker side governs),
@@ -383,6 +409,50 @@ expected: its buckling needs a kink at the joint or unglued outer plies as well.
   the validation README), so m is the statistical part only. (Round 19 used m 6 and
   cited Debertolis et al. 2025 for gussets holding "1-3 MPa": those were their design
   inputs, not measurements; coupons cut from the gussets held 5.1 MPa, CoV 0.27.)
+* **What is inside one joint** (since round 28; both off by default, the neutral values):
+  two mechanisms that compete with the size law above as readings of the same
+  observation (small laps hold more per mm^2 than large ones). Switching either on
+  without refitting `glue.weibull_m` counts that observation twice; the repo's policy is
+  that a law changes only with data, so they wait for the coupons that tell them apart.
+  *Starved and well glued spots* (`scatter.glue_point_cov`, 0): each glue point's
+  strength gets a lognormal factor of that CoV, one per square of `scatter.glue_spot_mm`
+  (5 mm) on the patch, from its centroid along its principal axes (the CAD's overlap, not
+  the mesh), drawn from a stream named after the joint, normalised so its area-weighted
+  mean over the joint's points is exactly 1: the joint's mean strength, its own draw and
+  the size law are unchanged, only the distribution inside it. The same joint at another
+  mesh draws the same squares (only the points that sample them, and so the normaliser,
+  change). A starved spot is softer in shear as well as weaker, in proportion, as the
+  joint's draw; its peel follows it where the glue line governs, the wood's caps only
+  shrink with a factor below 1; x `scatter.amplitude`, none for the perfect bridge or a
+  solid face (`idealize.glue_spot_factors`;
+  `test_glue_spot_factors_are_normalised_and_do_not_depend_on_the_mesh`). A 20 x 10 mm
+  lap with CoV 0.3 starts letting go at its weak spots at 15-24 % of its peak (28 %
+  uniform) and holds 0.990-1.001 x the uniform lap, 0.995 on average over 8 seeds (0.985
+  with a brittle G_IIc 0.3): a lap short against the glue's characteristic length shares
+  its load and fails near its mean strength, so this field moves a lap by ~1 %, far less
+  than the size law's 0.83 at 1320 mm^2
+  (`test_a_lap_with_weak_spots_lets_go_earlier_and_holds_no_more`). *Squeeze-out
+  fillets* (`glue.fillet_mm` f, 0): along the stretches of a patch's outline where one
+  part's face goes on past the other's edge (an edge of the overlap on one face's outline
+  and inside the other face: a stick's end or side on a gusset; flush where both faces
+  end together, within 0.25 mm), squeeze-out bonds f more width, so the joint holds as a
+  lap of area A + f P_e, relative to the coupon: (1 + f P_e / A) / (1 + f P_ref / A_ref),
+  P_e that exposed length (`idealize.exposed_perimeter`, inspect's
+  `exposed_perimeter_mm`), A_ref `glue.size_ref_mm2` and P_ref
+  `glue.fillet_ref_perimeter_mm` (20 mm: the 20 x 10 mm coupon of two 10 mm sticks has
+  its ends exposed and its sides flush). It scales the glue line in shear and peel (and
+  its toughness, the same slip at let-go), not its stiffness nor the wood's caps beside
+  it; no fillet for a lamination's share, a solid face or a dry point. With f = 1 mm a
+  10 x 10 mm lap holds 1.09 x tau_g, a 40 x 10 mm lap 0.95 x
+  (`test_fillets_follow_the_hand_formula`). To tell the three apart: laps of three sizes
+  or more with different perimeter-to-area ratios, 10 of each (10 x 10, 20 x 10 and 40 x
+  10 mm of two 10 mm sticks, and a 20 x 30 mm lap of three sticks side by side on each
+  part: the size law sees its area, the fillet its exposed ends over its area) in
+  `glue_joint_template.csv` (`exposed_perimeter_mm` where it is not two ends, 2 x
+  width): `calibrate` then fits `glue.weibull_m` and `glue.fillet_mm` together
+  (`study.fit_size_and_fillet`, least squares on log strength;
+  `test_lap_sizes_tell_the_size_law_from_fillets`); the spots need a joint broken and
+  looked at (the share of its face with neither glue nor wood on it).
 * **Laminations.** Two plates glued face to face (a deck's plies drawn as separate
   bodies, a gusset flat on a plate) are glued as the plies inside one laminated body:
   at `glue.interlaminar_MPa` (3.5 MPa, x the panel factor where one is a gusset wider
@@ -434,7 +504,10 @@ expected: its buckling needs a kink at the joint or unglued outer plies as well.
   capacity (tau_g times its area) does not jump when the mesh changes. The ratio depends
   on the glue's toughness and peel strength: round 17 changed them and kept 1.155, which
   left every joint ~5 % stronger than tau_g (the adversarial review); the test now uses
-  the simulation's own glue values.
+  the simulation's own glue values. (1.065 from round 21; 1.04 since round 28, the lap's
+  own bending pressing the middle of its overlap with `glue.pressure_coeff` on: on 1, 2,
+  3, 5 and 9 nodes per side the coupon then reads 0.996, 1.026, 0.981, 1.000 and 1.001 x
+  tau_g.)
 * A joint is reported **cracking** when 30 % of its glued area has let go and
   **separated** (`joint_failure`) at 90 % (area-weighted over its glue points); the
   first separation sets `Fu_first_joint_failure_kgf`.
@@ -944,11 +1017,14 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
 
 ## 7. Not modelled (yet)
 
-* Glue lines cover the whole touching area. Starved or gappy joints come in through
-  `glue_factor` in the overrides, or through the glue strength itself: tau_g is the
-  average over the nominal overlap of a hand-made lap, so once measured on laps made
+* Glue lines cover the whole touching area by default. Starved or gappy joints come in
+  through `glue_factor` in the overrides, or through the glue strength itself: tau_g is
+  the average over the nominal overlap of a hand-made lap, so once measured on laps made
   like the bridge's, incomplete coverage is in it (a separate coverage factor would
-  count it twice).
+  count it twice). Since round 28 starved spots inside a joint and squeeze-out fillets
+  along its edges can be switched on (`scatter.glue_point_cov`, `glue.fillet_mm`,
+  section 3), but they are off until lap coupons of several sizes separate them from the
+  size law that `glue.weibull_m` fits.
 * Splitting of a member along the grain other than by shear, knots and stick-to-stick
   variation inside one body (a plate's butt joints are one factor on its fibre tension
   strength, not resolved joint by joint). A member that splits

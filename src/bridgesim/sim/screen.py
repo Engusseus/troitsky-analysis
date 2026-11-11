@@ -377,10 +377,14 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
     out: list[Limit] = []
     lim_load = load_N / KGF
 
-    def add(part, mode, util, where):
+    def add(part, mode, util, where, scale=None):
+        """``scale``: the multiple of the load at which it reaches its limit, where that
+        is not 1 / util (a capacity that grows with the load)."""
         if util > 1e-9 and math.isfinite(util):
-            out.append(Limit(part, mode, float(util), float(lim_load / util),
-                             tuple(round(float(v), 1) for v in where)))
+            lim = lim_load / util if scale is None else lim_load * scale
+            if math.isfinite(lim):
+                out.append(Limit(part, mode, float(util), float(lim),
+                                 tuple(round(float(v), 1) for v in where)))
 
     # glued joints: the resultant over the joint against its capacity
     if len(m.c_a):
@@ -388,6 +392,14 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
         fT = np.zeros((len(m.patches), 3))
         capN = np.zeros(len(m.patches))
         capT = np.zeros(len(m.patches))
+        # pressed together a glue line holds more in shear, mu_i x the pressure it
+        # carries (glue.pressure_coeff, solver.glue_forces), which grows with the load,
+        # no further than the wood under it bears (glue_fc, as the crush caps it): per
+        # joint, its points' (mu_i A / peak, pressure at this load, that cap)
+        press: dict[int, list] = {}
+        mui = getattr(m, "c_mui", None)
+        if mui is None or len(mui) != len(m.c_a):
+            mui = np.zeros(len(m.c_a))
         # bearing: the wood under a face pressed together (glued or dry) starting to
         # crush where its pressure first reaches what the grain there takes (Hankinson,
         # glue_fc): the peak over the face's glue points, as a face pressed off-centre
@@ -415,13 +427,41 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
             fT[p] += m.c_area[i] * m.c_Ks[i] * dt
             capN[p] += m.c_area[i] * m.c_sig[i] / peak_over_avg
             capT[p] += m.c_area[i] * m.c_tau[i] / peak_over_avg
+            if mui[i] > 0 and dn < 0:
+                press.setdefault(p, []).append((m.c_area[i] * mui[i] / peak_over_avg,
+                                                m.c_Kn[i] * -dn,
+                                                fc[i] if fc[i] > 0 else math.inf))
         for p, pa in enumerate(m.patches):
             if capT[p] <= 0:
                 continue
-            ut = math.hypot(max(fN[p], 0.0) / max(capN[p], 1e-9),
-                            float(np.linalg.norm(fT[p])) / capT[p])
+            a_ = max(fN[p], 0.0) / max(capN[p], 1e-9)
+            b_ = float(np.linalg.norm(fT[p]))
+            pts = np.array(press.get(p, np.zeros((0, 3))), float).reshape(-1, 3)
+
+            def cap(lam, c_=capT[p], pts=pts):
+                """The joint's shear capacity at lam x this load."""
+                return c_ + float((pts[:, 0] * np.minimum(lam * pts[:, 1], pts[:, 2])).sum())
+
+            ut = math.hypot(a_, b_ / cap(1.0))
+            scale = None
+            if len(pts):
+                # the load multiple lam where lam hypot(a, b / cap(lam)) = 1: it rises
+                # with lam (the pressure's share saturates where the wood crushes); none
+                # if the joint is pressed and not sheared or pulled
+                def g(lam, a_=a_, b_=b_):
+                    return lam * math.hypot(a_, b_ / cap(lam))
+
+                lo, hi = 0.0, 1.0 / max(ut, 1e-12)
+                while g(hi) < 1.0 and hi < 1e12:
+                    lo, hi = hi, 2.0 * hi
+                if g(hi) < 1.0:
+                    continue  # never at its limit in the linear screen
+                for _ in range(60):
+                    mid = 0.5 * (lo + hi)
+                    lo, hi = (mid, hi) if g(mid) < 1.0 else (lo, mid)
+                scale = hi
             add(f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
-                "wood" if pa.kind == "solid" else "glue", ut, pa.centroid)
+                "wood" if pa.kind == "solid" else "glue", ut, pa.centroid, scale)
         for p, pa in enumerate(m.patches):
             if uB[p] > 0:
                 add(f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}", "bearing",

@@ -20,7 +20,8 @@ LS-DYNA and Abaqus/Explicit). Ingredients:
   small strain range); a node held only by broken elements becomes loose debris.
 * **glue lines**: zero-thickness cohesive springs with a bilinear mixed-mode law
   (quadratic initiation, Benzeggagh-Kenane propagation). In compression they keep
-  bearing (contact); once broken they slide with Coulomb friction.
+  bearing (contact) and hold more in shear (tau + mu_i sigma_c, glue_forces); once
+  broken they slide with Coulomb friction.
 * **floss**: tension-only cables that snap at their breaking load.
 * **contact**: penalty contact with friction against the base platform and the steel
   loading plate (a rigid body free to tilt on the jack's hemisphere), and frictionless
@@ -514,8 +515,26 @@ def glue_rate_factor(rate, tnow: float, tref: float, t0: np.ndarray) -> np.ndarr
     return np.exp(-rate * np.log(np.maximum(tl, tref / RATE_RANGE) / tref))
 
 
+def glue_pressure(m: Model) -> np.ndarray:
+    """Each glue point's rise of its shear strength per MPa of pressure across it
+    (``Model.c_mui``, glue.pressure_coeff; none where the model does not give one)."""
+    nc = len(m.c_a)
+    mui = getattr(m, "c_mui", None)
+    return mui if mui is not None and len(mui) == nc else np.zeros(nc)
+
+
 def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
                 update: bool = True, beta: float = 0.0, dt: float = 1.0) -> None:
+    """Cohesive glue springs (the NumPy reference of kernels.glue_kernel): a trilinear
+    mixed-mode law (quadratic onset, linear softening to G_c), the wood under the line
+    crushing, creep in shear, a strength that depends on the line's own time under load
+    (glue_rate), friction on the debonded share. Pressed together (normal traction
+    sigma_c = -t_n > 0, the pressure the line carries after the wood's crushing), a line
+    holds more in shear, a Mohr-Coulomb onset: tau_eff = tau rs + mu_i sigma_c (mu_i =
+    ``glue_pressure``, rs the rate factor, which scales the cohesive tau only), and its
+    toughness in the same ratio, G_c tau_eff / (tau rs), so it lets go at about the same
+    slip (exactly for the bilinear law: 2 G_c / tau); once debonded it slides at the
+    friction mu sigma_c as before."""
     if len(m.c_a) == 0:
         return
     pa, arm_a = _attach_pos(m, st, m.c_a)
@@ -572,6 +591,15 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     Gn = Kn * dnp**2
     B = Gs / np.maximum(Gs + Gn, 1e-30)
     Gc = m.c_GIc + (m.c_GIIc - m.c_GIc) * B**2
+    mui = glue_pressure(m)
+    if (mui > 0.0).any():
+        # pressed together: tau_eff = tau rs + mu_i sigma_c (pressed, dnp = 0 and the
+        # onset dm0 is the shear onset), the toughness in the same ratio
+        tc = m.c_tau * rs
+        on = (mui > 0.0) & (dn < 0.0) & (tc > 1e-12)
+        pr = np.where(on, 1.0 + mui * (-Kn * dn) / np.where(on, tc, 1.0), 1.0)
+        dm0 = dm0 * pr
+        Gc = Gc * pr
     Keff = np.where(dm > 1e-12, (Gn + Gs) / np.maximum(dm**2, 1e-30), Ks)
     dmax = np.maximum(st.c_dmax, dm)
     d = trilinear_damage(dmax, np.maximum(dm0, 1e-12), Keff, Gc, *glue_shape(m))
@@ -943,7 +971,7 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
                       st.c_dmax, st.c_d, st.c_slip, F, Mo, update,
                       s.beta if update else 0.0, s.dt, st.c_prev, st.c_alive, st.c_crush,
                       _glue_fc90(m), *_glue_crush(m), st.c_creep, *glue_creep(m, st),
-                      *glue_shape(m), *glue_rate(m, st))
+                      *glue_shape(m), *glue_rate(m, st), glue_pressure(m))
     if len(m.k_a):
         K.cable_kernel(x, R, m.a_node, m.a_r0, m.k_a, m.k_b, m.k_L0, m.k_EA, m.k_Fb,
                        st.k_alive, F, Mo, update)
