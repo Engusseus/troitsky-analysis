@@ -1869,8 +1869,13 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                                      if hull.geom_type == "Polygon" else hull)
             key_ = bodies[lead].name if len(grp) == 1 else \
                 "|".join(sorted(bodies[i].name for i in grp))
-            ff_ = FlatField(key_, sl.origin, sl.e1, sl.e2, sl.n, outline, glued, int(seed),
-                            flat_mm, amp)
+            try:
+                ff_ = FlatField(key_, sl.origin, sl.e1, sl.e2, sl.n, outline, glued,
+                                int(seed), flat_mm, amp)
+            except Exception as exc:  # noqa: BLE001 - an outline shapely cannot cut
+                notes.append(f"the out-of-flatness of '{key_}' could not be built from its "
+                             f"outline ({type(exc).__name__}: {exc}): it is built flat")
+                continue
             for i in grp:
                 flat_of[i] = ff_
     frame_tree: dict[int, cKDTree] = {}
