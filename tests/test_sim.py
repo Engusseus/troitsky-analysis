@@ -135,11 +135,14 @@ def test_lap_shear_reproduces_tau_g():
     # defaults: the factor has to be recomputed whenever they change
     from bridgesim.sim.study import coupon_K_s
 
+    # (since round 28 with the pressure coefficient: the coupon's own bending presses
+    # the middle of its overlap, 1.065 -> 1.04)
     kw = {"Kn": SP["glue.K_n_N_per_mm3"],
           "Ks": coupon_K_s(SP, 2.0, SP["wood.E_placeholder_MPa"] / 16.0),
           "GIc": SP["glue.G_Ic_N_per_mm"], "GIIc": SP["glue.G_IIc_N_per_mm"],
           "E": SP["wood.E_placeholder_MPa"], "onset": SP["glue.prepeak_onset"],
-          "peak_slip": SP["glue.peak_slip_ratio"]}
+          "peak_slip": SP["glue.peak_slip_ratio"],
+          "pressure_coeff": SP["glue.pressure_coeff"], "friction": SP["glue.friction"]}
 
     def tau_avg(tp, **k):
         peel = min(SP["glue.peel_to_shear"] * tp, SP["wood.f_t90_MPa"]) / tp
@@ -4459,3 +4462,364 @@ def test_a_member_crushed_on_its_side_gets_shallower():
             np.testing.assert_array_equal(m.b_fy[ee], fy[ee])  # its width is kept
         rest = np.setdiff1d(np.arange(len(m.b_i)), e)
         assert (m.b_fz[rest] == fz[rest]).all()
+
+
+# ------------------------------------------------- round 28: what a glue line holds
+
+
+def _lap_kw(**k):
+    """The lap coupon with the simulation's own glue values (as
+    test_lap_shear_reproduces_tau_g), tau_g 2 MPa."""
+    from bridgesim.sim.study import coupon_K_s
+
+    tp = 2.0 * SP["glue.tau_peak_over_avg"]
+    kw = {"Kn": SP["glue.K_n_N_per_mm3"],
+          "Ks": coupon_K_s(SP, 2.0, SP["wood.E_placeholder_MPa"] / 16.0),
+          "GIc": SP["glue.G_Ic_N_per_mm"], "GIIc": SP["glue.G_IIc_N_per_mm"],
+          "E": SP["wood.E_placeholder_MPa"], "onset": SP["glue.prepeak_onset"],
+          "peak_slip": SP["glue.peak_slip_ratio"]}
+    kw.update(k)
+    return tp, min(SP["glue.peel_to_shear"] * tp, SP["wood.f_t90_MPa"]) / tp, kw
+
+
+def test_a_clamped_lap_holds_tau_plus_mu_i_times_the_pressure():
+    """A glue line pressed together holds more in shear (Mohr-Coulomb onset, round 28):
+    tau_eff = tau + mu_i sigma_c. The 20 x 10 mm lap coupon clamped at p while it is
+    pulled, with the debonded share's friction off (glue.friction 0) so the onset alone
+    acts: hand calculation, peak / A = tau(0) + mu_i p, tau(0) the same lap pulled free:
+    with mu_i 0.3, +0.3 MPa at 1 MPa and +0.6 MPa at 2 MPa (within 3 %: the pressure part
+    shares the lap's shear lag, ~1/1.04 of it at the peak). With mu_i 0 the clamp alone
+    adds ~0.07 MPa at 2 MPa (it closes the peel at the lap's ends; the onset ignores the
+    pressure, round 27), a tenth of what mu_i 0.3 adds; with glue.friction 0.4 the share
+    of the lap already let go at its peak slides at 0.4 p, so it holds more still."""
+    tp, peel, kw = _lap_kw(friction=0.0, pressure_coeff=0.3)
+    t0 = lab.lap_shear(tp, peel, **kw).peak / 200
+    for p in (1.0, 2.0):
+        tpk = lab.lap_shear(tp, peel, **kw, clamp_MPa=p).peak / 200
+        assert tpk == pytest.approx(t0 + 0.3 * p, rel=0.03), p
+    kw0 = dict(kw, pressure_coeff=0.0)
+    t00 = lab.lap_shear(tp, peel, **kw0).peak / 200
+    rise0 = lab.lap_shear(tp, peel, **kw0, clamp_MPa=2.0).peak / 200 - t00
+    assert 0.0 <= rise0 < 0.1
+    fr = lab.lap_shear(tp, peel, **dict(kw, friction=0.4), clamp_MPa=2.0).peak / 200
+    assert fr > t0 + 0.6 + 0.05  # the debonded share's friction on top
+
+
+def test_pressure_coefficient_zero_is_round_27():
+    """mu_i = 0 (and round 27's peak factor 1.065, the within-joint field and fillets
+    off) reproduces round 27: the glue arrays of the synthetic bridge (seed 0 and the
+    perfect bridge) and the lap coupon's record, against values computed with the round-27
+    code (bit for bit on the machine they were made on; 1e-9 / 1e-7 here so another CPU's
+    rounding passes)."""
+    from bridgesim.sim.idealize import build_model
+
+    sp0 = SP.updated({"glue.pressure_coeff": 0.0, "glue.tau_peak_over_avg": 1.065,
+                      "scatter.glue_point_cov": 0.0, "glue.fillet_mm": 0.0})
+    pins = {0: (18414.203755357616, 12153.374478536029, 238.57515707865358,
+                9703.113322084113),
+            None: (23898.503428797623, 15773.01226300643, 309.59999999999997,
+                   12591.372479092268)}
+    for seed, want in pins.items():
+        m = build_model(simple_beam_bridge(), MAT, sp0, seed=seed)
+        got = (float(np.sum(m.c_tau * m.c_area)), float(np.sum(m.c_sig * m.c_area)),
+               float(np.sum(m.c_GIIc)), float(np.sum(m.c_Ks)))
+        assert got == pytest.approx(want, rel=1e-9), seed
+        assert np.all(m.c_mui == 0.0)
+    # the kernel: the lap coupon (the compiled glue kernel where numba is there)
+    r = lab.lap_shear(2.13, 0.5, 150.0, 140.0, 0.25, 1.2, onset=0.65, peak_slip=2.0)
+    assert r.peak == pytest.approx(389.0947131895847, rel=1e-7)
+    assert float(r.force.sum()) == pytest.approx(1066791.240255448, rel=1e-7)
+    r = lab.lap_shear(2.13, 0.5, 150.0, 140.0, 0.25, 1.2, rate_exponent=0.1,
+                      test_time_s=20.0)
+    assert r.peak == pytest.approx(426.3058969233287, rel=1e-7)
+    # the default switches it on for glue lines and solid faces, not for ties
+    m = build_model(simple_beam_bridge(), MAT, SP, seed=0)
+    assert np.all(m.c_mui[m.c_breakable] == SP["glue.pressure_coeff"])
+
+
+def _glue_points(n: int = 6):
+    """n independent glue points (node 0 fixed at the origin, node k + 1 its partner),
+    normal along y, 1 mm^2 each."""
+    from bridgesim.sim.lab import blank_model
+
+    m = blank_model(np.zeros((n + 1, 3)))
+    m.mass[:], m.rot_inertia[:] = 1.0, 1.0
+    m.a_node = np.r_[np.zeros(n, int), np.arange(1, n + 1)]
+    m.a_r0 = np.zeros((2 * n, 3))
+    m.c_a, m.c_b = np.arange(n), np.arange(n, 2 * n)
+    m.c_area = np.ones(n)
+    m.c_n0 = np.tile([0.0, 1.0, 0.0], (n, 1))
+    m.c_Kn, m.c_Ks = np.full(n, 150.0), np.full(n, 140.0)
+    m.c_sig, m.c_tau = np.full(n, 1.4), np.full(n, 2.0)
+    m.c_GIc, m.c_GIIc = np.full(n, 0.25), np.full(n, 1.2)
+    m.c_mu = np.zeros(n)
+    m.c_patch, m.c_breakable = np.zeros(n, int), np.ones(n, bool)
+    return m
+
+
+def test_pressed_glue_kernel_matches_numpy():
+    """With the pressure coefficient on, the compiled glue kernel and its NumPy reference
+    give the same forces and the same damage, slip, crushing and clock histories over a
+    load path that presses some points (one past the wood's crushing), opens one and
+    shears them all to separation, with the rate law running."""
+    pytest.importorskip("numba")
+    n = 6
+    out = {}
+    for impl in (S.internal_and_contact, S.internal_and_contact_numpy):
+        m = _glue_points(n)
+        m.c_mui = np.array([0.3, 0.3, 0.6, 0.0, 0.3, 1.0])
+        m.c_mu = np.full(n, 0.4)
+        m.c_rate = np.full(n, 0.1)
+        m.params.update(glue_fc=np.full(n, 3.0), glue_cdep=np.full(n, 4.0),
+                        densification_strain=0.45, densified_E=500.0,
+                        glue_prepeak_onset=0.65, glue_peak_slip_ratio=2.0)
+        st = S.initial_state(m, 1e12)
+        F, Mo = np.zeros((n + 1, 3)), np.zeros((n + 1, 3))
+        press = np.array([-0.01, -0.03, -0.01, -0.01, 0.002, -0.1])  # y: - presses
+        rec = []
+        for k, s in enumerate(np.linspace(0.0, 1.8, 451)):
+            st.t_test = 30.0 + 0.1 * k
+            st.x[1:, 1] = press * min(1.0, k / 20)
+            st.x[1:, 0] = s
+            st.x[1:, 2] = 0.3 * s
+            impl(m, st, S.Settings(dt=1e-6, beta_frac=0.0), F, Mo)
+            rec.append(np.r_[F[1:].ravel(), st.c_d, st.c_dmax, st.c_slip.ravel(),
+                             st.c_crush, st.c_t0])
+        out[impl.__name__] = np.array(rec)
+    a, b = out.values()
+    np.testing.assert_allclose(a, b, rtol=1e-9, atol=1e-9)
+    d = a[:, 3 * n: 4 * n]
+    assert d[-1].min() > 0.999 and (d[120] < 0.999).any()  # all let go, not at once
+    # pressed harder, a point lets go later (the same kernel, the pressure's effect)
+    go = [int(np.argmax(d[:, i] > 0.999)) for i in range(n)]
+    assert go[2] > go[0] > go[3] and go[1] > go[0]
+
+
+def test_a_pressed_glue_line_takes_proportionally_more_work_to_separate():
+    """One glue point pressed at sigma_c (normal stiffness 150 N/mm^3, pressed 2/150 mm:
+    2 MPa) then slid to separation, friction off: the work to separate it is G_IIc x
+    tau_eff / tau = G_IIc (1 + mu_i sigma_c / tau) (the toughness scaled with the
+    strength, round 28): 1.2 x (1 + 0.3 x 2 / 2) = 1.56 N/mm, against 1.2 unpressed;
+    bilinear and trilinear laws alike (each is built so the work done is G_c). The
+    bilinear line lets go at the same slip pressed or not, 2 G_IIc / tau = 1.2 mm."""
+    pytest.importorskip("numba")
+    for law in ((1.0, 1.0), (0.65, 2.0)):
+        for impl in (S.internal_and_contact, S.internal_and_contact_numpy):
+            for sig in (0.0, 2.0):
+                m = _glue_points(1)
+                m.c_mui = np.array([0.3])
+                m.params.update(glue_prepeak_onset=law[0], glue_peak_slip_ratio=law[1])
+                st = S.initial_state(m, 1e12)
+                F, Mo = np.zeros((2, 3)), np.zeros((2, 3))
+                st.x[1, 1] = -sig / 150.0
+                ss = np.linspace(0.0, 1.6, 8001)
+                T, d = [], []
+                for s in ss:
+                    st.x[1, 0] = s
+                    impl(m, st, S.Settings(dt=1e-6, beta_frac=0.0), F, Mo)
+                    T.append(F[1, 0])
+                    d.append(st.c_d[0])
+                W = float(np.trapezoid(T, ss))
+                assert W == pytest.approx(1.2 * (1 + 0.3 * sig / 2.0), rel=0.005), (law, sig)
+                if law == (1.0, 1.0):
+                    s_go = ss[int(np.argmax(np.array(d) >= 1.0))]
+                    assert s_go == pytest.approx(2 * 1.2 / 2.0, abs=0.002), sig
+
+
+def test_the_screen_counts_the_pressure_on_a_glue_line():
+    """The linear screen gives a pressed joint the shear capacity the crush gives it,
+    tau + mu_i sigma_c over its glue points, growing with the load as the pressure does:
+    no further than the wood under it bears (the crush's cap): the piers' joints, pressed
+    by the load, hold more with mu_i 0.05 than 0 and more with 0.3 (a lower utilisation,
+    a limit load past 1 / utilisation: on the left pier 2083 -> 3335 kgf at 0.3, the share
+    saturating where the wood crushes)."""
+    from bridgesim.sim import screen as scr
+    from bridgesim.sim.idealize import build_model
+
+    lim = {}
+    for mui in (0.0, 0.05, 0.3):
+        m = build_model(simple_beam_bridge(), MAT, SP.updated({"glue.pressure_coeff": mui}),
+                        seed=None)
+        sol = scr.solve(m, 100.0 * scr.KGF)
+        out = scr.utilisations(m, sol, 100.0 * scr.KGF,
+                               peak_over_avg=SP["glue.tau_peak_over_avg"])
+        lim[mui] = {(x.part, x.mode): x for x in out if x.mode == "glue"}
+    piers = [k for k in lim[0.0] if "Pier" in k[0]]
+    assert len(piers) == 4
+    for k in piers:
+        assert lim[0.3][k].utilisation < lim[0.05][k].utilisation < lim[0.0][k].utilisation
+        assert lim[0.3][k].load_kgf > lim[0.05][k].load_kgf > lim[0.0][k].load_kgf
+        # the capacity grows with the load: the limit is past 1 / utilisation
+        assert lim[0.3][k].load_kgf > 100.0 / lim[0.3][k].utilisation
+        assert lim[0.0][k].load_kgf == pytest.approx(100.0 / lim[0.0][k].utilisation)
+
+
+def test_glue_spot_factors_are_normalised_and_do_not_depend_on_the_mesh():
+    """The within-joint field (scatter.glue_point_cov, round 28): each glue point's local
+    factor is its square's (scatter.glue_spot_mm, on the patch from its centroid along its
+    principal axes), the area-weighted mean exactly 1. Sampled by two point grids (two
+    meshes), the squares draw the same values: points in the same square get the same
+    factor up to one normaliser per grid. Moving the CAD moves nothing; no stream (the
+    perfect bridge) or cov 0: all 1. Through the bridge model: every joint's mean glue
+    strength is the uniform joint's, its points scattered by about the CoV."""
+    from shapely.affinity import translate
+    from shapely.geometry import box as sbox
+
+    from bridgesim.sim.idealize import build_model, glue_spot_factors
+
+    poly = sbox(0.0, 0.0, 40.0, 10.0)
+    e1, e2 = np.array([1.0, 0, 0]), np.array([0, 0, 1.0])
+    cen = np.array([20.0, 0.0, 5.0])
+
+    def grid(h):
+        u = np.arange(h / 2, 40, h)
+        v = np.arange(h / 2, 10, h)
+        U, V = np.meshgrid(u, v, indexing="ij")
+        p = np.c_[U.ravel(), np.zeros(U.size), V.ravel()]
+        return p, np.full(len(p), 400.0 / len(p))
+
+    fs = {}
+    for h in (2.5, 1.25):
+        p, w = grid(h)
+        f = glue_spot_factors(poly, e1, e2, cen, p, w, 0.3, 5.0, np.random.default_rng(7))
+        assert float((w * f).sum() / w.sum()) == pytest.approx(1.0, abs=1e-12)
+        cell = np.floor((p - cen) @ e1 / 5.0).astype(int) * 100 + np.floor(
+            (p - cen) @ e2 / 5.0).astype(int)
+        fs[h] = {c: float(f[cell == c][0]) for c in np.unique(cell)}
+        for c in np.unique(cell):
+            assert np.ptp(f[cell == c]) < 1e-12  # one factor per square
+        assert 0.1 < np.std(list(fs[h].values())) < 0.6
+    ratio = [fs[2.5][c] / fs[1.25][c] for c in fs[2.5]]
+    assert np.ptp(ratio) < 1e-12  # the same squares, one normaliser per grid
+    p, w = grid(2.5)
+    d = np.array([123.4, -56.7, 89.0])
+    moved = glue_spot_factors(translate(poly, d[0], d[2]), e1, e2, cen + d, p + d, w, 0.3,
+                              5.0, np.random.default_rng(7))
+    assert moved == pytest.approx(glue_spot_factors(poly, e1, e2, cen, p, w, 0.3, 5.0,
+                                                    np.random.default_rng(7)), rel=1e-12)
+    assert np.all(glue_spot_factors(poly, e1, e2, cen, p, w, 0.3, 5.0, None) == 1.0)
+    assert np.all(glue_spot_factors(poly, e1, e2, cen, p, w, 0.0, 5.0,
+                                    np.random.default_rng(7)) == 1.0)
+    sp_ = SP.updated({"scatter.glue_point_cov": 0.3})
+    for scale in (1.6, 1.0):
+        m0 = build_model(simple_beam_bridge(), MAT, SP, seed=0, mesh_scale=scale)
+        m1 = build_model(simple_beam_bridge(), MAT, sp_, seed=0, mesh_scale=scale)
+        for pa in m1.patches:
+            i = np.asarray(pa.springs)
+            r = m1.c_tau[i] / m0.c_tau[i]
+            assert float((m1.c_area[i] * r).sum() / m1.c_area[i].sum()) == pytest.approx(
+                1.0, abs=1e-9)
+            assert 0.1 < np.std(r) < 0.5
+    mN = build_model(simple_beam_bridge(), MAT, sp_, seed=None)
+    m0N = build_model(simple_beam_bridge(), MAT, SP, seed=None)
+    assert np.all(mN.c_tau == m0N.c_tau)  # the perfect bridge has none
+
+
+def test_a_lap_with_weak_spots_lets_go_earlier_and_holds_no_more():
+    """A 20 x 10 mm lap whose glue varies inside it (CoV 0.3 over 5 mm squares, mean 1)
+    starts letting go at its weak spots at a lower share of its peak (15-24 %) than the
+    uniform lap (28 %: its ends soften first, shear lag), and holds no more: 0.990-0.999
+    x the uniform lap on these seeds (0.995 on average over 8 seeds with G_IIc 1.2 N/mm,
+    0.985 with a brittle 0.3: the lap is short against the glue's characteristic length,
+    so it shares its load and fails near its mean strength). A field like this moves a
+    lap's strength by ~1 %, far less than the size law glue.weibull_m it is an
+    alternative to (0.83 at 1320 mm^2)."""
+    tp, peel, kw = _lap_kw()
+    u = lab.lap_shear(tp, peel, **kw)
+
+    def first_soft(r):
+        return r.force[int(np.argmax(r.softened > 0))] / r.peak
+
+    ratios = []
+    for seed in (0, 2, 3):
+        f = lab.lap_shear(tp, peel, **kw, spot_cov=0.3, spot_seed=seed)
+        assert first_soft(f) < first_soft(u) - 0.03, seed
+        ratios.append(f.peak / u.peak)
+    assert max(ratios) <= 1.0 and min(ratios) > 0.97
+
+
+def test_fillets_follow_the_hand_formula():
+    """Squeeze-out fillets (glue.fillet_mm f, round 28): the exposed outline P_e of an
+    overlap (where one face goes on past the other's edge) and the joint's factor (1 + f
+    P_e / A) / (1 + f P_ref / A_ref), P_ref 20 mm on the 200 mm^2 coupon. Two 10 mm sticks
+    lapped 20 mm: their ends exposed, sides flush, P_e = 20, factor 1; 10 x 10 mm: P_e 20,
+    with f = 1 mm (1 + 0.2) / 1.1 = 1.0909; 40 x 10 mm: (1 + 0.05) / 1.1 = 0.9545; a stick
+    10 mm wide across a 100 mm gusset: its sides and the gusset's edges under it, 2 x 100
+    + 2 x 10 = 220; ending on it 40 mm in: 2 x 40 + 2 x 10 = 100. In the bridge each
+    joint's glue strength is x its factor (where the glue governs), its stiffness not; f
+    = 0 changes nothing."""
+    from shapely.geometry import box as sbox
+
+    from bridgesim.sim.idealize import build_model, exposed_perimeter, fillet_factor
+
+    def pe(a, b):
+        return exposed_perimeter(a.intersection(b), a, b)
+
+    assert pe(sbox(0, 0, 50, 10), sbox(30, 0, 80, 10)) == pytest.approx(20.0)
+    assert pe(sbox(0, 0, 50, 10), sbox(40, 0, 90, 10)) == pytest.approx(20.0)
+    assert pe(sbox(0, 0, 100, 100), sbox(-20, 40, 120, 50)) == pytest.approx(220.0)
+    assert pe(sbox(0, 0, 100, 100), sbox(-20, 40, 40, 50)) == pytest.approx(100.0)
+    assert fillet_factor(20.0, 200.0, 1.0) == pytest.approx(1.0)
+    assert fillet_factor(20.0, 100.0, 1.0) == pytest.approx(1.2 / 1.1, rel=1e-12)
+    assert fillet_factor(20.0, 400.0, 1.0) == pytest.approx(1.05 / 1.1, rel=1e-12)
+    assert fillet_factor(20.0, 100.0, 0.0) == 1.0
+    m0 = build_model(simple_beam_bridge(), MAT, SP, seed=0)
+    m1 = build_model(simple_beam_bridge(), MAT, SP.updated({"glue.fillet_mm": 1.0}), seed=0)
+    for pa in m1.patches:
+        i = np.asarray(pa.springs)
+        want = fillet_factor(pa.exposed_mm, pa.area_mm2, 1.0)
+        assert float((m1.c_area[i] * m1.c_tau[i]).sum() / (m1.c_area[i] * m0.c_tau[i]).sum()
+                     ) == pytest.approx(want, rel=1e-9)
+        assert np.all(m1.c_Ks[i] == m0.c_Ks[i])
+    assert {round(p.exposed_mm) for p in m1.patches} == {106, 2200}  # piers, deck
+
+
+def test_lap_sizes_tell_the_size_law_from_fillets():
+    """calibrate's fit (round 28): laps of four sizes made with a size law of m = 8 and
+    fillets of f = 0.8 mm (the hand formulas, tau_ref 2.4 MPa, +-1 % scatter) give m and
+    f back; the size law alone (f = 0), and fillets alone (no size effect: m = 0),
+    likewise. Fewer than three sizes: no fit."""
+    from bridgesim.sim.idealize import fillet_factor, lap_size_factor
+    from bridgesim.sim.study import fit_size_and_fillet
+
+    sizes = [(10, 10), (20, 10), (40, 10), (20, 30)]
+    for m_, f_ in ((8.0, 0.8), (10.0, 0.0), (0.0, 1.5)):
+        laps = []
+        for ov, w in sizes:
+            A, P = ov * w, 2.0 * w
+            t = 2.4 * lap_size_factor(A, 200.0, m_) * fillet_factor(P, A, f_)
+            laps += [(A, P, t * (1 + e)) for e in (-0.01, 0.0, 0.01)]
+        mf, ff, tr = fit_size_and_fillet(laps)
+        assert mf == pytest.approx(m_, rel=0.03, abs=0.01) and ff == pytest.approx(
+            f_, abs=0.03) and tr == pytest.approx(2.4, rel=0.01), (m_, f_)
+    assert fit_size_and_fillet([(200.0, 20.0, 2.0), (400.0, 20.0, 1.9)]) is None
+
+
+def test_calibrate_fits_the_pressure_coefficient_from_clamped_laps(tmp_path):
+    """Lap coupons pulled while clamped at 0, 1 and 2 MPa (glue_joint_template.csv,
+    clamp_pressure_MPa), made with the simulated lap at a pressure coefficient of 0.5 and
+    tau_g 2.4 MPa: calibrate gives both back (the simulated clamped lap's rise includes the
+    friction of the share already let go, ~0.28 per MPa at a coefficient of 0, which a
+    plain slope of the data would have read as the coefficient). An old file without the
+    column reads as laps pulled free."""
+    from bridgesim.sim import study
+
+    E = MAT.E_MPa.value
+    sp_t = SP.updated({"glue.pressure_coeff": 0.5})
+    ratio = SP["glue.tau_peak_over_avg"]
+    rows = ["specimen,overlap_mm,width_mm,faces,failure_load_N,clamp_pressure_MPa"]
+    for p in (0.0, 1.0, 2.0):
+        F = study._lap(sp_t, 2.4 * ratio, 20.0, 10.0, E, clamp_MPa=p).peak
+        rows += [f"J{p:g}{k},20,10,1,{F * (1 + e):.3f},{p:g}"
+                 for k, e in enumerate((-0.01, 0.0, 0.01))]
+    (tmp_path / "glue_joint_template.csv").write_text("\n".join(rows) + "\n")
+    mat, log, params = study.calibrate(tmp_path)
+    assert params["glue.pressure_coeff"] == pytest.approx(0.5, abs=0.05)
+    assert mat.glue.tau_g_MPa.value == pytest.approx(2.4, rel=0.02)
+    assert any("glue.pressure_coeff" in s for s in log)
+    old = tmp_path / "old"
+    old.mkdir()
+    (old / "glue_joint_template.csv").write_text(
+        "specimen,overlap_mm,width_mm,faces,failure_load_N\nJ1,20,10,1,400\n")
+    _m, _l, p_old = study.calibrate(old)
+    assert "glue.pressure_coeff" not in p_old

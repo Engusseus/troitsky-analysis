@@ -68,6 +68,7 @@ SLOW_TESTS = {
     "test_calibration_closes_the_loop",
     "test_simply_supported_beam_matches_beam_theory",
     "test_agent_loop_through_mcp",
+    "test_calibrate_fits_the_pressure_coefficient_from_clamped_laps",
 }
 
 

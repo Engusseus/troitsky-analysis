@@ -829,6 +829,133 @@ def lap_size_factor(area_mm2: float, ref_mm2: float = 200.0, m: float = 10.0,
     return float((min(area_mm2, max(cap_mm2, ref_mm2)) / ref_mm2) ** (-1.0 / m))
 
 
+EXPOSED_TOL_MM = 0.25  # an overlap's edge within this of both faces' outlines is flush
+
+
+def exposed_perimeter(inter, face_a, face_b, tol: float = EXPOSED_TOL_MM) -> float:
+    """The length of a glued overlap's outline along which squeeze-out can form a fillet
+    (mm): where the overlap's edge lies on the outline of one face only, the other face
+    going on past it (a stick's end on a gusset; a fillet then joins the stick's end or
+    side to the gusset's face). Where both faces end together (two sticks of one width
+    lapped side by side) the edge is flush: no fillet. The overlap and both faces are
+    polygons in one plane (the patch's own basis); each edge is judged at three points
+    (a quarter, half, three quarters along it), each worth a third of its length."""
+    if inter is None or inter.is_empty or face_a is None or face_b is None:
+        return 0.0
+    ba, bb = face_a.boundary, face_b.boundary
+    polys = list(getattr(inter, "geoms", [inter]))
+    total = 0.0
+    for poly in polys:
+        if poly.geom_type != "Polygon":
+            continue
+        for ring in [poly.exterior, *poly.interiors]:
+            c = np.asarray(ring.coords, float)
+            if len(c) < 2:
+                continue
+            p, q = c[:-1], c[1:]
+            L = np.linalg.norm(q - p, axis=1)
+            for f in (0.25, 0.5, 0.75):
+                pts = shapely.points(p + f * (q - p))
+                on_a = shapely.distance(ba, pts) < tol
+                on_b = shapely.distance(bb, pts) < tol
+                total += float((L * (on_a != on_b)).sum()) / 3.0
+    return total
+
+
+def fillet_factor(exposed_mm: float, area_mm2: float, fillet_mm: float,
+                  ref_area_mm2: float = 200.0, ref_exposed_mm: float = 20.0) -> float:
+    """A glued lap's strength with squeeze-out fillets over that of the coupon tau_g is
+    measured on: each mm of its exposed outline (exposed_perimeter) bonds ``fillet_mm``
+    of extra width, so it holds as a lap of area A + f P_e, relative to the coupon's A_ref
+    + f P_ref: (1 + f P_e / A) / (1 + f P_ref / A_ref). The coupon (glue.size_ref_mm2, a
+    20 x 10 mm lap of two 10 mm sticks) has its two 10 mm ends exposed and its sides flush
+    (glue.fillet_ref_perimeter_mm = 20). A small joint gets more, a long one less: with f
+    = 1 mm a 10 x 10 mm lap 1.09 x, a 40 x 10 mm lap 0.95 x. f = 0: 1 (off)."""
+    if fillet_mm <= 0 or area_mm2 <= 0:
+        return 1.0
+    return float((1.0 + fillet_mm * exposed_mm / area_mm2)
+                 / (1.0 + fillet_mm * ref_exposed_mm / max(ref_area_mm2, 1e-9)))
+
+
+def _poly_second_moments(poly) -> tuple[float, float, float, float, float, float]:
+    """Area, centroid and second moments (about the centroid: int x^2, int y^2, int x y)
+    of a (multi)polygon, holes taken out (Green's theorem over each ring)."""
+    from shapely.geometry.polygon import orient
+
+    rings = []
+    for g in getattr(poly, "geoms", [poly]):
+        if g.geom_type != "Polygon" or g.is_empty:
+            continue
+        g = orient(g, 1.0)  # exterior counter-clockwise, holes clockwise
+        rings += [np.asarray(r.coords, float) for r in [g.exterior, *g.interiors]]
+    c0 = np.asarray(poly.centroid.coords[0], float)
+    A = Sxx = Syy = Sxy = 0.0
+    for r in rings:
+        x, y = r[:-1, 0] - c0[0], r[:-1, 1] - c0[1]
+        x1, y1 = r[1:, 0] - c0[0], r[1:, 1] - c0[1]
+        cr = x * y1 - x1 * y
+        A += 0.5 * float(cr.sum())
+        Sxx += float(((x * x + x * x1 + x1 * x1) * cr).sum()) / 12.0
+        Syy += float(((y * y + y * y1 + y1 * y1) * cr).sum()) / 12.0
+        Sxy += float(((x * y1 + 2 * x * y + 2 * x1 * y1 + x1 * y) * cr).sum()) / 24.0
+    return A, float(c0[0]), float(c0[1]), Sxx, Syy, Sxy
+
+
+def _sign_fixed(v: np.ndarray) -> np.ndarray:
+    """A direction with a sign that does not depend on how it was found: its first
+    component that is not ~0 positive."""
+    for comp in v:
+        if abs(comp) > 1e-6:
+            return v if comp > 0 else -v
+    return v
+
+
+def glue_spot_factors(inter, e1: np.ndarray, e2: np.ndarray, centre: np.ndarray,
+                      pts3: np.ndarray, wts: np.ndarray, cov: float, spot_mm: float,
+                      rng, amp: float = 1.0) -> np.ndarray:
+    """The local strength factor of each glue point of a joint (starved spots and well
+    glued ones inside one joint): the patch's own plane cut into squares of ``spot_mm``
+    from its centroid (``centre``, 3D) along its principal axes (from the overlap
+    polygon ``inter`` in the basis e1, e2: the CAD's, not the mesh's), each square a
+    lognormal factor of CoV ``cov`` (x ``amp``, scatter.amplitude) drawn from ``rng``
+    (the joint's own stream) in a fixed order over the squares covering the polygon,
+    each point taking its square's (a point just outside, half an element off the edge,
+    the nearest square's), normalised so that the points' area-weighted mean is exactly
+    1: the joint's own strength is unchanged, only its distribution inside it. The same
+    joint at another mesh draws the same squares (only which points sample them, and so
+    the normaliser, change). None (all 1) without ``rng`` or with cov 0."""
+    n = len(pts3)
+    if rng is None or cov <= 0 or n < 2 or spot_mm <= 0 or inter is None \
+            or inter.is_empty:
+        return np.ones(n)
+    _A, _cx, _cy, Sxx, Syy, Sxy = _poly_second_moments(inter)
+    ev, vec = np.linalg.eigh(np.array([[Sxx, Sxy], [Sxy, Syy]]))
+    a2 = vec[:, int(np.argmax(ev))]  # the long axis (largest spread along it)
+    U = _sign_fixed(a2[0] * np.asarray(e1, float) + a2[1] * np.asarray(e2, float))
+    nrm = np.cross(e1, e2)
+    V = _sign_fixed(np.cross(nrm, U))
+    # the polygon's extent in (U, V) from its centroid: the squares that cover it
+    ring = []
+    for g in getattr(inter, "geoms", [inter]):
+        if g.geom_type == "Polygon":
+            ring.append(np.asarray(g.exterior.coords, float))
+    if not ring:
+        return np.ones(n)
+    r2 = np.vstack(ring) - np.asarray(inter.centroid.coords[0], float)
+    r3 = np.outer(r2[:, 0], e1) + np.outer(r2[:, 1], e2)
+    ru, rv = r3 @ U, r3 @ V
+    i0, i1 = math.floor(ru.min() / spot_mm), math.floor(ru.max() / spot_mm)
+    j0, j1 = math.floor(rv.min() / spot_mm), math.floor(rv.max() / spot_mm)
+    s = math.sqrt(math.log(1.0 + cov * cov)) * amp
+    Z = np.exp(s * rng.standard_normal((i1 - i0 + 1, j1 - j0 + 1)) - 0.5 * s * s)
+    d = np.asarray(pts3, float) - np.asarray(centre, float)
+    iu = np.clip(np.floor(d @ U / spot_mm).astype(int) - i0, 0, i1 - i0)
+    iv = np.clip(np.floor(d @ V / spot_mm).astype(int) - j0, 0, j1 - j0)
+    f = Z[iu, iv]
+    w = np.asarray(wts, float)
+    return f / (float((w * f).sum()) / max(float(w.sum()), 1e-30))
+
+
 T90_REF_VOLUME_MM3 = 4800.0  # Kruger et al. 2025's coupons: an 80 x 30 mm field, 2 mm
 T90_DEPTH_MM = 2.0  # how deep into the wood a glue line's peel stresses it (a ply)
 T90_FACTOR_MAX = 2.5
@@ -2319,14 +2446,23 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     # on: with one node per side the glue shears uniformly (1.0); as soon as a side's
     # stretching is resolved the shear-lag peak appears. Fitted to the lap coupon with
     # its glue on 1, 2, 3, 5 and 9 nodes per side (1.00, 1.04, 1.09, 1.07, 1.065 with
-    # the round-21 glue law; tests/test_sim.py checks it), so a joint's strength does not
-    # jump with the mesh
+    # the round-21 glue law; 1.04 at 9 nodes since round 28, the coupon's own bending
+    # pressing its overlap's middle with glue.pressure_coeff 0.3; tests/test_sim.py checks
+    # it), so a joint's strength does not jump with the mesh
     peak_over_avg = sp.values.get("glue.tau_peak_over_avg", 1.065)
 
     def peak_factor(n_nodes: int) -> float:
         return 1.0 + (peak_over_avg - 1.0) * (1.0 - math.exp(-2.2 * (n_nodes - 1)))
 
     end_factor = sp.values.get("glue.end_grain_factor", 0.75)
+    # what is inside one joint (round 28, both off by default: alternatives to the size
+    # law glue.weibull_m fits): starved and well glued spots (scatter.glue_point_cov over
+    # squares of scatter.glue_spot_mm), squeeze-out fillets along its exposed edges
+    # (glue.fillet_mm, relative to the coupon's glue.fillet_ref_perimeter_mm)
+    spot_cov = float(sp.values.get("scatter.glue_point_cov", 0.0))
+    spot_mm = float(sp.values.get("scatter.glue_spot_mm", 5.0))
+    fillet = float(sp.values.get("glue.fillet_mm", 0.0))
+    fillet_ref = float(sp.values.get("glue.fillet_ref_perimeter_mm", 20.0))
     end_tension = sp.values.get("glue.end_grain_tension_factor", 0.0)
     t90_m = sp.values.get("wood.t90_weibull_m", 0.0)
     f_roll = float(sp.values.get("wood.f_rolling_MPa", 4.0))
@@ -2677,8 +2813,9 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     for lst in by_pair.values():
         for r_, (_c, k_) in enumerate(sorted(lst)):
             pair_rank[k_] = r_
-    for k_patch, (ia, ib, pts3, na, area, _cad_c, wts) in enumerate(patch_pts3):
+    for k_patch, (ia, ib, pts3, na, area, cad_cen, wts) in enumerate(patch_pts3):
         key = "|".join(sorted((bodies[ia].name, bodies[ib].name)))
+        joint_key = key
         # the stream of its random glue strength: a joint alone between its two bodies by
         # their names (an edit that moves it keeps its draw, so ab compares the design,
         # not new luck at the joint changed); several between the same two bodies, the
@@ -2706,6 +2843,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         # of its face (starved edges, gaps) is softer in shear as well as weaker, in
         # proportion; bearing in compression keeps the whole contact
         k_cov = min(max(gf, 0.2), 3.0)
+        gf_k = gf  # (a starved spot inside the joint is softer in proportion too)
         pid = len(patches)
         cen = pts3.mean(0)
         poly3 = None
@@ -2778,6 +2916,24 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         tau_p = mat.glue.tau_g_MPa.value * peak_factor(n_nodes) * lap_size_factor(
             float(area), sp.values.get("glue.size_ref_mm2", 200.0),
             sp.values.get("glue.weibull_m", 10.0), sp.values.get("glue.size_cap_mm2", 3000.0))
+        # squeeze-out fillets (glue.fillet_mm, 0: off): along the outline where one face
+        # goes on past the other's edge the bond is wider by f, so the lap holds as one of
+        # area A + f P_e, relative to the coupon (fillet_factor): its glue line in shear
+        # and peel (and pulled apart on end grain), not its stiffness nor the wood's caps
+        # beside it; a lamination's share none (pressed flat, below), a solid face none
+        sides = sides_of.get(k_patch)
+        try:
+            p_exp = exposed_perimeter(sides[0], sides[3], sides[4]) if sides is not None \
+                else 0.0
+        except Exception:  # noqa: BLE001 - an odd outline: no fillet rather than no model
+            p_exp = 0.0
+        patches[pid].exposed_mm = float(p_exp)
+        ff = 1.0
+        if fillet > 0 and not solid:
+            ff = fillet_factor(p_exp, float(area), fillet,
+                               sp.values.get("glue.size_ref_mm2", 200.0), fillet_ref)
+            tau_p *= ff
+            sig_end_glue *= ff
         # shear stiffness: the glue line and its surfaces (glue.K_s_N_per_mm3) in series
         # with the two parts' shear through their thickness (shear_compliance; until
         # round 24 one constant for every joint, 60, from nothing: the literature review
@@ -2889,7 +3045,18 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                          + 1.0 / wood_normal_stiffness(k_patch, ia, cen, na, float(area))
                          + 1.0 / wood_normal_stiffness(k_patch, ib, cen, -na,
                                                        float(area)))
-        for wa, a_, b_, d_, fl in zip(wts, att_a, att_b, dry, fill, strict=True):
+        # what is inside the joint (scatter.glue_point_cov, 0: off): each glue point's
+        # local factor over squares of the patch, mean 1 over it (glue_spot_factors),
+        # from a stream named after the joint; a face through one piece of wood none
+        lf = np.ones(len(pts3))
+        if spot_cov > 0 and not solid and sides is not None:
+            lf = glue_spot_factors(sides[0], sides[1], sides[2], cad_cen, pts3, wts,
+                                   spot_cov, spot_mm,
+                                   rng_for(f"glue_spot:{joint_key}{where}"), amp)
+        # the fillet's toughness with its strength (the line lets go at the same slip):
+        # the lap's share of a lamination ramp
+        ff_g = 1.0 + (ff - 1.0) * (1.0 - w_lam) if ff != 1.0 else 1.0
+        for wa, a_, b_, d_, fl, lf_ in zip(wts, att_a, att_b, dry, fill, lf, strict=True):
             # glue_factor 0: not glued; past the glue's reach across a fit-up gap: dry
             springs["d0"].append(1.0 if gf <= 0 or d_ else 0.0)
             springs["a"].append(a_)
@@ -2897,7 +3064,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             springs["area"].append(float(wa))
             springs["n0"].append(na)
             springs["Kn"].append(kn_line)
-            springs["Ks"].append(ks_line * k_cov)
+            # a starved spot is softer as well as weaker, in proportion (as the joint)
+            springs["Ks"].append(ks_line * (k_cov if lf_ == 1.0
+                                            else min(max(gf_k * lf_, 0.2), 3.0)))
+            fl = fl * lf_  # the spot's own factor goes with the joint's draw
             gq = max(gf * fl, 1e-3)  # glue_factor 0: handled as "already broken" (d0 = 1)
             # the glue's drawn scatter (workmanship, how much of the face is glued)
             # scales the glue line; the wood's caps (laminate transfer, tension across
@@ -2918,8 +3088,8 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 gqs = max(gf_side * fl, 1e-3)
                 end = min(sig_end_glue * gqs, f_peel * wq)
                 springs["sig"].append(side + e_end * max(end - side, 0.0))
-                springs["GIc"].append(sp_glue["G_Ic_N_per_mm"] * gq)
-                springs["GIIc"].append(sp_glue["G_IIc_N_per_mm"] * gq)
+                springs["GIc"].append(sp_glue["G_Ic_N_per_mm"] * gq * ff_g)
+                springs["GIIc"].append(sp_glue["G_IIc_N_per_mm"] * gq * ff_g)
             springs["mu"].append(sp_glue["friction"])
             springs["patch"].append(pid)
             springs["breakable"].append(True)
@@ -3287,6 +3457,12 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         np.zeros(0)
     c_rate = np.where(np.asarray(springs["breakable"], bool), c_rate, 0.0) \
         if len(sp_patch) else c_rate
+    # each glue point's rise of its shear strength per MPa pressing it (glue.pressure_coeff:
+    # a glue line and a face through one piece of wood alike); ties none
+    c_mui = np.where(np.isin(kinds[np.where(sp_patch >= 0, sp_patch, len(patches))],
+                             ("glue", "solid")) & np.asarray(springs["breakable"], bool),
+                     float(sp.values.get("glue.pressure_coeff", 0.0)), 0.0) \
+        if len(sp_patch) else np.zeros(0)
     model = Model(
         X=np.array(bld.X), mass=mass, rot_inertia=rot, node_body=np.array(bld.node_body),
         b_i=arr(beams["i"], dtype=int), b_j=arr(beams["j"], dtype=int),
@@ -3310,6 +3486,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         c_tau=arr(springs["tau"]), c_GIc=arr(springs["GIc"]), c_GIIc=arr(springs["GIIc"]),
         c_mu=arr(springs["mu"]), c_patch=arr(springs["patch"], dtype=int),
         c_breakable=arr(springs["breakable"], dtype=bool), c_rate=np.asarray(c_rate, float),
+        c_mui=np.asarray(c_mui, float),
         k_a=arr(cables["a"], dtype=int), k_b=arr(cables["b"], dtype=int),
         k_L0=arr(cables["L0"]), k_EA=arr(cables["EA"]), k_Fb=arr(cables["Fb"]),
         k_body=arr(cables["body"], dtype=int),

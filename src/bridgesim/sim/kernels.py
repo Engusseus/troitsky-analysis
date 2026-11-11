@@ -640,7 +640,9 @@ def _trilinear_damage(dmx, dm0, keff, Gc, ga, gp):
 def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GIIc, mu,
                 breakable, dmax, dd, slip, F, Mo, update, beta, dt, prev, alive, crush,
                 fc90, cdep, eps_d, E_d, fcap, creep, cfac, cdec, ga, gp, crate, tnow,
-                tref, t0):
+                tref, t0, mui):
+    """``mui``: each point's rise of its shear strength per MPa pressing it (a
+    Mohr-Coulomb onset, glue.pressure_coeff; see solver.glue_forces)."""
     nc = ca.shape[0]
     pa = np.empty(3)
     pb = np.empty(3)
@@ -721,6 +723,7 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
                 dm0 = ds0
             if update and tnow > 0.0 and t0[i] < 0.0 and dm > 0.1 * dm0:  # RATE_LOAD
                 t0[i] = tnow
+            rs = 1.0
             if crate[i] != 0.0 and tnow > 0.0 and tref > 0.0:
                 tl = tnow - t0[i] if t0[i] >= 0.0 else 0.0
                 tmin = tref / RATE_RANGE
@@ -732,6 +735,17 @@ def glue_kernel(x, R, a_node, a_r0, ca, cb, area, n0, Kn, Ks, sig, tau, GIc, GII
             Gn = kn * dnp * dnp
             B = Gs / (Gs + Gn) if Gs + Gn > 1e-30 else 0.0
             Gc = GIc[i] + (GIIc[i] - GIc[i]) * B * B
+            # pressed together, the line holds more in shear (Mohr-Coulomb onset):
+            # tau + mui sigma_c, sigma_c the pressure it carries (after the wood's crushing
+            # above; the rate factor is on the cohesive tau only); the toughness in the
+            # same ratio, so it lets go at about the same slip (glue_forces). Pressed, the
+            # line does not open (dnp = 0), so its onset dm0 is the shear onset ds0
+            if mui[i] > 0.0 and dn < 0.0:
+                tc = tau[i] * rs
+                if tc > 1e-12:
+                    pr = 1.0 + mui[i] * (-kn * dn) / tc
+                    dm0 *= pr
+                    Gc *= pr
             keff = (Gn + Gs) / (dm * dm) if dm > 1e-12 else ks
             dmx = dmax[i] if dmax[i] > dm else dm
             dnew = _trilinear_damage(dmx, dm0 if dm0 > 1e-12 else 1e-12, keff, Gc, ga, gp)

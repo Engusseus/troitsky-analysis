@@ -124,6 +124,8 @@ class TestResult:
     peak: float
     state: S.State
     slow_disp: float = 0.0  # the test ran slowly (quasi-statically) up to this displacement
+    # the share of the glued area softening (past its onset, d > 0) at each reading
+    softened: np.ndarray | None = None
 
     @property
     def stiffness(self) -> float:
@@ -144,14 +146,17 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
           max_disp: float, dt: float | None = None, alpha: float = 200.0,
           stop_drop: float = 0.3, record_every: int = 20, max_steps: int = 2_000_000,
           gravity: bool = False, sign: float = 1.0, slow_disp: float = 0.0,
-          slow_rate: float | None = None, test_time_s: float = 0.0) -> TestResult:
+          slow_rate: float | None = None, test_time_s: float = 0.0,
+          f_ext: np.ndarray | None = None, f_ramp: float = 0.0) -> TestResult:
     """Move ``node`` (one node or a list: a grip) along global ``dof`` at ``rate`` mm/s
     (displacement control) with the ``fixed`` nodes held ("xyz", "xyzr" = also rotations,
     any subset of x, y, z, r) and record the reaction force. Stops at ``max_disp`` or
     when the force drops below ``stop_drop`` x peak after the peak. Up to ``slow_disp``
     the node moves at ``slow_rate`` instead (a quasi-static start, for the stiffness).
     ``test_time_s``: the physical time to failure the glue's strength is taken at
-    (solver.glue_rate; 0: the coupon's own, tau_g)."""
+    (solver.glue_rate; 0: the coupon's own, tau_g). ``f_ext``: constant nodal forces (n,
+    3) besides the grip, a clamp, applied in full once the grip has moved ``f_ramp`` mm
+    (linearly before)."""
     node = np.atleast_1d(np.asarray(node, int))
     m.mass = np.maximum(m.mass, 1e-12)
     m.rot_inertia = np.maximum(m.rot_inertia, 1e-12)
@@ -175,7 +180,8 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
         if "r" in spec:
             fix_r[nd] = True
     x0 = m.X[node, dof]
-    disp, force = [], []
+    disp, force, soft = [], [], []
+    a_glue = float(m.c_area.sum()) if len(m.c_a) else 0.0
     peak = 0.0
     k = 0
     u = 0.0
@@ -189,6 +195,8 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
         fext = np.zeros_like(F)
         if gravity:
             fext[:, 1] = -m.mass * s.gravity
+        if f_ext is not None:
+            fext += f_ext * (min(1.0, u / f_ramp) if f_ramp > 0 else 1.0)
         acc = (fext - F) / m.mass[:, None] - alpha * st.v
         acc[fix_t] = 0.0
         acc[node, dof] = 0.0
@@ -207,12 +215,14 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
             f = sign * float(F[node, dof].sum())
             disp.append(u)
             force.append(f)
+            if a_glue > 0:
+                soft.append(float((m.c_area * (st.c_d > 0)).sum()) / a_glue)
             peak = max(peak, f)
             if peak > 0 and f < stop_drop * peak and u > 0.05 * max_disp:
                 break
         k += 1
     return TestResult(np.array(disp), np.array(force), peak, st,
-                      slow_disp if slow_rate else 0.0)
+                      slow_disp if slow_rate else 0.0, np.array(soft) if soft else None)
 
 
 def three_point_bending(E: float, ft: float, fc: float, span: float = 100.0,
@@ -300,7 +310,10 @@ def lap_shear(tau_max: float, peel_to_shear: float = 0.5, Kn: float = 150.0,
               E: float = 10000.0, free: float = 40.0, rate: float = 20.0,
               n_ov: int = 8, n_glue: int = 9, one_node: bool = False,
               onset: float = 1.0, peak_slip: float = 1.0, rate_exponent: float = 0.0,
-              test_time_s: float = 0.0, coupon_time_s: float = 60.0) -> TestResult:
+              test_time_s: float = 0.0, coupon_time_s: float = 60.0,
+              pressure_coeff: float = 0.0, clamp_MPa: float = 0.0,
+              friction: float = 0.4, spot_cov: float = 0.0, spot_mm: float = 5.0,
+              spot_seed: int = 0, max_disp: float = 2.0) -> TestResult:
     """Single-lap joint of two sticks (overlap x width), pulled along X. Returns the
     pull force; tau_avg = peak / (overlap * width). The overlap has ``n_ov`` elements per
     stick and ``n_glue`` rows of glue points, each hung on the nearest node of each stick
@@ -308,7 +321,17 @@ def lap_shear(tau_max: float, peel_to_shear: float = 0.5, Kn: float = 150.0,
     nodes than there are points). ``onset``, ``peak_slip``: the glue law's pre-peak
     shape (glue.prepeak_onset, glue.peak_slip_ratio; 1, 1 bilinear). ``test_time_s``:
     a lap failing at that time instead of the coupons' ``coupon_time_s`` (with
-    ``rate_exponent``, glue.rate_exponent)."""
+    ``rate_exponent``, glue.rate_exponent). ``clamp_MPa``: the overlap pressed together
+    at that pressure while it is pulled (equal and opposite forces on the two sticks'
+    overlap nodes, by their share of its length, applied over the first 0.02 mm of the
+    pull), the clamped-lap coupon of glue.pressure_coeff (``pressure_coeff``: a pressed
+    line holds tau + pressure_coeff x the pressure): its peak ~ (tau_g + pressure_coeff
+    x clamp_MPa) x overlap x width, plus the ``friction`` (glue.friction) x clamp_MPa
+    that the share of the overlap already let go carries at the peak. ``spot_cov``:
+    starved and well glued spots inside the lap (scatter.glue_point_cov: each glue
+    point's strength, toughness and shear stiffness x its square's factor of
+    ``spot_mm``, mean 1 over the lap; idealize.glue_spot_factors, drawn from
+    ``spot_seed``)."""
     n_free = 8
     # stick A from x=0 to free+overlap at y = 0; stick B overlaps, at y = t
     xa = np.r_[np.linspace(0, free, n_free + 1)[:-1], np.linspace(free, free + overlap,
@@ -350,15 +373,41 @@ def lap_shear(tau_max: float, peel_to_shear: float = 0.5, Kn: float = 150.0,
     m.c_Kn, m.c_Ks = np.full(nc, Kn), np.full(nc, Ks)
     m.c_tau, m.c_sig = np.full(nc, tau_max), np.full(nc, tau_max * peel_to_shear)
     m.c_GIc, m.c_GIIc = np.full(nc, GIc), np.full(nc, GIIc)
-    m.c_mu = np.full(nc, 0.4)
+    m.c_mu = np.full(nc, float(friction))
     m.c_patch = np.zeros(nc, int)
     m.c_breakable = np.ones(nc, bool)
     m.params["glue_prepeak_onset"], m.params["glue_peak_slip_ratio"] = onset, peak_slip
     m.params["glue_coupon_time_s"] = coupon_time_s
     m.c_rate = np.full(nc, float(rate_exponent))
+    if spot_cov > 0:
+        # the lap's own squares (its plane x-z, from its centre), as a bridge's joint
+        from shapely.geometry import box as _box
+
+        from bridgesim.sim.idealize import glue_spot_factors
+
+        pts = np.array([m.X[m.a_node[a]] + m.a_r0[a] for a in m.c_a])
+        lf = glue_spot_factors(_box(free, -width / 2, free + overlap, width / 2),
+                               np.array([1.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0]),
+                               np.array([free + overlap / 2, t / 2, 0.0]), pts, m.c_area,
+                               spot_cov, spot_mm, np.random.default_rng(spot_seed))
+        m.c_tau, m.c_sig = m.c_tau * lf, m.c_sig * lf
+        m.c_GIc, m.c_GIIc = m.c_GIc * lf, m.c_GIIc * lf
+        m.c_Ks = m.c_Ks * np.clip(lf, 0.2, 3.0)
+    if pressure_coeff:
+        m.c_mui = np.full(nc, float(pressure_coeff))
+    f_ext = None
+    if clamp_MPa > 0:
+        # the clamp: B pressed down onto A over the overlap, each overlap node by its
+        # share of the overlap's length (half at its ends), the total p x overlap x width
+        f_ext = np.zeros((m.n_nodes, 3))
+        w_n = np.full(len(ov_a), 1.0)
+        w_n[[0, -1]] = 0.5
+        w_n *= clamp_MPa * overlap * width / w_n.sum()
+        f_ext[ov_a, 1] += w_n
+        f_ext[ov_b, 1] -= w_n
     # grips: the outer ends, clamped (no rotation); the B grip is pulled along +X
-    return drive(m, {na[0]: "xyzr", nb[-1]: "yzr"}, nb[-1], 0, rate, max_disp=2.0,
-                 stop_drop=0.2, test_time_s=test_time_s)
+    return drive(m, {na[0]: "xyzr", nb[-1]: "yzr"}, nb[-1], 0, rate, max_disp=max_disp,
+                 stop_drop=0.2, test_time_s=test_time_s, f_ext=f_ext, f_ramp=0.02)
 
 
 def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2.0,

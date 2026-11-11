@@ -1,2 +1,2 @@
-specimen,overlap_mm,width_mm,faces,failure_load_N,time_to_failure_s,cure_hours,glue_product,notes
-J01,20,10.0,1,,60,24,,example row: replace with your data
+specimen,overlap_mm,width_mm,faces,failure_load_N,time_to_failure_s,clamp_pressure_MPa,exposed_perimeter_mm,cure_hours,glue_product,notes
+J01,20,10.0,1,,60,,,24,,example row: replace with your data. clamp_pressure_MPa: blank or 0 for a lap pulled free; the pressure a clamp or weight held across the overlap while it was pulled (force / overlap area): laps at two or more pressures fit glue.pressure_coeff. exposed_perimeter_mm: blank for two sticks of one width lapped side by side (2 x width: their two ends); laps of three or more sizes (e.g. 10 x 10 / 20 x 10 / 40 x 10 and a 20 x 30 of three sticks side by side) fit glue.weibull_m and glue.fillet_mm together
