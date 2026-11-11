@@ -5062,6 +5062,9 @@ def test_glue_spot_factors_are_normalised_and_do_not_depend_on_the_mesh():
         m0 = build_model(simple_beam_bridge(), MAT, SP, seed=0, mesh_scale=scale)
         m1 = build_model(simple_beam_bridge(), MAT, sp_, seed=0, mesh_scale=scale)
         for pa in m1.patches:
+            if pa.kind == "block":  # a plane inside a pier is wood, not a glue line
+                assert np.all(m1.c_tau[pa.springs] == m0.c_tau[pa.springs])
+                continue
             i = np.asarray(pa.springs)
             r = m1.c_tau[i] / m0.c_tau[i]
             assert float((m1.c_area[i] * r).sum() / m1.c_area[i].sum()) == pytest.approx(
@@ -5124,11 +5127,15 @@ def test_fillets_follow_the_hand_formula():
     m1 = build_model(simple_beam_bridge(), MAT, SP.updated({"glue.fillet_mm": 1.0}), seed=0)
     for pa in m1.patches:
         i = np.asarray(pa.springs)
+        if pa.kind == "block":  # a plane inside a pier is wood: no fillet
+            assert np.all(m1.c_tau[i] == m0.c_tau[i])
+            continue
         want = fillet_factor(pa.exposed_mm, pa.area_mm2, 1.0)
         assert float((m1.c_area[i] * m1.c_tau[i]).sum() / (m1.c_area[i] * m0.c_tau[i]).sum()
                      ) == pytest.approx(want, rel=1e-9)
         assert np.all(m1.c_Ks[i] == m0.c_Ks[i])
-    assert {round(p.exposed_mm) for p in m1.patches} == {106, 2200}  # piers, deck
+    assert {round(p.exposed_mm) for p in m1.patches if p.kind != "block"} == {
+        106, 2200}  # piers, deck
 
 
 def test_lap_sizes_tell_the_size_law_from_fillets():
