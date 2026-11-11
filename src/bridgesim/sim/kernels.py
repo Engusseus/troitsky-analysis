@@ -313,12 +313,35 @@ def _soft(r, rf):
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
-def _plateau(r, rc):
+def _soft_on(r, ron, rf):
+    """Damage of a linear-softening mode whose onset the nonlocal measure set (solver.
+    plate_nonlocal_onset): 0 while held (ron 0: the point's own ratio r has passed 1 but
+    the average around it has not); from ron, the ratio it stood at when the average
+    reached 1 (at least 1), the stress falls linearly from ron x the strength to nothing
+    at r_end = rf / ron, so the element still dissipates G per unit crack area (the area
+    under the softening, ron r_end / 2, is rf / 2 as for an onset at 1); ron 1 is _soft
+    exactly. r_end is kept above 1.05 ron (a snap-back within the element otherwise)."""
+    if ron <= 0.0:
+        return 0.0
+    if ron == 1.0:
+        return _soft(r, rf)
+    if r <= ron:
+        return 0.0
+    re = rf / ron
+    if re < 1.05 * ron:
+        re = 1.05 * ron
+    d = 1.0 - ron * (re - r) / (r * (re - ron))
+    return 1.0 if d > 1.0 else d
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
+def _plateau(r, rc, wc):
     """Secant damage of a crushing mode: the stress falls from the strength to the plateau
-    rc x strength over one more onset strain, then stays there."""
+    rc x strength over ``wc`` more onset strains (the element's crushing fall,
+    solver.shell_crush_fall; 1 as until round 27), then stays there."""
     if r <= 1.0:
         return 0.0
-    u = r - 1.0
+    u = (r - 1.0) / wc
     if u > 1.0:
         u = 1.0
     return 1.0 - (1.0 - (1.0 - rc) * u) / r
@@ -381,7 +404,7 @@ def _shell_dkmt(e, d, w, lay, nl, sR, sKH, sGs, sphi, sH, sfil, split, rat, upda
 @njit(cache=True, fastmath=True, error_model="numpy")
 def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hist, dmg,
                gone, update, fe, me, beta, dt, prev, wd, wR, wth, ws, sR, sKH, sGs, sphi,
-               sH, sfil, split, rat):
+               sH, sfil, split, rat, wc, nlo, nlon, hon, ept, ec, wait, ecw):
     d = wd[e]
     Rl = wR[e]
     th = wth[e]
@@ -395,6 +418,19 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
             me[e, a, c] = 0.0
     if update:
         rat[e] = 0.0
+    # nonlocal onset (plate.nonlocal_onset; solver.plate_nonlocal_onset): with update,
+    # whether a point is held past its own strength (wait) and its strains then (ept),
+    # and, on the steps the onset pass asks for them (ecw), the element's mean strain of
+    # each ply at each level (ec) for the averaging
+    nlx = nlo and update
+    nle = nlx and ecw
+    if nlx:
+        wait[e] = False
+    if nle:
+        for ll in range(ec.shape[1]):
+            for q in range(3):
+                for c in range(3):
+                    ec[e, ll, q, c] = 0.0
     if gone[e]:
         return
     c0 = (x[n0, 0] + x[n1, 0] + x[n2, 0]) / 3.0
@@ -552,11 +588,40 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
                 hft = hist[e, p, 0]
                 hmt = hist[e, p, 2]
                 hs = hist[e, p, 4]
-                dft = _soft(hft, rf[e, 0])
-                dmt = _soft(hmt, rf[e, 1])
-                ds = _soft(hs, rf[e, 2])
-                d1 = dft if e1t >= 0.0 else _plateau(hist[e, p, 1], rc)
-                d2 = dmt if e2t >= 0.0 else _plateau(hist[e, p, 3], 1.0)
+                if nle:
+                    ec[e, ll, q, 0] += e1 / 3.0
+                    ec[e, ll, q, 1] += e2 / 3.0
+                    ec[e, ll, q, 2] += g12 / 3.0
+                # the tension modes' softening ends at rf / ron (ron 1: rf, local onset)
+                o0 = 1.0
+                o1 = 1.0
+                o2 = 1.0
+                held = False
+                if nlo and nlon[e, 0, ll]:
+                    o0 = hon[e, p, 0]
+                    dft = _soft_on(hft, o0, rf[e, 0])
+                    held = o0 <= 0.0 and hft >= 1.0
+                else:
+                    dft = _soft(hft, rf[e, 0])
+                if nlo and nlon[e, 1, ll]:
+                    o1 = hon[e, p, 1]
+                    dmt = _soft_on(hmt, o1, rf[e, 1])
+                    held = held or (o1 <= 0.0 and hmt >= 1.0)
+                else:
+                    dmt = _soft(hmt, rf[e, 1])
+                if nlo and nlon[e, 2, ll]:
+                    o2 = hon[e, p, 2]
+                    ds = _soft_on(hs, o2, rf[e, 2])
+                    held = held or (o2 <= 0.0 and hs >= 1.0)
+                else:
+                    ds = _soft(hs, rf[e, 2])
+                if nlx and held:
+                    wait[e] = True
+                    ept[e, p, 0] = e1
+                    ept[e, p, 1] = e2
+                    ept[e, p, 2] = g12
+                d1 = dft if e1t >= 0.0 else _plateau(hist[e, p, 1], rc, wc[e])
+                d2 = dmt if e2t >= 0.0 else _plateau(hist[e, p, 3], 1.0, 1.0)
                 dsh = 1.0 - (1.0 - ds) * (1.0 - dft) * (1.0 - dmt)
                 cr = dft
                 if dmt > cr:
@@ -566,11 +631,18 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
                 if cr < mincr:
                     mincr = cr
                 if all_open:
-                    op = hft / rf[e, 0]
-                    if hmt / rf[e, 1] > op:
-                        op = hmt / rf[e, 1]
-                    if hs / rf[e, 2] > op:
-                        op = hs / rf[e, 2]
+                    if nlo:  # wide open: twice the strain its softening ends at
+                        op = hft * o0 / rf[e, 0]
+                        if hmt * o1 / rf[e, 1] > op:
+                            op = hmt * o1 / rf[e, 1]
+                        if hs * o2 / rf[e, 2] > op:
+                            op = hs * o2 / rf[e, 2]
+                    else:
+                        op = hft / rf[e, 0]
+                        if hmt / rf[e, 1] > op:
+                            op = hmt / rf[e, 1]
+                        if hs / rf[e, 2] > op:
+                            op = hs / rf[e, 2]
                     if op < 2.0:
                         all_open = False
                 k1 = 1.0 - d1
@@ -650,12 +722,12 @@ def _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hi
 @njit(cache=True, fastmath=True, parallel=True, error_model="numpy")
 def shell_kernel(x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hist, dmg,
                  gone, F, Mo, update, fe, me, beta, dt, prev, wd, wR, wth, ws, sR, sKH, sGs,
-                 sphi, sH, sfil, split, rat):
+                 sphi, sH, sfil, split, rat, wc, nlo, nlon, hon, ept, ec, wait, ecw):
     ns = sn.shape[0]
     for e in prange(ns):
         _shell_one(e, x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, hist, dmg,
                    gone, update, fe, me, beta, dt, prev, wd, wR, wth, ws, sR, sKH, sGs, sphi,
-                   sH, sfil, split, rat)
+                   sH, sfil, split, rat, wc, nlo, nlon, hon, ept, ec, wait, ecw)
     for e in range(ns):
         for a in range(3):
             nd = sn[e, a]
@@ -665,6 +737,51 @@ def shell_kernel(x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, his
             Mo[nd, 0] += me[e, a, 0]
             Mo[nd, 1] += me[e, a, 1]
             Mo[nd, 2] += me[e, a, 2]
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
+def nonlocal_onset_kernel(wait, gone, nlon, ec, ept, hist, hon, lim, nl, ip, ix, wv):
+    """Compiled solver.plate_nonlocal_onset (the NumPy reference there): for each held
+    element, mode j (fibre tension, across the grain, shear: the strain e1, e2, g12 of
+    the ply) and ply whose line averages (nlon), each level's mean strain along the line
+    (the elements on it that are not gone, by their weights: row (j x layers + ply) x ns
+    + e of the CSR ip, ix, wv) less the element's own, added to each held point's
+    strain; where that averaged ratio has reached 1 the point's onset is set, hon =
+    max(h / r_nl, 1)."""
+    ns = wait.shape[0]
+    nlay = ec.shape[1]
+    for e in range(ns):
+        if not wait[e] or gone[e]:
+            continue
+        for j in range(3):
+            kh = 2 * j  # the history (and strength) of the mode: 0, 2, 4
+            for ll in range(nl[e]):
+                if not nlon[e, j, ll]:
+                    continue
+                r0 = (j * nlay + ll) * ns + e
+                for q in range(3):
+                    num = 0.0
+                    den = 0.0
+                    for k in range(ip[r0], ip[r0 + 1]):
+                        o = ix[k]
+                        if not gone[o]:
+                            num += wv[k] * ec[o, ll, q, j]
+                            den += wv[k]
+                    if den <= 0.0:
+                        continue
+                    dl = num / den - ec[e, ll, q, j]
+                    for g in range(3):
+                        p = (g * nlay + ll) * 3 + q
+                        h = hist[e, p, kh]
+                        if hon[e, p, j] > 0.0 or h < 1.0:
+                            continue
+                        v = ept[e, p, j] + dl
+                        if j == 2:
+                            v = abs(v)
+                        r = v / lim[e, kh]
+                        if r >= 1.0:
+                            o_ = h / r
+                            hon[e, p, j] = o_ if o_ > 1.0 else 1.0
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")

@@ -290,14 +290,17 @@ def recovery(xy: np.ndarray, phi: np.ndarray | None = None) -> np.ndarray:
 # own damage (Matzenmiller-type, as in LS-DYNA's MAT_054 or Abaqus' Hashin model):
 #
 #   fibre tension      linear softening, energy G_f per unit crack area
-#   fibre compression  crushing plateau at (1 - crush_softening) f_c
+#   fibre compression  crushing plateau at (1 - crush_softening) f_c, reached over the
+#                      shortening 5 (f_c / E) wood.crush_band_mm (solver.shell_crush_fall)
 #   across-grain tension (sticks parting edge to edge)  linear softening, G_f90
 #   across-grain compression  plateau at f_c90
 #   in-plane shear along the grain  linear softening, G_v
 #
 # Cracks close: a ply broken in tension still carries compression. The softening strain
 # is set by the element's characteristic length (crack band, Bazant & Oh 1983), so the
-# energy a crack dissipates does not depend on the mesh.
+# energy a crack dissipates does not depend on the mesh; where it starts at a stress
+# raiser does not either since round 28: the tension modes wait for the strain averaged
+# along the crack's path over 2 L_c (solver.plate_nonlocal_onset).
 
 NMODE = 5  # history per point: fibre t, fibre c, across t, across c, shear
 

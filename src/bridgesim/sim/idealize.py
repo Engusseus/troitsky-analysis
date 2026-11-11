@@ -4820,6 +4820,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 "wood_creep_exponent": sp.values.get("wood.creep_exponent", 0.25),
                 **dict(zip(("crusher_stroke_mm", "crusher_stroke_time_s",
                             "crusher_pause_s"), jack_strokes(sp.values), strict=True)),
+                # the plates' tension modes start where the strain averaged along the
+                # crack's path over their material length reaches the onset
+                # (solver.plate_nonlocal_onset)
+                "plate_nonlocal": sp.values.get("plate.nonlocal_onset", 0.0),
                 # each beam's section (width along e2, depth along e3, centre along e2)
                 # and each joint's share of its crush on either side's member, crushed
                 # across its grain on its side (sections: the member gets shallower)

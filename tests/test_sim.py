@@ -7152,3 +7152,293 @@ def test_ply_groups_one_keeps_round_27s_member():
     info = {b.name: b for b in m.bodies}["Chord (13-ply UD)"]
     A = np.array([m.b_fA[e].sum() for e in info.beams])
     assert not info.ply_groups and info.butt_zones and A.min() < 0.6 * A.max()
+
+
+# ------------------------------------------- round 28, C2: the plates' in-plane failure
+# laws do not depend on the mesh (nonlocal onset of the tension modes; crushing fall)
+
+
+def _sp_nl(on: float, **kw) -> SimParams:
+    sp = SimParams.load()
+    sp.values["plate.nonlocal_onset"] = on
+    sp.values.update(kw)
+    return sp
+
+
+def _same_time_step(monkeypatch):
+    """Make a compiled and a NumPy run of lab.drive step alike, so their force kernels
+    can be compared over a whole test: the nodes turned by one update in both (solver.
+    rotate's compiled and NumPy rotation updates differ by ~1e-5 over a plate's run, the
+    force kernels by ~1e-11), and the time step lab.drive takes recorded (crush.
+    stable_dt's power iteration runs on either's forces) and returned by the function
+    this returns for the next runs."""
+    from bridgesim.sim import crush
+
+    real, seen = crush.stable_dt, []
+
+    def record(*a, **k):
+        seen.append(real(*a, **k))
+        return seen[-1]
+
+    monkeypatch.setattr(S, "rotate", lambda st, dt, use_numba=True:
+                        S.K.expmap_update(st.R, st.w, dt))
+    monkeypatch.setattr(crush, "stable_dt", record)
+    return lambda: monkeypatch.setattr(crush, "stable_dt", lambda *a, **k: seen[0])
+
+
+def test_the_nonlocal_line_reproduces_the_onset_of_a_sharp_notch(monkeypatch):
+    """The averaging of the nonlocal onset (solver.plate_nonlocal_averaging) is the line
+    method of the theory of critical distances: a line along each mode's crack path, NL_
+    HALF_LENGTH x L_c each way, L_c = E G / (pi f^2), normalised by the wood on it. At a
+    sharp notch's root (no wood behind it) the field sigma = K / sqrt(2 pi r) averages
+    over [0, 2 L_c] to K / sqrt(pi L_c), the strength f exactly when K = K_c = sqrt(E G):
+    linear elastic fracture mechanics (by hand with E 10500, G_f 8 N/mm, f_t 40 MPa: L_c =
+    16.71 mm, K_c = 289.8 N mm^-1.5). On a plate: every row sums to 1 (a uniform field
+    averages to itself), the fibre mode of a 0/90 deck averages each ply across its own
+    grain and the across-grain mode along it, and an element longer than its line (the
+    half-length set tiny) keeps its own value: no row averages."""
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    E, G, f = 10500.0, 8.0, 40.0
+    Lc = E * G / (math.pi * f * f)
+    assert Lc == pytest.approx(16.71, abs=0.01)
+    Kc = math.sqrt(E * G)
+    a0 = S.NL_HALF_LENGTH * Lc
+    u = np.linspace(0, math.sqrt(a0), 20001)  # r = u^2: dr / sqrt(r) = 2 du
+    mean = np.trapezoid(np.full_like(u, 2 * Kc / math.sqrt(2 * math.pi)), u) / a0
+    assert mean == pytest.approx(f, rel=1e-9)
+    m = build_model(simple_beam_bridge(), MAT, _sp_nl(1.0), Overrides(), seed=None)
+    W, nlon = S.plate_nonlocal_averaging(m)
+    ns, nlay = len(m.s_nodes), m.s_lay.shape[1]
+    rs = np.asarray(W.sum(axis=1)).ravel()
+    assert np.allclose(rs[rs > 0], 1.0) and nlon.any()
+    cen = m.X[m.s_nodes].mean(axis=1)
+    for j in (0, 1):
+        for ll in range(nlay):
+            e = int(np.argmax(nlon[:, j, ll]))
+            row = W[(j * nlay + ll) * ns + e]
+            d = cen[row.indices] - cen[e]
+            c, s = m.s_lay[e, ll, 2:]
+            grain = c * m.s_E0[e][:, 0] + s * m.s_E0[e][:, 1]
+            across = np.cross(m.s_E0[e][:, 2], grain)
+            # fibre mode: the line across its grain; across the grain: along it
+            on, off = (across, grain) if j == 0 else (grain, across)
+            assert (row.data * (d @ on) ** 2).sum() > 4 * (row.data * (d @ off) ** 2).sum()
+    monkeypatch.setattr(S, "NL_HALF_LENGTH", 1e-3)
+    m._pnl = None
+    assert not S.plate_nonlocal_averaging(m)[1].any()
+
+
+@pytest.mark.slow
+def test_a_plate_pulled_through_a_third_of_its_end_converges_with_the_nonlocal_onset():
+    """A 2 mm plate, its grain across the pull (a 90 ply), 40 long and 30 wide, pulled
+    along X through the middle third of its end (the grip's edges are stress raisers).
+    Locally its first element cracks where the mesh resolves the raiser: 71.4 / 54.1 /
+    43.0 N with 5 / 2.5 / 1.25 mm elements (48.1 / 36.3 / 28.8 at round 26's f_t90 1.0),
+    no convergence. With the nonlocal onset: L_c = E_T G_f90 / (pi f_t90^2) = 500 x 0.45
+    / (pi 1.5^2) = 31.8 mm, so a ply's line across the grain (along y here, 2 x 63.7
+    mm) spans the plate's whole width: the across-grain strain averaged on it is its
+    cross-section's mean, F / (W t E_T) by equilibrium, wherever the grip puts the load
+    in, and the plate starts to crack at its net section, f_t90 W t = 1.5 x 30 x 2 = 90 N
+    (the theory of critical distances: a raiser inside the critical distance of a part
+    that small does not weaken it). Measured 90.4 / 90.6 / 90.7 N, within 1 % of each
+    other and of 90; the crack then runs across the end through the whole width,
+    G_f90 W t = 27 N mm, measured 27.6-28.0."""
+    pytest.importorskip("numba")
+    peaks = {}
+    for h in (5.0, 2.5, 1.25):
+        r = lab.shell_strip_tension(h, L=40, W=30, angles=(90,), weak=1, grip=1 / 3,
+                                    sim_params=_sp_nl(1.0))
+        peaks[h] = r.peak
+        assert r.peak == pytest.approx(90.0, rel=0.03), h
+        assert float(np.trapezoid(r.force, r.disp)) == pytest.approx(27.0, rel=0.1), h
+    assert max(peaks.values()) < 1.1 * min(peaks.values())  # acceptance: within 10 %
+    local = [lab.shell_strip_tension(h, L=40, W=30, angles=(90,), weak=1, grip=1 / 3,
+                                     sim_params=_sp_nl(0.0)).peak for h in (5.0, 1.25)]
+    assert local[1] < 0.7 * local[0] < 0.7 * peaks[5.0]  # local: falls with the mesh
+
+
+@pytest.mark.slow
+def test_uniform_strips_are_as_strong_with_the_nonlocal_onset():
+    """A uniform field averages to itself, so a strip whose stress is uniform is as strong
+    with the nonlocal onset as without it, within 5 % at 5, 2.5 and 1.25 mm elements:
+    a 0 ply with a column 5 % weaker (0.95 f_t W t = 760 N; measured +0.2 to +0.5 %
+    over local), and a 45 ply stretched uniformly (its ends on rollers): its plies part
+    across the grain at e_2 = (sigma / 2)(1 / E_T - nu_LT / E_L) = f_t90 / E_T, sigma =
+    3.05 MPa, 61.1 N (58.0 in the weak column; measured 59.2-61.1, within 1 % of local).
+    A process-zone onset tried before (validation README 3.4) doubled the 45 strip by
+    holding the modes at their strengths. (Clamped, the 45 strip's corners are stress
+    raisers: 74.9 / 62.6 / 59.4 N locally, 93.1 / 84.1 / 81.8 nonlocal, its average
+    across-grain strain lower than a free strip's.)"""
+    pytest.importorskip("numba")
+    ply = Ply.from_material(MAT, SP)
+    s45 = 2 * ply.f_t90 / ply.E_T / (1 / ply.E_T - ply.nu_LT / ply.E_L)
+    assert s45 * 10 * 2 == pytest.approx(61.07, abs=0.05)
+    for ang, rollers, want in ((0.0, False, 760.0), (45.0, True, 0.975 * s45 * 20)):
+        for h in (5.0, 2.5, 1.25):
+            pk = [lab.shell_strip_tension(h, angles=(ang,), rollers=rollers,
+                                          sim_params=_sp_nl(on)).peak for on in (0.0, 1.0)]
+            assert pk[1] == pytest.approx(pk[0], rel=0.05), (ang, h)
+            assert pk[1] == pytest.approx(want, rel=0.04), (ang, h)
+
+
+@pytest.mark.slow
+def test_a_notched_strip_dissipates_the_fracture_energy_with_the_nonlocal_onset():
+    """A 0 ply strip 10 wide with an edge notch 5 deep at mid-length, pulled along its
+    grain on two meshes: the crack runs through the 5 mm ligament, dissipating G_f x 5 x
+    t = 8 x 5 x 2 = 80 N mm within 10 % (measured 82.7 and 86.1; the existing test_shell_
+    fracture_energy_is_mesh_independent keeps its own strip, nonlocal on). The ligament's
+    line across the grain (2 x 33 mm) spans it, the notch cutting it: the onset at its
+    net section, f_t x 5 x 2 = 400 N, and the fibres at the notch's root, held past f_t
+    until then, soften from the stress they hold: the peak 1.07-1.09 x the net section
+    (local 0.96)."""
+    pytest.importorskip("numba")
+    peaks = []
+    for h in (2.5, 1.25):
+        r = lab.shell_strip_tension(h, angles=(0.0,), weak=1.0, notch=5.0, max_disp=2.0,
+                                    sim_params=_sp_nl(1.0))
+        work = float(np.trapezoid(r.force, r.disp))
+        assert work == pytest.approx(80.0, rel=0.1), h
+        assert 400.0 < r.peak < 1.12 * 400.0, h
+        peaks.append(r.peak)
+    assert peaks[0] == pytest.approx(peaks[1], rel=0.03)
+
+
+def test_the_nonlocal_onset_switch_and_kernel(monkeypatch):
+    """plate.nonlocal_onset 0 is round 27's local onset (the pulled-through plate at 5 mm
+    peaks at its 71.38 N); with it on, a plate whose elements are all longer than their
+    lines (the half-length set tiny) takes no average and gives the local curve bit for
+    bit; and the compiled kernel and onset pass give the NumPy reference's curve and
+    onset ratios."""
+    pytest.importorskip("numba")
+    kw = dict(L=40, W=30, angles=(90,), weak=1, grip=1 / 3)
+    off = lab.shell_strip_tension(5.0, sim_params=_sp_nl(0.0), max_disp=0.3, **kw)
+    assert off.peak == pytest.approx(71.38, abs=0.01)
+    replay = _same_time_step(monkeypatch)
+    on = lab.shell_strip_tension(5.0, sim_params=_sp_nl(1.0), max_disp=0.3, **kw)
+    assert on.peak > 1.2 * off.peak and (on.state.s_hon > 1.0).any()
+    with monkeypatch.context() as mp:
+        mp.setattr(S, "NL_HALF_LENGTH", 1e-3)
+        tiny = lab.shell_strip_tension(5.0, sim_params=_sp_nl(1.0), max_disp=0.3, **kw)
+    assert np.array_equal(tiny.force, off.force)
+    monkeypatch.setattr(S.K, "HAVE_NUMBA", False)
+    replay()
+    ref = lab.shell_strip_tension(5.0, sim_params=_sp_nl(1.0), max_disp=0.3, **kw)
+    np.testing.assert_allclose(ref.force, on.force, rtol=1e-6, atol=1e-6 * on.peak)
+    np.testing.assert_allclose(ref.state.s_hon, on.state.s_hon, rtol=1e-6, atol=1e-9)
+    np.testing.assert_allclose(ref.state.s_hist, on.state.s_hist, rtol=1e-6, atol=1e-9)
+
+
+def test_a_plate_crushing_along_its_grain_takes_the_same_shortening_on_any_mesh(
+        monkeypatch):
+    """A 0 ply strip (40 x 10 x 2, held flat) pushed along its grain, its cells from
+    mid-length 5 % weaker, with 10, 5 and 2.5 mm elements: the weak column crushes at
+    0.95 f_c W t = 570 N and falls to its plateau 0.7 x that (x Q11 / E_L, 1.008: the
+    plateau is on the ply's Q11) over wc = 5 x wood.crush_band_mm / l_c onset strains,
+    i.e. the shortening 5 (f_c / E) x 12.5 mm = 0.178 mm on any mesh: the work the column
+    takes from peak to plateau is A x 0.178 x (28.5 + 0.7 x 1.008 x 28.5) / 2 = 86.5 N mm
+    (measured with the elastic energy the rest of the strip gives back as the load falls,
+    (F_p^2 - F_pl^2)(L - h) / (2 E A), added to the grip's work: within 2 % on each mesh).
+    Until round 27 the fall took one onset strain whatever the element (crush_band_mm 0,
+    the same law bit for bit: wc 1), so the column's work was A h e0 (f + 0.7 f) / 2,
+    in proportion to the element. Compiled = NumPy."""
+    from bridgesim.sim import kernels as Kn
+
+    pytest.importorskip("numba")
+    rr = np.random.default_rng(0).uniform(0.5, 4.0, 50)
+
+    def plateau27(r, rc):  # round 27's law, as it was written: u = min(r - 1, 1)
+        if r <= 1.0:
+            return 0.0
+        u = r - 1.0
+        if u > 1.0:
+            u = 1.0
+        return 1.0 - (1.0 - (1.0 - rc) * u) / r
+
+    old27 = Kn.njit(cache=False, fastmath=True, error_model="numpy")(plateau27)
+    assert all(Kn._plateau(float(x), 0.7, 1.0) == old27(float(x), 0.7) for x in rr)
+    u = np.minimum(np.maximum(rr - 1.0, 0.0), 1.0)
+    old = np.where(rr > 1.0, 1.0 - (1.0 - (1.0 - 0.7) * u) / np.maximum(rr, 1.0), 0.0)
+    assert np.array_equal(S._plateau(rr, 0.7), old)
+    E, fc, A, L = 10000.0, 30.0, 20.0, 40.0
+    fp = 0.95 * fc * A
+    ply = Ply.from_material(MAT, SP)
+    q11 = ply.Q()[0, 0]
+    rc = 1.0 - SP["wood.crush_softening"]
+    w = 5 * 0.95 * fc / E * 12.5
+    band_work = A * w * (0.95 * fc + rc * q11 / E * 0.95 * fc) / 2
+    assert band_work == pytest.approx(86.5, abs=0.1)
+
+    def run(h, band, **kw):
+        sp = SimParams.load()
+        sp.values["wood.crush_band_mm"] = band
+        return lab.shell_strip_tension(h, L=L, sim_params=sp, sign=-1.0, flat=True,
+                                       weak_cells=True, max_disp=0.3, **kw)
+
+    def column_work(r, h):
+        i0 = int(np.argmax(r.force))
+        i1 = i0 + int(np.argmax(r.force[i0:] <= rc * fp * q11 / E * 1.005))
+        assert i1 > i0
+        Fp, Fpl = r.force[i0], r.force[i1]
+        grip = float(np.trapezoid(r.force[i0:i1 + 1], r.disp[i0:i1 + 1]))
+        return grip + (Fp**2 - Fpl**2) * (L - h) / (2 * E * A)
+
+    works = []
+    for h in (10.0, 5.0, 2.5):
+        r = run(h, 12.5)
+        assert r.peak == pytest.approx(fp, rel=0.01), h
+        works.append(column_work(r, h))
+        assert works[-1] == pytest.approx(band_work, rel=0.02), h
+    assert max(works) < 1.05 * min(works)
+    # round 27 (crush_band_mm 0): one onset strain on every mesh, wc 1
+    from types import SimpleNamespace
+
+    lc = np.array([2.5, 10.0, 100.0])
+    for band, want in ((0.0, [1.0, 1.0, 1.0]), (12.5, [25.0, 6.25, 1.0])):
+        mm = SimpleNamespace(s_nodes=np.zeros((3, 3), int), s_lc=lc,
+                             params={"crush_band_mm": band})
+        assert np.array_equal(S.shell_crush_fall(mm), want)
+    # round 27's column at 10 mm: A h e0 (f + f_pl) / 2 = 13.8 N mm, a sixth of the band's
+    old = column_work(run(10.0, 0.0), 10.0)
+    assert old < 0.3 * band_work
+    replay = _same_time_step(monkeypatch)
+    fast = run(10.0, 12.5)
+    monkeypatch.setattr(S.K, "HAVE_NUMBA", False)
+    replay()
+    ref = run(10.0, 12.5)
+    np.testing.assert_allclose(ref.force, fast.force, rtol=1e-6, atol=1e-6 * fp)
+
+
+@pytest.mark.slow
+def test_an_open_hole_follows_the_average_stress_criterion():
+    """A strip with a central hole (30 wide, 60 long, 2 thick; its upper half, held on its
+    centre line) of an isotropic test ply (E 10 GPa, nu 0, f 40 MPa, G = pi L_c f^2 / E
+    for L_c = 3 mm, no shear or crushing failure) pulled along X, nonlocal onset on.
+    Whitney & Nuismer's average-stress criterion with the line method's length, a_0 =
+    2 L_c: sigma_N / sigma_0 = 2 (1 - x) / (2 - x^2 - x^4), x = a / (a + a_0), over the
+    finite-width factor (2 + (1 - 2a/W)^3) / (3 (1 - 2a/W)): a = 1.5 mm (half L_c) 0.808,
+    a = 4.5 mm (one and a half) 0.575, against the net section 0.9 and 0.7 (the size
+    effect: the small hole weakens the strip about as its net section says, the large one
+    as its stress concentration does). Measured 0.874 and 0.630 with 1 mm elements, 0.867
+    and 0.636 with 0.7 mm: 7-11 % above the criterion (an onset criterion; here the
+    fibres at the hole soften from the stress they held and the crack grows stably for a
+    while), converged to 1 %, and their ratio 1.36 against its 1.41 (local, the large
+    hole: 0.539 at 1 mm)."""
+    from shapely.geometry import Point, box
+
+    pytest.importorskip("numba")
+    Lc, E, f, t, W, L = 3.0, 10000.0, 40.0, 2.0, 30.0, 60.0
+    G = math.pi * Lc * f * f / E
+    ply = Ply(E_L=E, E_T=E, G_LT=E / 2, nu_LT=0.0, f_t=f, f_c=1e4, f_t90=f, f_c90=1e4,
+              f_v=1e4)
+    sp = _sp_nl(1.0, **{"wood.G_f_N_per_mm": G, "wood.G_f90_N_per_mm": G,
+                        "wood.G_v_N_per_mm": 1e4})
+    for a, want in ((1.5, 0.808), (4.5, 0.575)):
+        x = a / (a + 2 * Lc)
+        r_ = 2 * a / W
+        asc = 2 * (1 - x) / (2 - x**2 - x**4) / ((2 + (1 - r_) ** 3) / (3 * (1 - r_)))
+        assert asc == pytest.approx(want, abs=0.001)
+        poly = box(-L / 2, 0, L / 2, W / 2).difference(Point(0, 0).buffer(a, 128))
+        r = lab.shell_plate_pull(poly, 1.0, t=t, ply=ply, sim_params=sp, max_disp=0.6,
+                                 rho_scale=100.0, sym_y0=True, stop_drop=0.3)
+        assert asc < r.peak / (f * W / 2 * t) < 1.12 * asc, a

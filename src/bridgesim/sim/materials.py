@@ -147,6 +147,7 @@ PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("crusher.stroke_mm", 0.0, 100.0, True),
     ("crusher.stroke_time_s", 0.0, 3600.0, False),
     ("crusher.pause_s", 0.0, 3600.0, True),
+    ("plate.nonlocal_onset", 0.0, 1.0, True),
     ("*", 0.0, float("inf"), False),  # moduli, strengths, energies, sizes: positive
 ]
 

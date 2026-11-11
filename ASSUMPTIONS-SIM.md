@@ -785,8 +785,8 @@ load-shortening record of a short stack crushed past its peak measures it,
 924 by hand, and the 25 mm element follows round 27's curve
 (`test_crushing_takes_the_same_shortening_on_any_mesh`). A free strut kinks in the
 element that crushes (its fibres crush unevenly and the section bends), which the
-regularisation does not reach. The plates' plies still fall over one more onset strain
-(section 7). A single stick so modelled breaks in 3-point bending at the material's
+regularisation does not reach. The plates' plies crushing along their grain fall over the
+same shortening since round 28 (below). A single stick so modelled breaks in 3-point bending at the material's
 f_b (within 4 %; the test allows 10 %): compression yielding on top and tension softening below give
 the bending strength, as in wood. A member **splits in shear** when the shear on a
 family of planes along it reaches their strength: on the glue planes between its plies,
@@ -833,7 +833,8 @@ points through each ply group (Simpson's rule, exact for the elastic bending
 stiffness), the strain is turned into the grain axes and each failure mode has its own
 damage, in the spirit of LS-DYNA's MAT_054 or Abaqus' Hashin damage but with an
 independent maximum-strain criterion per mode: fibre tension softens to zero with
-fracture energy G_f (8 N/mm); fibre compression crushes to a plateau at 70 % of f_c;
+fracture energy G_f (8 N/mm); fibre compression crushes to a plateau at 70 % of f_c
+(below: over a shortening, since round 28);
 across-grain tension (sticks parting edge to edge, f_t90 = 1.5 MPa) softens with G_f90
 (0.45 N/mm); across-grain compression yields at f_c90; in-plane shear softens with G_v
 (1.3 N/mm). Cracks close: a broken ply still carries compression. A 0/90 sheet of sticks with unglued edges (`glue.plate_edges_glued` 0, asked as `plate_edges`) carries in-plane shear through the glued crossings of its plies, like cross-laminated timber with unglued narrow faces: ~0.68 of the shear stiffness and half the shear strength (Bogensperger, Moosbrugger & Silly 2010), or less where the glued crossings fail first in torsion: tau_T = 3 tau t* / a with t* = n t / (n - 1) per glued interface (Boggian, Andreolli & Tomasi 2019), which caps a 2-ply sheet of 2 x 10 mm sticks at 0.83 x the crossing's torsional strength, min(the bond line 4 MPa, 2.4 x rolling shear: Flaig & Blass 2013 measured torsion 3.5-4.7 MPa against rolling shear 1.4-1.5 on CLT crossings), 3.3 MPa against half of f_v, 4 (round 20). The softening strain of
@@ -858,6 +859,83 @@ crack band, so until round 17 any plate crack was flagged, also one in fibre ten
 that the mesh resolves (`test_a_crack_is_flagged_only_past_the_crack_band_of_its_own_
 mode`). An element is removed only when every ply is torn wide open
 (twice the strain at which it carries nothing) or when it is distorted beyond 0.5 rad.
+
+**Where a plate starts to crack** (since round 28; `plate.nonlocal_onset` 0 gives round
+27's local onset back, bit for bit). The crack band makes the energy of a crack
+independent of the mesh, not its onset: at a stress raiser (a grip pulling part of a
+plate's edge, a re-entrant corner, the end of a glued lap on a gusset) the strain an
+element resolves grows without bound as elements shrink, so the first crack came at a
+lower load on a finer mesh (a plate pulled through a third of its end: 71.4, 54.1 and
+43.0 N with 5, 2.5 and 1.25 mm elements). A ply's point whose own strain passes its
+onset in a tension mode (fibre tension, across the grain, in-plane shear) is now held
+elastic until that mode's strain, averaged along the crack's path through its element,
+reaches the onset too: the line method of the theory of critical distances (Taylor
+2007, *The Theory of Critical Distances*, Elsevier), along a line across the ply's grain
+for fibre tension and along it across the grain and in shear, 2 L_c each way, L_c = E G
+/ (pi f^2) of the mode (the ply's modulus, fracture energy and strength: 16.7 mm in fibre
+tension, 31.8 mm across the grain and 4.2 mm in shear with the placeholders), normalised
+by the wood on the line (`solver.plate_nonlocal_averaging`: a cached sparse average per
+plate, mode and ply of each element's mean strain, the element's own variation about its
+mean kept; only elements of the same plate). At a notch's root, with no wood behind it,
+that is the average over 2 L_c ahead, which for a sharp notch reaches the strength
+exactly at the fracture toughness K_c = sqrt(E G) and for a hole is Whitney and
+Nuismer's average-stress criterion (`test_the_nonlocal_line_reproduces_the_onset_of_a_
+sharp_notch`); a uniform field averages to itself. From then the point softens from the
+stress it holds (the ratio h / r_nl it stands at, at least 1) to nothing at rf / that
+ratio, so it still dissipates G per unit crack area (`kernels._soft_on`), its own strain
+driving the softening: driving it by the averaged strain, as nonlocal damage models do,
+would let an opening crack's strain, smeared along the line, damage its flanks, a band
+wider than one element dissipating more than G. A point never starts below its own
+strength (the average only delays the onset), so the crack band, which takes over where
+elements are larger than the band, is unchanged, and an element whose own chord holds its
+whole line (longer than about 4 L_c) stays local. The plate pulled through a third of
+its end now peaks at 90.4, 90.6 and 90.7 N with 5, 2.5 and 1.25 mm elements, at its net
+section f_t90 W t = 90 N: its line across the grain spans its width, so its average is
+the section's mean stress by equilibrium, and a raiser inside the critical distance of
+a part that small does not weaken it; its crack then dissipates G_f90 W t within 4 %
+(`test_a_plate_pulled_through_a_third_of_its_end_converges_with_the_nonlocal_onset`).
+Uniform strips (a 0 ply with a weak column, a 45 ply stretched on rollers) are as strong
+as with the local onset within 1 % (`test_uniform_strips_are_as_strong_with_the_
+nonlocal_onset`; the process-zone onset tried before doubled the 45 strip by holding
+the modes at their strengths, `validation/README.md` §3.4); a notched strip dissipates
+G_f x its ligament within 8 % on two meshes (`test_a_notched_strip_dissipates_the_
+fracture_energy_with_the_nonlocal_onset`); an open-hole strip of an isotropic test ply
+reads 7-11 % above the average-stress criterion with the same L_c, converged to 1 % on two
+meshes, for holes of half and one and a half L_c, the small one close to its net section
+and the large one far below it as the criterion has them (0.87 and 0.63 against 0.81 and
+0.58; locally 0.54 for the large hole on 1 mm elements): the criterion is an onset, and
+here the fibres at the hole soften from the stress they held and the crack grows stably
+for a while (`test_an_open_hole_follows_the_average_stress_criterion`).
+An average over a disc (the area method) was tried first and not adopted: it takes the
+unloaded wood beside a notch (its shadow) into the ligament's average, and a notched
+strip's ligament held 1.7-1.85 x its net section. Limits: a part shallower than about 2
+L_c across the crack's path, bent in its plane, is held past its strength (the line
+takes in its compressed side); the fibres at a notch's root soften from the stress they
+held, so a notched ligament peaks at 1.07-1.09 x its net section (0.96 locally); a 45
+ply strip clamped at its ends (its corners are raisers) reads 93 / 84 / 82 N with 5 /
+2.5 / 1.25 mm elements against 75 / 63 / 59 locally (a free one 59-61), not converged
+to 10 % at 5 mm; and the critical lengths are long with the placeholder values (63.7
+mm each way across the grain), so on the bridge's meshes nearly every plate element
+averages. A crush whose failure starts as a crack in elements past the crack band of
+its mode is still flagged (`study._quality`): those elements hold most of their line
+and their strength is lowered to the energy, so their onset depends on the mesh as
+before. It costs ~2 % of a step on the synthetic bridge at standard while no point is
+held (the averaging is applied only to held elements, the element means written only
+then).
+
+**Plies crushing along their grain** fall from f_c to their plateau over the shortening
+5 (f_c / E) x `wood.crush_band_mm` across the element (since round 28: 5 x band / l_c
+onset strains in an element of crack band l_c, at least one, `solver.shell_crush_fall`),
+as the members' fibres do (above), so the energy a crushing plate gives up does not
+depend on its mesh: a strip with a weak column crushed along its grain with 10, 5 and
+2.5 mm elements gives up the same work from its peak to its plateau, 86.5 N mm by hand,
+within 2 % on each (`test_a_plate_crushing_along_its_grain_takes_the_same_shortening_
+on_any_mesh`). Until round 27 the fall took one onset strain whatever the element
+(`wood.crush_band_mm` 0 gives it back, bit for bit), its work in proportion to the
+element, a factor ~5 below the members' for the same wood at standard: a standard plate
+element (l_c 15-20 mm) now falls over 3-4 onset strains, more gently than before. On a
+fine mesh the crushed column reaches its plateau at a large strain (14 % at 1.25 mm),
+where the constant-strain element begins to stiffen again past the plateau.
 
 **Plates in out-of-plane shear** (since round 28; `plate.shear_deformable` 0 gives round
 27's Kirchhoff element back, bit for bit). A stick plate is soft in transverse shear: a
@@ -1528,16 +1606,17 @@ assumed values (judgements, nothing measured on stick bridges), drawn by `montec
   ten, the adversarial review of round 24); other untrustworthy runs are listed apart and
   left out while at least half the runs are trustworthy, and a rigid block under the
   loading plate is named in the note (it cannot fail in any run).
-* **Crack onset is local.** A plate left as a shell cracks where its strain first
-  reaches the strength in one element; the crack band makes the energy of the crack
-  independent of the mesh, not its onset at a sharp stress raiser (the end of a glued
-  lap, a re-entrant corner), which comes at a lower load the finer the mesh. The narrow
-  plates where that mattered on Bridge_v6 are frames since round 11, and its x0.5 mesh
-  converges with x0.75 (above); on a design whose shells have sharp stress raisers in
-  the load path, check with `--fidelity fine` and `convergence_study.py --scales
-  1,0.75,0.5`. A nonlocal process-zone onset
-  was tried and not adopted (it doubled the strength of off-axis plies;
-  `validation/README.md` §3.4).
+* **Crack onset at a stress raiser** is nonlocal since round 28 (section 4: a ply's point
+  past its strength waits until the strain along the crack's path, averaged over 2 L_c
+  each way, reaches it too; until round 27 the first element to reach its strength
+  cracked, at a lower load the finer the mesh at a sharp raiser, the end of a glued lap,
+  a re-entrant corner). It converges where the line is resolved; where elements are
+  larger than the crack band of their mode (their onset lowered to the energy) it is as
+  local as before, and a part shallower than about 2 L_c bent in its plane is held past
+  its strength. On a design whose shells crack first at a sharp stress raiser, check
+  with `--fidelity fine` and `convergence_study.py --scales 1,0.75,0.5`. (A process-zone
+  onset that held the modes at their strengths was tried before round 28 and not adopted:
+  it doubled the strength of off-axis plies; `validation/README.md` §3.4.)
 * Time is compressed: the simulated jack moves at ~100 mm/s instead of the real
   mm/min. The glue's and (since round 28) the wood's creep and rate-dependent strength
   run on the physical test time (the jack's travel at the real rate, a pumped jack's
@@ -1616,9 +1695,6 @@ assumed values (judgements, nothing measured on stick bridges), drawn by `montec
   model: crushing is in the glue line between two parts (permanent set, compaction). A
   member crushed across its grain on its side is shallower there since round 28 (section
   2); one crushed on its end grain keeps its length.
-* The plates' plies crushing along their grain fall to their plateau over one more onset
-  strain, not over a shortening set by the element's size as members' fibres do since
-  round 28 (section 4): that needs a width per element in the shell kernel.
 * Plates use constant-strain membranes (a membrane with drilling rotations was tried and
   not adopted: `validation/README.md` §3.4), with elements at least 1.5 x their thickness
   in size (`idealize.THICK_H`, set for the Kirchhoff element; since round 28 the bending

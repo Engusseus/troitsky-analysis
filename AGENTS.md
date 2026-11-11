@@ -499,8 +499,11 @@ laminated members and stick plates are assumed in a brick pattern unless
 profile (a part at least twice as long as its section is a member), each stick with its
 own strength since round 28 (`scatter.stick_field`: a long member is as strong as its
 weakest section); compact blocks are a few rigid cells joined by their wood (they split
-only between cells; `kind: rigid` for one rigid body); plates crack ply by ply and, since
-round 28, deform and split between their plies in out-of-plane shear; plates made of
+only between cells; `kind: rigid` for one rigid body); plates crack ply by ply (since
+round 28 a crack starts where the strain averaged along its path over a material length
+reaches the strength, so a stress raiser does not crack earlier on a finer mesh:
+`plate.nonlocal_onset`) and, since round 28, deform and split between their plies in
+out-of-plane shear; plates made of
 narrow arms are frames of members; a glue line pressed together holds more in shear
 (`glue.pressure_coeff`, assumed until clamped laps measure it); the built bridge differs
 from the drawing by seeded amounts that are judgements until measured on a build (plates

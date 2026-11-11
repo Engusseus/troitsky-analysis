@@ -438,14 +438,26 @@ def lap_shear(tau_max: float, peel_to_shear: float = 0.5, Kn: float = 150.0,
 def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2.0,
                         angles: tuple = (0.0,), weak: float = 0.95, rate: float = 40.0,
                         material=None, sim_params=None, grip: float = 1.0,
-                        max_disp: float = 1.0) -> TestResult:
+                        max_disp: float = 1.0, sign: float = 1.0, flat: bool = False,
+                        notch: float = 0.0, ply=None, stop_drop: float = 0.01,
+                        rho_scale: float = 1.0, rollers: bool = False,
+                        weak_cells: bool = False) -> TestResult:
     """A plate strip (L along X, W across, thickness t, ply ``angles`` from X) meshed with
     right triangles of size ``h``, clamped at x = 0 and pulled along X at x = L until it
     breaks. The column of elements at mid-length is ``weak`` x as strong, so the crack
     forms there. With the crack-band regularisation the work to break the strip is
     G_f W t whatever ``h`` is (the mesh-convergence check of the shell damage).
     ``grip`` < 1 pulls only the middle share of the end (a stress concentration at the
-    grip's edges)."""
+    grip's edges). ``sign`` -1 pushes instead (``flat``: every node held in z, so it
+    cannot buckle out of its plane); ``notch``: an edge notch that deep (mm, from y = 0),
+    one element wide from x = L / 2 (the cells there left out; give ``weak`` 1); ``ply``: a
+    materials.Ply instead of the material's (a test material); ``rho_scale``: its density
+    x this (mass scaling: a larger stable time step for a test that stays quasi-static);
+    ``rollers``: both ends free to slide across (one corner held), so a strip whose plies
+    couple stretching and shearing (an angle ply) is stretched uniformly, not clamped;
+    ``weak_cells``: the weak column is the cells from x = L / 2 (whole cross-sections:
+    the two triangles of each), not the triangles whose centroid is nearest it (a
+    zig-zag of half cells, round 27's)."""
     from bridgesim.schema import Material
     from bridgesim.sim.materials import Ply, SimParams
 
@@ -453,12 +465,12 @@ def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2
     mat = material or Material.from_yaml(
         __import__("pathlib").Path(__file__).resolve().parents[3] / "materials"
         / "popsicle_birch.yaml")
-    ply = Ply.from_material(mat, sp)
+    ply = ply or Ply.from_material(mat, sp)
     nx, ny = max(2, round(L / h)), max(1, round(W / h))
     xs, ys = np.linspace(0, L, nx + 1), np.linspace(0, W, ny + 1)
     X = np.array([[x, y, 0.0] for x in xs for y in ys])
     m = blank_model(X)
-    rho = mat.density_kg_m3.value * 1e-12  # t/mm^3
+    rho = mat.density_kg_m3.value * 1e-12 * rho_scale  # t/mm^3
 
     def nid(i, j):
         return i * (ny + 1) + j
@@ -471,6 +483,8 @@ def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2
                         (nid(i, j), nid(i + 1, j + 1), nid(i, j + 1))):
                 P3 = X[list(tri)]
                 c = P3.mean(0)
+                if notch > 0 and i == nx // 2 and c[1] < notch:
+                    continue  # the notch: the cells of the column from x = L / 2 cut out
                 ex = (P3[1] - P3[0]) / np.linalg.norm(P3[1] - P3[0])
                 ez = np.array([0.0, 0.0, 1.0])
                 ey = np.cross(ez, ex)
@@ -478,7 +492,8 @@ def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2
                 Ploc = (P3 - c) @ E0
                 gang = math.degrees(math.atan2(float(np.array([1.0, 0, 0]) @ ey),
                                                float(np.array([1.0, 0, 0]) @ ex)))
-                Sf = weak if abs(c[0] - L / 2) < 0.5 * L / nx else 1.0
+                mid = (i == nx // 2) if weak_cells else abs(c[0] - L / 2) < 0.5 * L / nx
+                Sf = weak if mid else 1.0
                 ed = shellmod.element_data(Ploc[:, :2], [gang + a for a in angles], t, ply,
                                            1.0, Sf, G, ply.E_L * t)
                 els.append(ed)
@@ -498,12 +513,81 @@ def shell_strip_tension(h: float, L: float = 20.0, W: float = 10.0, t: float = 2
     m.params["crush_softening"] = sp["wood.crush_softening"]
     m.params["fc_proportional"] = sp.values.get("wood.fc_proportional", 1.0)
     m.params["crush_band_mm"] = sp.values.get("wood.crush_band_mm", 0.0)
+    m.params["plate_nonlocal"] = sp.values.get("plate.nonlocal_onset", 0.0)
     left = [nid(0, j) for j in range(ny + 1)]
     right = [nid(nx, j) for j in range(ny + 1)
              if abs(ys[j] - W / 2) <= grip * W / 2 + 1e-9]
-    fixed = {n: "xyzr" for n in left} | {n: "yzr" for n in right}
-    return drive(m, fixed, right, 0, rate, max_disp=max_disp, stop_drop=0.01, alpha=2000.0,
-                 record_every=5)
+    fixed = ({n: "z" for n in range(len(X))} if flat else {}) | \
+        {n: "xz" if rollers else "xyzr" for n in left} | \
+        {n: "z" if rollers else "yzr" for n in right}
+    if rollers:
+        fixed[left[0]] = "xyz"
+    return drive(m, fixed, right, 0, rate, max_disp=max_disp, stop_drop=stop_drop,
+                 alpha=2000.0, record_every=5, sign=sign)
+
+
+def shell_plate_pull(poly, h: float, t: float = 2.0, angles: tuple = (0.0,), ply=None,
+                     sim_params=None, rate: float = 40.0, max_disp: float = 1.0,
+                     rho_scale: float = 1.0, sym_y0: bool = False,
+                     stop_drop: float = 0.05) -> TestResult:
+    """A flat plate of any outline (a shapely polygon in the XY plane, holes allowed: an
+    open-hole strip) meshed as the bridge's plates are (idealize.mesh_polygon, elements of
+    about ``h``), clamped along its edge at the smallest x and pulled along X by its edge
+    at the largest x (nodes within h / 100 of them) until it breaks; ply ``angles`` from
+    X, ``ply`` a materials.Ply (default: the material's). ``sym_y0``: the plate is the
+    upper half of a symmetric one, its nodes on y = 0 held in y (a crack along y = 0
+    would be counted twice: only for cracks across it). ``rho_scale``: the density x
+    this (mass scaling, for a test that stays quasi-static)."""
+    from bridgesim.schema import Material
+    from bridgesim.sim.idealize import mesh_polygon
+    from bridgesim.sim.materials import Ply, SimParams
+
+    sp = sim_params or SimParams.load()
+    mat = Material.from_yaml(
+        __import__("pathlib").Path(__file__).resolve().parents[3] / "materials"
+        / "popsicle_birch.yaml")
+    ply = ply or Ply.from_material(mat, sp)
+    P2, tri = mesh_polygon(poly, h)
+    X = np.c_[P2, np.zeros(len(P2))]
+    m = blank_model(X)
+    rho = mat.density_kg_m3.value * 1e-12 * rho_scale
+    G = (sp["wood.G_f_N_per_mm"], sp["wood.G_f90_N_per_mm"], sp["wood.G_v_N_per_mm"])
+    els, E0s, Ps = [], [], []
+    for t3 in tri:
+        P3 = X[list(t3)]
+        c = P3.mean(0)
+        ex = (P3[1] - P3[0]) / np.linalg.norm(P3[1] - P3[0])
+        ez = np.array([0.0, 0.0, 1.0])
+        ey = np.cross(ez, ex)
+        E0 = np.stack([ex, ey, ez], axis=1)
+        Ploc = (P3 - c) @ E0
+        gang = math.degrees(math.atan2(float(ey[0]), float(ex[0])))
+        ed = shellmod.element_data(Ploc[:, :2], [gang + a for a in angles], t, ply, 1.0,
+                                   1.0, G, ply.E_L * t)
+        els.append(ed)
+        E0s.append(E0)
+        Ps.append(Ploc)
+        me = rho * ed["area"] * t
+        for nd in t3:
+            m.mass[nd] += me / 3
+            m.rot_inertia[nd] += me / 3 * (h * h / 12 + t * t / 12)
+    for k, v in shellmod.pack(els).items():
+        setattr(m, k, v)
+    m.s_nodes = np.asarray(tri, int)
+    m.s_E0, m.s_P = np.array(E0s), np.array(Ps)
+    m.s_t = np.full(len(tri), t)
+    m.s_body = np.zeros(len(tri), int)
+    m.params["crush_softening"] = sp["wood.crush_softening"]
+    m.params["crush_band_mm"] = sp.values.get("wood.crush_band_mm", 0.0)
+    m.params["plate_nonlocal"] = sp.values.get("plate.nonlocal_onset", 0.0)
+    x0, x1 = float(P2[:, 0].min()), float(P2[:, 0].max())
+    left = np.where(P2[:, 0] < x0 + 0.01 * h)[0]
+    right = np.where(P2[:, 0] > x1 - 0.01 * h)[0]
+    fixed = {int(n): "y" for n in np.where(np.abs(P2[:, 1]) < 0.01 * h)[0]} \
+        if sym_y0 else {}
+    fixed |= {int(n): "xyzr" for n in left} | {int(n): "yzr" for n in right}
+    return drive(m, fixed, right, 0, rate, max_disp=max_disp, stop_drop=stop_drop,
+                 alpha=2000.0, record_every=5)
 
 
 def shell_strip_bending(h: float, L: float = 12.0, W: float = 20.0, t: float = 4.0,
@@ -577,6 +661,8 @@ def shell_strip_bending(h: float, L: float = 12.0, W: float = 20.0, t: float = 4
     m.s_body = np.zeros(len(nodes), int)
     m.params["crush_softening"] = sp["wood.crush_softening"]
     m.params["fc_proportional"] = sp.values.get("wood.fc_proportional", 1.0)
+    m.params["crush_band_mm"] = sp.values.get("wood.crush_band_mm", 0.0)
+    m.params["plate_nonlocal"] = sp.values.get("plate.nonlocal_onset", 0.0)
     fixed = {nid(0, j): "z" for j in range(ny + 1)} | \
         {nid(nx, j): "z" for j in range(ny + 1)} | {nid(0, 0): "xyz", nid(nx, 0): "yz"}
     load = [nid(nx // 2, j) for j in range(ny + 1)]
