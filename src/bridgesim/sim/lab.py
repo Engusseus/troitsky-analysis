@@ -126,6 +126,7 @@ class TestResult:
     slow_disp: float = 0.0  # the test ran slowly (quasi-statically) up to this displacement
     # the share of the glued area softening (past its onset, d > 0) at each reading
     softened: np.ndarray | None = None
+    wood: object = None  # the wood's time laws of a test run on a test-time clock (woodtime)
 
     @property
     def stiffness(self) -> float:
@@ -148,7 +149,7 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
           gravity: bool = False, sign: float = 1.0, slow_disp: float = 0.0,
           slow_rate: float | None = None, test_time_s: float = 0.0,
           f_ext: np.ndarray | None = None, f_ramp: float = 0.0,
-          until=None) -> TestResult:
+          until=None, test_rate_mm_s: float = 0.0) -> TestResult:
     """Move ``node`` (one node or a list: a grip) along global ``dof`` at ``rate`` mm/s
     (displacement control) with the ``fixed`` nodes held ("xyz", "xyzr" = also rotations,
     any subset of x, y, z, r) and record the reaction force. Stops at ``max_disp`` or
@@ -158,10 +159,19 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
     (solver.glue_rate; 0: the coupon's own, tau_g). ``f_ext``: constant nodal forces (n,
     3) besides the grip, a clamp, applied in full once the grip has moved ``f_ramp`` mm
     (linearly before). ``until(state)``: checked every step; true stops the test there,
-    its last record the force of that step."""
+    its last record the force of that step. ``test_rate_mm_s`` (> 0, round 28):
+    the test's real pace: the physical test time runs with the grip's travel at it (from
+    ``test_time_s``) and the wood's duration of load and creep follow it (woodtime: the
+    model's wood_rate_exponent, wood_creep_coeff; ``TestResult.wood`` holds its clocks);
+    0: no test time passes, the coupon's own strengths and stiffness."""
     node = np.atleast_1d(np.asarray(node, int))
     m.mass = np.maximum(m.mass, 1e-12)
     m.rot_inertia = np.maximum(m.rot_inertia, 1e-12)
+    wt = None
+    if test_rate_mm_s > 0.0:
+        from bridgesim.sim import woodtime
+
+        wt = woodtime.setup(m)  # the instantaneous moduli, before the time step
     s = S.Settings(dt=dt or 1e-6)
     if dt is None:
         from bridgesim.sim.crush import stable_dt
@@ -191,6 +201,11 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
     while u < max_disp and k < max_steps:
         vr = rate if u >= slow_disp or not slow_rate else slow_rate
         u = min(max_disp, u + vr * s.dt)
+        if test_rate_mm_s > 0.0:
+            st.creep_dt = vr * s.dt / test_rate_mm_s
+            st.t_test += st.creep_dt
+            if wt is not None and k % woodtime.EVERY == 0:
+                woodtime.update(m, st, wt)
         st.x[node, dof] = x0 + sign * u
         st.v[node, dof] = sign * vr
         S.internal_and_contact(m, st, s, F, Mo)
@@ -228,8 +243,11 @@ def drive(m: Model, fixed: dict[int, str], node, dof: int, rate: float,
             if peak > 0 and f < stop_drop * peak and u > 0.05 * max_disp:
                 break
         k += 1
+    if wt is not None:
+        woodtime.release(m)
     return TestResult(np.array(disp), np.array(force), peak, st,
-                      slow_disp if slow_rate else 0.0, np.array(soft) if soft else None)
+                      slow_disp if slow_rate else 0.0, np.array(soft) if soft else None,
+                      wt)
 
 
 def three_point_bending(E: float, ft: float, fc: float, span: float = 100.0,

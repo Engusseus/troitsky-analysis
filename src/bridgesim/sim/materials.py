@@ -76,6 +76,8 @@ class SimParams:
         for k, val in changes.items():
             v[k] = float(val)
             s[k] = source
+        if any(k.startswith("crusher.") for k in changes):
+            jack_strokes(v)  # a pumped jack whose pause would be negative: input error
         return SimParams(v, s, dict(self.notes), self.name)
 
     def assumed_keys(self) -> list[str]:
@@ -138,8 +140,49 @@ PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("block.cell_mm", 0.0, 1e4, True),  # 0: one rigid body
     ("plate.shear_deformable", 0.0, 1.0, True),
     ("plate.shear_correction", 0.0, 1.0, False),
+    # round 28: the wood's time effects and the pumped jack
+    ("wood.coupon_time_s", 0.1, 1e6, True),
+    ("wood.creep_coeff", 0.0, 2.0, True),
+    ("wood.creep_exponent", 0.0, 1.0, False),
+    ("crusher.stroke_mm", 0.0, 100.0, True),
+    ("crusher.stroke_time_s", 0.0, 3600.0, False),
+    ("crusher.pause_s", 0.0, 3600.0, True),
     ("*", 0.0, float("inf"), False),  # moduli, strengths, energies, sizes: positive
 ]
+
+
+def jack_strokes(values: dict) -> tuple[float, float, float]:
+    """The pumped jack's protocol (stroke mm, stroke time s, pause s) from the simulation
+    values; stroke 0 (the default): a jack at the constant pace
+    crusher.test_rate_mm_per_min, (0, 0, 0). A hand-pumped jack advances
+    crusher.stroke_mm in crusher.stroke_time_s, then stands for the pause; the mean pace
+    is stroke / (stroke time + pause). With crusher.pause_s 0 the pause is the one that
+    keeps the mean pace at crusher.test_rate_mm_per_min: stroke x 60 / rate - stroke
+    time (a stroke time longer than that is an input error, ValueError); a pause given
+    sets the mean pace with the stroke and its time (the rate is then not used for the
+    jack). A pause of 0 left (strokes back to back): the constant pace."""
+    s = float(values.get("crusher.stroke_mm", 0.0))
+    if s <= 0.0:
+        return 0.0, 0.0, 0.0
+    ts = float(values.get("crusher.stroke_time_s", 0.0))
+    tp = float(values.get("crusher.pause_s", 0.0))
+    if ts <= 0.0:
+        raise ValueError("overrides: params.crusher.stroke_time_s must be > 0 with "
+                         f"crusher.stroke_mm = {s:g}")
+    if tp <= 0.0:
+        rate = float(values.get("crusher.test_rate_mm_per_min", 10.0))
+        tp = s * 60.0 / max(rate, 1e-9) - ts
+        if tp < -1e-9 * ts:
+            raise ValueError(
+                f"overrides: a pumped jack's stroke of {s:g} mm in {ts:g} s "
+                f"(crusher.stroke_mm, crusher.stroke_time_s) is slower than the mean pace "
+                f"crusher.test_rate_mm_per_min = {rate:g}: the pause between strokes would "
+                f"be negative ({tp:.3g} s); give a shorter stroke time, a longer stroke, a "
+                "slower mean pace, or the pause itself (crusher.pause_s)")
+        tp = max(tp, 0.0)
+    if tp <= 0.0:
+        return 0.0, 0.0, 0.0
+    return s, ts, tp
 
 
 def param_range_error(key: str, value) -> str | None:

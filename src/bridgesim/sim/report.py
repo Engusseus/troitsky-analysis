@@ -254,6 +254,10 @@ class Quality(BaseModel):
     holds: int = Field(0, description="Times the jack was slowed to 2 % while something "
                                       "was breaking, until it stopped (quasi-static failure)")
     hold_time_s: float = 0.0
+    pauses: int = Field(0, description=(
+        "A hand-pumped jack (crusher.stroke_mm > 0, since round 28): the pauses it stood "
+        "still between strokes (crusher.pause_s of test time each, the bridge creeping "
+        "under its load); 0 with a jack at a constant pace"))
     min_fidelity: str = Field("quick", description=(
         "The coarsest fidelity whose mesh is fine enough for the members that fail "
         "(elements at most 3x their depth, 1.5x below 10 mm): run diagnose, montecarlo, "
@@ -308,8 +312,11 @@ class CrushReport(BaseModel):
     deflection_at_Fu_mm: float
     test_time_at_Fu_s: float = Field(0.0, description=(
         "When the real test would reach F_u (s): the jack's travel to the peak at "
-        "crusher.test_rate_mm_per_min. The glue's strength is taken at this time to "
-        "failure (glue.rate_exponent, against its coupons' glue.coupon_time_s)"))
+        "crusher.test_rate_mm_per_min (a hand-pumped jack, crusher.stroke_mm > 0: its "
+        "strokes at their own pace and the pauses between them). The glue's strength is "
+        "taken at this time to failure (glue.rate_exponent, against its coupons' "
+        "glue.coupon_time_s), each line's and, since round 28, each member's and plate's "
+        "(wood.rate_exponent, wood.creep_coeff) at its own time under load"))
     mass_kg: float
     efficiency_kgf_per_kg: float = Field(description="§12.6: Fu / mass")
     criteria: Criteria = Field(description="First time each §12.5 failure criterion "
