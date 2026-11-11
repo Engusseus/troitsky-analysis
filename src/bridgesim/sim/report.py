@@ -303,8 +303,8 @@ class CrushReport(BaseModel):
         "crusher.test_rate_mm_per_min (a hand-pumped jack, crusher.stroke_mm > 0: its "
         "strokes at their own pace and the pauses between them). The glue's strength is "
         "taken at this time to failure (glue.rate_exponent, against its coupons' "
-        "glue.coupon_time_s), the wood's at its own (wood.rate_exponent, "
-        "wood.coupon_time_s; since round 28)"))
+        "glue.coupon_time_s), each line's and, since round 28, each member's and plate's "
+        "(wood.rate_exponent, wood.creep_coeff) at its own time under load"))
     mass_kg: float
     efficiency_kgf_per_kg: float = Field(description="§12.6: Fu / mass")
     criteria: Criteria = Field(description="First time each §12.5 failure criterion "

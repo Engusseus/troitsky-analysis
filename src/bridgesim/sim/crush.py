@@ -35,9 +35,11 @@ report.
 The simulation is dynamic but slow compared with the bridge's vibrations: quasi-static.
 The kinetic energy is recorded and reported against the work done, so it can be checked.
 Time is compressed (the real jack moves at ~mm/min, the simulated one at ~mm/s); the
-glue's creep and its rate-dependent strength run on the physical test time (the jack's
-travel at crusher.test_rate_mm_per_min), so this does not change the result as long as
-the run is quasi-static, and the replay maps simulated time back to real test time.
+glue's and the wood's creep and rate-dependent strengths (solver.glue_rate,
+:mod:`bridgesim.sim.woodtime`) run on the physical test time (the jack's travel at
+crusher.test_rate_mm_per_min, or a hand-pumped jack's strokes and pauses:
+:class:`JackProtocol`), so this does not change the result as long as the run is
+quasi-static, and the replay maps simulated time back to real test time.
 """
 
 from __future__ import annotations

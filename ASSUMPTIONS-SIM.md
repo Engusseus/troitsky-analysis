@@ -346,8 +346,9 @@ expected: its buckling needs a kink at the joint or unglued outer plies as well.
   adversarial review of round 22), inside the drawn range of n and of the crusher's pace;
   a bridge the model makes too stiff peaks too soon, which makes its glue too strong by
   the same law (2.5x more compliant: ~45 s instead of 18, -9 %). A face through one piece of wood
-  follows the wood's own exponent (`wood.rate_exponent`, 0.02: ~4 % per decade, USDA Wood
-  Handbook ch. 5). The coupons and the screen take tau_g (no physical time); the crush
+  follows the wood's own exponent (`wood.rate_exponent`, 0.02, ~4.7 % per decade), as
+  every member and plate does since round 28 (section 4, time under load). The coupons
+  and the screen take tau_g (no physical time); the crush
   reports when the real test would reach F_u (`test_time_at_Fu_s`). Give each glue test
   its `time_to_failure_s` (glue_joint and short_beam_shear templates): `calibrate` brings
   every one to t_ref (`test_the_glue_is_as_strong_as_a_test_failing_when_the_crush_does`).
@@ -607,6 +608,66 @@ that the mesh resolves (`test_a_crack_is_flagged_only_past_the_crack_band_of_its
 mode`). An element is removed only when every ply is torn wide open
 (twice the strain at which it carries nothing) or when it is distorted beyond 0.5 rad.
 
+**Time under load** (since round 28, `sim/woodtime.py`). The wood runs on the glue's
+clock, the physical test time (section 5), each beam and plate element on its own: its
+time under load t counts from when it first carried a tenth of its strength (its
+fibres' stress over their coupon-time strengths, or its shear over its split strength;
+a plate element, its largest strain over its limit), as each glue line's (section 3).
+*Duration of load*: its strengths at t are f_ref (t / t_ref)^-n (`wood.rate_exponent`
+n = 0.02, ~4.7 % per decade; `wood.coupon_time_s` t_ref = 60 s, the time to failure of
+the coupons the strengths stand for, a convention while they are placeholders; t at
+least t_ref / 16, as the glue's): a beam's f_t, f_c and G_f (the fracture energy follows
+the strength, as the stick field's factor makes it) and its split strengths; a plate's
+five ply failure strains, its softening keeping each mode's final strain (G_f follows
+the strength there too). Two sources bracket n: clear wood under a constant load (the
+Madison curve, Wood 1951) loses ~6.3 % of its short-term strength per decade of its
+time to failure (as drawn by Aicher & Dill-Langer 1999, Otto-Graf-Journal 10, fig. 6:
+n ~0.028); hemlock lumber bent to failure at five rates over six decades of time
+(Foschi & Barrett 1982, Karacabeyli & Barrett 1993, tabulated by Wong 2020,
+arXiv:2002.03537, table 1: 44.8 MPa at 619 min, 47.8 at 66 s, 49.0 at 0.045 s) ~1.2 %
+per decade (n ~0.005). 0.02 lies between them, assumed and drawn by `montecarlo` (50 %);
+the USDA Wood Handbook's figure that set it in round 27 (failure in 1 s about 10 % above
+a standard 5-min test, n ~0.017) could not be rechecked in round 28. A coupon pulled to
+failure at two paces a decade apart breaks at loads in the ratio 10^(n / (1 + n)) (the
+stronger one takes longer), each at f (t_e / t_ref)^-n of its own time under load t_e
+(`test_the_woods_strength_follows_its_time_under_load`); a member held at 95 % of its
+strength breaks by itself after t_ref 0.95^(-1/n) = 781 s, the fall of its strength
+below its stress putting its fibres on their softening branch, not a jump
+(`test_a_member_held_near_its_strength_fails_when_the_law_says`). *Creep*: an
+isochronous modulus, E(t) = E_ref (1 + phi(t_ref)) / (1 + phi(t)), phi(t) = a (t / 60
+s)^m (`wood.creep_coeff` a = 0.04, the relative creep after a minute under load;
+`wood.creep_exponent` m = 0.25; together a relative creep of ~1 after a year, the
+figures commonly quoted for wood at moderate stress, which round 28 could not recheck:
+assumed, drawn 50 % and 20 %). The coupons' modulus holds at their time (a static test
+of a minute carries that much creep, section 7), so an element loaded for less is
+stiffer, up to the instantaneous E_ref (1 + a) before it carries anything, one held
+longer softer; its G (torsion, shear both ways) and a plate's ply and drilling
+stiffness alike. Creep lowers the modulus, not the strength: the stress at which a fibre
+cracks or crushes stays f(t), so a creeping member fails at a strain (1 + phi(t)) / (1
++ phi(t_ref)) (t / t_ref)^-n times its coupon's, within a few % of it over a test (the
+usual assumption that wood creeping to rupture fails at about its short-term strain;
+counting creep toward its failure as well would count the duration-of-load loss twice).
+The isochronous law is exact under a held load; under a load rising steadily the
+hereditary integral gives phi / (1 + m), so it overstates creep in a ramp by 1 + m (25
+%), and an element unloaded recovers at once (no creep set). A held cantilever's
+deflection grows by 1 + phi(t) over its loaded share (`test_a_held_cantilever_creeps_
+as_the_power_law`), and a strut held at 90 % of its buckling load buckles when E(t)
+has fallen to 0.9 E_0, after 60 (0.111 / a)^(1/m) s, a time 40x as sensitive as the
+modulus (`test_a_strut_held_below_its_buckling_load_buckles_by_creep`). The law is
+linear: creep grows faster than the stress above ~50-60 % of the strength (section 7).
+The kernels read the strengths and moduli from the model's arrays, set from Python
+every 100 steps (`woodtime.EVERY`, ~0.2 s of test time at 10 mm/min: a strength moves
+~0.1 % per update at most); the moduli only fall during a run, so the stable time step,
+taken with the instantaneous ones, holds. A plate element's history (its largest strain
+over its limit) is rescaled with its limit, so it keeps the largest strain reached; a
+beam's damage and plastic strains are strains already, so a fibre already crushing
+whose modulus then falls moves back a little along its fall (its onset strain f_c / E
+grows: ~1 % of f_c at most over a test). A crush that peaks 10-40 s in at 10 mm/min
+finds its elements younger than the coupons: ~1-6 % stronger and ~0.4-1.4 % stiffer
+than their coupon-time values. `wood.rate_exponent` 0 and `wood.creep_coeff` 0 give
+round 27's model bit for bit (the coupon's forces in the first test above). `screen`
+and the coupons of `lab` take the coupon-time values.
+
 **Scatter** (seeded, `--seed`; `--seed -1` for a perfect bridge): per stick, E (CoV 12 %)
 and strength (CoV 18 %), correlated (`scatter.E_strength_corr`, 0.7: stiffer wood is
 stronger, MOE-MOR r = 0.6-0.8, which machine stress grading relies on; paired bending
@@ -708,6 +769,31 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   A bridge that rings slowly (period over 10 ms: a light truss) starts from standard's
   jack speed at most at every fidelity (since round 25: at quick's 200 mm/s, slowed by
   its period, a light truss stayed dynamic, kinetic/work 0.10, and read half of standard).
+* **A hand-pumped jack** (since round 28, `crush.JackProtocol`): the press head advances
+  `crusher.stroke_mm` per stroke in `crusher.stroke_time_s` (0.5 s, assumed), then stands
+  for `crusher.pause_s` while the operator lifts the lever, the bridge carrying its load.
+  0 (the default) is the jack at the constant pace `crusher.test_rate_mm_per_min`; a pause
+  of 0 is the one that keeps that mean pace, stroke x 60 / rate - stroke time (1 mm
+  strokes of 0.5 s at 10 mm/min: 5.5 s), a stroke slower than the mean pace allows an
+  input error; a pause given sets the mean pace with the stroke and its time. The
+  physical test time is then the strokes' travel at their own pace (the loading fast
+  within a stroke) plus the pauses: at travel x after k pauses, x stroke time / stroke + k
+  pause (`test_the_pumped_jacks_clock_follows_its_timetable`). The simulated jack keeps
+  its own speed and logic (the fidelity's, slowed for a bridge that rings slowly): at
+  each stroke's end it slows to a stop over the hold ramp (started so that it stops
+  there), stands while the pause's test time passes, spread evenly over two of the
+  bridge's periods (`crush.PAUSE_PERIODS`: the glue's and the wood's creep and their rate
+  laws' clocks follow it quasi-statically), and speeds up again; the reading is cut at a
+  pause's start as at a break, so the load relaxing in the pause reads in time and F_u is
+  the highest stroke's end. The glue's Kelvin element is integrated exactly over any
+  step of test time (an exponential update), so a pause's creep is the analytical one
+  however it is split (`test_a_pumped_jacks_pause_lets_the_glue_creep_as_a_kelvin_
+  element`); the wood's creep law is a function of each element's time, with no step to
+  integrate. A run counts its pauses (`quality.pauses`) and times F_u on its own clock
+  (`test_time_at_Fu_s`); the replay's real-time clock still runs at the mean pace. From
+  a video of the competition: count the strokes in a minute, read the head's travel over
+  it against something of known size (the stroke: that over the count), and the frames
+  in which the head moves within a stroke (its time; the pause the rest).
 * **The load reading.** The jack force rings with stress waves that a real test at
   mm/min never shows (time is compressed). Two filters of it: *online*, a one-pole
   low-pass over 0.3 mm of jack travel, which decides when to hold the jack and when the
@@ -985,10 +1071,10 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   was tried and not adopted (it doubled the strength of off-axis plies;
   `validation/README.md` §3.4).
 * Time is compressed: the simulated jack moves at ~100 mm/s instead of the real
-  mm/min. The glue's creep and rate-dependent strength run on the physical test time
-  (the jack's travel at the real rate), not the simulated time, and the wood has no rate
-  effect but on faces through one piece, so this changes nothing as long as the run stays
-  quasi-static; the replay converts back to real test time. **The jack speed
+  mm/min. The glue's and (since round 28) the wood's creep and rate-dependent strength
+  run on the physical test time (the jack's travel at the real rate, a pumped jack's
+  strokes and pauses: section 5), not the simulated time, so this changes nothing as
+  long as the run stays quasi-static; the replay converts back to real test time. **The jack speed
   follows the bridge**: the speed of each fidelity (200 / 100 / 50 mm/s) is for a bridge
   whose lowest mode under the plate (the plate's mass plus half the bridge's on the
   bridge's linear stiffness under the plate, as `screen` computes it) has a period of
@@ -1060,9 +1146,13 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
 * Friction in the contact between parts that were not touching at the start.
 * Debris (pieces with nothing left holding them) falls under gravity and lands on the
   platform, but does not hit the bridge or the plate.
-* Creep of the wood and the time the bridge waits loaded (the glue's creep and its
-  rate-dependent strength are modelled, section 3, in physical test time). Moisture is
-  one input, `wood.moisture_excess_pct` (0): how many points wetter the bridge's wood is
+* Creep growing faster than the stress near the wood's strength (the wood's creep is
+  linear since round 28, section 4), creep under a load that rises (the isochronous
+  modulus overstates it there by 1 + m) and the creep set left after unloading; the
+  duration of load of the wood crushed across its grain under a glue line or a bearing
+  face (f_c90 at the glue and contact points keeps its coupon-time value; the glue's
+  creep and both rate laws are modelled, sections 3-5, in physical test time, and a
+  pumped jack's pauses since round 28). Moisture is one input, `wood.moisture_excess_pct` (0): how many points wetter the bridge's wood is
   than its coupons' (members laminated days before the test: a PVA line brings ~+8
   points to a 2 mm ply, evened out only after a week), lowering E and G 2 %, f_c 5.7 %,
   f_c90 5 % and f_v 2.4 % per point (USDA Wood Handbook eq. 5-3, paper birch); make the
@@ -1075,7 +1165,7 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   F_u. Glued timber trusses tested to failure were "mostly linear elastic
   until failure, which occurred in a brittle manner", their secant at the peak 0.84-0.92
   of the 10-40 % secant (Debertolis et al. 2025, 7 m span): the model is stiffer to its
-  peak than that, and a real stick bridge (creep under a pumped jack, joints that seat,
+  peak than that, and a real stick bridge (creep near its strength, joints that seat,
   members bowing) may bend more before its peak. How stiff it is to start with: a 2D
   model of those trusses with rigid glued joints read 0.82-0.96 of their stiffness
   measured with LVDTs on the bridge (Debertolis et al. 2025), and glued joints' slip is
@@ -1088,5 +1178,6 @@ sensitivity study: `validation/convergence_study.py --amplitude`).
   video at mid-span), or the EN 26891 cycle (to 0.4 of the expected peak and back to 0.1,
   then to failure: the reloading branch leaves seating out). Stick coupons loaded at the test's own pace (failure in
   about the same minutes as the crush test; EN 408 asks 300 +- 120 s) carry the wood's
-  creep of that duration in the E that `calibrate` fits, so a calibrated model includes
-  it to first order; what is left out is how creep grows with the stress near the peak.
+  creep of that duration in the E that `calibrate` fits: `wood.coupon_time_s` is that
+  duration, the time the creep law takes the modulus from (section 4, since round 28);
+  what is left out is how creep grows with the stress near the peak.

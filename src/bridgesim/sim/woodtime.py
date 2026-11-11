@@ -52,7 +52,9 @@ RATE_LOAD = 0.1  # share of its strength at which an element's clock starts (the
 SHELL_TOL = 1e-4  # a plate element's strain limits are redone past this relative change
 
 _BEAM = ("b_E", "b_ft", "b_fc", "b_Gf", "b_fv", "b_fv3", "b_GJ", "b_kGA", "b_kGA3")
-_SHELL = ("s_lim", "s_rf", "s_Q", "s_kd", "s_K")
+# (not s_K, the elements' stiffness for the time-step estimates: crush.stable_dt refines
+# them by power iteration on the forces, which read s_Q)
+_SHELL = ("s_lim", "s_rf", "s_Q", "s_kd")
 
 
 @dataclass
@@ -119,6 +121,8 @@ def setup(m) -> WoodTime | None:
     if wt is not None and len(wt.b_t0) == len(m.b_i) and len(wt.s_t0) == len(m.s_nodes):
         _restore(m, wt)
         wt.n, wt.t_ref, wt.a, wt.m = n, tref, a, mm
+    elif n <= 0.0 and a <= 0.0:
+        return None  # both laws off: nothing to keep
     else:
         names = [k for k in _BEAM if getattr(m, k).shape[:1] == m.b_i.shape] + \
             [k for k in _SHELL if getattr(m, k).shape[:1] == (len(m.s_nodes),)]
@@ -133,8 +137,6 @@ def setup(m) -> WoodTime | None:
     if not wt.active:
         return None
     _apply(m, None, wt, 0.0)
-    if "s_K" in wt.pristine and wt.a > 0.0:  # the time-step estimates: the stiffest
-        m.s_K[...] = wt.pristine["s_K"] * (1.0 + float(wt.phi(wt.t_ref)))
     return wt
 
 
