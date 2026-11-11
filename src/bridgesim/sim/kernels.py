@@ -740,14 +740,39 @@ def shell_kernel(x, R, sn, E0, P, Bm, Bb, area, kd, lay, nl, Q, lim, rf, rc, his
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
-def nonlocal_onset_kernel(wait, gone, nlon, ec, ept, hist, hon, lim, nl, ip, ix, wv):
+def _tension_mean(el, a, n, ec, gone, e, ll, q, j):
+    """solver._tension_mean on the samples el[a:a + n]: the mean strain of mode j along
+    the line from its middle outward each way, up to the first sample that is no wood or
+    whose element is not in tension in the mode (in shear: the sign opposite e's own)."""
+    c = n // 2
+    s0 = 1.0
+    if j == 2 and ec[e, ll, q, 2] < 0.0:
+        s0 = -1.0
+    tot = ec[e, ll, q, j]
+    cnt = 1
+    for step in (1, -1):
+        k = c + step
+        while 0 <= k < n:
+            o = el[a + k]
+            if o < 0 or gone[o]:
+                break
+            v = ec[o, ll, q, j]
+            if o != e and v * s0 <= 0.0:
+                break
+            tot += v
+            cnt += 1
+            k += step
+    return tot / cnt
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
+def nonlocal_onset_kernel(wait, gone, nlon, ec, ept, hist, hon, lim, nl, ptr, el):
     """Compiled solver.plate_nonlocal_onset (the NumPy reference there): for each held
     element, mode j (fibre tension, across the grain, shear: the strain e1, e2, g12 of
-    the ply) and ply whose line averages (nlon), each level's mean strain along the line
-    (the elements on it that are not gone, by their weights: row (j x layers + ply) x ns
-    + e of the CSR ip, ix, wv) less the element's own, added to each held point's
-    strain; where that averaged ratio has reached 1 the point's onset is set, hon =
-    max(h / r_nl, 1)."""
+    the ply) and ply whose line takes in other elements (nlon), each level's mean strain
+    along the line's stretch in tension (row (j x layers + ply) x ns + e of the samples
+    ptr, el) less the element's own, added to each held point's strain; where that
+    averaged ratio has reached 1 the point's onset is set, hon = max(h / r_nl, 1)."""
     ns = wait.shape[0]
     nlay = ec.shape[1]
     for e in range(ns):
@@ -759,17 +784,10 @@ def nonlocal_onset_kernel(wait, gone, nlon, ec, ept, hist, hon, lim, nl, ip, ix,
                 if not nlon[e, j, ll]:
                     continue
                 r0 = (j * nlay + ll) * ns + e
+                a = ptr[r0]
+                n = ptr[r0 + 1] - a
                 for q in range(3):
-                    num = 0.0
-                    den = 0.0
-                    for k in range(ip[r0], ip[r0 + 1]):
-                        o = ix[k]
-                        if not gone[o]:
-                            num += wv[k] * ec[o, ll, q, j]
-                            den += wv[k]
-                    if den <= 0.0:
-                        continue
-                    dl = num / den - ec[e, ll, q, j]
+                    dl = _tension_mean(el, a, n, ec, gone, e, ll, q, j) - ec[e, ll, q, j]
                     for g in range(3):
                         p = (g * nlay + ll) * 3 + q
                         h = hist[e, p, kh]

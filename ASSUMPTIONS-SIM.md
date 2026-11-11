@@ -868,15 +868,19 @@ element resolves grows without bound as elements shrink, so the first crack came
 lower load on a finer mesh (a plate pulled through a third of its end: 71.4, 54.1 and
 43.0 N with 5, 2.5 and 1.25 mm elements). A ply's point whose own strain passes its
 onset in a tension mode (fibre tension, across the grain, in-plane shear) is now held
-elastic until that mode's strain, averaged along the crack's path through its element,
-reaches the onset too: the line method of the theory of critical distances (Taylor
+elastic until that mode's strain, averaged along the crack's path through its element
+where that path is in tension, reaches the onset too: the line method of the theory of critical distances (Taylor
 2007, *The Theory of Critical Distances*, Elsevier), along a line across the ply's grain
 for fibre tension and along it across the grain and in shear, 2 L_c each way, L_c = E G
 / (pi f^2) of the mode (the ply's modulus, fracture energy and strength: 16.7 mm in fibre
 tension, 31.8 mm across the grain and 4.2 mm in shear with the placeholders), normalised
-by the wood on the line (`solver.plate_nonlocal_averaging`: a cached sparse average per
-plate, mode and ply of each element's mean strain, the element's own variation about its
-mean kept; only elements of the same plate). At a notch's root, with no wood behind it,
+by the wood on the line (`solver.plate_nonlocal_averaging`: the line's samples cached per
+plate, mode and ply; each element's mean strain averaged, the element's own variation
+about its mean kept; only elements of the same plate) and cut, walking outward from the
+element each way, at the first wood that is not in tension in the mode (the opposite
+sign in shear) or where the wood ends: a crack starts in and runs through wood under
+tension, and is neither started nor held back by wood that is compressed (in the onset
+pass, `solver._tension_mean`, for the held elements only). At a notch's root, with no wood behind it,
 that is the average over 2 L_c ahead, which for a sharp notch reaches the strength
 exactly at the fracture toughness K_c = sqrt(E G) and for a hole is Whitney and
 Nuismer's average-stress criterion (`test_the_nonlocal_line_reproduces_the_onset_of_a_
@@ -889,11 +893,34 @@ wider than one element dissipating more than G. A point never starts below its o
 strength (the average only delays the onset), so the crack band, which takes over where
 elements are larger than the band, is unchanged, and an element whose own chord holds its
 whole line (longer than about 4 L_c) stays local. The plate pulled through a third of
-its end now peaks at 90.4, 90.6 and 90.7 N with 5, 2.5 and 1.25 mm elements, at its net
-section f_t90 W t = 90 N: its line across the grain spans its width, so its average is
-the section's mean stress by equilibrium, and a raiser inside the critical distance of
-a part that small does not weaken it; its crack then dissipates G_f90 W t within 4 %
-(`test_a_plate_pulled_through_a_third_of_its_end_converges_with_the_nonlocal_onset`).
+its end now peaks at 90.4, 90.6 and 87.2 N with 5, 2.5 and 1.25 mm elements, about its
+net section f_t90 W t = 90 N: its line across the grain spans its width, so its average
+is the section's mean stress by equilibrium, and a raiser inside the critical distance
+of a part that small does not weaken it. With 5 and 2.5 mm elements its crack then runs
+across the whole end, G_f90 W t within 4 %; with 1.25 mm the end beside the grip is
+pressed across the grain, the line stops at the grip's edges and the gripped piece pulls
+out, as the local model's does on every mesh (90.7 N and the whole end before the line
+was cut in round 28's follow-up; `test_a_plate_pulled_through_a_third_of_its_end_
+converges_with_the_nonlocal_onset`). **In bending in its plane** a plate's line runs
+down its depth and stops at the neutral axis, so the extreme fibre's average is half its
+strain over the tensile half: a part no deeper than 2 L_c starts to crack at twice the
+moment its first point would locally, an extreme-fibre stress of 2 f (the line method's
+modulus of rupture of a small beam; this is the method's value, not a measured one:
+for wood along the grain EN 338 sets the tension strength of graded timber at 0.6 x its
+bending strength, a ratio of 1.67, and nothing on craft sticks across the grain was at
+hand), and a deeper one at 1 / (1 - 2 L_c / d) of it, tending to the local value: strips
+8, 32 and 128 mm deep (0.25, 1 and 4 x 2 L_c) start at 1.71, 1.71 and 1.33 x their local
+first-point onset with 8 elements across, their peaks (the crack band's, 2-3.2 x the
+elastic first-crack moment: the softening zone carries load as it opens) within 10 % on
+two meshes and of the local peaks (`test_a_plate_bent_in_its_plane_cracks_at_a_finite_
+moment_with_the_nonlocal_onset`); in tension with bending, all in tension (the top fibre
+1.5 x the mean, the bottom 0.5 x), the line runs through the depth and the strip starts
+where its mean strain reaches the onset, 1.45 x its first-point onset (`test_eccentric_
+tension_starts_between_tension_and_bending`). Before the cut, the line took in the
+compressed half, averaged to about nothing and held a bent plate's fibre for ever. A cap
+on the hold at 2 x the strength (the small beam's value) was tried and not kept: it
+bound at the singular corners of the pulled-through plate on 1.25 mm elements and
+brought their mesh dependence back (77.4 N against 90.4 and 90.6).
 Uniform strips (a 0 ply with a weak column, a 45 ply stretched on rollers) are as strong
 as with the local onset within 1 % (`test_uniform_strips_are_as_strong_with_the_
 nonlocal_onset`; the process-zone onset tried before doubled the 45 strip by holding
@@ -908,9 +935,10 @@ here the fibres at the hole soften from the stress they held and the crack grows
 for a while (`test_an_open_hole_follows_the_average_stress_criterion`).
 An average over a disc (the area method) was tried first and not adopted: it takes the
 unloaded wood beside a notch (its shadow) into the ligament's average, and a notched
-strip's ligament held 1.7-1.85 x its net section. Limits: a part shallower than about 2
-L_c across the crack's path, bent in its plane, is held past its strength (the line
-takes in its compressed side); the fibres at a notch's root soften from the stress they
+strip's ligament held 1.7-1.85 x its net section. Limits: wood next to a raiser that is
+barely in tension (the unloaded wood beside a notch) stays on the line and pulls the
+average down; there is no cap on the hold, so a singular raiser's own point is held as
+far as its line's average says; the fibres at a notch's root soften from the stress they
 held, so a notched ligament peaks at 1.07-1.09 x its net section (0.96 locally); a 45
 ply strip clamped at its ends (its corners are raisers) reads 93 / 84 / 82 N with 5 /
 2.5 / 1.25 mm elements against 75 / 63 / 59 locally (a free one 59-61), not converged
@@ -1608,12 +1636,13 @@ assumed values (judgements, nothing measured on stick bridges), drawn by `montec
   loading plate is named in the note (it cannot fail in any run).
 * **Crack onset at a stress raiser** is nonlocal since round 28 (section 4: a ply's point
   past its strength waits until the strain along the crack's path, averaged over 2 L_c
-  each way, reaches it too; until round 27 the first element to reach its strength
-  cracked, at a lower load the finer the mesh at a sharp raiser, the end of a glued lap,
-  a re-entrant corner). It converges where the line is resolved; where elements are
-  larger than the crack band of their mode (their onset lowered to the energy) it is as
-  local as before, and a part shallower than about 2 L_c bent in its plane is held past
-  its strength. On a design whose shells crack first at a sharp stress raiser, check
+  each way where the path is in tension, reaches it too; until round 27 the first element
+  to reach its strength cracked, at a lower load the finer the mesh at a sharp raiser,
+  the end of a glued lap, a re-entrant corner). It converges where the line is resolved;
+  where elements are larger than the crack band of their mode (their onset lowered to
+  the energy) it is as local as before, and a part shallower than 2 L_c bent in its plane
+  starts to crack at up to twice its local moment, the line method's value, not a
+  measured one. On a design whose shells crack first at a sharp stress raiser, check
   with `--fidelity fine` and `convergence_study.py --scales 1,0.75,0.5`. (A process-zone
   onset that held the modes at their strengths was tried before round 28 and not adopted:
   it doubled the strength of off-axis plies; `validation/README.md` §3.4.)

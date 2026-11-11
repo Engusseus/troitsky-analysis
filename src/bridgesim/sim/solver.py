@@ -483,26 +483,29 @@ def _locate(tri2: np.ndarray, pts: np.ndarray, k: int = 12) -> np.ndarray:
 
 
 def plate_nonlocal_averaging(m: Model):
-    """The averaging of the plates' nonlocal onset (cached on the model), the line method
-    of the theory of critical distances: for each element, ply and tension mode j (fibre
-    tension, across the grain, in-plane shear) the weights of the elements of its plate
-    along a line through its centroid in the direction that mode's crack runs (across the
-    ply's grain for fibre tension, along it across the grain and in shear), of half-length
-    R_j = NL_HALF_LENGTH x L_c,j, each element by its length on the line (sampled at a
-    quarter of an element or finer), normalised by the length of wood on it (a free edge,
-    a notch or a hole cuts the line: the average is over the wood ahead of the root, as
-    the line method's). L_c = E G / (pi f^2) = rf l_c / (2 pi) (E, G and f the ply's, its
-    scatter and butt-joint factors included; the median over the plate's elements within
-    the crack band of the mode). Only elements of the same plate facing the same way with
-    the same plies count. An element whose own chord holds the whole line keeps its own
-    value (an element longer than 2 R_j along the line: the mode stays local there).
-    Returns (W, nlon): W a sparse matrix whose row (j x layers + ply) x ns + e holds those
-    weights, nlon (ns, 3, layers) whether a row averages over other elements."""
+    """The lines of the plates' nonlocal onset (cached on the model), the line method of
+    the theory of critical distances: for each element, ply and tension mode j (fibre
+    tension, across the grain, in-plane shear) a line through its centroid in the
+    direction that mode's crack runs (across the ply's grain for fibre tension, along it
+    across the grain and in shear), of half-length R_j = NL_HALF_LENGTH x L_c,j, sampled
+    at a quarter of an element or finer: the element each sample lies in, in order along
+    the line (-1 where there is no wood of the plate: past a free edge, in a notch or a
+    hole, or an element of the plate facing the other way or with other plies), so each
+    element counts by its length on the line. L_c = E G / (pi f^2) = rf l_c / (2 pi) (E,
+    G and f the ply's, its scatter and butt-joint factors included; the median over the
+    plate's elements within the crack band of the mode). The onset pass averages along
+    the part of the line that is wood in tension in the mode (plate_nonlocal_onset). An
+    element whose own chord holds the whole line keeps its own value (an element longer
+    than 2 R_j along the line: the mode stays local there). Returns (W, nlon, lines): W
+    a sparse matrix whose row (j x layers + ply) x ns + e holds the weights of the whole
+    line, normalised by the wood on it (the line uncut); nlon (ns, 3, layers) whether a
+    row takes in other elements; lines (ptr, el): row r's samples are el[ptr[r]:ptr[r +
+    1]] (an odd number, the element's centroid the middle one; none for a local row)."""
     ns = len(m.s_nodes)
     nlay = m.s_lay.shape[1] if ns else 1
     cached = getattr(m, "_pnl", None)
     if cached is not None and cached[0] == ns:
-        return cached[1], cached[2]
+        return cached[1:]
     from scipy.sparse import csr_matrix
 
     P = m.X[m.s_nodes]  # (ns, 3, 3)
@@ -511,6 +514,7 @@ def plate_nonlocal_averaging(m: Model):
     Lc = m.s_rf * m.s_lc[:, None] / (2.0 * math.pi)
     nlon = np.zeros((ns, 3, nlay), bool)
     rows, cols, vals = [], [], []
+    samples: dict[int, np.ndarray] = {}
     for bd in np.unique(m.s_body):
         idx = np.where(m.s_body == bd)[0]
         # the plate's plane: the first element's initial axes
@@ -544,24 +548,33 @@ def plate_nonlocal_averaging(m: Model):
                 hit = _locate(tri2, pts.reshape(-1, 2)).reshape(len(act), n_s)
                 for a_, row in zip(act, hit, strict=True):
                     e = idx[a_]
-                    hh = row[row >= 0]
-                    if not len(hh):
-                        continue
-                    hh = hh[(nrm[idx[hh]] @ nrm[e] > 0.0) & (m.s_nl[idx[hh]] == m.s_nl[e])]
-                    cnt = np.bincount(hh, minlength=len(idx))
-                    near = np.nonzero(cnt)[0]
+                    gl = idx[np.maximum(row, 0)]
+                    gl = np.where((row >= 0) & (nrm[gl] @ nrm[e] > 0.0)
+                                  & (m.s_nl[gl] == m.s_nl[e]), gl, -1)
+                    near, cnt = np.unique(gl[gl >= 0], return_counts=True)
                     if len(near) < 2:
                         continue  # the line is all its own: local
+                    r_ = (j * nlay + ll) * ns + e
                     nlon[e, j, ll] = True
-                    rows.extend([(j * nlay + ll) * ns + e] * len(near))
-                    cols.extend(idx[near].tolist())
-                    vals.extend((cnt[near] / cnt[near].sum()).tolist())
+                    samples[r_] = gl
+                    rows.extend([r_] * len(near))
+                    cols.extend(near.tolist())
+                    vals.extend((cnt / cnt.sum()).tolist())
     W = csr_matrix((np.asarray(vals, float), (np.asarray(rows, int), np.asarray(cols, int))),
                    shape=(3 * nlay * ns, ns))
     W.sum_duplicates()
     W.sort_indices()
-    m._pnl = (ns, W, nlon)
-    return W, nlon
+    nr = 3 * nlay * ns
+    lens = np.zeros(nr, np.int64)
+    for r_, gl in samples.items():
+        lens[r_] = len(gl)
+    ptr = np.zeros(nr + 1, np.int64)
+    ptr[1:] = np.cumsum(lens)
+    el = np.full(int(ptr[-1]), -1, np.int64)
+    for r_, gl in samples.items():
+        el[ptr[r_]:ptr[r_ + 1]] = gl
+    m._pnl = (ns, W, nlon, (ptr, el))
+    return W, nlon, (ptr, el)
 
 
 def nonlocal_state(m: Model, st: State) -> bool:
@@ -578,20 +591,59 @@ def nonlocal_state(m: Model, st: State) -> bool:
     return on
 
 
+# (No cap on how far a point is held past its own strength: a cap at 2, the line's value
+# for a small beam in pure bending, bound at the corners of the plate pulled through a
+# third of its end on 1.25 mm elements, a raiser's own singular strain, and brought the
+# mesh dependence back there: 90.4 / 90.6 / 77.4 N with 5 / 2.5 / 1.25 mm elements, 87.2
+# at 1.25 mm without it.)
+
+
+def _tension_mean(row, ec, gone, e, ll, q, j):
+    """Mean strain e1, e2 or g12 (mode j) of ply ll at level q along a line's samples
+    ``row`` (element per sample, -1 no wood; the middle one the element e itself): from
+    the middle outward each way, up to the first sample that is not wood or whose
+    element's mean is not in tension in the mode (the opposite sign of e's own in shear),
+    so the average is over the stretch of the crack's path in tension through e."""
+    n = len(row)
+    c = n // 2
+    s0 = 1.0
+    if j == 2 and ec[e, ll, q, 2] < 0.0:
+        s0 = -1.0
+    tot = ec[e, ll, q, j]
+    cnt = 1
+    for step in (1, -1):
+        k = c + step
+        while 0 <= k < n:
+            o = row[k]
+            if o < 0 or gone[o]:
+                break
+            v = ec[o, ll, q, j]
+            if o != e and v * s0 <= 0.0:
+                break
+            tot += v
+            cnt += 1
+            k += step
+    return tot / cnt
+
+
 def plate_nonlocal_onset(m: Model, st: State, compiled: bool = False) -> None:
     """The plates' nonlocal onset (plate.nonlocal_onset; since round 28): a point of a
     ply whose own strain has passed its onset in a tension mode (fibre tension, across
     the grain, in-plane shear) is held elastic (the kernel flags its element in
     ``st.s_wait``) until the strain that drives that mode, averaged along the line of
-    ``plate_nonlocal_averaging`` through its element (each element's mean over its three
-    points, of the same ply at the same level, the element's own variation about its mean
-    kept), reaches the onset too; from then it softens from the ratio it stands at,
-    hon = max(h / r_nl, 1) (``_soft_on``: the stress it holds then, falling to nothing
-    with the crack band's energy G per unit crack area). An element longer than the line
-    stays local; a uniform field averages to itself. Called after the shell forces on
-    each step that updates the history; ``compiled``: kernels.nonlocal_onset_kernel. The
-    kernel writes the element means only on the steps this asks for them (``st.s_nlec``:
-    while a point is held), so a hold is decided from the step after it starts."""
+    ``plate_nonlocal_averaging`` through its element over the stretch in tension in that
+    mode (from the element outward each way up to the first wood not in tension, or no
+    wood: a crack starts in, and runs through, wood under tension, not because of nor
+    held back by wood compressed; each element's mean over its three points, of the same
+    ply at the same level, the element's own variation about its mean kept), reaches the
+    onset too; from then it softens from the ratio it stands at, hon = max(h / r_nl, 1)
+    (``_soft_on``: the stress it holds then, falling to nothing with the crack band's
+    energy G per unit crack area).
+    An element longer than the line stays local; a uniform field averages to itself.
+    Called after the shell forces on each step that updates the history; ``compiled``:
+    kernels.nonlocal_onset_kernel. The kernel writes the element means only on the steps
+    this asks for them (``st.s_nlec``: while a point is held), so a hold is decided from
+    the step after it starts."""
     if not nonlocal_on(m) or not len(st.s_wait):
         return
     if not st.s_wait.any():
@@ -600,34 +652,33 @@ def plate_nonlocal_onset(m: Model, st: State, compiled: bool = False) -> None:
     if not st.s_nlec:  # the means were not written this step: from the next one
         st.s_nlec = True
         return
-    W, nlon = plate_nonlocal_averaging(m)
+    _, nlon, (ptr, el) = plate_nonlocal_averaging(m)
     if compiled:
         K.nonlocal_onset_kernel(st.s_wait, st.s_gone, nlon, st.s_ec, st.s_ept, st.s_hist,
-                                st.s_hon, m.s_lim, m.s_nl, W.indptr, W.indices, W.data)
+                                st.s_hon, m.s_lim, m.s_nl, ptr, el)
         return
     ns = len(m.s_nodes)
     nlay = st.s_ec.shape[1]
-    alive = (~st.s_gone).astype(float)
-    for j in range(3):
-        kk = 2 * j  # the mode's history and strength: fibre t 0, across t 2, shear 4
-        for ll in range(nlay):
-            es = np.where(st.s_wait & ~st.s_gone & nlon[:, j, ll] & (m.s_nl > ll))[0]
-            if not len(es):
-                continue
-            Wr = W[(j * nlay + ll) * ns + es]
-            den = Wr @ alive
-            avg = (Wr @ (st.s_ec[:, ll, :, j] * alive[:, None])) \
-                / np.where(den > 0.0, den, 1.0)[:, None]
-            dl = avg - st.s_ec[es, ll, :, j]  # (n, 3 levels)
-            for g in range(3):
+    for e in np.where(st.s_wait & ~st.s_gone)[0]:
+        for j in range(3):
+            kk = 2 * j  # the mode's history and strength: fibre t 0, across t 2, shear 4
+            for ll in range(int(m.s_nl[e])):
+                if not nlon[e, j, ll]:
+                    continue
+                r0 = (j * nlay + ll) * ns + e
+                row = el[ptr[r0]:ptr[r0 + 1]]
                 for q in range(3):
-                    p = (g * nlay + ll) * 3 + q
-                    h = st.s_hist[es, p, kk]
-                    v = st.s_ept[es, p, j] + dl[:, q]
-                    r = (np.abs(v) if j == 2 else v) / m.s_lim[es, kk]
-                    sel = (den > 0.0) & (st.s_hon[es, p, j] <= 0.0) & (h >= 1.0) & (r >= 1.0)
-                    if sel.any():
-                        st.s_hon[es[sel], p, j] = np.maximum(h[sel] / r[sel], 1.0)
+                    dl = _tension_mean(row, st.s_ec, st.s_gone, e, ll, q, j) \
+                        - st.s_ec[e, ll, q, j]
+                    for g in range(3):
+                        p = (g * nlay + ll) * 3 + q
+                        h = st.s_hist[e, p, kk]
+                        if st.s_hon[e, p, j] > 0.0 or h < 1.0:
+                            continue
+                        v = st.s_ept[e, p, j] + dl
+                        r = (abs(v) if j == 2 else v) / m.s_lim[e, kk]
+                        if r >= 1.0:
+                            st.s_hon[e, p, j] = max(h / r, 1.0)
 
 
 def _ply_strain(e, k, z, cc2, ss2, cs):
