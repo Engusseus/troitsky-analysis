@@ -41,6 +41,9 @@ class BodyInfo:
     axis: tuple | None = None
     chains: list = field(default_factory=list)  # a frame's beams, arm by arm
     butt_zones: list = field(default_factory=list)  # open butt joints at their places
+    # the seeded differences of the built part from its drawing (round 28, idealize:
+    # thickness factor, twist (rad), placement shift (mm), fit error (mm), flatness (mm))
+    built: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -173,6 +176,11 @@ class Model:
     # shear stiffness k G A (N) for shear along e3, through the plies (empty: b_kGA)
     b_fs: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
     b_kGA3: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    # beams (round 28): the share of each element's rest length b_L0 that is the member's
+    # lack of fit (mm; idealize, scatter.fit_mm): b_L0 = drawn length + b_dL, the member
+    # cut long (+) or short (-) and forced into place. The crush brings it in with gravity
+    # while the bridge settles (crush.py); empty: none
+    b_dL: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
     @property
     def n_nodes(self) -> int:

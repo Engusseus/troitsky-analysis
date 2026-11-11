@@ -103,6 +103,13 @@ PARAM_RANGES: list[tuple[str, float, float, bool]] = [
     ("*friction*", 0.0, 2.0, True),
     ("floss.strands", 1.0, 100.0, True),
     ("contact.seating_mm", 0.0, 10.0, True),
+    # the built bridge (round 28): a plate out of flat by a tenth of its span, a stick
+    # twisted by a radian per 100 mm, a third of its thickness, members 5 mm off, 2 mm long
+    ("scatter.plate_flatness", 0.0, 0.1, True),
+    ("scatter.twist_rad_per_m", 0.0, 10.0, True),
+    ("scatter.thickness_cov", 0.0, 0.3, True),
+    ("scatter.member_placement_mm", 0.0, 5.0, True),
+    ("scatter.fit_mm", 0.0, 2.0, True),
     ("scatter.*_cov", 0.0, 1.0, True),
     ("uncertainty.*_cov", 0.0, 1.0, True),
     ("uncertainty.mesh_bias_*", -0.5, 0.5, True),

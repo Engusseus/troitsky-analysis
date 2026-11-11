@@ -136,6 +136,9 @@ class State:
     # Timoshenko shear strain correction of each beam, bending about e3 and e2
     b_gam: np.ndarray = field(default_factory=lambda: np.zeros((0, 2)))
     sc: object | None = None  # self-contact (bridgesim.sim.contact.SelfContact)
+    # each beam's rest length while a run brings the members' lack of fit in (Model.b_dL:
+    # the crush ramps it with gravity as the bridge settles); empty: the model's b_L0
+    b_L0: np.ndarray = field(default_factory=lambda: np.zeros(0))
     t: float = 0.0
     jack_y: float = 0.0
     jack_v: float = 0.0  # jack speed (mm/s, negative = down)
@@ -193,6 +196,25 @@ def beam_fs(m: Model) -> np.ndarray:
     return m.b_fs
 
 
+def beam_L0(m: Model, st: State) -> np.ndarray:
+    """Each beam's rest length now (mm): the model's (its drawn length plus its member's lack
+    of fit, Model.b_dL), or the one a run is bringing the lack of fit in with
+    (``st.b_L0``, crush.py's settling)."""
+    return st.b_L0 if st.b_L0.shape == m.b_L0.shape else m.b_L0
+
+
+def fit_ramp(m: Model, st: State, g: float) -> None:
+    """Bring a share ``g`` (0..1) of the members' lack of fit in (Model.b_dL): the rest
+    lengths b_L0 - (1 - g) b_dL; at 1 the model's own. A model without any lack of fit is
+    left alone (bit for bit)."""
+    dL = m.b_dL
+    if dL.shape != m.b_L0.shape or g >= 1.0 or not dL.any():
+        if st.b_L0.size:
+            st.b_L0 = np.zeros(0)
+        return
+    st.b_L0 = m.b_L0 - (1.0 - max(g, 0.0)) * dL
+
+
 def beam_kGA3(m: Model) -> np.ndarray:
     """Each beam's shear stiffness k G A for shear along e3, through its plies (N): b_kGA
     (one value both ways) for a model that has none."""
@@ -230,7 +252,7 @@ def beam_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
     Et = np.transpose(E, (0, 2, 1))
     th_i = logvec(Et @ Ti)
     th_j = logvec(Et @ Tj)
-    L0 = m.b_L0
+    L0 = beam_L0(m, st)
     eps0 = (l - L0) / L0
     N = np.zeros_like(l)
     Mzi = np.zeros_like(l)
@@ -955,8 +977,8 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
     Mo[:] = 0
     x, R = st.x, st.R
     if len(m.b_i):
-        K.beam_kernel(x, R, m.b_i, m.b_j, m.b_L0, m.b_E0, m.b_fy, m.b_fz, m.b_fA, m.b_E,
-                      m.b_ft, m.b_fc, beam_fs(m), m.b_Gf, m.b_GJ, m.b_A, m.b_fv, m.b_fv3,
+        K.beam_kernel(x, R, m.b_i, m.b_j, beam_L0(m, st), m.b_E0, m.b_fy, m.b_fz, m.b_fA,
+                      m.b_E, m.b_ft, m.b_fc, beam_fs(m), m.b_Gf, m.b_GJ, m.b_A, m.b_fv, m.b_fv3,
                       m.b_Wt, m.b_nply, m.b_kGA, beam_kGA3(m), st.b_gam, st.b_s2, st.b_s3,
                       float(m.params.get("crush_softening", 0.3)), st.eps_p, st.dmg_t,
                       st.b_alive, st.b_fractured, st.b_shear, F, Mo, update,

@@ -2423,7 +2423,9 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
              "percentiles." if n < 20 else "")
     if drawn:
         rep.note = ("The spread covers member bow, stick-to-stick and joint-to-joint "
-                    "scatter, plate placement and the placeholder material values "
+                    "scatter, the built bridge's differences from its drawing (plates out "
+                    "of flat, members twisted, thicker or thinner, off their place, cut "
+                    "long or short), plate placement and the placeholder material values "
                     f"({', '.join(sorted(drawn))}), each drawn per run around its "
                     "placeholder (lognormal, with the spread of the literature or "
                     "craft-stick range of each: 20-50 %; a Latin hypercube, so each "
@@ -2432,7 +2434,10 @@ def montecarlo(cad: str | Path, n: int = 8, overrides=None, material=None,
                     "only a validation test can narrow." + small)
     else:
         rep.note = ("The spread covers member bow, stick-to-stick and joint-to-joint "
-                    "scatter and plate placement. It does not cover the material values "
+                    "scatter, the built bridge's differences from its drawing (plates out "
+                    "of flat, members twisted, thicker or thinner, off their place, cut "
+                    "long or short) and plate placement. It does not cover the material "
+                    "values "
                     "themselves: "
                     + (f"{len(assumed)} are still placeholders, which can move F_u by tens "
                        "of % (bridgesim sensitivity shows which); measure them, or add "
@@ -2897,6 +2902,12 @@ PLACEHOLDER_PRIORS = {
     # round 28: the gauge length of the crushing fall (a kink band's width, millimetres to
     # a few centimetres in wood; nothing measured on sticks)
     "wood.crush_band_mm": 0.50,
+    # round 28, the built bridge (judgements, nothing measured on stick bridges: about a
+    # factor of 2 either way at 90 %): the plates' out-of-flatness, the sticks' twist and
+    # thickness scatter, how far members land off their drawn place, their lack of fit
+    "scatter.plate_flatness": 0.50, "scatter.twist_rad_per_m": 0.50,
+    "scatter.thickness_cov": 0.50, "scatter.member_placement_mm": 0.50,
+    "scatter.fit_mm": 0.50,
 }
 # placeholders drawn additively, value + sd x z within (low, high): the wood's moisture
 # above its coupons' (percentage points; members laminated in the last days before the
@@ -2992,6 +3003,20 @@ SENSITIVITY_MORE = {
                            "the soft start of your crush-test curve"),
     "scatter.support_level_mm": ("how far the support corners are out of level",
                                  "the gap under the corner that rocks on a flat table"),
+    # round 28: the built bridge
+    "scatter.plate_flatness": ("how flat the stick plates are built (a share of each free "
+                               "panel's span)",
+                               "a straightedge across each free panel of the built plates, "
+                               "feeler gauges under it"),
+    "scatter.twist_rad_per_m": ("how twisted the sticks are",
+                                "winding sticks across a member's ends, or a stick's corner "
+                                "standing off a flat table"),
+    "scatter.thickness_cov": ("how much the sticks' thickness varies",
+                              "50 sticks measured with calipers, three points each"),
+    "scatter.member_placement_mm": ("how far members land off their drawn place",
+                                    "the built bridge on a full-size print of the drawing"),
+    "scatter.fit_mm": ("how far members fitted end to end were cut long or short",
+                       "a member against its gap before gluing (feeler gauges)"),
     "floss.strand_break_N": ("breaking load of one floss strand",
                              "hang weights on a strand"),
 }

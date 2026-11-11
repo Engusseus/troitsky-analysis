@@ -961,12 +961,15 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
 
     # ------------------------------------------------------------ 1. settle (self weight)
     # gravity is ramped on over settle_s, then the bridge and the plate are left to come
-    # to rest (until no node moves faster than 0.5 mm/s, at most settle_max_s)
+    # to rest (until no node moves faster than 0.5 mm/s, at most settle_max_s). The
+    # members' lack of fit (Model.b_dL, scatter.fit_mm) comes in along the same ramp: its
+    # locked-in stress released at once would ring the bridge (solver.fit_ramp)
     y_ref = st.x[:, 1].copy()
     n_ramp = max(1, int(opt.settle_s / dt))
     k = 0
     while True:
         g = min(1.0, (k + 1) / n_ramp)
+        S.fit_ramp(m, st, g)
         do_step(g, max(opt.alpha, 150.0))
         k += 1
         if k > n_ramp and k % 200 == 0:

@@ -607,9 +607,12 @@ class _Builder:
         p = np.asarray(p, float)
         return p if self.imperf is None else self.imperf(p)
 
-    def node(self, p, body: int) -> int:
+    def node(self, p, body: int, off=None) -> int:
+        """A node of ``body`` drawn at p; ``off``: where the built part puts it off the
+        drawing (its out-of-flatness, its placement error: idealize's built bridge), a
+        node offset only (the glue points and contacts stay where they are drawn)."""
         self.X_cad.append(np.asarray(p, float))
-        self.X.append(self._at(p))
+        self.X.append(self._at(p) if off is None else self._at(p) + np.asarray(off, float))
         self.mass.append(0.0)
         self.rot.append(0.0)
         self.node_body.append(body)
@@ -773,6 +776,250 @@ def stick_factors(seed: int | None, name: str, n_plies: int, sp: SimParams
     zE, zS = z(f"E:{name}"), z(f"S:{name}")
     return (ln(sp["scatter.E_cov"], zE),
             ln(sp["scatter.strength_cov"], rho * zE + math.sqrt(max(0.0, 1 - rho**2)) * zS))
+
+
+# ---------------------------------------------------------------- the built bridge
+# A hand-built stick bridge is not its drawing (round 28): its plates are not flat, its
+# members are twisted, its sticks are not all as thick as drawn, its members land a little
+# off their drawn place and are cut a little long or short. Each difference is drawn from a
+# stream named after its body (``built_stream``), scaled by scatter.amplitude, absent for
+# the perfect bridge (seed None) and switched off by its parameter at 0. The parts are built
+# that way (no stress): the offsets move a body's own nodes and every point it is glued or
+# bears at stays where it is drawn, its rigid arm taking up the difference, as the bow does.
+
+
+def built_stream(seed: int, key: str) -> np.random.Generator:
+    """The random stream of one seeded difference of the built bridge (``key``: what and
+    which body), the same at every fidelity."""
+    return np.random.default_rng([int(seed), zlib.crc32(key.encode("utf-8"))])
+
+
+def thickness_factor(seed: int | None, name: str, n_plies: int, sp: SimParams) -> float:
+    """The built thickness of a laminated part of ``n_plies`` sticks over its drawn
+    thickness: 1 + c z / sqrt(n), c = scatter.thickness_cov (one stick's CoV of thickness),
+    z a standard normal draw of the body's own stream; the sticks through the stack are
+    independent, so a member of n plies varies by c / sqrt(n) (times scatter.amplitude).
+    At least 0.2 (a guard against an absurd draw: z < -27 at the default)."""
+    cov = float(sp.values.get("scatter.thickness_cov", 0.0))
+    if seed is None or cov <= 0.0:
+        return 1.0
+    amp = float(sp.values.get("scatter.amplitude", 1.0))
+    z = float(built_stream(seed, f"thick:{name}").standard_normal())
+    return max(1.0 + amp * cov / math.sqrt(max(1, int(n_plies))) * z, 0.2)
+
+
+def twist_angle(seed: int | None, name: str, n_plies: int, L_mm: float, stick_mm: float,
+                sp: SimParams) -> float:
+    """The pre-twist of a member ``L_mm`` long, from end to end (rad): its section turns
+    about its axis linearly from -phi/2 to +phi/2. One stick twists at a rate drawn with
+    the standard deviation tau = scatter.twist_rad_per_m; a member of n plies, its sticks
+    ``stick_mm`` long, takes the mean rate of its plies (glued together they share one
+    shape: tau / sqrt(n)), and along it its sticks' twists add as independent pieces, so
+    phi = tau z sqrt(L min(L, L_s)) / sqrt(n) (L in m; for a member no longer than one
+    stick, tau z L / sqrt(n)); times scatter.amplitude."""
+    tau = float(sp.values.get("scatter.twist_rad_per_m", 0.0))
+    if seed is None or tau <= 0.0 or L_mm <= 0.0:
+        return 0.0
+    amp = float(sp.values.get("scatter.amplitude", 1.0))
+    z = float(built_stream(seed, f"twist:{name}").standard_normal())
+    L_eff = math.sqrt(L_mm * min(L_mm, max(stick_mm, 1e-9))) / 1000.0
+    return amp * tau * z * L_eff / math.sqrt(max(1, int(n_plies)))
+
+
+def twisted_frame(E0: np.ndarray, theta: float) -> np.ndarray:
+    """A beam element's frame [e1 e2 e3] (columns) turned by ``theta`` about e1."""
+    c, s = math.cos(theta), math.sin(theta)
+    out = E0.copy()
+    out[:, 1] = c * E0[:, 1] + s * E0[:, 2]
+    out[:, 2] = -s * E0[:, 1] + c * E0[:, 2]
+    return out
+
+
+#: a direction within this of a glued face's normal (its eigenvalue of sum n n^T) is not
+#: in the plane of the member's glued faces (~13 degrees)
+PLACEMENT_TOL = 0.05
+
+
+def placement_shift(seed: int | None, name: str, normals, sp: SimParams) -> np.ndarray:
+    """Where a member glued by hand lands off its drawn place (mm, a rigid shift of its
+    centre line): a standard normal vector of the body's own stream, its components along
+    the normals of the member's glued (or bearing) faces taken out (it cannot shift into a
+    part it is glued to: the directions whose eigenvalue of sum n n^T is below
+    PLACEMENT_TOL), times scatter.member_placement_mm (the standard deviation in each
+    direction left) and scatter.amplitude. A member lapped between gussets shifts in their
+    plane, one glued on two adjacent faces only along itself, one glued on its end grain
+    alone across itself either way."""
+    sd = float(sp.values.get("scatter.member_placement_mm", 0.0))
+    if seed is None or sd <= 0.0:
+        return np.zeros(3)
+    amp = float(sp.values.get("scatter.amplitude", 1.0))
+    M = np.zeros((3, 3))
+    for n in normals:
+        n = np.asarray(n, float)
+        M += np.outer(n, n) / max(float(n @ n), 1e-12)
+    w, V = np.linalg.eigh(M)
+    P = sum((np.outer(V[:, k], V[:, k]) for k in range(3) if w[k] < PLACEMENT_TOL),
+            np.zeros((3, 3)))
+    z = built_stream(seed, f"place:{name}").standard_normal(3)
+    return amp * sd * (P @ z)
+
+
+def fit_error(seed: int | None, name: str, sp: SimParams) -> float:
+    """How much longer than the gap it is fitted into a member was cut (mm, + long, -
+    short): scatter.fit_mm x a standard normal draw of the body's own stream x
+    scatter.amplitude. Only a member cut long is locked in (pushed into place, it stays in
+    compression): one cut short is not pulled, the glue fills its gap (glue.gap_fill_mm;
+    a cut end's fit-up is scatter.bearing_gap_mm), so build_model takes max(0, this)."""
+    sd = float(sp.values.get("scatter.fit_mm", 0.0))
+    if seed is None or sd <= 0.0:
+        return 0.0
+    amp = float(sp.values.get("scatter.amplitude", 1.0))
+    return amp * sd * float(built_stream(seed, f"fit:{name}").standard_normal())
+
+
+def _smoothstep(t: np.ndarray) -> np.ndarray:
+    t = np.clip(t, 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+#: points across a free piece of a plate the flatness field's span and scale are read at
+FLAT_SAMPLES = 24
+
+
+@dataclass
+class FlatPiece:
+    poly: Polygon  # the free piece, in the plate's frame
+    c0: np.ndarray  # corner of its minimum rotated rectangle
+    u2: np.ndarray  # its long side's direction
+    w2: np.ndarray  # its short side's
+    L: float
+    W: float
+    d_max: float  # its largest distance from the glued regions (inf: none)
+    a: float  # amplitude (mm)
+    psi: float  # the seeded mix of a half and a full wave across it (and their sign)
+    kappa: float  # the uniform share across it (a piece narrower than its free span)
+    sigma: float  # the seeded sign of that share
+    norm: float  # max |shape x mask| over the piece (the shape is scaled to amplitude a)
+
+    def shape(self, q: np.ndarray, d: np.ndarray) -> np.ndarray:
+        xi = (q - self.c0) @ self.u2 / self.L
+        eta = (q - self.c0) @ self.w2 / self.W
+        across = math.cos(self.psi) * np.sin(math.pi * eta) \
+            + math.sin(self.psi) * np.sin(2.0 * math.pi * eta)
+        s = np.sin(math.pi * xi) * (self.kappa * self.sigma + (1.0 - self.kappa) * across)
+        m = np.ones(len(q)) if not math.isfinite(self.d_max) else \
+            _smoothstep(np.asarray(d, float) / self.d_max)
+        return s * m
+
+
+class FlatField:
+    """The out-of-flatness of a plate, or of plates glued face to face into one stack (the
+    plies of a deck drawn as separate bodies, a gusset on a web: they share it), in the
+    frame of its largest plate (origin, e1, e2, n): w(p) along n, from the plate's
+    outline and the regions where other parts are glued on it or bear on it (its faces
+    and its edges), all from the CAD.
+
+    The plate is built curved, but a part glued on its face holds it flat there (it was
+    pressed onto it while the glue set): the plate is cut into the free pieces its glued
+    faces leave, and each piece gets a seeded smooth shape of its own, zero over the
+    glued regions. Along its longer extent L (its minimum rotated rectangle, W the
+    shorter) a half sine wave; across it a half wave, a full wave or a seeded mix of the
+    two (cos psi sin(pi eta) + sin psi sin(2 pi eta)), flattened toward a uniform section
+    of seeded sign by kappa = 1 - W / s where the piece is narrower than its free span s
+    (a strap glued at its ends bows as a column, it is not cupped by its length's
+    amplitude); times a mask that is zero where the piece meets a glued region and rises
+    to one at the piece's farthest point from them, d_max (smoothstep of d / d_max: it
+    leaves a glued face tangentially, as a plate pressed flat there); scaled so its
+    largest offset is a = scatter.plate_flatness x the piece's free span s = min(L,
+    2 d_max): a piece glued along its long sides (a deck panel between stringers) bows by
+    its width, one glued at its ends by its length. The glued regions themselves stay
+    exactly where they are drawn, so no glue line starts open or pressed."""
+
+    def __init__(self, key: str, origin: np.ndarray, e1: np.ndarray, e2: np.ndarray,
+                 n: np.ndarray, outline, glued: list, seed: int, flat: float, amp: float):
+        self.origin, self.e1, self.e2, self.n = origin, e1, e2, n
+        self.pieces: list[FlatPiece] = []
+        geoms = [g for g in glued if g is not None and not g.is_empty]
+        self.G = shapely.union_all(geoms) if geoms else None
+        areas = [g for g in geoms if g.area > 0]
+        G_area = shapely.union_all(areas) if areas else None
+        free = outline if G_area is None else outline.difference(G_area)
+        free = free.buffer(0)
+        parts = [p for p in getattr(free, "geoms", [free])
+                 if p.geom_type == "Polygon" and p.area > 1.0]
+        order = sorted(parts, key=lambda p: (-int(round(p.area)), int(round(p.centroid.x)),
+                                             int(round(p.centroid.y))))
+        for k, piece in enumerate(order):
+            try:
+                u2, w2, L, W = _mrr(piece)
+            except Exception:  # noqa: BLE001
+                continue
+            if W < 0.5 or L < 0.5:
+                continue
+            ext = np.asarray(piece.exterior.coords)
+            c0 = float((ext @ u2).min()) * u2 + float((ext @ w2).min()) * w2
+            Q = self._samples(piece, L, W)
+            d = self.distance(Q)
+            d_max = float(d.max()) if self.G is not None else math.inf
+            if d_max <= 1e-6:
+                continue
+            span = min(L, 2.0 * d_max)
+            r_ = built_stream(seed, f"flat:{key}:{k}")
+            psi = float(r_.uniform(0.0, 2.0 * math.pi))
+            sigma = 1.0 if r_.uniform() < 0.5 else -1.0
+            kappa = max(0.0, 1.0 - W / span)
+            pc = FlatPiece(piece, c0, u2, w2, L, W, d_max, amp * flat * span, psi, kappa,
+                           sigma, 1.0)
+            norm = float(np.abs(pc.shape(Q, d)).max())
+            if norm <= 1e-9:
+                continue
+            pc.norm = norm
+            self.pieces.append(pc)
+
+    @staticmethod
+    def _samples(piece, L: float, W: float) -> np.ndarray:
+        """Points over a piece on a grid of FLAT_SAMPLES across its narrow way (at most
+        ~40,000 of them), and its representative point: from its outline alone."""
+        minx, miny, maxx, maxy = piece.bounds
+        h = max(min(L, W) / FLAT_SAMPLES, 0.05)
+        while ((maxx - minx) / h + 1) * ((maxy - miny) / h + 1) > 40000:
+            h *= 1.5
+        xs = np.arange(minx + 0.5 * h, maxx, h)
+        ys = np.arange(miny + 0.5 * h, maxy, h)
+        XX, YY = np.meshgrid(xs, ys, indexing="ij")
+        q = np.c_[XX.ravel(), YY.ravel()]
+        q = q[shapely.contains_xy(piece, q[:, 0], q[:, 1])]
+        rp = np.asarray(piece.representative_point().coords[0])
+        return np.vstack([q, rp[None, :]])
+
+    def distance(self, q: np.ndarray) -> np.ndarray:
+        if self.G is None:
+            return np.full(len(q), math.inf)
+        return np.asarray(shapely.distance(self.G, shapely.points(q)), float)
+
+    def to2(self, P3: np.ndarray) -> np.ndarray:
+        P3 = np.asarray(P3, float).reshape(-1, 3)
+        return np.c_[(P3 - self.origin) @ self.e1, (P3 - self.origin) @ self.e2]
+
+    def offsets(self, P3: np.ndarray) -> np.ndarray:
+        """(k, 3): the offset of each drawn point P3 of the plate (its mid-surface), w n."""
+        q = self.to2(P3)
+        w = np.zeros(len(q))
+        if not self.pieces:
+            return np.zeros((len(q), 3))
+        pts = shapely.points(q)
+        d = self.distance(q)
+        done = np.zeros(len(q), bool)
+        for pc in self.pieces:
+            sel = ~done & (np.asarray(shapely.distance(pc.poly, pts), float) <= 1e-6)
+            if sel.any():
+                w[sel] = pc.a * pc.shape(q[sel], d[sel]) / pc.norm
+                done |= sel
+        return w[:, None] * self.n[None, :]
+
+    @property
+    def amplitude(self) -> float:
+        return max((pc.a for pc in self.pieces), default=0.0)
 
 
 def interlaminar_strength(angles, f_v: float, f_rolling: float, bond: float) -> float:
@@ -1549,12 +1796,89 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         sh = shapes[bi]
         pre_shell[bi] = _mesh_robust(sh.poly, _shell_h(sh) * mesh_scale, bodies[bi].name,
                                      fixed=_partner_nodes(bi))
+    # ---------------------------------------------------------------- the built bridge
+    # what each part is glued to or bears on, from the CAD: its faces' normals (the plane a
+    # member's placement error stays in) and centres (whether a member is fitted between
+    # two parts, end to end: its lack of fit)
+    face_nc: dict[int, list[tuple[np.ndarray, np.ndarray]]] = {}
+    for ia_, ib_, inter_, oa_, e1_, e2_, na_ in raw_patches:
+        if shapes[ia_].kind in ("ignore", "cable") or shapes[ib_].kind in ("ignore", "cable"):
+            continue
+        cc_ = inter_.centroid
+        c3_ = oa_ + cc_.x * e1_ + cc_.y * e2_
+        for bb_ in (ia_, ib_):
+            face_nc.setdefault(bb_, []).append((np.asarray(na_, float), c3_))
+    # the plates' out-of-flatness (FlatField): one field per plate, or per stack of plates
+    # glued face to face (meshed node on node, they keep one shape), its free pieces cut by
+    # the faces glued on it from outside the stack and held flat there
+    flat_mm = float(sp.values.get("scatter.plate_flatness", 0.0))
+    flat_of: dict[int, FlatField] = {}
+    if seed is not None and flat_mm > 0:
+        seen_: set = set()
+        for b0 in range(len(bodies)):
+            if shapes[b0].kind != "shell" or b0 in seen_ or shapes[b0].poly is None:
+                continue
+            grp, todo = [], [b0]
+            while todo:
+                x_ = todo.pop()
+                if x_ in seen_:
+                    continue
+                seen_.add(x_)
+                grp.append(x_)
+                todo += [y_ for y_ in sorted(stacked.get(x_, ()))
+                         if shapes[y_].kind == "shell" and y_ not in seen_]
+            grp.sort()
+            lead = max(grp, key=lambda i: (shapes[i].poly.area, -i))
+            sl = shapes[lead]
+
+            def to_lead(P3, sl=sl):
+                return np.c_[(P3 - sl.origin) @ sl.e1, (P3 - sl.origin) @ sl.e2]
+
+            def lifted(poly, o3, a3, b3):
+                """A polygon drawn in the frame (o3, a3, b3), in 3D."""
+                ext = np.asarray(poly.exterior.coords)
+                return (o3 + np.outer(ext[:, 0], a3) + np.outer(ext[:, 1], b3),
+                        [o3 + np.outer(np.asarray(r.coords)[:, 0], a3)
+                         + np.outer(np.asarray(r.coords)[:, 1], b3) for r in poly.interiors])
+
+            outl = []
+            for i in grp:
+                for pg in getattr(shapes[i].poly, "geoms", [shapes[i].poly]):
+                    ex3, ho3 = lifted(pg, shapes[i].origin, shapes[i].e1, shapes[i].e2)
+                    outl.append(Polygon(to_lead(ex3), [to_lead(h_) for h_ in ho3]).buffer(0))
+            outline = shapely.union_all(outl)
+            glued = []
+            in_grp = set(grp)
+            for ia_, ib_, inter_, oa_, e1_, e2_, na_ in raw_patches:
+                if (ia_ in in_grp) == (ib_ in in_grp):
+                    continue
+                if shapes[ia_].kind in ("ignore", "cable") or \
+                        shapes[ib_].kind in ("ignore", "cable"):
+                    continue
+                face = abs(float(np.dot(na_, sl.n))) > 0.9
+                for pg in getattr(inter_, "geoms", [inter_]):
+                    if pg.geom_type != "Polygon" or pg.is_empty:
+                        continue
+                    ex3, ho3 = lifted(pg, oa_, e1_, e2_)
+                    if face:
+                        glued.append(Polygon(to_lead(ex3),
+                                             [to_lead(h_) for h_ in ho3]).buffer(0))
+                    else:  # glued on its edge: that edge, a line
+                        hull = shapely.MultiPoint(to_lead(ex3)).convex_hull
+                        glued.append(LineString(hull.exterior.coords)
+                                     if hull.geom_type == "Polygon" else hull)
+            key_ = bodies[lead].name if len(grp) == 1 else \
+                "|".join(sorted(bodies[i].name for i in grp))
+            ff_ = FlatField(key_, sl.origin, sl.e1, sl.e2, sl.n, outline, glued, int(seed),
+                            flat_mm, amp)
+            for i in grp:
+                flat_of[i] = ff_
     frame_tree: dict[int, cKDTree] = {}
     frame_h: dict[int, float] = {}
     beams: dict[str, list] = {k: [] for k in ("i", "j", "L0", "E0", "fy", "fz", "fA", "E",
                                               "ft", "fc", "Gf", "GJ", "A", "fv", "fv3",
                                               "nply", "Wt", "kGA", "body", "fs", "kGA3",
-                                              "sec")}
+                                              "sec", "dL")}
     # the stick field (stickfield, scatter.stick_field): each stick's own share of the
     # scatter, (1 - rho) s^2 of a stick's log-variance, drawn per stick cell
     from bridgesim.sim import stickfield as sfld
@@ -1622,15 +1946,18 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
     # torsion 3.5-4.7 MPa against rolling shear 1.43-1.51 on CLT crossings)
     crossing_tor = min(il_strength["bond"], 2.4 * il_strength["f_rolling"])
 
-    def _frame_body(bi, b, sh, info, o, ssc, Ef, Sf, mass_t):
+    def _frame_body(bi, b, sh, info, o, ssc, Ef, Sf, mass_t, kT=1.0):
         """A plate of narrow arms as a frame: each arm a chain of fibre beams along its
         centre line with the arm's local width and the plate's thickness, its plies
-        stacked through the thickness, the arms sharing nodes where they meet."""
+        stacked through the thickness, the arms sharing nodes where they meet. ``kT``:
+        its built thickness over its drawn one (thickness_factor: its sections and mass;
+        its nodes stay on the drawn mid-surface)."""
         from types import SimpleNamespace
 
         from bridgesim.sim.skeleton import resample
 
         T = sh.T * ssc
+        Tk = T * kT  # the built thickness (its sections)
         o_mid = sh.origin - sh.n * T / 2
         bnd = sh.poly.boundary
         arm = 2 * sh.poly.area / max(sh.poly.length, 1e-9)
@@ -1783,10 +2110,10 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             kc = butt_compression(b.name, kt, o)
             ny, nz = (5, 3) if We >= T else (3, 5)
             gy = ((np.arange(ny) + 0.5) / ny - 0.5) * We * _exact(ny)
-            gz = ((np.arange(nz) + 0.5) / nz - 0.5) * T * _exact(nz)
+            gz = ((np.arange(nz) + 0.5) / nz - 0.5) * Tk * _exact(nz)
             FY, FZ = np.meshgrid(gy, gz, indexing="ij")
-            A_e = We * T
-            J, Wt2, Wt3 = rect_torsion(We, T)
+            A_e = We * Tk
+            J, Wt2, Wt3 = rect_torsion(We, Tk)
             fs_e, eloc = np.ones(ny * nz), 1.0
             if arm_fld[ci] is not None:
                 mf = arm_fld[ci]
@@ -1811,18 +2138,19 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             beams["nply"].append(float(max(2, len(lam.angles))))
             beams["Wt"].append((Wt2, Wt3))
             beams["kGA"].append(5 / 6 * lam.G_xy * Ef * A_e * eloc)
-            beams["kGA3"].append(stack_kGA(lam, laminated, Ef * eloc, A_e, T))
+            beams["kGA3"].append(stack_kGA(lam, laminated, Ef * eloc, A_e, Tk))
             beams["fs"].append(fs_e)
-            beams["sec"].append((We, T, 0.0))
+            beams["sec"].append((We, Tk, 0.0))
+            beams["dL"].append(0.0)
             beams["body"].append(bi)
             info.beams.append(len(beams["i"]) - 1)
             while len(info.chains) <= ci:
                 info.chains.append([])
             info.chains[ci].append(len(beams["i"]) - 1)
-            me = mass_t * We * L0 / wl  # the plate's mass spread over its arms
+            me = mass_t * We * L0 / wl * kT  # the plate's mass spread over its arms
             bld.mass[a_] += me / 2
             bld.mass[b_] += me / 2
-            r2 = (We**2 + T**2) / 12
+            r2 = (We**2 + Tk**2) / 12
             for nn in (a_, b_):
                 bld.rot[nn] += me / 2 * (L0**2 / 12 + r2)
         ids = np.array(sorted(set(ids_all)))
@@ -1907,6 +2235,27 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             # strength is its element's, so a ply cannot be cut in tension alone)
             n_ply = len(lam.angles) if sh.layup.kind == "laminate" else 1
             Ls = mat.stick.length_mm
+            # the built member (a laminate of sticks; not a toothpick): its thickness
+            # through the stack (thickness_factor: its sections and its mass, its nodes
+            # and glued faces as drawn), its pre-twist (twist_angle), its placement error
+            # in the plane of its glued faces (placement_shift) and, fitted end to end
+            # between two parts (a face within 60 degrees of its axis in each end quarter),
+            # its lack of fit when it was cut long (fit_error; a lapped member slides into
+            # place while its glue is wet, one cut short leaves its gap to the glue)
+            kT, phi_tw, shift, d_fit = 1.0, 0.0, np.zeros(3), 0.0
+            if sh.layup.kind == "laminate":
+                kT = thickness_factor(seed, b.name, n_ply, sp)
+                phi_tw = twist_angle(seed, b.name, n_ply, L, Ls, sp)
+                shift = placement_shift(seed, b.name, [n_ for n_, _c in face_nc.get(bi, [])],
+                                        sp)
+                ends_ = [float((c_ - c) @ u) for n_, c_ in face_nc.get(bi, [])
+                         if abs(float(n_ @ u)) >= 0.5]
+                if any(x_ < s0 + 0.25 * L for x_ in ends_) and \
+                        any(x_ > s1 - 0.25 * L for x_ in ends_):
+                    d_fit = max(0.0, fit_error(seed, b.name, sp))
+            Tk = T * kT  # the built thickness through the stack
+            info.built = {"thickness_factor": kT, "twist_rad": phi_tw,
+                          "shift_mm": [float(v) for v in shift], "fit_mm": d_fit}
             zones: list[tuple[float, frozenset[int]]] = []
             open_frac = 0.0
             lz = 0.0
@@ -1953,7 +2302,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             ids = []
             for s in st2:
                 p = c + s * u + bow_a * math.sin(math.pi * (s - s0) / L) * bow_dir
-                ids.append(bld.node(p, bi))
+                ids.append(bld.node(p, bi, off=shift if shift.any() else None))
             ids = np.array(ids)
             body_nodes[bi] = ids
             bar_axis[bi] = (c, u, st2)
@@ -1980,13 +2329,13 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 dl = np.diff(st2)
                 wid = np.maximum(wid, 0.2 * Wp)
                 wid *= vol / (T * float((wid * dl).sum()))  # same volume as the solid
-            gz = ((np.arange(nz) + 0.5) / nz - 0.5) * T * _exact(nz)
+            gz = ((np.arange(nz) + 0.5) / nz - 0.5) * Tk * _exact(nz)
             Wm = float(np.mean(wid))
             E0 = np.stack([u, w, nrm], axis=1)
             # each zone's net section, and the factors its elements' strengths keep: the
             # member's butt-joint factors over the net share of its weakest zone (the
             # glue-line paths round the joints are in them), 1 elsewhere
-            z_sec = [zone_layers(n_ply, cut, nz, T, open_frac) for _x, cut in zones]
+            z_sec = [zone_layers(n_ply, cut, nz, Tk, open_frac) for _x, cut in zones]
             net_min = min((float(kp.mean()) for kp, _sh in z_sec), default=1.0)
             kt_z = min(1.0, kt / max(net_min, 1e-9))
             kc_z = min(1.0, kc / max(net_min, 1e-9))
@@ -1998,7 +2347,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             mfld = member_field(b.name, o, laminated, n_ply, Wp, L, f"buttpos:{b.name}")
             for k_e, (a_, b_) in enumerate(zip(ids[:-1], ids[1:], strict=True)):
                 We = float(wid[k_e])
-                A_e = We * T if sh.fill < 0.75 else A_true
+                A_e = We * Tk if sh.fill < 0.75 else A_true * kT
                 gy = off[k_e] + ((np.arange(ny) + 0.5) / ny - 0.5) * We * _exact(ny)
                 sm_e = 0.5 * (st2[k_e] + st2[k_e + 1]) - s0
                 zi = next((i for i, (xc, _c) in enumerate(zones)
@@ -2012,20 +2361,25 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                     FY, FZ = np.meshgrid(gy, gz + shz, indexing="ij")
                     fA = (np.ones((ny, nz)) * kp[None, :]).ravel() * A_e / (ny * nz)
                     kt_e, kc_e = kt_z, kc_z
-                J, Wt2, Wt3 = rect_torsion(We, T)
+                J, Wt2, Wt3 = rect_torsion(We, Tk)
                 L0 = float(np.linalg.norm(bld.X[b_] - bld.X[a_]))
                 e1v = (bld.X[b_] - bld.X[a_]) / L0
                 e3v = np.cross(e1v, w)
                 e3v /= np.linalg.norm(e3v)
                 e2v = np.cross(e3v, e1v)
                 Ein = np.stack([e1v, e2v, e3v], axis=1)
+                if phi_tw:  # pre-twist: the section turned at the element's middle
+                    Ein = twisted_frame(Ein, phi_tw * (sm_e / L - 0.5))
+                # lack of fit: the member's rest length, its length error spread over its
+                # elements (its mass stays the drawn element's)
+                dL_e = L0 * d_fit / L if d_fit else 0.0
                 fs_e, eloc = np.ones(ny * nz), 1.0
                 if mfld is not None:
                     fs_e, eloc = mfld.element(st2[k_e] - s0, st2[k_e + 1] - s0,
                                               fibre_W(ny, nz, mfld.n_cols, mfld.n_rows))
                 beams["i"].append(a_)
                 beams["j"].append(b_)
-                beams["L0"].append(L0)
+                beams["L0"].append(L0 + dL_e if d_fit else L0)
                 beams["E0"].append(Ein)
                 beams["fy"].append(FY.ravel())
                 beams["fz"].append(FZ.ravel())
@@ -2041,16 +2395,17 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 beams["nply"].append(float(max(2, len(lam.angles))))
                 beams["Wt"].append((Wt2, Wt3))
                 beams["kGA"].append(5 / 6 * lam.G_xy * Ef * A_e * eloc)
-                beams["kGA3"].append(stack_kGA(lam, laminated, Ef * eloc, A_e, T))
+                beams["kGA3"].append(stack_kGA(lam, laminated, Ef * eloc, A_e, Tk))
                 beams["fs"].append(fs_e)
-                beams["sec"].append((We, T, float(off[k_e])))
+                beams["sec"].append((We, Tk, float(off[k_e])))
+                beams["dL"].append(dL_e)
                 beams["body"].append(bi)
                 info.beams.append(len(beams["i"]) - 1)
                 # lumped mass
                 me = mass_t * L0 * A_e / vol
                 bld.mass[a_] += me / 2
                 bld.mass[b_] += me / 2
-                r2 = (We**2 + T**2) / 12 + off[k_e] ** 2
+                r2 = (We**2 + Tk**2) / 12 + off[k_e] ** 2
                 for nn in (a_, b_):
                     bld.rot[nn] += me / 2 * (L0**2 / 12 + r2)
             del E0
@@ -2077,9 +2432,26 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             h = _shell_h(sh) * mesh_scale
             P2, tri, h = pre_shell[bi] if bi in pre_shell else \
                 _mesh_robust(sh.poly, h, b.name)  # glue attaches by rigid arms
-            ids = np.array([bld.node(o_mid + p[0] * sh.e1 + p[1] * sh.e2, bi) for p in P2])
+            # the built plate: its thickness (thickness_factor: its elements and mass, its
+            # mid-surface where it is drawn) and its out-of-flatness (FlatField: its nodes
+            # off the drawn mid-surface, its glue points and contacts where they are drawn)
+            kT = thickness_factor(seed, b.name, len(sh.layup.angles), sp) \
+                if sh.layup.kind == "laminate" else 1.0
+            Tk = T * kT
+            ff = flat_of.get(bi)
+            fl_off = np.zeros((len(P2), 3))
+            if ff is not None:
+                fl_off = ff.offsets(np.array([o_mid + p[0] * sh.e1 + p[1] * sh.e2
+                                              for p in P2]))
+            ids = np.array([bld.node(o_mid + p[0] * sh.e1 + p[1] * sh.e2, bi,
+                                     off=fl_off[k_] if ff is not None else None)
+                            for k_, p in enumerate(P2)])
+            info.built = {"thickness_factor": kT,
+                          "flatness_mm": float(np.abs(fl_off @ sh.n).max()) if len(P2)
+                          else 0.0}
             body_nodes[bi] = ids
-            shell_tree[bi] = cKDTree(np.array([bld.X[i] for i in ids]))
+            # (which node a glue point or a contact hangs on: by the drawn plate)
+            shell_tree[bi] = cKDTree(np.array([bld.X[i] for i in ids]) - fl_off)
             trib = np.zeros(len(ids))
             for t3 in tri:
                 a3 = P2[t3]
@@ -2155,9 +2527,9 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                     angs = angs[::-1]
                 # (the element's modulus x eloc, its failure stresses kept but the fibres'
                 # x fs_e, with their fracture energy)
-                ed = shellmod.element_data(Ploc[:, :2], angs, T, ply_s, Ef * eloc, Sf / eloc,
+                ed = shellmod.element_data(Ploc[:, :2], angs, Tk, ply_s, Ef * eloc, Sf / eloc,
                                            (Gm[0] * fs_e, Gm[1], Gm[2]),
-                                           lam_ref.E_x * Ef * T, kt=kt_pl * fs_e,
+                                           lam_ref.E_x * Ef * Tk, kt=kt_pl * fs_e,
                                            kc=kc_pl * fs_e)
                 if ed["snapback"]:
                     n_snap += 1
@@ -2168,21 +2540,25 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                 shells["nodes"].append(ids[t3])
                 shells["E0"].append(E0)
                 shells["P"].append(Ploc)
-                shells["t"].append(T)
+                shells["t"].append(Tk)
                 shells["el"].append(ed)
                 shells["body"].append(bi)
                 info.shells.append(len(shells["nodes"]) - 1)
+                X3 = X3 - fl_off[t3]  # its mass by the drawn (flat) element
                 ar = 0.5 * np.linalg.norm(np.cross(X3[1] - X3[0], X3[2] - X3[0]))
-                me = mass_t * ar / area
+                me = mass_t * ar / area * kT
                 for k in t3:
                     bld.mass[ids[k]] += me / 3
-                    bld.rot[ids[k]] += me / 3 * (h * h / 12 + T * T / 12)
+                    bld.rot[ids[k]] += me / 3 * (h * h / 12 + Tk * Tk / 12)
             info.E_eff_MPa = lam_ref.E_x
             info.f_t_eff_MPa, info.f_c_eff_MPa = lam_ref.f_t * kt_pl, lam_ref.f_c * kc_pl
             info.thickness_mm = T
             info.nodes = list(ids)
         elif sh.kind == "frame":
-            _frame_body(bi, b, sh, info, o, ssc, Ef, Sf, mass_t)
+            kT = thickness_factor(seed, b.name, len(sh.layup.angles), sp) \
+                if sh.layup.kind == "laminate" else 1.0
+            info.built = {"thickness_factor": kT}
+            _frame_body(bi, b, sh, info, o, ssc, Ef, Sf, mass_t, kT)
         elif sh.kind == "cable":
             info.nodes = []  # a floss cable acts between the parts it is tied to
         elif sh.kind == "block":
@@ -3299,6 +3675,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         b_Wt=arr(beams["Wt"], (0, 2)), b_kGA=arr(beams["kGA"]),
         b_body=arr(beams["body"], dtype=int),
         b_fs=arr(beams["fs"], (0, nf)), b_kGA3=arr(beams["kGA3"]),
+        b_dL=arr(beams["dL"]) if any(beams["dL"]) else np.zeros(0),
         s_nodes=arr(shells["nodes"], (0, 3), int),
         s_E0=arr(shells["E0"], (0, 3, 3)), s_P=arr(shells["P"], (0, 3, 3)),
         s_t=arr(shells["t"]), s_body=arr(shells["body"], dtype=int),
