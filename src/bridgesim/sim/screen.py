@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from bridgesim.sim import solver as S
 from bridgesim.sim.model import Model
 
 KGF = 9.80665
@@ -205,8 +206,10 @@ def solve(m: Model, load_N: float, k_contact: float = 2000.0,
     # sticks (as the platform's contacts do: a loading bar resting on two chords is held
     # in place, not left free to slide, which left the linear system all but singular
     # and a published truss's period at 5.7 s: the realism review of round 21), and
-    # open freely
-    for i in np.where(unglued)[0]:
+    # open freely; a dry face drawn apart (a near miss, a fit-up gap too wide to glue)
+    # stays open in a linear solve: its gap is far more than the screen's load closes
+    gap0 = S.glue_gap0(m)
+    for i in np.where(unglued & (gap0 <= 0.0))[0]:
         na, Ta = _att_T(m, int(m.c_a[i]))
         nb, Tb = _att_T(m, int(m.c_b[i]))
         if na == nb:
@@ -412,6 +415,7 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
         if len(fc) != len(m.c_a):
             fc = np.zeros(len(m.c_a))
         unglued = _unglued(m)
+        gap0 = S.glue_gap0(m)
         for i in range(len(m.c_a)):
             if not m.c_breakable[i]:
                 continue
@@ -421,8 +425,8 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
             nrm = m.c_n0[i] / max(np.linalg.norm(m.c_n0[i]), 1e-12)
             dn = float(d @ nrm)
             p = int(m.c_patch[i])
-            if fc[i] > 0:
-                uB[p] = max(uB[p], m.c_Kn[i] * max(-dn, 0.0) / fc[i])
+            if fc[i] > 0:  # (a dry face bears once its drawn gap has closed)
+                uB[p] = max(uB[p], m.c_Kn[i] * max(-dn - gap0[i], 0.0) / fc[i])
             if unglued[i]:
                 continue
             dt = d - dn * nrm

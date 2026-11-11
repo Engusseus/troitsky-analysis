@@ -542,7 +542,8 @@ def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
         assumed_parameters=_assumed(mat, sp),
         model={"nodes": int(model.n_nodes), "beam_elements": int(len(model.b_i)),
                "shell_elements": int(len(model.s_nodes)), "glue_points": int(len(model.c_a)),
-               "glued_patches": len(model.patches), "floss_cables": int(len(model.k_a)),
+               "glued_patches": sum(p.kind != "dry" for p in model.patches),
+               "floss_cables": int(len(model.k_a)),
                "platform_contact_points": int(len(model.p_att)),
                "plate_contact_points": int(len(model.q_att))},
         warnings=list(model.notes))
@@ -3074,6 +3075,10 @@ PLACEHOLDER_PRIORS = {
     # fits; drawn around 0 they would stay 0, and switched on without refitting m they
     # count the same observation twice
     "glue.pressure_coeff": 0.50,
+    # round 28: friction between parts that come into contact (dry wood on wood 0.25-0.5,
+    # wet 0.2, Bowden & Tabor 1950: the contact between parts was frictionless until
+    # then)
+    "contact.friction_parts": 0.30,
 }
 # placeholders drawn additively, value + sd x z within (low, high): the wood's moisture
 # above its coupons' (percentage points; members laminated in the last days before the
@@ -3169,6 +3174,8 @@ SENSITIVITY_MORE = {
                            "the soft start of your crush-test curve"),
     "scatter.support_level_mm": ("how far the support corners are out of level",
                                  "the gap under the corner that rocks on a flat table"),
+    "contact.friction_parts": ("friction between parts that come into contact",
+                               "the angle a stick starts to slide down another"),
     "floss.strand_break_N": ("breaking load of one floss strand",
                              "hang weights on a strand"),
     "glue.pressure_coeff": ("how much more a glue line holds in shear while a thrust "

@@ -138,6 +138,11 @@ def replay_html(res: CrushResult, bodies: list[CadBody], title: str = "Crush tes
     # body state per frame: 0 ok, 1 damaged glue, 2 cracked/broken
     nb = len(m.bodies)
     bstate = np.zeros((len(frames), nb), np.uint8)
+    # (a face with no glue, dry from the start, is not a joint that has let go)
+    d0 = np.asarray(m.params.get("c_d0", np.zeros(len(m.c_a))), float)
+    glued = np.bincount(m.c_patch, weights=(d0 < 1.0).astype(float),
+                        minlength=len(m.patches)) > 0 \
+        if len(m.c_patch) and len(d0) == len(m.c_patch) else np.ones(len(m.patches), bool)
     for fi, f in enumerate(frames):
         if len(m.b_body):
             cracked = f.beam_state > 0
@@ -145,7 +150,7 @@ def replay_html(res: CrushResult, bodies: list[CadBody], title: str = "Crush tes
         if len(m.s_body):
             bstate[fi, np.unique(m.s_body[f.shell_state > 0])] = 2
         if len(m.patches):
-            for pid in np.where(f.patch_damage >= 0.3)[0]:  # joint cracking
+            for pid in np.where((f.patch_damage >= 0.3) & glued)[0]:  # joint cracking
                 p = m.patches[pid]
                 for bb in (p.body_a, p.body_b):
                     bstate[fi, bb] = max(bstate[fi, bb], 1)

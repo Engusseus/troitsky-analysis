@@ -28,8 +28,9 @@ LS-DYNA and Abaqus/Explicit). Ingredients:
   broken they slide with Coulomb friction.
 * **floss**: tension-only cables that snap at their breaking load.
 * **contact**: penalty contact with friction against the base platform and the steel
-  loading plate (a rigid body free to tilt on the jack's hemisphere), and frictionless
-  contact between parts that meet during the collapse (:mod:`bridgesim.sim.contact`).
+  loading plate (a rigid body free to tilt on the jack's hemisphere), and between parts
+  that meet during the test (:mod:`bridgesim.sim.contact`: members as boxes of their
+  section, plates as slabs, with Coulomb friction).
   The jack rod above the plate is not a contact body (only drawn in the replay).
 * **gravity** on everything, and mass-proportional damping (bridges are lightly damped).
 
@@ -648,9 +649,10 @@ def glue_forces(m: Model, st: State, F: np.ndarray, Mo: np.ndarray,
             go = (m.c_breakable & (d < 0.999))[:, None]
             st.c_creep = np.where(go, cfac * ds + (st.c_creep - cfac * ds) * cdec,
                                   st.c_creep)
-    # a debonded pair that has turned, parted or passed through stops acting as contact
+    # a debonded pair that has turned, parted (3 mm from where it was drawn: a dry face
+    # drawn apart starts open by its gap) or passed through stops acting as contact
     gone = m.c_breakable & (d >= 0.999) & ((nn < 1.6) | (st.c_crush < -cdep)
-                                           | (dn**2 + s**2 > 9.0))
+                                           | ((dn - glue_gap0(m))**2 + s**2 > 9.0))
     live = st.c_alive & ~gone
     if update:
         st.c_alive = live
@@ -928,6 +930,17 @@ def _glue_crush(m: Model) -> tuple[np.ndarray, float, float, float]:
         float(m.params.get("bearing_cap", 1e30))
 
 
+def glue_gap0(m: Model) -> np.ndarray:
+    """How far apart each glue point's two sides were drawn (mm): a dry face drawn apart
+    (idealize: a near miss not glued, a cut end's fit-up gap too wide for the glue) bears
+    only once that gap has closed; 0 for the rest."""
+    g = m.params.get("c_gap0")
+    if g is None or len(g) != len(m.c_a):
+        g = np.zeros(len(m.c_a))
+        m.params["c_gap0"] = g
+    return g
+
+
 def _glue_fc90(m: Model) -> np.ndarray:
     """Crushing strength of the wood at each glue point (MPa), by grain direction."""
     f = m.params.get("glue_fc")
@@ -1008,7 +1021,7 @@ def _internal_fast(m: Model, st: State, s: Settings, F: np.ndarray, Mo: np.ndarr
                       st.c_dmax, st.c_d, st.c_slip, F, Mo, update,
                       s.beta if update else 0.0, s.dt, st.c_prev, st.c_alive, st.c_crush,
                       _glue_fc90(m), *_glue_crush(m), st.c_creep, *glue_creep(m, st),
-                      *glue_shape(m), *glue_rate(m, st), glue_pressure(m))
+                      *glue_shape(m), *glue_rate(m, st), glue_pressure(m), glue_gap0(m))
     if len(m.k_a):
         K.cable_kernel(x, R, m.a_node, m.a_r0, m.k_a, m.k_b, m.k_L0, m.k_EA, m.k_Fb,
                        st.k_alive, F, Mo, update)
