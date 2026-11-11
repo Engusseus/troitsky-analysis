@@ -453,8 +453,29 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
             if ut > worst_block.get(key, (0.0, None, None))[0]:
                 worst_block[key] = (ut, pa.centroid, scale)
 
+        # the glue lines inside a member split into ply groups (round 28): their most
+        # loaded point against its own strength, as the member's split check (its glue
+        # lines in shear), not the resultant over the line, which bending sums to ~0
+        ply_if = [getattr(pa, "plies", None) is not None for pa in m.patches]
+        worst_if: dict[int, tuple] = {}
         for p, pa in enumerate(m.patches):
-            if capT[p] <= 0:
+            if not ply_if[p]:
+                continue
+            for i in pa.springs:
+                ua, ub = (u[m.a_node[a], :3] + np.cross(u[m.a_node[a], 3:], m.a_r0[a])
+                          for a in (int(m.c_a[i]), int(m.c_b[i])))
+                d = ub - ua
+                nrm = m.c_n0[i] / max(np.linalg.norm(m.c_n0[i]), 1e-12)
+                dn = float(d @ nrm)
+                ts = float(np.linalg.norm(d - dn * nrm)) * m.c_Ks[i]
+                ut = math.hypot(max(dn, 0.0) * m.c_Kn[i] / max(m.c_sig[i], 1e-9),
+                                ts / max(m.c_tau[i], 1e-9))
+                if ut > worst_if.get(pa.body_a, (0.0,))[0]:
+                    worst_if[pa.body_a] = (ut, m.X[m.a_node[m.c_a[i]]] + m.a_r0[m.c_a[i]])
+        for bd, (ut, where) in worst_if.items():
+            add(m.bodies[bd].name, "shear", ut, where)
+        for p, pa in enumerate(m.patches):
+            if capT[p] <= 0 or ply_if[p]:
                 continue
             pk = peak_over_avg if pa.kind == "block" else 1.0
             a_ = max(fN[p], 0.0) / max(capN[p] * pk, 1e-9)
@@ -486,7 +507,7 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
                 scale = hi
             add_patch(pa, "wood" if pa.kind == "solid" else "glue", ut, scale)
         for p, pa in enumerate(m.patches):
-            if uB[p] > 0:
+            if uB[p] > 0 and not ply_if[p]:
                 add_patch(pa, "bearing", uB[p])
         for (nm, mode), (ut, where, scale) in worst_block.items():
             add(nm, mode, ut, where, scale)
@@ -527,6 +548,26 @@ def utilisations(m: Model, sol: dict, load_N: float, ply=None,
                 continue
             info = m.bodies[bd]
             sel = np.where(m.b_body == bd)[0]
+            if info.kind == "bar" and getattr(info, "ply_groups", None):
+                # a member split into ply groups (round 28) buckles as one while its glue
+                # lines hold: its groups' compressions summed against the composite
+                # section's Euler load (each group's own I plus its area x its offset
+                # from the stack's centroid squared: an upper bound, the glue lines'
+                # slip not counted, which the crush follows)
+                chs = [np.asarray(g, int) for g in info.chains if len(g)]
+                Nt = sum(float(Nel[g].min()) for g in chs)
+                if Nt < 0:
+                    e3 = m.b_E0[chs[0][0]][:, 2]
+                    zg = np.array([float(m.X[m.b_i[g[0]]] @ e3) for g in chs])
+                    EA = np.array([float((m.b_E[g] * A[g]).mean()) for g in chs])
+                    zc = float((EA * zg).sum() / max(EA.sum(), 1e-12))
+                    EIy = sum(float((m.b_E[g] * Iy[g]).mean()) + EA[k] * (zg[k] - zc) ** 2
+                              for k, g in enumerate(chs))
+                    EIz = sum(float((m.b_E[g] * Iz[g]).mean()) for g in chs)
+                    Lm = max(info.length_mm, max(float(m.b_L0[g].sum()) for g in chs))
+                    ut = -Nt / max(math.pi**2 * min(EIy, EIz) / Lm**2, 1e-9)
+                    add(info.name, "buckling", ut, m.X[np.r_[m.b_i[sel], m.b_j[sel]]].mean(0))
+                continue
             # a member buckles over its length (pinned); a frame arm by arm, each between
             # its junctions with its own compression
             groups = [np.asarray(g, int) for g in getattr(info, "chains", []) if len(g)] \

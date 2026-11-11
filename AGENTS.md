@@ -265,7 +265,16 @@ bodies:                     # by exact body name or glob pattern
   "Diagonal 3*": {butt_gap_mm: 2, butt_at: [[0.5, [0, 4]]]}  # rounded ends left open:
                                                  # the outer plies of a 5-ply member
                                                  # butted at mid-length (a net section
-                                                 # there, where it can buckle)
+                                                 # there, where it can buckle; since
+                                                 # round 28 a member whose overrides
+                                                 # declare open joints is split into
+                                                 # ply groups there: a butted ply ends
+                                                 # at its joint and can buckle alone)
+  "Top Chord*": {ply_groups: 3}                 # a laminated bar as 3 groups of plies
+                                                 # glued to each other, so its plies can
+                                                 # part and buckle on their own (finer
+                                                 # elements: slower; 1: one beam, and
+                                                 # round 27's net sections at open joints)
   "Floor Beam*": {kind: bar, axis: z}            # a member spanning along z (its outline
                                                  # may be longer the other way)
   "Deck Stringer*": {section_scale: 1.25}       # what-if: section x1.25 (area x1.56)

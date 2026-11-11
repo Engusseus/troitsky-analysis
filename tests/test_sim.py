@@ -2993,6 +2993,11 @@ def test_cut_ends_stand_off_their_seats_by_a_seeded_gap(tmp_path):
                                                  "x")
     sp = sp.updated({"scatter.bearing_gap_mm": 3.0, "glue.gap_fill_mm": 0.15,
                      "scatter.glue_cov": 0.0, "scatter.glue_bridge_cov": 0.0})
+    # (gaps this wide also leave the stringers' butt joints open, which since round 28
+    # splits them into ply groups: one beam each, so only the post's end faces differ)
+    from bridgesim.sim.idealize import Overrides
+
+    ov = Overrides.from_dict({"bodies": {"*": {"ply_groups": 1}}})
 
     def build(seed):
         m = study._build(bodies, mat, sp, ov, seed, 1.0, False)
@@ -3455,9 +3460,12 @@ def test_open_butt_joints_sit_at_their_places_as_net_sections():
     assert keep.mean() == pytest.approx(6 / 13, abs=0.02)
     bodies = simple_beam_bridge() + [box("Chord (13-ply UD)", (-300, 200, -13),
                                          (300, 210, 13))]
+    # (ply_groups 1: since round 28 open joints split the member into ply groups by
+    # themselves, test_open_butt_joints_let_the_butted_plies_end_and_bound_the_member;
+    # one beam keeps round 27's net sections)
     for gap, n_zones in ((2.0, 5), (0.3, 0)):
         m = build_model(bodies, MAT, SP, Overrides.from_dict(
-            {"bodies": {"Chord*": {"butt_gap_mm": gap}}}), seed=1)
+            {"bodies": {"Chord*": {"butt_gap_mm": gap, "ply_groups": 1}}}), seed=1)
         info = {b.name: b for b in m.bodies}["Chord (13-ply UD)"]
         assert len(info.butt_zones) >= n_zones and (n_zones or not info.butt_zones)
         A = np.array([m.b_fA[e].sum() for e in info.beams])
@@ -3471,7 +3479,7 @@ def test_open_butt_joints_sit_at_their_places_as_net_sections():
     m = build_model(bodies, MAT, SP, Overrides.from_dict({"bodies": {"Chord*": {
         "butt_gap_mm": 2.0, "butt_at": [[0.5, [0, 12]]]}}}), seed=1)
     info = {b.name: b for b in m.bodies}["Chord (13-ply UD)"]
-    assert info.butt_zones == [pytest.approx(300.0, abs=0.5)]
+    assert info.butt_zones == [pytest.approx(300.0, abs=0.5)]  # (split into ply groups)
 
 
 def test_faces_drawn_a_little_apart_are_glued_and_asked_about():
@@ -6862,3 +6870,285 @@ def test_a_pumped_jacks_load_reads_each_stroke_and_each_pause():
     old = reported_load(t, F, v, x, breaks=cuts[::2], hold=hold, period_s=T)
     i, want = ends[2]  # the second stroke's end
     assert old[i] < 0.9 * want
+
+
+# ------------------------------------------------------------------ round 28, package F:
+# slender struts and plies that buckle on their own (members split into ply groups)
+
+
+def _strut_peak(ends: str, bow: float, n_el: int = 20, rate: float = 2.0,
+                max_disp: float = 0.4, elastic: bool = False):
+    """A single craft stick (108 x 9.5 x 2 mm, E 10500, f_c 30, the crush's compression
+    law) as a strut with ideal ends, a half-sine bow of ``bow`` mm about its weak axis,
+    shortened at one end; the lab's drive."""
+    L, b, t = 108.0, 9.5, 2.0
+    s = np.linspace(0, L, n_el + 1)
+    m = lab.blank_model(np.c_[s, bow * np.sin(np.pi * s / L), np.zeros_like(s)])
+    m.params.update(fc_proportional=SP["wood.fc_proportional"],
+                    crush_softening=SP["wood.crush_softening"],
+                    crush_band_mm=SP["wood.crush_band_mm"])
+    fc = 1e6 if elastic else 30.0
+    lab.add_beam_line(m, list(range(n_el + 1)),
+                      lab.BeamSpec(b=b, d=t, E=10500.0, ft=40.0, fc=fc, Gf=8.0,
+                                   G=10500.0 / 16, fv=8.0, rho=5.7e-10), up=(0, 1, 0))
+    fixed = {0: "xyz", n_el: "yz"} if ends == "pinned" else {0: "xyzr", n_el: "yzr"}
+    return lab.drive(m, fixed, n_el, 0, rate, max_disp=max_disp, sign=-1.0, stop_drop=0.5,
+                     alpha=200.0, record_every=5)
+
+
+def test_a_single_stick_strut_buckles_at_euler_and_perry():
+    """Round 28 (package F, published test D's end diagonals): the model's strut itself
+    is right. A 108 x 9.5 x 2 mm stick (E 10500, I = 9.5 x 2^3 / 12 = 6.33 mm^4) buckles
+    pinned at P_E = pi^2 E I / L^2 = 56.3 N (Timoshenko: / (1 + P_E / (5/6 G A)), 56.0)
+    and with both ends fixed at 4 P_E = 224 N; a pinned one with a half-sine bow e0 =
+    L/400 = 0.27 mm reaches the Perry-Robertson load, where P/A + P e0 / (1 - P/P_E) / Z =
+    f (Z = b t^2 / 6 = 6.33 mm^3): 51.7 N at f = f_c = 30, 49.3 at the proportional limit
+    0.65 f_c (the fibres bend over between the two). Perfect columns (a bow of L/10^5 to
+    start them, the wood elastic) read the load they carry once buckled (the post-
+    buckling plateau), so the dynamic overshoot of a perfect column's onset is not read."""
+    E, b, t, L = 10500.0, 9.5, 2.0, 108.0
+    A, I, Z = b * t, b * t**3 / 12, b * t**2 / 6
+    Pe = math.pi**2 * E * I / L**2 / (1 + math.pi**2 * E * I / L**2 / (5 / 6 * E / 16 * A))
+
+    def perry(e0, f):
+        lo, hi = 0.0, Pe
+        for _ in range(60):
+            P = 0.5 * (lo + hi)
+            lo, hi = (P, hi) if P / A + P * e0 / (1 - P / Pe) / Z < f else (lo, P)
+        return P
+
+    r = _strut_peak("pinned", L / 1e5, rate=1.0, max_disp=0.12, elastic=True)
+    assert r.force[-1] == pytest.approx(Pe, rel=0.03)
+    r = _strut_peak("fixed", L / 1e5, rate=2.0, max_disp=0.2, elastic=True)
+    assert r.force[-1] == pytest.approx(4 * Pe, rel=0.05)
+    r = _strut_peak("pinned", L / 400)
+    assert 0.99 * perry(L / 400, 0.65 * 30.0) <= r.peak <= 1.02 * perry(L / 400, 30.0)
+
+
+def _ply_column(groups=None, ov=None, mesh_scale: float = 1.0, L: float = 260.0,
+                T: float = 9.7, W: float = 30.0, layup: str = "5-ply UD"):
+    """A column L x W x T (5 plies of 1.94 mm through T) built by build_model beside the
+    synthetic bridge (seed None: no bow, no scatter), split into ``groups`` ply groups
+    (None: as the model decides)."""
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    nm = f"Column ({layup})"
+    bodies = simple_beam_bridge() + [box(nm, (-L / 2, 300, -T / 2), (L / 2, 300 + W, T / 2))]
+    o = dict(ov or {})
+    if groups is not None:
+        o["ply_groups"] = groups
+    m = build_model(bodies, MAT, SP, Overrides.from_dict({"bodies": {"Column*": o}}),
+                    seed=None, mesh_scale=mesh_scale)
+    return m, nm
+
+
+def _member_coupon(m, name, ifaces: bool = True, elastic: bool = False):
+    """The member ``name`` of model m alone, as a coupon: its beams and the glue points
+    between its ply groups (``ifaces``: False leaves its plies unglued), and its groups'
+    (start nodes, end nodes). ``elastic``: wood and glue kept elastic."""
+    bi = [b.name for b in m.bodies].index(name)
+    info = m.bodies[bi]
+    nodes = sorted({int(n) for n in info.nodes})
+    remap = {n: k for k, n in enumerate(nodes)}
+    bm = np.array(info.beams)
+    chains = info.chains if info.ply_groups else [list(bm)]
+    ends = ([remap[int(m.b_i[ch[0]])] for ch in chains],
+            [remap[int(m.b_j[ch[-1]])] for ch in chains])
+    sub = lab.blank_model(m.X[nodes])
+    sub.mass[:] = m.mass[nodes]
+    sub.rot_inertia[:] = m.rot_inertia[nodes]
+    for k in ("b_L0", "b_E0", "b_fy", "b_fz", "b_fA", "b_E", "b_ft", "b_fc", "b_Gf", "b_GJ",
+              "b_A", "b_fv", "b_fv3", "b_nply", "b_Wt", "b_kGA", "b_fs", "b_kGA3"):
+        setattr(sub, k, np.asarray(getattr(m, k))[bm].copy())
+    sub.b_i = np.array([remap[int(n)] for n in m.b_i[bm]])
+    sub.b_j = np.array([remap[int(n)] for n in m.b_j[bm]])
+    sub.b_body = np.zeros(len(bm), int)
+    idx = np.array([i for p in m.patches if p.plies is not None and p.body_a == bi
+                    for i in p.springs] if ifaces else [], int)
+    att = [a for i in idx for a in (m.c_a[i], m.c_b[i])]
+    sub.a_node = np.array([remap[int(m.a_node[a])] for a in att], int)
+    sub.a_r0 = np.array([m.a_r0[a] for a in att]).reshape(-1, 3)
+    sub.c_a, sub.c_b = np.arange(0, 2 * len(idx), 2), np.arange(1, 2 * len(idx), 2)
+    for k in ("c_area", "c_n0", "c_Kn", "c_Ks", "c_sig", "c_tau", "c_GIc", "c_GIIc", "c_mu",
+              "c_breakable", "c_mui"):
+        setattr(sub, k, np.asarray(getattr(m, k))[idx].copy())
+    sub.c_patch = np.zeros(len(idx), int)
+    sub.c_rate = np.zeros(len(idx))
+    for k in ("crush_softening", "fc_proportional", "crush_band_mm", "glue_prepeak_onset",
+              "glue_peak_slip_ratio"):
+        sub.params[k] = m.params[k]
+    sub.params["glue_fc"] = np.asarray(m.params["glue_fc"])[idx].copy()
+    sub.params["glue_cdep"] = np.asarray(m.params["glue_cdep"])[idx].copy()
+    if elastic:
+        for k in ("b_ft", "b_fc", "b_fv", "b_fv3", "c_tau", "c_sig", "c_GIc", "c_GIIc"):
+            getattr(sub, k)[:] = 1e6
+    return sub, ends
+
+
+def _clamped(sub, ends, rate: float, max_disp: float, bow: float = 0.0, stop=0.5):
+    """Fixed-fixed: every group's start node clamped, every end node clamped and moved
+    towards the start (shortening the column), after a stress-free (1 - cos) bow of
+    ``bow`` mm through the stack (along z)."""
+    if bow:
+        s = sub.X[:, 0] - sub.X[:, 0].min()
+        span = float(np.ptp(sub.X[:, 0]))
+        sub.X[:, 2] += bow * 0.5 * (1 - np.cos(2 * np.pi * s / span))
+        d = sub.X[sub.b_j] - sub.X[sub.b_i]
+        sub.b_L0 = np.linalg.norm(d, axis=1)
+        e1 = d / sub.b_L0[:, None]
+        e3 = np.cross(e1, sub.b_E0[:, :, 1])
+        e3 /= np.linalg.norm(e3, axis=1)[:, None]
+        sub.b_E0 = np.stack([e1, np.cross(e3, e1), e3], axis=2)
+    fixed = {n: "xyzr" for n in ends[0]} | {n: "yzr" for n in ends[1]}
+    sg = float(np.sign(sub.X[ends[0][0], 0] - sub.X[ends[1][0], 0]))
+    return lab.drive(sub, fixed, ends[1], 0, rate, max_disp=max_disp, sign=sg,
+                     stop_drop=stop, alpha=200.0, record_every=10)
+
+
+def test_ply_groups_split_a_member_into_beams_of_its_plies():
+    """A laminated member split into ply groups (overrides ply_groups: K): K beams of its
+    own plies on their own centre lines (n = 5 plies, K = 2: plies 1-2 and 3-5, 3.88 and
+    5.82 mm deep), the member's section and mass shared out, K - 1 glue lines between
+    them (glue.lamination_K_s_N_per_mm3 in shear; across, glue.K_n in series with a ply's
+    depth pressed across its grain, 1 / (1 / 150 + 1.94 / 500) = 94.8 N/mm^3) over the
+    member's length x width, which are not joints (inspect, weak_joints). Open butt joints
+    split a member by themselves: the plies butted open on their own, ending at the joint
+    (a real gap), and the plies beside them (ply_group_ranges). A ply_groups value that is
+    not a whole number from 1 is an overrides problem; on a member of one ply it does
+    nothing (a note)."""
+    from bridgesim.sim import study
+    from bridgesim.sim.idealize import Overrides, ply_group_ranges
+
+    assert ply_group_ranges(5, 2) == [(0, 2), (2, 5)]
+    assert ply_group_ranges(5, 1) == [(0, 5)]
+    assert ply_group_ranges(5, 1, [frozenset({0, 4})]) == [(i, i + 1) for i in range(5)]
+    assert ply_group_ranges(13, 1, [frozenset({0, 12})]) == [(0, 1), (1, 2), (2, 11),
+                                                            (11, 12), (12, 13)]
+    m1, nm = _ply_column()
+    m2, _ = _ply_column(2)
+    i1 = {b.name: b for b in m1.bodies}[nm]
+    i2 = {b.name: b for b in m2.bodies}[nm]
+    assert not i1.ply_groups and i2.ply_groups == [(0, 2), (2, 5)]
+    assert "split into 2 ply groups" in i2.notes[0]
+    sec = np.asarray(m2.params["b_section_mm"])[i2.beams]
+    assert sorted(set(np.round(sec[:, 1], 2))) == [3.88, 5.82]
+    A1 = m1.b_fA[i1.beams].sum(1)
+    assert sum(m2.b_fA[ch].sum(1).mean() for ch in i2.chains) == pytest.approx(A1.mean())
+    assert m2.mass[i2.nodes].sum() == pytest.approx(m1.mass[i1.nodes].sum(), rel=1e-9)
+    ply = [p for p in m2.patches if p.plies is not None]
+    assert len(ply) == 1 and ply[0].plies == ((0, 2), (2, 5))
+    sp_ = np.asarray(ply[0].springs)
+    assert m2.c_area[sp_].sum() == pytest.approx(260.0 * 30.0, rel=1e-6)
+    assert m2.c_Ks[sp_] == pytest.approx(SP["glue.lamination_K_s_N_per_mm3"])
+    assert m2.c_Kn[sp_] == pytest.approx(1 / (1 / SP["glue.K_n_N_per_mm3"]
+                                              + 1.94 / SP["wood.E_T_MPa"]), rel=1e-6)
+    assert len(study._joint_reports(m2, MAT)) == len(study._joint_reports(m1, MAT))
+    assert [b.ply_groups for b in study._body_reports(m2) if b.name == nm] == [[[1, 2],
+                                                                              [3, 5]]]
+    m3, _ = _ply_column(ov={"butt_gap_mm": 2.0, "butt_at": [[0.5, [0, 4]]]})
+    i3 = {b.name: b for b in m3.bodies}[nm]
+    assert i3.ply_groups == [(i, i + 1) for i in range(5)]
+    for k, ch in enumerate(i3.chains):  # a 2 mm gap in the outer plies only
+        assert m3.b_L0[ch].sum() == pytest.approx(260.0 - (2.0 if k in (0, 4) else 0.0),
+                                                  abs=0.05)
+    ov = Overrides.from_dict({"bodies": {"Column*": {"ply_groups": 0}}})
+    assert any("ply_groups" in p for p in ov.problems([nm]))
+    m4, nm4 = _ply_column(3, T=2.0, W=10.0, layup="1-ply UD")
+    assert not {b.name: b for b in m4.bodies}[nm4].ply_groups
+    assert any("ply_groups has no effect" in n for n in m4.notes)
+
+
+def test_ply_groups_reproduce_the_member():
+    """A member split into K ply groups is the same member while its glue lines hold. Its
+    axial stiffness exactly: sum E A_g = E A (K = 1, 2, 5 within 0.1 %). Through its
+    stack (5-ply column 260 x 30 x 9.7 mm, both ends clamped, wood and glue elastic) it
+    buckles at Engesser's load with the stack's shear stiffness, P = P_E / (1 + P_E /
+    (5/6 G_s A)), P_E = 4 pi^2 E I / L^2, G_s from materials.through_stack_shear_modulus
+    (the plies and the glue lines in series: 326 MPa for 1.94 mm plies on 350 N/mm^3
+    lines): ~10,400 N with the member's E. One beam (K = 1) is that within 2 %; split,
+    the glue points carry the same glue lines (K = 2 and K = n = 5 within 5 %: each ply's
+    own shear on its share of the force, the layered beam's 6/5 per ply, -2 %, and the
+    offset plies' coupling at their nodes, 12 sum(E I_g) / L_e^2 with half-depth
+    elements, -2 %). The load read is the one carried once buckled (the elastic plateau)."""
+    from bridgesim.sim.materials import through_stack_shear_modulus
+
+    L, T, W = 260.0, 9.7, 30.0
+    ks = []
+    for K in (None, 2, 5):
+        m, nm = _ply_column(K)
+        sub, ends = _member_coupon(m, nm, elastic=True)
+        r = _clamped(sub, ends, 1.0, 0.01, stop=0.0)
+        sel = r.disp > 0.004
+        ks.append(np.polyfit(r.disp[sel], r.force[sel], 1)[0])
+    assert ks[1] == pytest.approx(ks[0], rel=1e-3)
+    assert ks[2] == pytest.approx(ks[0], rel=1e-3)
+    E = float(sub.b_E.mean())  # the member's modulus (its butt joints' shear lag in it)
+    Gs = through_stack_shear_modulus([0.0] * 5, MAT.G_MPa.value, SP["wood.G_rolling_MPa"],
+                                     SP["glue.lamination_K_s_N_per_mm3"], T)
+    Pe = 4 * math.pi**2 * E * W * T**3 / 12 / L**2
+    P = Pe / (1 + Pe / (5 / 6 * Gs * W * T))
+    for K, tol in ((None, 0.02), (2, 0.05), (5, 0.05)):
+        m, nm = _ply_column(K)
+        sub, ends = _member_coupon(m, nm, elastic=True)
+        r = _clamped(sub, ends, 16.0, 1.3, bow=L / 1e4)
+        assert r.force[-1] == pytest.approx(P, rel=tol), K
+
+
+def test_ply_groups_without_their_glue_buckle_as_separate_plies():
+    """With the glue lines between its plies gone (glue factor 0 on the lamination: the
+    points removed) a 5-ply stack buckles as five separate plies, each on its own:
+    5 x 4 pi^2 E (W t^3 / 12) / L^2 = 1/25 of the glued member's Euler load (t = 1.94,
+    W = 30, L = 260, clamped)."""
+    L, T, W, t = 260.0, 9.7, 30.0, 1.94
+    m, nm = _ply_column(5)
+    sub, ends = _member_coupon(m, nm, ifaces=False, elastic=True)
+    E = float(sub.b_E.mean())
+    P = 5 * 4 * math.pi**2 * E * W * t**3 / 12 / L**2
+    r = _clamped(sub, ends, 1.0, 0.12, bow=L / 1e4)
+    assert r.force[-1] == pytest.approx(P, rel=0.05)
+    assert P == pytest.approx(4 * math.pi**2 * E * W * T**3 / 12 / L**2 / 25, rel=1e-6)
+
+
+def test_open_butt_joints_let_the_butted_plies_end_and_bound_the_member():
+    """A 5-ply column (260 x 30 x 9.7 mm, clamped) whose outer plies are butted open at
+    mid-length (butt_gap_mm 2, butt_at [[0.5, [0, 4]]]) splits by itself: the outer
+    plies end at the joint, a real 2 mm gap, and hand their load to the plies beside them
+    through their glue lines. Its strength lies between two hand values: at most the net
+    section's, the three middle plies crushing, A_net f_c = 3/5 x 291 x 30 = 5238 N (no
+    eccentricity: the lost plies are symmetric), and no less than the three middle plies
+    alone (the outer plies peeled off everywhere) buckling, 4 pi^2 E (W (3 t)^3 / 12) /
+    L^2 = 2,590 N. Two meshes (elements of half and a third of the depth) agree within
+    10 %."""
+    L, W, t = 260.0, 30.0, 1.94
+    ov = {"butt_gap_mm": 2.0, "butt_at": [[0.5, [0, 4]]]}
+    up = 3 / 5 * W * 5 * t * MAT.f_c_MPa.value
+    peaks = []
+    for ms in (1.0, 0.5):
+        m, nm = _ply_column(ov=ov, mesh_scale=ms)
+        sub, ends = _member_coupon(m, nm)
+        lo = 4 * math.pi**2 * float(sub.b_E.mean()) * W * (3 * t) ** 3 / 12 / L**2
+        r = _clamped(sub, ends, 16.0, 0.7, bow=L / 1e4, stop=0.6)
+        assert lo < r.peak <= 1.01 * up, ms
+        peaks.append(r.peak)
+    assert peaks[1] == pytest.approx(peaks[0], rel=0.10)
+
+
+def test_ply_groups_one_keeps_round_27s_member():
+    """ply_groups 1, and every member whose butt joints do not stand open, is the member
+    of round 27 bit for bit: one beam through the stack, the same arrays; with its joints
+    open and ply_groups 1, round 27's net sections at their places."""
+    from bridgesim.sim.idealize import Overrides, build_model
+
+    bodies = simple_beam_bridge() + [box("Chord (13-ply UD)", (-300, 200, -13),
+                                         (300, 210, 13))]
+    ms = [build_model(bodies, MAT, SP, Overrides.from_dict({"bodies": {"Chord*": o}}),
+                      seed=1) for o in ({}, {"ply_groups": 1})]
+    for k in ("X", "mass", "rot_inertia", "b_i", "b_fy", "b_fz", "b_fA", "b_E", "b_fc",
+              "b_kGA3", "b_fs", "c_a", "a_r0", "c_Ks", "c_tau"):
+        assert np.array_equal(getattr(ms[0], k), getattr(ms[1], k)), k
+    assert not any(p.plies is not None for m in ms for p in m.patches)
+    m = build_model(bodies, MAT, SP, Overrides.from_dict({"bodies": {"Chord*": {
+        "butt_gap_mm": 2.0, "ply_groups": 1}}}), seed=1)
+    info = {b.name: b for b in m.bodies}["Chord (13-ply UD)"]
+    A = np.array([m.b_fA[e].sum() for e in info.beams])
+    assert not info.ply_groups and info.butt_zones and A.min() < 0.6 * A.max()

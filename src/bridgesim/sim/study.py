@@ -299,6 +299,8 @@ def design_questions(bodies: list[CadBody], model: Model, mat: Material, sp: Sim
     # weak joints: a bar whose joints are much weaker in shear than the bar in tension
     by_body: dict[int, list] = {}
     for p in model.patches:
+        if getattr(p, "plies", None) is not None:  # a split member's own lamination
+            continue
         by_body.setdefault(p.body_a, []).append(p)
         by_body.setdefault(p.body_b, []).append(p)
     weak_seen: set[str] = set()
@@ -455,7 +457,9 @@ def _body_reports(model: Model) -> list[BodyReport]:
             length_mm=round(b.length_mm, 1), section_mm=b.section_mm,
             thickness_mm=round(b.thickness_mm, 2), E_eff_MPa=round(b.E_eff_MPa, 1),
             f_t_eff_MPa=round(b.f_t_eff_MPa, 2), f_c_eff_MPa=round(b.f_c_eff_MPa, 2),
-            butt_zones_mm=list(getattr(b, "butt_zones", []) or []), why=why))
+            butt_zones_mm=list(getattr(b, "butt_zones", []) or []),
+            ply_groups=[[int(a) + 1, int(z)] for a, z in getattr(b, "ply_groups", [])],
+            why=why))
     return out
 
 
@@ -521,7 +525,8 @@ def _joint_reports(model: Model, mat: Material) -> list[JointReport]:
                         lamination=p.lamination,
                         shear_capacity_N=round(patch_capacity_N(model, p, mat), 1),
                         exposed_perimeter_mm=round(float(getattr(p, "exposed_mm", 0.0)), 1))
-            for p in model.patches if p.kind != "block"]  # (not the planes inside blocks)
+            for p in model.patches  # (not the planes inside blocks or split members)
+            if p.kind != "block" and getattr(p, "plies", None) is None]
 
 
 def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
@@ -556,7 +561,9 @@ def inspect(cad: str | Path, overrides=None, material=None, sim_params=None,
         assumed_parameters=_assumed(mat, sp),
         model={"nodes": int(model.n_nodes), "beam_elements": int(len(model.b_i)),
                "shell_elements": int(len(model.s_nodes)), "glue_points": int(len(model.c_a)),
-               "glued_patches": sum(p.kind not in ("dry", "block") for p in model.patches),
+               "glued_patches": sum(p.kind not in ("dry", "block")
+                                    and getattr(p, "plies", None) is None
+                                    for p in model.patches),
                "block_cells": int(sum((model.params.get("block_cells") or {}).values())),
                "block_planes": int(model.params.get("block_faces", 0)),
                "floss_cables": int(len(model.k_a)),

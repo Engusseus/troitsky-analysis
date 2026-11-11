@@ -100,7 +100,7 @@ class Overrides:
 
     KINDS = ("bar", "shell", "frame", "block", "rigid", "cable", "ignore")
     FIELDS = ("kind", "layup", "grain", "glue_factor", "strength_factor", "butt_stagger_mm",
-              "butt_gap_mm", "butt_at", "section_scale", "axis")
+              "butt_gap_mm", "butt_at", "section_scale", "axis", "ply_groups")
 
     def for_body(self, name: str) -> dict:
         out: dict = {}
@@ -155,6 +155,12 @@ class Overrides:
                                       or len(grain_vectors_of(v)) != 1):
                     out.append(f"overrides: axis {v!r} for {pat!r} must be x, y, z or a "
                                "direction [x, y, z]: the direction a member spans")
+                elif k == "ply_groups" and not (
+                        isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 64):
+                    out.append(f"overrides: ply_groups {v!r} for {pat!r} must be a whole "
+                               "number from 1 to 64: the groups a laminated member's plies "
+                               "are split into, each its own beam (1: one beam through the "
+                               "stack, also where its open butt joints would split it)")
                 elif k in ("section_scale", "glue_factor", "strength_factor") and not (
                         isinstance(v, (int, float)) and 0 <= v <= 10
                         and (k != "section_scale" or v > 0)):
@@ -1763,6 +1769,29 @@ def zone_layers(n: int, cut: frozenset[int], nz: int, T: float, open_frac: float
     return keep, shift
 
 
+def ply_group_ranges(n: int, k: int, cuts: list[frozenset[int]] | None = None
+                     ) -> list[tuple[int, int]]:
+    """The ply groups a laminated member of ``n`` plies is split into (round 28), as
+    (first ply, last ply + 1) from ply 0 (at -T/2 through the thickness): ``k`` groups of
+    as near equal size as can be, then split further between any two neighbouring plies
+    butted open at different places (``cuts``: the plies each open butt zone cuts), so a
+    group's plies all run through a joint or all end there: a group never holds a ply
+    that ends at a joint beside one that runs through it; and a ply beside such a change
+    is a group of its own, so the load a butted ply hands on over its shear-lag length
+    goes into the ply next to it first, as in the laminate (the plies beside an open
+    joint carry more near it: USDA TB 1069 fig. 61), not spread over a thick group at
+    once. k = 1 with no cuts: one group."""
+    k = max(1, min(int(k), n))
+    bounds = {int(round(i * n / k)) for i in range(1, k)}
+    sig = [frozenset(z for z, c in enumerate(cuts or []) if p in c) for p in range(n)]
+    change = {p for p in range(1, n) if sig[p] != sig[p - 1]}
+    bounds |= change
+    for p in change:  # the plies either side of a change on their own
+        bounds |= {p - 1, p + 1}
+    edges = [0, *sorted(b for b in bounds if 0 < b < n), n]
+    return [(a, b) for a, b in zip(edges[:-1], edges[1:], strict=True) if b > a]
+
+
 def _butt_question(g: str, name: str, L: float, Ls: float, s: float, kt: float,
                    what: str = "member") -> dict:
     return {
@@ -2627,6 +2656,205 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         info.length_mm = max(ch_len)  # the longest arm (buckling length in the screen)
         info.nodes = list(ids)
 
+    # members split into ply groups (round 28): each group's stations, nodes and open butt
+    # joints (for attach), and the glue lines between neighbouring groups (built with the
+    # other glue points, below)
+    bar_groups: dict[int, dict] = {}
+    ply_ifaces: list[dict] = []
+
+    def _split_bar(bi, b, sh, info, o, c, u, w, nrm, s0, L, T, Wp, vol, mass_t, Ef, Sf,
+                   kt, kc, kE, h, st_u, zones, g_b, open_all, groups):
+        """A laminated member split into ply groups: each group (ply_group_ranges) a chain
+        of fibre beams of its own plies, on its own centre line (its plies' mid-height
+        through the stack), sharing the member's width, bow and stick cells, and the
+        groups joined face to face along the member by lamination glue points (built
+        below with the joints: ply_ifaces). A group whose plies are butted open at a
+        joint ends there, a real gap of the joint's width with two free ends (open_all:
+        the zones' net sections and factors are then not applied: the geometry carries
+        them); otherwise every element keeps the member's butt-joint factors (joints
+        that bear). Mass, stick cells and sections per group; one body throughout."""
+        n_ply = len(sh.layup.angles)
+        t_p = T / n_ply
+        ratio = sp["scatter.bow_L_over"]
+        bow_a, ang = 0.0, 0.0
+        rb = rng_for(f"bow:{b.name}")  # the member's own stream: the same bridge
+        if rb is not None and ratio > 0:
+            bow_a = amp * L / ratio * rb.uniform(0.3, 1.7)
+            ang = rb.uniform(0, 2 * math.pi)
+        bow_dir = math.cos(ang) * w + math.sin(ang) * nrm
+        A_true = vol / L
+        # elements no longer than half the stack's depth (a third at fine): offset ply
+        # beams coupled at their nodes bend the stack through their axial forces,
+        # constant along an element, while its curvature varies along it; the rest falls
+        # to the plies' own bending, a spurious shear flexibility of 12 sum(E I_g) / L_e^2
+        # (a fixed-fixed 5-ply column 260 x 30 x 9.7 mm: -17 % on its Euler load with 12
+        # mm elements, -4 % with 5 mm: test_ply_groups_reproduce_the_member)
+        xu = np.asarray(st_u, float) - s0
+        h_s = 0.5 * T * min(mesh_scale / 0.75, 1.0)  # (finer at fine, as element_depth_cap)
+        if float(np.diff(xu).max()) > h_s:
+            xu = np.linspace(0.0, L, max(2, int(math.ceil(L / h_s - 1e-9))) + 1)
+        n_u = len(xu) - 1
+        wid = np.full(n_u, A_true / T if sh.fill < 0.75 else Wp)
+        offs = np.zeros(n_u)
+        if sh.fill < 0.75 and sh.poly is not None:
+            w2 = np.array([w @ sh.e1, w @ sh.e2])
+            for k in range(n_u):
+                sm = s0 + 0.5 * (xu[k] + xu[k + 1])
+                p2 = np.array([(c + sm * u - sh.origin) @ sh.e1,
+                               (c + sm * u - sh.origin) @ sh.e2])
+                cut = sh.poly.intersection(LineString([p2 - 2 * Wp * w2, p2 + 2 * Wp * w2]))
+                if cut.length > 0:
+                    wid[k] = cut.length
+                    offs[k] = float((np.asarray(cut.centroid.coords[0]) - p2) @ w2)
+            wid = np.maximum(wid, 0.2 * Wp)
+            wid *= vol / (T * float((wid * np.diff(xu)).sum()))
+        mfld = member_field(b.name, o, True, n_ply, Wp, L, f"buttpos:{b.name}")
+        f_v = mat.f_v_MPa.value
+        gf = max(float(o.get("glue_factor", 1.0)), 1e-3)
+        f45 = 0.5 * min(ply.f_t, ply.f_c)
+        ke, kte, kce = (1.0, 1.0, 1.0) if open_all else (kE, kt, kc)
+        rec = {"c": c, "u": u, "nrm": nrm, "s0": s0, "T": T, "groups": list(groups),
+               "x": [], "ids": [], "gaps": []}
+        all_ids: list[int] = []
+        # stations: a group butted open at a joint ends at the gap's edges (its elements
+        # there at least half an element long); a group that runs through it has an
+        # element of the usual length across the gap, centred on it (the net section the
+        # load crosses there: no node of it inside the gap, where the glue of a butted ply
+        # on either side would reach it and let the two push on each other past the net
+        # section; no element as short as the gap, which would set the time step)
+        all_gaps = sorted((xc - g_b / 2, xc + g_b / 2) for xc, _cut in zones) \
+            if open_all else []
+        hs_ = float(np.diff(xu).max())
+
+        def stations(gp):
+            spans = [(a, b_) if (a, b_) in gp else
+                     (0.5 * (a + b_) - 0.5 * max(hs_, b_ - a + 0.5),
+                      0.5 * (a + b_) + 0.5 * max(hs_, b_ - a + 0.5)) for a, b_ in all_gaps]
+            xs_ = [x for x in xu if x in (xu[0], xu[-1])
+                   or not any(a - 0.5 * hs_ < x < b_ + 0.5 * hs_ for a, b_ in spans)]
+            return np.array(sorted({*xs_, *(v for ab in spans for v in ab)}))
+
+        for k0, k1 in groups:
+            ng = k1 - k0
+            Tg = ng * t_p
+            zg = -T / 2 + 0.5 * (k0 + k1) * t_p
+            gp = sorted((xc - g_b / 2, xc + g_b / 2) for xc, cut in zones
+                        if open_all and k0 in cut)
+            xs = stations(gp)
+            ids = [bld.node(c + (s0 + x) * u + bow_a * math.sin(math.pi * x / L) * bow_dir
+                            + zg * nrm, bi) for x in xs]
+            rec["x"].append(xs)
+            rec["ids"].append(np.array(ids, int))
+            rec["gaps"].append(gp)
+            all_ids += ids
+            info.chains.append([])  # its beams, group by group
+            angs = list(sh.layup.angles[k0:k1])
+            lam_g = laminate(ply, angs, Tg)
+            fv3 = interlaminar_strength(angs, f_v, il_strength["f_rolling"],
+                                        il_strength["bond"] * gf) if ng >= 2 else f_v
+            fvin = inplane_split_strength(angs, f_v, f45)
+            for j in range(len(xs) - 1):
+                xa, xb = float(xs[j]), float(xs[j + 1])
+                if any(abs(xa - a) < 1e-6 and abs(xb - b_) < 1e-6 for a, b_ in gp):
+                    continue  # the open butt joint: no element across it
+                a_, b2 = ids[j], ids[j + 1]
+                ku = int(min(n_u - 1, max(0, np.searchsorted(xu, 0.5 * (xa + xb)) - 1)))
+                We, oy = float(wid[ku]), float(offs[ku])
+                ny, nz = (5, 3) if We >= Tg else (3, 5)
+                gy = oy + ((np.arange(ny) + 0.5) / ny - 0.5) * We * _exact(ny)
+                gz = ((np.arange(nz) + 0.5) / nz - 0.5) * Tg * _exact(nz)
+                FY, FZ = np.meshgrid(gy, gz, indexing="ij")
+                A_e = (We * T if sh.fill < 0.75 else A_true) * ng / n_ply
+                J, Wt2, Wt3 = rect_torsion(We, Tg)
+                L0 = float(np.linalg.norm(bld.X[b2] - bld.X[a_]))
+                e1v = (bld.X[b2] - bld.X[a_]) / L0
+                e3v = np.cross(e1v, w)
+                e3v /= np.linalg.norm(e3v)
+                e2v = np.cross(e3v, e1v)
+                fs_e, eloc = np.ones(ny * nz), 1.0
+                if mfld is not None:
+                    fs_e, eloc = mfld.element_rows(xa, xb, fibre_W(ny, nz, mfld.n_cols, ng),
+                                                   k0, k1)
+                beams["i"].append(a_)
+                beams["j"].append(b2)
+                beams["L0"].append(L0)
+                beams["E0"].append(np.stack([e1v, e2v, e3v], axis=1))
+                beams["fy"].append(FY.ravel())
+                beams["fz"].append(FZ.ravel())
+                beams["fA"].append(np.full(ny * nz, A_e / (ny * nz)))
+                beams["E"].append(lam_g.E_x * Ef * ke * eloc)
+                beams["ft"].append(lam_g.f_t * Ef * Sf * kte)
+                beams["fc"].append(lam_g.f_c * Ef * Sf * kce)
+                beams["Gf"].append(G_f * Sf)
+                beams["GJ"].append(lam_g.G_xy * Ef * J * eloc)
+                beams["A"].append(A_e)
+                beams["fv"].append(fvin * Sf)
+                beams["fv3"].append(fv3 * Sf)
+                beams["nply"].append(float(max(2, ng)))
+                beams["Wt"].append((Wt2, Wt3))
+                beams["kGA"].append(5 / 6 * lam_g.G_xy * Ef * A_e * eloc)
+                beams["kGA3"].append(stack_kGA(lam_g, ng >= 2, Ef * eloc, A_e, Tg))
+                beams["fs"].append(fs_e)
+                beams["sec"].append((We, Tg, oy))
+                beams["dL"].append(0.0)  # (a split member is built as drawn: no lack of fit)
+                beams["body"].append(bi)
+                info.beams.append(len(beams["i"]) - 1)
+                info.chains[-1].append(len(beams["i"]) - 1)
+                me = mass_t * L0 * A_e / vol
+                bld.mass[a_] += me / 2
+                bld.mass[b2] += me / 2
+                r2 = (We**2 + Tg**2) / 12 + oy**2
+                for nn in (a_, b2):
+                    bld.rot[nn] += me / 2 * (L0**2 / 12 + r2)
+        # the glue lines between neighbouring groups: points along the member where
+        # either group has a node, bonded where both plies are (not across either's open
+        # joint), two across the width at +-W / (2 sqrt 3) (the exact second moment of
+        # the width: the stack resists twisting through them), each its tributary length
+        # x half the width
+        for gi in range(len(groups) - 1):
+            cuts = sorted(rec["gaps"][gi] + rec["gaps"][gi + 1])
+            bonded = []
+            lo = 0.0
+            for a, b_ in cuts:
+                if a > lo:
+                    bonded.append((lo, a))
+                lo = max(lo, b_)
+            if L > lo:
+                bonded.append((lo, L))
+            xs_all = np.unique(np.round(np.r_[rec["x"][gi], rec["x"][gi + 1]], 6))
+            pts, trib, side = [], [], []
+            for a, b_ in bonded:
+                xi = np.unique(np.r_[a, xs_all[(xs_all > a + 0.1) & (xs_all < b_ - 0.1)], b_])
+                if len(xi) < 2:
+                    continue
+                tr = np.zeros(len(xi))
+                tr[:-1] += 0.5 * np.diff(xi)
+                tr[1:] += 0.5 * np.diff(xi)
+                pts += list(xi)
+                trib += list(tr)
+                side += [(a, b_)] * len(xi)
+            if not pts:
+                continue
+            k0a, k1a = groups[gi]
+            angs2 = [sh.layup.angles[k1a - 1], sh.layup.angles[k1a]]
+            ply_ifaces.append({
+                "bi": bi, "ga": gi, "gb": gi + 1, "x": np.array(pts), "trib": np.array(trib),
+                "side": side,
+                "z": -T / 2 + k1a * t_p, "t_p": t_p, "Sf": Sf, "W": wid, "off": offs,
+                "xu": xu, "tau": interlaminar_strength(angs2, f_v, il_strength["f_rolling"],
+                                                       il_strength["bond"] * gf) * Sf,
+                "plies": (tuple(groups[gi]), tuple(groups[gi + 1])), "T": T})
+        bar_groups[bi] = rec
+        body_nodes[bi] = np.array(all_ids, int)
+        info.ply_groups = [tuple(g) for g in groups]
+        info.notes[0] += (f"; split into {len(groups)} ply groups (plies "
+                          + ", ".join(f"{a + 1}-{b_}" if b_ - a > 1 else f"{b_}"
+                                      for a, b_ in groups)
+                          + "), each its own beam, glued to the next along the member"
+                          + (", the plies butted open ending at their joints" if open_all
+                             else ""))
+        info.nodes = list(all_ids)
+
     mass_change_t = 0.0
     for bi, (b, sh) in enumerate(zip(bodies, shapes, strict=True)):
         o = ov.for_body(b.name)
@@ -2736,6 +2964,7 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                     zones = butt_zones(n_ply, L, Ls,
                                        float(o.get("butt_stagger_mm") or Ls / 2), off_b,
                                        lz, butt_at_of(o.get("butt_at")))
+            kE_bear = kE
             if zones:
                 kE = 1.0  # the shear lag is in the zones now
             # uniform elements; joints attach to the nearest node through a rigid arm. No
@@ -2747,6 +2976,40 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             h = min(h, element_depth_cap(min(T, Wp), mesh_scale))
             n_el = max(2, int(math.ceil(L / h - 1e-9)))
             st2 = list(np.linspace(s0, s1, n_el + 1))
+            # ply groups (round 28): a laminated member split into groups of plies, each
+            # its own beam, glued to the next (ply_group_ranges, _split_bar): asked for
+            # (ply_groups: K >= 2), or by itself where its butt joints stand open for good
+            # (a gap of wood.butt_open_gap_mm or more: rounded stick ends), so a ply that
+            # ends at an open joint is a strut held only by its glue line; ply_groups 1
+            # keeps one beam through the stack (and round 27's net sections)
+            pg = o.get("ply_groups")
+            pg = int(pg) if isinstance(pg, int) and not isinstance(pg, bool) and pg >= 1 \
+                else None
+            # (only where the designer declared them, butt_gap_mm or butt_at on the body: a
+            # gap that comes from the seeded fit-up default, which montecarlo draws, keeps
+            # round 27's net sections, so a draw does not change a member's idealisation)
+            open_all = bool(zones) and open_frac >= 1.0 and (
+                o.get("butt_gap_mm") is not None or o.get("butt_at") is not None)
+            groups: list[tuple[int, int]] = []
+            if sh.layup.kind == "laminate" and n_ply >= 2 and pg != 1 and (
+                    open_all or (pg or 0) >= 2):
+                groups = ply_group_ranges(n_ply, pg or 1,
+                                          [c_ for _x, c_ in zones] if open_all else [])
+                if len(groups) < 2:
+                    groups = []
+            if groups:
+                _split_bar(bi, b, sh, info, o, c, u, w, nrm, s0, L, T, Wp, vol, mass_t, Ef,
+                           Sf, kt, kc, kE_bear, h, st2, zones, g_b if open_all else 0.0,
+                           open_all, groups)
+                if zones:
+                    info.butt_zones = [round(float(xc), 1) for xc, _c in zones]
+                kE_i = 1.0 if open_all else kE_bear
+                info.E_eff_MPa, info.f_t_eff_MPa, info.f_c_eff_MPa = (
+                    lam.E_x * kE_i, lam.f_t * kt, lam.f_c * kc)
+                info.section_mm = (round(Wp, 2), round(T, 2))
+                info.length_mm = L
+                infos.append(info)
+                continue
             if zones:
                 edges = [s0 + xc + d * lz / 2 for xc, _c in zones for d in (-1, 1)]
                 keep_ = [x for x in st2[1:-1] if all(abs(x - e) > 0.3 * min(h, lz)
@@ -3078,8 +3341,36 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             info.nodes = [nid]
         infos.append(info)
 
+    for bi, b in enumerate(bodies):
+        pg_ = ov.for_body(b.name).get("ply_groups")
+        if isinstance(pg_, int) and pg_ >= 2 and not infos[bi].ply_groups:
+            notes.append(f"overrides: ply_groups has no effect on '{b.name}' (a "
+                         f"{infos[bi].kind}: only a member, a bar of two plies or more, "
+                         "can be split into ply groups)")
+
+    def attach_group(bi: int, gi: int, p: np.ndarray, lo: float = -math.inf,
+                     hi: float = math.inf) -> int:
+        """A point on ply group gi of a member split into ply groups: on its node nearest
+        along the member, among those from ``lo`` to ``hi`` (a glue line's bonded stretch
+        between open joints: the point's own side of them)."""
+        g = bar_groups[bi]
+        s = float((p - g["c"]) @ g["u"]) - g["s0"]
+        xg = g["x"][gi]
+        d = np.abs(xg - s) + np.where((xg >= lo - 1e-6) & (xg <= hi + 1e-6), 0.0, 1e9)
+        return bld.attach(int(g["ids"][gi][int(np.argmin(d))]), p)
+
     def attach(bi: int, p: np.ndarray) -> int:
         sh = shapes[bi]
+        if bi in bar_groups:
+            # a member split into ply groups: the group whose plies the point lies in
+            # through the stack (a face glued on its side: the outer group on that side;
+            # an end or edge face: each point to the plies it is on)
+            g = bar_groups[bi]
+            zr = float((p - g["c"]) @ g["nrm"]) + 0.5 * g["T"]
+            t_p = g["T"] / g["groups"][-1][1]
+            gi = next((i for i, (_k0, k1) in enumerate(g["groups"]) if zr < k1 * t_p),
+                      len(g["groups"]) - 1)
+            return attach_group(bi, gi, p)
         if sh.kind == "bar":
             c, u, st2 = bar_axis[bi]
             s = float((p - c) @ u)
@@ -3989,6 +4280,63 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             springs["fc"].append(f_bear)
             springs["cdep"].append(c_dep)
             patches[pid].springs.append(len(springs["a"]) - 1)
+    # the glue lines inside a member split into ply groups (round 28): the lamination's
+    # own lines, as strong as the member's glue lines are (interlaminar_strength, the
+    # plies either side, x the member's strength draw: its b_fv3), in shear as stiff as a
+    # pressed lamination line (glue.lamination_K_s_N_per_mm3: the plies' own shear is in
+    # the groups' beams, as materials.through_stack_shear_modulus has the two in series),
+    # across it the glue line in series with a ply's depth of wood pressed across its
+    # grain (glue.K_n_N_per_mm3, wood.E_T_MPa); in peel glue.peel_to_shear x that, no
+    # more than the wood's tension across the grain over a member-deep length
+    # (t90_size_factor); the glue's toughness, rate and pressure laws as any glue line.
+    # One patch per glue line, ``plies`` naming the groups either side: the member's own
+    # lamination, not a joint
+    for spec in ply_ifaces:
+        bi = spec["bi"]
+        g = bar_groups[bi]
+        c, u, nrm = g["c"], g["u"], g["nrm"]
+        w_ax = np.cross(nrm, u)
+        tau_i = spec["tau"]
+        t_p = spec["t_p"]
+        We_m = float(np.mean(spec["W"]))
+        sig_i = min(tau_i * sp_glue["peel_to_shear"],
+                    ply.f_t90 * t90_size_factor(We_m * spec["T"], t90_m))
+        kn_i = 1.0 / (1.0 / sp_glue["K_n_N_per_mm3"] + t_p / max(ply.E_T, 1e-9))
+        ks_i = float(sp.values.get("glue.lamination_K_s_N_per_mm3",
+                                   sp_glue["K_s_N_per_mm3"]))
+        xs, tr = spec["x"], spec["trib"]
+        pid = len(patches)
+        area_i = float((tr * np.interp(xs, 0.5 * (spec["xu"][:-1] + spec["xu"][1:]),
+                                       spec["W"])).sum())
+        cen = c + (g["s0"] + 0.5 * (xs.min() + xs.max())) * u + spec["z"] * nrm
+        patches.append(Patch(bi, bi, area_i, cen, nrm.copy(), kind="glue", lamination=True,
+                             plies=spec["plies"]))
+        patches[pid].strength_MPa = tau_i
+        xm = 0.5 * (spec["xu"][:-1] + spec["xu"][1:])
+        for x, t_, (lo_, hi_) in zip(xs, tr, spec["side"], strict=True):
+            We = float(np.interp(x, xm, spec["W"]))
+            oy = float(np.interp(x, xm, spec["off"]))
+            for yq in (-1.0, 1.0):
+                p = c + (g["s0"] + x) * u + spec["z"] * nrm \
+                    + (oy + yq * We / (2.0 * math.sqrt(3.0))) * w_ax
+                springs["a"].append(attach_group(bi, spec["ga"], p, lo_, hi_))
+                springs["b"].append(attach_group(bi, spec["gb"], p, lo_, hi_))
+                springs["area"].append(float(t_ * We / 2.0))
+                springs["n0"].append(nrm.copy())
+                springs["Kn"].append(kn_i)
+                springs["Ks"].append(ks_i)
+                springs["tau"].append(tau_i)
+                springs["sig"].append(sig_i)
+                springs["GIc"].append(sp_glue["G_Ic_N_per_mm"])
+                springs["GIIc"].append(sp_glue["G_IIc_N_per_mm"])
+                springs["mu"].append(sp_glue["friction"])
+                springs["patch"].append(pid)
+                springs["breakable"].append(True)
+                springs["d0"].append(0.0)
+                springs["gap0"].append(0.0)
+                springs["fc"].append(ply.f_c90)
+                springs["cdep"].append(t_p)
+                patches[pid].springs.append(len(springs["a"]) - 1)
     if end_grain_joints:
         names = sorted({f"{a} | {b}" for a, b, _ in end_grain_joints})
         groups = sorted({" | ".join(sorted((_group(a), _group(b))))

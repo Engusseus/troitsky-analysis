@@ -253,6 +253,73 @@ glued ends turn the piers' top cells: a pier of cells bends with its bottom cell
 the platform where a rigid pier rocked on its edge). A load hanger or a putty lump in a
 rebuilt published test is not wood: `kind: rigid` there.
 
+**Members split into ply groups** (since round 28). A laminated member is one fibre beam,
+its plies held together; split into ply groups, its plies can part and buckle on their
+own. Each group (contiguous plies) is then a chain of fibre beams of its own plies on its
+own centre line (its plies' mid-height), with the member's width, bow, stick cells and
+butt-joint factors, and neighbouring groups are glued face to face along the whole member
+by glue points of the lamination's own glue line: in shear `glue.lamination_K_s_N_per_mm3`
+(the plies' own shear is in the groups' Timoshenko beams, as
+`materials.through_stack_shear_modulus` puts the two in series, so one glue line is not
+counted twice), across it `glue.K_n_N_per_mm3` in series with a ply's depth of wood
+pressed across its grain (`wood.E_T_MPa`: 95 N/mm^3 for 2 mm sticks), the member's
+interlaminar strength (`interlaminar_strength` of the two plies either side, x its
+strength draw: its `b_fv3`), in peel `glue.peel_to_shear` of that, no more than the
+wood's tension across the grain over a member-deep length (`t90_size_factor`), the glue's
+toughness, time and pressure laws as any glue line; two points across the width at +-W /
+(2 sqrt 3), which keeps the stack's resistance to twisting. Each group keeps its own split
+check for the glue lines inside it (a one-ply group: its wood), the glue lines between
+groups are these points, so no glue line is in both. A member is split when the overrides
+ask (`ply_groups: K`, K equal groups, 1 to 64) and by itself where its butt joints stand
+open for good and the designer declared them (`butt_gap_mm` or `butt_at` on the body, a
+gap of `wood.butt_open_gap_mm`, 1 mm, or more: rounded stick ends): there
+each ply butted open is a group of its own and **ends at its joint**, a real gap with two
+free ends (a group never mixes plies that end at a joint with plies that run through it),
+the plies beside it are groups of their own too (the load a butted ply hands on over its
+shear-lag length goes into the ply next to it first, as the laminate's adjacent plies
+carry more near an open joint, USDA TB 1069 fig. 61), and a group that runs through the
+joint has an element across it, the net section the load crosses there; the zones' net
+sections and butt-joint factors are then not applied (the geometry carries them), and
+a butted ply's glue attaches on its own side of the gap. A joint between 0.5 and 1 mm
+(that may close) keeps round 27's zones, and `ply_groups: 1` keeps one beam (and round
+27's net sections) for any member. Joints to other parts attach to the group whose plies
+the point lies in (a lap on a face: the outer group on that side; an end or edge face:
+each point to its plies). The groups are one body (no contact between them: they bear on
+each other through their glue points, which keep bearing once broken), and their parting
+is the member splitting along its glue lines (`member_shear`, once a member-deep length
+of one has let go); they are not joints (inspect's list, `weak_joints`), and the screen
+checks their most loaded point against its strength (a member's `shear`) and the member's
+buckling with the groups' compressions summed against the composite section's Euler load.
+A split member's elements are no longer than half its depth (a third at fine): offset ply
+beams coupled at their nodes bend the stack through their axial forces, constant along an
+element, while its curvature varies along it, and the rest falls to the plies' own
+bending, a spurious shear flexibility of 12 sum(E I_g) / L_e^2 (-17 % on a clamped 5-ply
+column's Euler load with 12 mm elements, -4 % with 5 mm). It costs time: published test
+B's diagonal D3 split on both trusses (its outer plies butted open at mid-length, a
+sensitivity variant) halved the stable time step at fine (1.40 to 0.67 us; 109,000 to
+230,000 steps, the mass scaling at its 5 % limit). Tested: split K = 2 and K = n = 5 a
+column has the member's axial stiffness exactly and buckles within 5 % of Engesser's load
+with the stack's shear modulus (the layered beam's own shear, 6/5 per ply, -2 %, and the
+nodal coupling, -2 %), unglued its plies buckle one by one at 1/n^2 of the glued member's
+load, and a 5-ply column with its outer plies butted open at mid-length lies between the
+middle plies buckling alone and the net section crushing, on two meshes within 10 %
+(`test_ply_groups_split_a_member_into_beams_of_its_plies`,
+`test_ply_groups_reproduce_the_member`,
+`test_ply_groups_without_their_glue_buckle_as_separate_plies`,
+`test_open_butt_joints_let_the_butted_plies_end_and_bound_the_member`,
+`test_ply_groups_one_keeps_round_27s_member`).
+
+**A single stick as a strut** (round 28's check of published test D, whose end diagonals
+are single sticks): the model's fibre beam reaches Euler's load of a 108 x 9.5 x 2 mm
+stick pinned (56 N) and with fixed ends (224 N) within 3 and 5 %, and with a bow of L/400
+the Perry-Robertson load between first yield at the proportional limit and at f_c
+(`test_a_single_stick_strut_buckles_at_euler_and_perry`). D's diagonals carry less in
+the model (42-46 N at seed 0's peak) because of their nodes as the rebuild draws them: an
+end diagonal's top is mitred onto the next diagonal (25 mm^2 of end grain, no lap on the
+top chord, which starts at the apex) and its foot lapped over 52 mm^2 on a single-stick
+chord that twists; held by rigid chords instead it still lets go at its laps (65-114 N),
+not by buckling (the diagnosis of round 28).
+
 ## 3. Joints
 
 * Every pair of coplanar touching faces of two bodies (facing each other within
@@ -1535,7 +1602,16 @@ assumed values (judgements, nothing measured on stick bridges), drawn by `montec
   in shear switches to its split section at once (no fracture energy for the split
   itself, as a pressed glue line fails brittly in a short-beam shear test; the energy it
   releases goes into the dynamics and the damping); its axial (in-plane) strength is
-  kept.
+  kept. A member
+  split into ply groups (since round 28, section 2) parts between its groups gradually,
+  through glue points with the glue's fracture energy, and its plies buckle on their own;
+  only bars are split (a frame's arms and the plates' plies stay together), only where
+  asked or where the designer declared butt joints that stand open (`butt_gap_mm` or
+  `butt_at` on the body: a gap from the seeded fit-up default keeps round 27's net
+  sections, so a montecarlo draw does not change a member's idealisation), a split
+  member is built as drawn (none of the built bridge's differences of section 4), and
+  its elements' coupling leaves a spurious shear flexibility of 12 sum(E I_g) / L_e^2
+  (a few % at half-depth elements).
 * A plate or a block crushed at a glue line keeps its full section in the rest of the
   model: crushing is in the glue line between two parts (permanent set, compaction). A
   member crushed across its grain on its side is shallower there since round 28 (section

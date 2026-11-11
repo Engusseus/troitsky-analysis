@@ -39,7 +39,8 @@ class BodyInfo:
     centroid_mm: tuple = (0.0, 0.0, 0.0)
     bbox_mm: tuple | None = None
     axis: tuple | None = None
-    chains: list = field(default_factory=list)  # a frame's beams, arm by arm
+    chains: list = field(default_factory=list)  # a frame's beams, arm by arm (a member
+    #                                              split into ply groups: group by group)
     butt_zones: list = field(default_factory=list)  # open butt joints at their places
     # a compact block cut into cells (idealize.BlockLattice): its frame (centre, axes, lo,
     # size, k), the cell of each lattice cell (group) and each cell's node (nodes)
@@ -48,6 +49,10 @@ class BodyInfo:
     # thickness factor, twist (rad), placement shift (mm), lack of fit (mm), a plate's
     # largest out-of-flatness at its nodes (mm) and its field, idealize.FlatField or None)
     built: dict = field(default_factory=dict)
+    # a laminated member split into ply groups (round 28): each group's plies (first,
+    # last + 1), each group its own chain of beams joined to its neighbours by lamination
+    # glue points; empty: one fibre beam through the whole stack
+    ply_groups: list = field(default_factory=list)
 
 
 @dataclass
@@ -78,6 +83,11 @@ class Patch:
     # squeeze-out fillet can form there; flush edges and plate laminations not counted)
     exposed_mm: float = 0.0
     split: str = ""  # a block's plane: "along" its grain (fibres in it) or "across" it
+    # the glue line between two ply groups of one member split into ply groups (round
+    # 28; body_a == body_b): the plies either side, ((first, last + 1), (first, last +
+    # 1)); None for a joint between two parts. Not a joint: it is the member's own
+    # lamination, its parting a split of the member (member_shear)
+    plies: tuple | None = None
 
 
 @dataclass

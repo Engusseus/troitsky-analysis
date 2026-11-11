@@ -1209,6 +1209,16 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     m.params["s_crack_mode"] = crack_mode
     # faces with no glue at all: no glue event, no joint failure
     glued_patch = patch_area > 0 if len(patch_of) else np.ones(n_patch, bool)
+    # the glue lines between the ply groups of a member split into them (round 28): the
+    # member's own lamination, not joints; their parting is the member splitting along
+    # its glue lines (member_shear), once a member-deep length (width x depth of its
+    # section) of one has let go
+    ply_if = np.array([getattr(p, "plies", None) is not None for p in m.patches], bool) \
+        if n_patch else np.zeros(0, bool)
+    glued_patch = glued_patch & ~ply_if
+    ply_thr = np.array([float(np.prod(m.bodies[p.body_a].section_mm)) if ply_if[k] else 0.0
+                        for k, p in enumerate(m.patches)]) if n_patch else np.zeros(0)
+    prev_ply_split = np.zeros(n_patch, bool)
     # the planes inside compact blocks: a block splitting (block_fracture), not a joint
     in_block = np.array([p.kind == "block" for p in m.patches], bool)
     joint_patch = glued_patch & ~in_block
@@ -1448,7 +1458,8 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
             if len(patch_of):
                 pcrush = np.bincount(patch_of, weights=m.c_area * np.maximum(-st.c_crush, 0),
                                      minlength=n_patch) / np.maximum(face_area, 1e-12)
-                for pid in np.where((pcrush >= CRUSH_EVENT_MM) & ~prev_patch_crushed)[0]:
+                for pid in np.where((pcrush >= CRUSH_EVENT_MM) & ~prev_patch_crushed
+                                    & ~ply_if)[0]:
                     pa = m.patches[pid]
                     ev("bearing_crushing",
                        f"{m.bodies[pa.body_a].name} | {m.bodies[pa.body_b].name}",
@@ -1492,6 +1503,22 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
                     else f"glued joint separated ({pfrac[pid]:.0%} of its "
                          f"{pa.area_mm2:.0f} mm^2 let go)"), pa.centroid,
                    fraction=float(pfrac[pid]), capacity=float(patch_cap[pid]))
+            if ply_if.any():
+                gone_a = np.bincount(patch_of, weights=m.c_area * (st.c_d >= 0.999),
+                                     minlength=n_patch)
+                for pid in np.where(ply_if & ~prev_ply_split & (gone_a >= ply_thr)
+                                    & (gone_a > 0))[0]:
+                    pa = m.patches[pid]
+                    sel = np.where((patch_of == pid) & (st.c_d >= 0.999))[0]
+                    nd = m.a_node[m.c_a[sel]]
+                    where = (st.x[nd] + np.einsum("nij,nj->ni", st.R[nd],
+                                                  m.a_r0[m.c_a[sel]])).mean(0)
+                    (pa_a, pa_b) = pa.plies
+                    ev("member_shear", m.bodies[pa.body_a].name,
+                       f"the glue line between its plies {pa_a[0] + 1}-{pa_a[1]} and "
+                       f"{pa_b[0] + 1}-{pa_b[1]} has let go over {gone_a[pid]:.0f} mm^2 "
+                       "(delamination): the plies bend on their own there", where)
+                    prev_ply_split[pid] = True
             prev_b, prev_bs, prev_s = st.b_fractured.copy(), st.b_shear.copy(), st.s_dmg > 0.5
             prev_ss = st.s_shear.copy()
             prev_a = st.b_alive.copy()
@@ -1699,7 +1726,7 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
         i0 = max(0, int(np.searchsorted(tt, t_c - lag)))
         i1 = min(len(glue_hist) - 1, int(np.searchsorted(tt, t_call + lag)))
         lost = (glue_hist[i1] - glue_hist[i0]) / np.maximum(patch_area, 1e-12)
-        lost = np.where(patch_cap >= MINOR_SHARE * peak, lost, 0.0)
+        lost = np.where((patch_cap >= MINOR_SHARE * peak) & ~ply_if, lost, 0.0)
         k = int(np.argmax(lost)) if len(lost) else -1
         if k >= 0 and lost[k] >= 0.2:
             pa = m.patches[k]
