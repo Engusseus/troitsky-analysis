@@ -793,6 +793,25 @@ def major_breaks(events: list[Event], t_call: float, peak: float) -> list[Event]
     return [e for e in events if e.t <= t_call and e.capacity_N >= MINOR_SHARE * peak]
 
 
+def glue_intact_at(events, t: float, kind=lambda e: e.kind,
+                   when=lambda e: e.t) -> set[str]:
+    """The joints of ``events`` whose glue line had not begun to fail at time ``t``: their
+    first ``glue_damage`` event comes after it (a joint without one is not in the set:
+    nothing says when its glue began to go). Such a joint letting go after a member broke
+    at ``t`` is that break's cascade: an intact glue line carries its share elastically
+    and cannot have started the fall, and more glue there (a stronger line, a little
+    stiffer in shear) leaves its strength unreached up to the member's break (round 28:
+    a laminated beam on two piers broke in bending at the peak; its joint on a pier began
+    to let go 2.3 ms later, as the beam fell, and separated with the load gone; it was
+    named and its glue x1.5 changed F_u by 0.0 %, the beam's section x1.25 by +77 %).
+    ``kind`` / ``when`` read an event's kind and time (crush.Event or report.EventOut)."""
+    onset: dict[str, float] = {}
+    for e in events:
+        if kind(e) == "glue_damage":
+            onset[e.what] = min(onset.get(e.what, math.inf), when(e))
+    return {w for w, t0 in onset.items() if t0 > t}
+
+
 def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
               speed_mm_s: float, period_s: float = 0.0) -> tuple[Event | None, list[str]]:
     """The governing failure and the competing ones, from the events up to the failure
@@ -810,7 +829,9 @@ def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
     the laps went 2-3 ms after the foot, outside the load cell's window of 0.75-3 ms, and
     the foot, 5 % of F_u, kept the label); a plate that had cracked before (it was
     cracking and the load came back) does not keep its place before joints letting go
-    with it.
+    with it. A joint whose glue had not begun to fail when a member broke in that moment
+    (``glue_intact_at``) is the member's cascade: it neither governs nor competes, so a
+    member crushing keeps its place before the joints that let go as it fell (round 28).
     Without a break from ``t_c``: the last survived break within 10 % of F_u; else one
     within 3 mm of jack travel of the peak. Competing: the other breaks
     within 10 % of F_u that were survived, or that came at the same moment as the
@@ -826,6 +847,12 @@ def attribute(before: list[Event], t_c: float, peak: float, peak_travel: float,
                 and e.force_N >= 0.9 * peak]
     win = max(2 * tol, 0.5 * period_s)
     if falling:
+        member = next((e for e in falling if e.t <= falling[0].t + win
+                       and e.kind.startswith("member_")), None)
+        if member is not None:
+            late = glue_intact_at(before, member.t)
+            falling = [e for e in falling
+                       if not (e.kind.startswith("joint") and e.what in late)]
         same = clean([e for e in falling if e.t <= falling[0].t + win])
         joints = [e for e in same if e.kind.startswith("joint")]
         # joints letting go together at one node: the strongest of them (those sharing a

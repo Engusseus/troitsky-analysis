@@ -38,7 +38,14 @@ from bridgesim.materials import load_material
 from bridgesim.rules import RuleSet, evaluate_values
 from bridgesim.schema import Material
 from bridgesim.sim import lab as labmod
-from bridgesim.sim.crush import KGF, MINOR_SHARE, CrushOptions, CrushResult, run_crush
+from bridgesim.sim.crush import (
+    KGF,
+    MINOR_SHARE,
+    CrushOptions,
+    CrushResult,
+    glue_intact_at,
+    run_crush,
+)
 from bridgesim.sim.idealize import Overrides, _group, build_model
 from bridgesim.sim.materials import SimParams
 from bridgesim.sim.model import Model
@@ -1164,6 +1171,12 @@ def _next_crush(rep: CrushReport, path: Path, overrides, out_dir) -> list[NextSt
         lead = [e.model_copy(update={"kind": "joint_failure"}) for e in pool
                 if e.what == part and e.kind in ("joint_cracking", "glue_damage")][:1]
     near = [e for e in broke if e.load_kgf >= 0.9 * rep.Fu_kgf and e not in lead]
+    if lead and lead[0].kind.startswith("member_"):
+        # a joint whose glue was still intact when the governing member broke is its
+        # cascade (crush.glue_intact_at): its strength was never reached before that
+        # break, so more glue there cannot raise F_u and it gets no glue what-if
+        late = glue_intact_at(pool, lead[0].t_s, when=lambda e: e.t_s)
+        near = [e for e in near if not (e.kind.startswith("joint") and e.what in late)]
     # every joint of the governing part that broke with it (a diagonal's foot and both
     # its gusset laps: strengthening one leaves the others), then the others, up to 3
     lead_parts = set(lead[0].parts) if lead else set()

@@ -926,8 +926,7 @@ def test_agent_loop_through_mcp(tmp_path):
     # them, and where each body is, from the full inspect report)
     bodies = {b["name"]: ({"layup": "20-ply UD", "butt_stagger_mm": 0} if b["kind"] == "bar"
                           else {"kind": "block"}) for b in ins["bodies"]}
-    ov = {"bodies": bodies, "acknowledge": ["material:*", "rigid_*", "floating:*", "rule:*",
-                                           "weak_joints"]}
+    ov = {"bodies": bodies, "acknowledge": ["material:*", "rule:*", "weak_joints"]}
     ov_yaml = yaml.safe_dump(ov)
     ins2 = call("inspect_bridge", cad_path=str(cad), overrides_yaml=ov_yaml, strict=True)
     assert not [q for q in ins2["questions"] if q["severity"] == "important"], \
@@ -1679,6 +1678,70 @@ def test_whatif_is_written_with_the_users_overrides(synthetic_crush):
     # a what-if is made on every copy of a part, and only on its copies
     assert _copies("Top Chord (10-ply UD) - Far") == "Top Chord (10-ply UD)*"
     assert _copies("Body 4") == "Body 4"
+
+
+def test_a_joint_intact_when_a_member_broke_is_its_cascade():
+    """The agent loop's laminated beam on two piers (quick, seed 1, round 28) breaks in
+    bending at the peak: its fibres crush at x = 95 mm (member_crushing at 0.76462 s); the
+    glue of its joint on a pier begins to fail 2.3 ms later, as the beam falls, and the
+    joint separates 5 ms later with the load gone. All within half a period of the
+    ringing (42 ms), so the joint's clean break was put before the crushing and named:
+    its glue x1.5 then moved F_u by 0.0 %, the beam's section x1.25 by +77 %. A joint
+    whose glue was intact when the member broke is the member's cascade: it neither
+    governs nor competes. A joint whose glue was failing already keeps the clean break's
+    place, and so does one without a glue_damage event (nothing says when it began)."""
+    from bridgesim.sim.crush import KGF, Event, attribute, glue_intact_at
+
+    def ev(t, kgf, kind, what):
+        return Event(t, 24.0 * t, kgf * KGF, kind, what)
+
+    joint = "Beam | Pier L"
+    seq = [ev(0.76462, 183.0, "member_crushing", "Beam"),
+           ev(0.76695, 148.4, "glue_damage", joint),
+           ev(0.76822, 109.3, "joint_cracking", joint),
+           ev(0.76972, 96.5, "joint_failure", joint)]
+    kw = {"t_c": 0.7645, "peak": 222.7 * KGF, "peak_travel": 21.45, "speed_mm_s": 24.0,
+          "period_s": 0.042}
+    assert glue_intact_at(seq, 0.76462) == {joint} and glue_intact_at(seq, 0.767) == set()
+    gov, competing = attribute(seq, **kw)
+    assert (gov.kind, gov.what) == ("member_crushing", "Beam") and competing == []
+    early = [ev(0.7600, 222.0, "glue_damage", joint)] + [e for e in seq
+                                                         if e.kind != "glue_damage"]
+    gov, _ = attribute(early, **kw)
+    assert (gov.kind, gov.what) == ("joint_failure", joint)
+    gov, _ = attribute([e for e in seq if e.kind != "glue_damage"], **kw)
+    assert (gov.kind, gov.what) == ("joint_failure", joint)
+
+
+def test_strengthen_offers_no_glue_where_the_glue_was_intact_when_the_member_broke(
+        synthetic_crush, tmp_path):
+    """The strengthen step of a crush governed by a member breaking: a joint that let go
+    after it (read at 92 % of F_u) gets a glue what-if only if its glue had begun to fail
+    before the member broke; one whose glue was intact then is the cascade, and more
+    glue there cannot change the run up to the member's break (the agent loop's beam,
+    round 28: glue x1.5 on its pier joint, +0.0 %). The member gets its section."""
+    from bridgesim.sim import study
+    from bridgesim.sim.crush import KGF
+    from bridgesim.sim.report import EventOut
+
+    _, rep, _ = synthetic_crush
+    F = rep.Fu_kgf
+
+    def ev(t, share, kind, what):
+        return EventOut(t_s=t, jack_travel_mm=24.0 * t, load_N=share * F * KGF,
+                        load_kgf=share * F, kind=kind, what=what, where_mm=[0.0, 150.0, 0.0])
+
+    crushed, sep = ev(0.5, 0.97, "member_crushing", "Beam"), ev(0.505, 0.92, "joint_failure",
+                                                                "Beam | Pier L")
+    for onset, glue in ((0.502, False), (0.45, True)):
+        r = rep.model_copy(update={
+            "governing": "member crushing: Beam", "failure_mode": "collapse",
+            "failures": [crushed, sep],
+            "events": [crushed, ev(onset, 0.95, "glue_damage", "Beam | Pier L"), sep]})
+        st = next(s for s in study._next_crush(r, tmp_path / "b.stl", None, None)
+                  if s.action == "strengthen")
+        assert st.overrides["bodies"] == {"Beam": {"section_scale": 1.25}}, onset
+        assert ("glue" in st.overrides) == glue, onset
 
 
 def test_inspect_selects_bodies_and_joints(tmp_path):

@@ -1450,7 +1450,14 @@ assumed values (judgements, nothing measured on stick bridges), drawn by `montec
   ms before: the laps went 2-3 ms after the foot and the foot, under 5 % of F_u, kept the
   label, while strengthening the laps x1.5 raised F_u 22 %, the adversarial review of
   round 24), and a plate that was cracking before (more of the same crack) does not keep
-  its place before joints letting go with it. Since round 26 the strongest is taken only
+  its place before joints letting go with it. A joint whose glue had not begun to fail
+  (no `glue_damage` yet) when a member broke in that moment is the member's cascade: it
+  neither governs nor competes, and the strengthen step gives it no glue what-if (since
+  round 28: the agent loop's laminated beam on two piers broke in bending at the peak, its
+  joint on a pier began to let go 2.3 ms after the beam's fibres crushed and separated 5
+  ms later with the load gone; the joint's clean break was put before the crushing and
+  named, its glue x1.5 moved F_u by 0.0 %, the beam's section x1.25 by +77 %,
+  `test_a_joint_intact_when_a_member_broke_is_its_cascade`). Since round 26 the strongest is taken only
   among the joints sharing a part with the first to let go (one node): a joint on the
   other truss letting go within the same half period is the cascade (the adversarial
   review of round 25: the label named the other truss's laps, 1.4 ms later). Every major
