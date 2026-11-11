@@ -1710,6 +1710,17 @@ assumed values (judgements, nothing measured on stick bridges), drawn by `montec
   along its edges can be switched on (`scatter.glue_point_cov`, `glue.fillet_mm`,
   section 3), but they are off until lap coupons of several sizes separate them from the
   size law that `glue.weibull_m` fits.
+* Three things found while round 28 was put together and left as they are, so that its
+  switches still give round 27 back: a member's split strengths (`b_fv`, `b_fv3`) scale
+  with its seeded strength factor over its stiffness factor, where its tension and
+  compression strengths, and the plates' glue planes, scale with the strength factor (a
+  stiffer body gets a split strength a few % low: 0.921 for 0.957 on the 6 mm truss's
+  governing floor beam); a member's split check fires on the first step its
+  depth-averaged ratio passes 1, on forces that include the damping terms and with no
+  averaging over time, so beside a crack that is opening it follows the element's ringing
+  (`validation/README.md` section 3.21: the 6 mm truss); and a member glued on both faces
+  may have its depth counted under each face in its glue lines' normal stiffness
+  (`wood_normal_stiffness`; put right for blocks of cells only).
 * Splitting of a member along the grain other than by shear, and knots (stick-to-stick
   variation inside one body is in the model since round 28: the stick field, section 4;
   a plate's butt joints are still one factor on its fibre tension strength, not resolved

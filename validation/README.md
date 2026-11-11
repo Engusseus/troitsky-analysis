@@ -1629,7 +1629,25 @@ still the foot of vertical 320, the label now at the top joint of the same verti
 lets go 0.05 mm later), D 16.65 (17.9: -7.0 %, an end diagonal crushing; 16.70 with the
 member-section package alone). The 6 mm truss at fine reads 26.88 kgf (30.3: -11.3 %),
 member shear in floor beam 2 as before, flagged as before (a deck joint narrower than the
-deck's elements): the one case past the policy's 10 %. It was already at 26.37 with the first five packages (member sections, glue, contact, blocks, plate shear) and the later four moved it by +0.5 kgf; the plate shear alone had read +1.0 %. Alone, the packages moved the 10 mm truss by -0.3 %
+deck's elements): the one case past the policy's 10 %, and the stick field is why. Measured on the seven
+packages then merged, each mechanism switched back to round 27 in turn (same seed, one
+code; with all of them back and one shear stiffness both ways the truss reads 30.32,
+round 27's figure): the stick field -13.0 %, the plates' shear -2.1 %, the built bridge
+-2.2 %, against the wood's clock +4.3 % (the peak comes 12 s into the test, the coupons
+took 60) and the shear through the stack +3.6 % (the floor beam, softer in shear, takes a
+little less of the deck's load); blocks, glue and friction 0; the stiffness under the
+plate is 13.0-13.4 kgf/mm in every case. On seed 0 the field draws the bottom stick of
+floor beam 2 over its middle 100 mm at 0.82 of round 27's tension strength (8.28 against
+10.04 MPa; the beam's split strength is 2.9 % higher). Its bottom fibres start to crack at
+15.8 kgf instead of 18.7, the crack runs away near 26.8 kgf, and the beam's split check
+fires there, in the element that is softening, where it fired at the support at 30.9 kgf
+in round 27. A three-ply beam failing from its weakest outer stick is what the field is
+for; the size of the drop is one seed's draw of one stick, not a bias (the field's mean is
+1), so this case now hinges on that draw and a benchmark over several seeds would say
+more. The trigger is partly numerical: the split check reads the instantaneous shear of
+an element that is ringing as it softens (its ratio 0.17, 0.56, 0.28 at samples 100 steps
+apart, at a steady 0.35), with no averaging over time, so where and when it fires there
+depends on the dynamics (an open point below). Alone, the packages moved the 10 mm truss by -0.3 %
 (glue), -0.3 % (blocks), -0.1 % (plate shear), 0.0 % (contact), -0.15 % (the built bridge,
 the governing label moving between two joints that already competed), +0.2 % (the wood's
 clock), +0.5 % then 0.0 % (the plates' onset before and after the tension cut), and C by
@@ -1650,12 +1668,14 @@ flat for the plates' shear stiffness and split; a block in double shear; the fiv
 differences on a real bridge; the jack's strokes from a video). The published tests' Monte
 Carlo (section 3.14) was not re-run: `published_check` and `uncertainty.published_bias` are
 round 27's, and with C up 8 % and D down 7 % on seed 0 their medians have moved by about
-that. The fidelity table (quick / standard / fine) was not re-run. Known open points, each
-in ASSUMPTIONS-SIM.md section 7: a glue line on a plate's face counts the plate's
+that. The fidelity table (quick / standard / fine) was not re-run. Known open points (ASSUMPTIONS-SIM.md section 7 has them with their sources): a glue line on a plate's face counts the plate's
 through-thickness slip partly twice (the glue spring and the shear-deformable element:
 -1.5 % stiffness on the 10 mm truss); a member's shear strengths scale with its strength
 factor over its stiffness factor, not with its strength factor as its tension and
-compression strengths do (round 27's, kept so the switches reproduce it); a member glued
+compression strengths do (round 27's, kept so the switches reproduce it); a member's
+split check fires on the first step its depth-averaged ratio passes 1, on forces that
+include the damping terms, so next to a crack that is opening it follows the element's
+ringing (the 6 mm truss above); a member glued
 on both faces may have its depth counted under each face in the glue line's normal
 stiffness (fixed for blocks only); a free strut kinks as it crushes and that bending
 localisation still depends on the mesh; compact blocks are no contact surface; frames and
