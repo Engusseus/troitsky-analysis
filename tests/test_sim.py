@@ -4614,7 +4614,11 @@ def test_with_the_stick_field_off_the_model_is_round_27s():
             None: {"b_E": 2422241.1276578186, "b_ft": 2943.9999999999995, "b_fc": 7866.0,
                    "b_GJ": 189071306.55228245, "b_kGA": 16387500.000000004,
                    "s_lim": 10.726003469935472, "s_K": 653420818.2046883}}
-    for sp_, seed in ((SP.updated({"scatter.stick_field": 0}), 0), (SP, None)):
+    # (the plates Kirchhoff elements as round 27's: shear-deformable, plate.shear_deformable,
+    # their stiffness s_K holds the shear term)
+    r27 = {"plate.shear_deformable": 0}
+    for sp_, seed in ((SP.updated({"scatter.stick_field": 0, **r27}), 0),
+                      (SP.updated(r27), None)):
         m = build_model(simple_beam_bridge(), MAT, sp_, seed=seed)
         for k, v in want[seed].items():
             assert float(np.sum(getattr(m, k))) == pytest.approx(v, rel=1e-14), k
