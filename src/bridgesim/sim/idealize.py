@@ -1230,11 +1230,18 @@ def ply_group_ranges(n: int, k: int, cuts: list[frozenset[int]] | None = None
     as near equal size as can be, then split further between any two neighbouring plies
     butted open at different places (``cuts``: the plies each open butt zone cuts), so a
     group's plies all run through a joint or all end there: a group never holds a ply
-    that ends at a joint beside one that runs through it. k = 1 with no cuts: one group."""
+    that ends at a joint beside one that runs through it; and a ply beside such a change
+    is a group of its own, so the load a butted ply hands on over its shear-lag length
+    goes into the ply next to it first, as in the laminate (the plies beside an open
+    joint carry more near it: USDA TB 1069 fig. 61), not spread over a thick group at
+    once. k = 1 with no cuts: one group."""
     k = max(1, min(int(k), n))
     bounds = {int(round(i * n / k)) for i in range(1, k)}
     sig = [frozenset(z for z, c in enumerate(cuts or []) if p in c) for p in range(n)]
-    bounds |= {p for p in range(1, n) if sig[p] != sig[p - 1]}
+    change = {p for p in range(1, n) if sig[p] != sig[p - 1]}
+    bounds |= change
+    for p in change:  # the plies either side of a change on their own
+        bounds |= {p - 1, p + 1}
     edges = [0, *sorted(b for b in bounds if 0 < b < n), n]
     return [(a, b) for a, b in zip(edges[:-1], edges[1:], strict=True) if b > a]
 
@@ -2060,15 +2067,23 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
         rec = {"c": c, "u": u, "nrm": nrm, "s0": s0, "T": T, "groups": list(groups),
                "x": [], "ids": [], "gaps": []}
         all_ids: list[int] = []
+        # every group on the same stations, the open joints' edges among them: a group
+        # that runs through a joint has an element across its gap (the net section the
+        # load crosses there) and its glue to a butted ply ends at the gap's edge, on its
+        # own side (a node shared across the gap would let the butted plies push on each
+        # other past the net section)
+        all_gaps = sorted((xc - g_b / 2, xc + g_b / 2) for xc, _cut in zones) \
+            if open_all else []
+        hs_ = float(np.diff(xu).max())
+        xs = [x for x in xu if x in (xu[0], xu[-1])
+              or not any(a - 0.3 * hs_ < x < b_ + 0.3 * hs_ for a, b_ in all_gaps)]
+        xs = np.array(sorted({*xs, *(v for ab in all_gaps for v in ab)}))
         for k0, k1 in groups:
             ng = k1 - k0
             Tg = ng * t_p
             zg = -T / 2 + 0.5 * (k0 + k1) * t_p
             gp = sorted((xc - g_b / 2, xc + g_b / 2) for xc, cut in zones
                         if open_all and k0 in cut)
-            xs = [x for x in xu if x in (xu[0], xu[-1])
-                  or not any(a - 0.3 * h < x < b_ + 0.3 * h for a, b_ in gp)]
-            xs = np.array(sorted({*xs, *(v for ab in gp for v in ab)}))
             ids = [bld.node(c + (s0 + x) * u + bow_a * math.sin(math.pi * x / L) * bow_dir
                             + zg * nrm, bi) for x in xs]
             rec["x"].append(xs)
@@ -2297,9 +2312,6 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
                                           [c_ for _x, c_ in zones] if open_all else [])
                 if len(groups) < 2:
                     groups = []
-            elif (pg or 0) >= 2:
-                notes.append(f"overrides: ply_groups has no effect on '{b.name}' (only a "
-                             "member of two plies or more can be split into ply groups)")
             if groups:
                 _split_bar(bi, b, sh, info, o, c, u, w, nrm, s0, L, T, Wp, vol, mass_t, Ef,
                            Sf, kt, kc, kE_bear, h, st2, zones, g_b if open_all else 0.0,
@@ -2571,6 +2583,13 @@ def build_model(bodies: list[CadBody], mat: Material, sp: SimParams,
             body_nodes[bi] = np.array([nid])
             info.nodes = [nid]
         infos.append(info)
+
+    for bi, b in enumerate(bodies):
+        pg_ = ov.for_body(b.name).get("ply_groups")
+        if isinstance(pg_, int) and pg_ >= 2 and not infos[bi].ply_groups:
+            notes.append(f"overrides: ply_groups has no effect on '{b.name}' (a "
+                         f"{infos[bi].kind}: only a member, a bar of two plies or more, "
+                         "can be split into ply groups)")
 
     def attach_group(bi: int, gi: int, p: np.ndarray) -> int:
         """A point on ply group gi of a member split into ply groups: on its node nearest
