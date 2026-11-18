@@ -28,6 +28,19 @@ E_SIM = SP["wood.E_placeholder_MPa"] if MAT.E_MPa.source == "assumed" else MAT.E
 G_SIM = E_SIM / 16 if MAT.E_MPa.source == "assumed" else MAT.G_MPa.value
 
 
+def _r28_inputs(sp: SimParams = SP) -> tuple[Material, SimParams]:
+    """The placeholders shipped until round 28 (E 10000 / 10.5 GPa in the crush, G 625, f_t
+    40, f_c 30, f_b 50, tau_g 2.0 MPa, strength CoV 0.18), on ``sp``: a test comparing
+    with arrays round 27's code built from them takes them as its own inputs."""
+    mat = MAT.model_copy(deep=True)
+    for k, v in (("E_MPa", 10000.0), ("G_MPa", 625.0), ("f_t_MPa", 40.0),
+                 ("f_c_MPa", 30.0), ("f_b_MPa", 50.0)):
+        getattr(mat, k).value = v
+    mat.glue.tau_g_MPa.value = 2.0
+    return mat, sp.updated({"wood.E_placeholder_MPa": 10500.0, "scatter.strength_cov": 0.18},
+                           source="assumed")
+
+
 # ------------------------------------------------------------------ materials
 
 
@@ -4644,7 +4657,8 @@ def test_a_long_member_is_as_strong_as_its_weakest_section():
 
     Ls, rho = MAT.stick.length_mm, SP["scatter.ply_corr"]
     sE = sf.log_sd(SP["scatter.E_cov"], 1 - rho, 1.0)
-    sS = sf.log_sd(SP["scatter.strength_cov"], 1 - rho, 1.0)
+    # the strength CoV these figures are for, 0.18 (the placeholder until round 28)
+    sS = sf.log_sd(0.18, 1 - rho, 1.0)
 
     def strength(k, i, stagger=0.0, n=3):
         L = k * Ls
@@ -4693,7 +4707,8 @@ def test_with_the_stick_field_off_the_model_is_round_27s():
     r27 = {"plate.shear_deformable": 0}
     for sp_, seed in ((SP.updated({"scatter.stick_field": 0, **r27, **BUILT_OFF}), 0),
                       (SP.updated(r27), None)):
-        m = build_model(simple_beam_bridge(), MAT, sp_, seed=seed)
+        mat, sp_ = _r28_inputs(sp_)  # round 27's arrays came from the placeholders of then
+        m = build_model(simple_beam_bridge(), mat, sp_, seed=seed)
         for k, v in want[seed].items():
             assert float(np.sum(getattr(m, k))) == pytest.approx(v, rel=1e-14), k
         assert (m.b_fs == 1.0).all()
@@ -4947,12 +4962,13 @@ def test_pressure_coefficient_zero_is_round_27():
     sp0 = SP.updated({"glue.pressure_coeff": 0.0, "glue.tau_peak_over_avg": 1.065,
                       "scatter.glue_point_cov": 0.0, "glue.fillet_mm": 0.0,
                       "block.cell_mm": 0.0})
+    mat0, sp0 = _r28_inputs(sp0)  # round 27's arrays came from the placeholders of then
     pins = {0: (18414.203755357616, 12153.374478536029, 238.57515707865358,
                 9703.113322084113),
             None: (23898.503428797623, 15773.01226300643, 309.59999999999997,
                    12591.372479092268)}
     for seed, want in pins.items():
-        m = build_model(simple_beam_bridge(), MAT, sp0, seed=seed)
+        m = build_model(simple_beam_bridge(), mat0, sp0, seed=seed)
         got = (float(np.sum(m.c_tau * m.c_area)), float(np.sum(m.c_sig * m.c_area)),
                float(np.sum(m.c_GIIc)), float(np.sum(m.c_Ks)))
         assert got == pytest.approx(want, rel=1e-9), seed
