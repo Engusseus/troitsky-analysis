@@ -302,9 +302,10 @@ the two, which shows whether the X is worth its mass.
 
 Stated plainly:
 
-* **Placeholder materials.** E = 10 GPa (10.5 GPa in the crush: dry craft sticks are 11-15 GPa by vibration, a little less static), f_t = 40, f_c = 30, f_b = 50, f_v = 8 MPa, glue
-  τ = 2 MPa: textbook-order guesses, **not data**. Popsicle sticks vary a lot between brands
-  and batches.
+* **Placeholder materials.** E = 13 GPa, f_t = 70, f_c = 45, f_b = 80, f_v = 8 MPa, glue
+  τ = 3 MPa: set from other teams' published coupon tests of craft sticks
+  ([`validation/literature/`](validation/literature/)) and handbook values, **not data**
+  for your sticks and glue. Popsicle sticks vary a lot between brands and batches.
 * **Linear, first-failure.** No P-Δ, no imperfections, no joint slip, no load
   redistribution after a member fails, and no contact-with-crusher failure. Real bridges
   can carry more after a brace buckles (mark slender braces

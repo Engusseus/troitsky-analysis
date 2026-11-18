@@ -14,15 +14,15 @@ All values in `materials/popsicle_birch.yaml` are **assumed placeholders**, not 
 
 | Property | Value | Notes |
 |---|---|---|
-| E | 10,000 MPa | Measure: three-point bending, $E = F L^3 / (48\,\delta\, I)$ |
-| G | E/16 = 625 MPa | Typical wood ratio |
+| E | 13,000 MPa | Measure: three-point bending, $E = F L^3 / (48\,\delta\, I)$ |
+| G | E/16 = 812.5 MPa | Typical wood ratio |
 | ν | 0.3 | Only used by the solver's material definition |
-| f_t (tension) | 40 MPa | Parallel to grain |
-| f_c (compression) | 30 MPa | Crushing, parallel to grain |
-| f_b (bending) | 50 MPa | Modulus of rupture |
+| f_t (tension) | 70 MPa | Parallel to grain |
+| f_c (compression) | 45 MPa | Crushing, parallel to grain |
+| f_b (bending) | 80 MPa | Modulus of rupture |
 | f_v (shear) | 6 MPa | Parallel to grain, $\tau = 1.5V/A$ |
 | density | 650 kg/m³ | |
-| τ_g (glue shear) | 2.0 MPa | Lap-joint average shear strength |
+| τ_g (glue shear) | 3.0 MPa | Lap-joint average shear strength |
 | glue mass fraction | 0.10 | |
 | glued overlap / faces | 20 mm / 2 | Per member end |
 | stick | 115 × 10 × 2 mm | |
