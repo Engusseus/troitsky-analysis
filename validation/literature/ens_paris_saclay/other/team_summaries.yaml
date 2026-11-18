@@ -1,0 +1,130 @@
+# Summary statistics of craft-stick coupon tests in the ENS Paris-Saclay resources on
+# Eduscol (Move Your Bridge 2018-19 and 2.0, and the 2023 tension and bending write-ups).
+# Not read by bridgesim: the templates of validation/physical/ hold one specimen per row,
+# these are means and standard deviations. See ../../README.md for the sources.
+#
+# Values as printed, in the printed units (MPa, GPa, N). Where a source has an evident slip
+# it is kept and flagged in `note`, not corrected. Pages are PDF pages of the files named in
+# the README ("report p." where the report's own number differs). `sd`: the standard
+# deviation as printed ("écart type").
+
+sticks_2018_19:
+  source: "myb_jaune.pdf section 2.1, Table 1 (PDF p. 5); the same table is Table 1 of myb_main.pdf (p. 4) and of edu_14198.pdf (p. 4)"
+  sample: "50 sticks ('un échantillon de 50 bâtonnets'), jaune team"
+  length_mm: {mean: 114, plus_minus: 1.4}
+  width_mm: {mean: 9.6, plus_minus: 1}
+  thickness_mm: {mean: 2.02, plus_minus: 0.4}
+  section_mm2: {mean: 19.39, plus_minus: 9.3}
+  density_kg_m3: {mean: 630, plus_minus: 12}
+  interval: "'intervalle de confiance de 95%'"
+  note: >-
+    Not stated whether the +- is a confidence interval of the mean or the spread of the
+    sticks (+-9.3 mm^2 on a mean section of 19.39 reads as a spread). The 2018-19 sticks
+    were dyed, one colour per team (myb_main p. 3); edu_14198 (p. 4) says the dye changed
+    their mechanical properties 'sensiblement', and Move Your Bridge 2.0 used undyed sticks
+    but reprints this same table without saying it measured them again. No source gives
+    the dimensions of the sticks of the 76 tension tests or of the 2021 bending tests.
+
+edu_14237_tension_76:
+  source: "edu_14237.pdf section 2 (p. 2) and 3 (p. 4-5); the 76 loads are in ../stick_tension.csv"
+  n: 76
+  mean_N: 1389
+  sd_population_N: 337.5
+  sd_sample_N: 339.7
+  lognormal_5pct_quantile_N: 829.9
+  lognormal_fitted_to_histogram: {mean_N: 1441.8, sd_N: 320.7, quantile_5pct_N: 907.3}
+
+myb_2018_19_pooled:
+  source: "myb_main.pdf section 4.1, tables under 'Voici quelques résultats' (p. 5)"
+  note: >-
+    'les résultats sont mis en commun' (p. 4): pooled over the six teams; how many tests
+    is not stated. Re* and Rm* carry an asterisk the page does not explain.
+  tension_single_stick: {Re_MPa: {mean: 86, sd: 19}, Rm_MPa: {mean: 100, sd: 26}, E_GPa: {mean: 15, sd: 2.5}}
+  bending_E_GPa: {single_stick: {mean: 7, sd: 3}, I_assembly: {mean: 1.5}, I_assembly_double_web: {mean: 2.4, sd: 0.3}}
+  buckling: {single_stick: {E_GPa: 5.9, load_N: 100}, I_assembly: {E_GPa: 2.4, load_N: 2100}}
+  sanding: "sanding the paint off raised the strength of a glued assembly in tension (their Fig. 5) by 'presque 30%' (p. 5)"
+
+rouge:
+  source: "myb_rouge.pdf ch. 3 (PDF pp. 16-20)"
+  machine: "Instron 3369, 50 kN, with an extensometer (PDF p. 16)"
+  tension: {n: "'une trentaine' (about thirty)", E_GPa: {mean: 14.2, sd: 1.3}, Rm_MPa: {mean: 86.6, sd: 5.8}, page: "PDF p. 17"}
+  buckling: "mean 90 N, pin-ended, see buckling.csv (PDF p. 18)"
+  laps: "1300 / 1700 / 2000 N, see ../glue_laps.csv and wood_failed_laps.csv (PDF pp. 19-20)"
+
+orange:
+  source: "myb_orange.pdf section 2 (PDF p. 7) and annex (PDF p. 23)"
+  tension_E_MPa: {mean: 15261, sd: 1440, note: "a tension study shared with other groups; Fig. 6 plots about ten values (not transcribed)"}
+  edge_glued_joint: {mean_max_load_N: 140, note: "a stick glued on its edge ('collage par la tranche') pulled off (Fig. 7 left); how many not stated"}
+  edge_glued_joint_moment: {mean_max_moment_N_m: 0.2, note: "Fig. 7 right"}
+  laps: >-
+    annex (PDF p. 23): laps of 5 mm to 3 cm; 'une longueur de collage de 1,5 cm suffit pour
+    atteindre la résistance mécanique du matériau' (the stick broke before the glue from
+    15 mm up); no loads given. Stick width taken as 9,5 mm there. Sanding along the grain
+    glued best.
+
+jaune:
+  source: "myb_jaune.pdf section 2 (PDF pp. 5-7)"
+  tension: {n: 10, E_GPa: 15, Re_MPa: 50, machine: "Instron 3000", note: "10 sticks pooled with other groups (PDF p. 6)"}
+  bending: {n: 5, E_GPa: 7, note: "the team blames its measurement of the span for the factor 2 against tension (PDF p. 7)"}
+  compression:
+    n: 4
+    Rc_MPa: 30
+    note: >-
+      'la résistance limite en compression soit plutôt de l'ordre de 30 GPa (moyenne de 4
+      expériences)', then 'Rc = 30 MPa' (PDF p. 7): GPa is a slip. Specimen length and end
+      conditions are not stated, so whether this is a crushing or a buckling stress is not
+      known; it is not put in a stick_compression file.
+
+vert:
+  source: "myb_vert.pdf section 3 (PDF pp. 8-9)"
+  tension: {E_MPa: {mean: 10780, sd: 3200}, strength_MPa: {mean: 83, sd: 10}}
+  bending: {E_MPa: {mean: 5040, sd: 1330}}
+  buckling: {effective_length_factor_alpha: 0.71, note: "F = pi^2 E I / (alpha L)^2 fitted to their buckling tests of 'un bâtonnet assemblé avec de la colle à bois'; no loads or lengths given"}
+
+bleu:
+  source: "myb_bleu.pdf section 1 (PDF pp. 6-8)"
+  tension: {n: 10, Re_MPa: {mean: 86.0, sd: 19.6}, E_MPa: {mean: 14800, sd: 2530}, table: "Table 1, PDF p. 6", note: "printed as 8,60E+01 and 1,48E+04 / 2,53E+03; grips reinforced with glued pieces of stick"}
+  bending: {n: 14, Re_MPa: {mean: 74.2, sd: 15.8}, E_MPa: {mean: 5910, sd: 1380}, table: "Table 2, PDF p. 7", note: "span not stated"}
+  I_beams: {n_each: 2, single_web: {Re_MPa: 25.8, E_MPa: 1510}, double_web: {Re_MPa: 27.5, E_MPa: 2360}, table: "Table 3, PDF p. 7"}
+  buckling: "Table 4, see buckling.csv"
+
+violet:
+  source: "edu_11624.pdf (violet team report) section 3 (PDF pp. 5-6)"
+  tension: {E_GPa: {mean: 14.6, sd: 1.6}, Rm_MPa: {mean: 100, sd: 26.7}, machine: "Instron 3369", table: "Tableau 1, PDF p. 5", note: "means over sticks of good quality only"}
+  bending_on_edge: {note: "'une contrainte maximale moyenne de 1,25Pa avec un écart type de 8%' (PDF p. 5): the unit is a slip and the value cannot be recovered"}
+  laps: "sanding the painted faces raised lap strength by 20 % on average (PDF p. 6); 'la plupart du temps il y a rupture au niveau de la colle'; no loads given"
+  sorting: {grade_A_pct: 5, grade_B_pct: 15, grade_C_pct: 30, grade_D_pct: 50, table: "Tableau 2, PDF p. 6"}
+
+myb_2_0:
+  source: "edu_14198.pdf section 4.1 (pp. 4-7)"
+  glue: "Pattex Bois-Hout Express, label D2 (photo, Fig. 2, p. 4); sticks undyed (p. 4)"
+  tension_95pct_by_group:
+    table: "Tableau 2, p. 7: 'Fmax à 95%', 'R95%', E"
+    Louis-Vuipont: {Fmax_95_N: 1200, R95_MPa: 60, E_GPa: 11.3}
+    Pont-ain-d-idee: {Fmax_95_N: 1400, R95_MPa: null, E_GPa: 15}
+    Pont de l'Ascension: {Fmax_95_N: 1280, R95_MPa: 71, E_GPa: 14.7}
+    Ponta Cana: {Fmax_95_N: 1380, R95_MPa: 69, E_GPa: 14}
+    (Vis le Pon)T: {Fmax_95_N: 870, R95_MPa: 43, E_GPa: 6.7}
+  tension_examples:
+    table: "Fig. 6, p. 6: 'Exemples de valeurs relevées et calculées pour quelques essais'; which group is not stated"
+    columns: [stress_max_MPa, E_GPa, force_max_N]
+    rows:
+      - [105, 12.7, 2098]
+      - [87, 19.73, 1743]
+      - [65, 11.4, 1300]
+      - [113, 14.9, 2278]
+      - [114.8, 16.5, 2297]
+      - [117.7, 17.97, 2340]
+      - [88.8, 11.6, 1776]
+      - [118, 15.47, 2359]
+      - [87.8, 8.2, 1756]
+      - [159, 18.5, 3181]
+      - [103.2, 11.6, 2063]
+      - [93.4, 17.6, 1869]
+    printed_mean: [104.391666666667, 14.6808333333333, 2088.33333333333]
+    printed_sd: [23.3976866895905, 3.55569059481567, 467.838032060695]
+    note: >-
+      A second, stronger tension campaign (mean 2088 N against 1389 N for the 76 of
+      edu_14237); kept here, not mixed into ../stick_tension.csv. Fig. 7 (p. 6) also shows a
+      histogram of 100 results and Fig. 8 (p. 7) lap strengths by overlap (10-40 mm) and by
+      sanding, as charts only: not transcribed.

@@ -1,0 +1,61 @@
+# Craft-stick coupon statistics from Fredette & Kennedy (2022), Cedarville University: the
+# summary statistics only (the paper gives no individual values). Not read by bridgesim
+# (no file of validation/physical/'s formats can hold a mean and a range). See
+# ../README.md for the citation.
+#
+# Units as printed (ksi) and converted (1 ksi = 6.894757 MPa). "range" is the paper's
+# "ensemble range" / "range": the spread of the values (max - min, by its wording), not a
+# standard deviation.
+
+source:
+  citation: >-
+    L. Fredette and M. Kennedy, "Work in Progress: Reformulation of a Truss Competition
+    Course Project to Improve Educational Outcomes", 2022 ASEE Annual Conference &
+    Exposition, paper ID 37551
+  url: https://peer.asee.org/work-in-progress-reformulation-of-a-truss-competition-course-project-to-improve-educational-outcomes.pdf
+  pages: "PDF p. 6 (the coupon tests, at the end of 'Previous Truss Project Formulation') and p. 8 (Figure 2 and the text above it)"
+
+stick_tension:
+  n: 10
+  ultimate_tensile_stress: {mean_ksi: 12.3, range_ksi: 13.6, mean_MPa: 84.8, range_MPa: 93.8}
+  elastic_modulus: {mean_ksi: 1219, range_ksi: 579, mean_GPa: 8.40, range_GPa: 3.99}
+  quote: >-
+    "Ten tension samples were tested, revealing an average ultimate tensile stress of 12.3
+    ksi, but an ensemble range of 13.6 ksi. The elastic modulus from these tests was 1219
+    ksi on average with a range of 579 ksi." (p. 6)
+
+lap_shear:
+  n: 24
+  n_each: "12 sanded and 12 unsanded: derived from 'half with sanding prior to gluing and half without'"
+  unsanded: {mean_ksi: 0.495, mean_MPa: 3.41}
+  sanded: {mean_ksi: 0.783, mean_MPa: 5.40}
+  range: "'a range of 85% of the average in each case' (p. 6): about 2.9 MPa unsanded and 4.6 MPa sanded, max - min"
+  failure: "'the craft stick shear failures occurred in the glue' (p. 8): glue-line failures"
+  quote: >-
+    "Twenty-four lap-shear samples were also made up, half with sanding prior to gluing
+    and half without. These yielded an average glue shear strength of 0.495 ksi and 0.783
+    ksi for unsanded and sanded specimens, respectively, with a range of 85% of the
+    average in each case." (p. 6)
+
+figure_2: >-
+  Figure 2 (p. 8) plots each craft-stick value of modulus, tensile strength and shear
+  strength "divided by the average of all values for that property and material" (its
+  caption): not digitised here.
+
+not_stated:
+  # read for in the whole paper; none of these is given
+  - the glue (type or brand) and its cure time
+  - the lap geometry: overlap length, width, single or double lap, how the load was applied
+  - the clamping pressure while gluing, and the sanding (grit, direction)
+  - the sticks: maker, species, dimensions, and how many batches
+  - the test machine, the grips, the loading rate and the time to failure
+  - how the modulus was measured (extensometer or crosshead travel; gauge length)
+  - how the stress was computed (the cross-section used)
+  - the standard deviations and the individual values (only means and ranges)
+  - when the tests were made (the paper says only that they were run to check the values
+    given to students under the earlier format of the course, before 2021-22)
+  - temperature and humidity
+
+also_in_the_paper: >-
+  The same paper reports tension and lap-shear tests of high-density fibreboard (HDF), the
+  material that replaced the sticks (p. 7): not craft sticks, not reproduced here.
