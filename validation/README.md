@@ -1791,7 +1791,8 @@ and what they change.
     run with a smaller time step, as any divergence does
     (`tests/test_settle_guard.py`).
 
-  With both, at standard (`ab -n 3`, the team's overrides): round 28's values 2080, 1854
+  With both, at standard (`ab -n 3`, with `bridge_v10.overrides.yaml`, which applies to
+  it under `--strict`): round 28's values 2080, 1854
   and 2219 kgf on seeds 1-3 (the drawing's 2021 on seed 1), round 29's 2167, 2078 and
   2526: +10.0 % (90 % interval +1.3 to +18.7 %), the failure at the end posts' gusset
   laps at the knee nodes on four of the six runs, and moved on two seeds. Sticks 1.5-1.75x as
