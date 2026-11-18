@@ -234,7 +234,12 @@ def silva_2026(width: float = 150.0):
         # the putty wraps round each diagonal's end (P): the end face glued to the lump
         # stands for that, x5 (its four sides, ~4 x 9 x 10 mm against the 85 mm^2 end)
         "glue": {"Diag* | Putty*": 5.0},
+        # every joint here is epoxy putty on wood, not white glue: the bond keeps the 2.0
+        # MPa the stand-in above was set with (the white-glue placeholder until round 28;
+        # with round 29's 3.0 the x5 would stand for 15 MPa, and B read 161.6 kgf, 2.23
+        # of its test, on seed 0 at fine)
         "params": {"material.E_MPa": 13000.0, "material.f_c_MPa": 31.5,
+                   "material.glue.tau_g_MPa": 2.0,
                    "material.density_kg_m3": 500.0,
                    # a load hung from the nodes: the softest loading there is (a crack
                    # lets the load drive on), the press stiffness's low end (round 25)
