@@ -17,7 +17,9 @@ file's ``params:`` (``-o``). Nothing is tuned.
     two 6 mm posts 100 mm apart, loaded at mid-span through a rigid nose by the press
     plate; each model is checked with study.inspect before it is crushed; seed -1 (the
     perfect coupon) and seeds 0-4; a run flagged only as not quasi-static is crushed again
-    at half the jack speed, as montecarlo does;
+    at half the jack speed, as montecarlo does. What differs from a bridge's crush, all in
+    coupon_overrides and _crush_one: a 2 g plate, no hand placement of it, the bench's
+    0.1 mm/s, and a longer step limit (a single stick at fine needs ~1-4 million steps);
 (c) the single-stick buckling tests with lab.euler_column (elastic, pin-ended, bow L/1000)
     and the same column with the bridge's fibre law (f_t, f_c); a clamped column as a
     pin-ended one of half its free length.
@@ -26,6 +28,7 @@ Unglued stacks need no simulation (n sticks carry n times one stick): tabulated.
 
     uv run python validation/literature_coupons.py --out DIR [-o overrides.yaml]
         [--seeds=-1,0,1,2,3,4] [--fidelity fine] [--jobs 2] [--skip-crush]
+    uv run python validation/literature_coupons.py --summarize --out DIR
 
 writes DIR/summary.json and, per coupon, DIR/<coupon>/coupon.stl, coupon.overrides.yaml,
 inspect.json and seed_<s>/crush.json (curve.csv, events.csv).
@@ -257,7 +260,11 @@ def coupon_overrides(user: dict) -> dict:
     """The coupon's overrides: the fixture and the nose steel (rigid), bearing on the beam
     dry; the press plate light (the bench drives its nose by displacement; a 2 g plate
     keeps a single stick's period under the crush's 10 ms reference); the bench's 0.1 mm/s
-    (edu_14235) as the test's pace. Acknowledged as drawn: the orientation check (the
+    (edu_14235) as the test's pace; no hand placement of the plate (scatter.placement_mm
+    0: the bench's nose is on its actuator's axis; with the competition's +-3 mm, the nose
+    and the free plate on it, a 50 mm stack on the 9.6 mm face of one stick, toppled
+    before the jack reached the plate in seed 1, and the plate fell past the coupon: the
+    other seeded imperfections are kept). Acknowledged as drawn: the orientation check (the
     fixture's base lies on the platform at mid-span, as a bridge lying on its side would;
     the coupon is drawn Y up), a single flat stick as a bar (a beam in 3-point bending), the
     bridge rules, the crusher and the placeholder questions. The user's params: (and
@@ -265,7 +272,8 @@ def coupon_overrides(user: dict) -> dict:
     ov = {"bodies": {"Fixture": {"kind": "rigid"}, "Loading nose": {"kind": "rigid"},
                      "Beam*": {"kind": "bar"}},
           "glue": {"Fixture | *": 0, "Loading nose | *": 0},
-          "params": {"crusher.plate_mass_kg": 0.002, "crusher.test_rate_mm_per_min": 6.0},
+          "params": {"crusher.plate_mass_kg": 0.002, "crusher.test_rate_mm_per_min": 6.0,
+                     "scatter.placement_mm": 0.0},
           "acknowledge": ["geometry:orientation", "kind:Beam*", "material:measure", "rule:*",
                           "crusher:*"]}
     ov["params"].update(user.get("params") or {})
@@ -335,7 +343,8 @@ def _crush_one(task: tuple) -> dict:
             "speed_mm_s": round(rep.quality.speed_mm_s, 1),
             "period_ms": rep.quality.fundamental_period_ms,
             "kinetic_to_work_max": rep.quality.kinetic_to_work_max,
-            "steps": rep.quality.steps, "code_sha": rep.code_sha}
+            "steps": rep.quality.steps, "code_sha": rep.code_sha,
+            "max_load_N": round(max(rep.curve.load_raw_kgf or [0.0]) * 9.80665, 1)}
 
 
 def _flag(r: dict) -> str:
@@ -407,13 +416,22 @@ def part_b(out: Path, user: dict, seeds: list[int], fidelity: str, jobs: int,
         runs = sorted(res[key]["runs"], key=lambda r: r["seed"])
         res[key]["runs"] = runs
         m = res[key]["measured_N"]["mean"]
-        perfect = next((r for r in runs if r["seed"] < 0), None)
-        sc = [r["Fu_N"] for r in runs if r["seed"] >= 0]
+        # a run whose plate never loaded the coupon (it fell past it) is no result
+        for r in runs:
+            r["plate_loaded"] = r["max_load_N"] > 0.05 * m
+        perfect = next((r for r in runs if r["seed"] < 0 and r["plate_loaded"]), None)
+        seeded = [r for r in runs if r["seed"] >= 0 and r["plate_loaded"]]
+        # as montecarlo: untrustworthy runs left out while at least half remain
+        ok = [r for r in seeded if r["trustworthy"]]
+        use = ok if len(ok) >= max(3, (len(seeded) + 1) // 2) else seeded
+        sc = [r["Fu_N"] for r in use]
         res[key]["sim_perfect_N"] = perfect["Fu_N"] if perfect else None
         res[key]["ratio_perfect"] = round(perfect["Fu_N"] / m, 3) if perfect else None
+        res[key]["plate_not_loaded"] = [r["seed"] for r in runs if not r["plate_loaded"]]
         if sc:
             res[key]["sim_seeds_N"] = {"median": round(float(np.median(sc)), 1),
-                                       "min": min(sc), "max": max(sc), "n": len(sc)}
+                                       "min": min(sc), "max": max(sc), "n": len(sc),
+                                       "seeds": [r["seed"] for r in use]}
             res[key]["ratio_median"] = round(float(np.median(sc)) / m, 3)
         gov: dict[str, int] = {}
         for r in runs:
@@ -557,7 +575,11 @@ def print_b(pb: dict) -> None:
                   f"{r['deflection_at_Fu_mm']:.1f} mm; governing '{r['governing']}'; "
                   f"first failure {first}"
                   + (f" (slowed from {r['slowed_from_N']} N)" if "slowed_from_N" in r else "")
-                  + _flag(r))
+                  + _flag(r)
+                  + ("" if r.get("plate_loaded", True) else
+                     " PLATE NEVER LOADED THE COUPON: not counted"))
+        if v.get("sim_seeds_N"):
+            print(f"       seeds counted: {v['sim_seeds_N'].get('seeds')}")
         print(f"       observed: {v['observed_failure']}")
 
 
