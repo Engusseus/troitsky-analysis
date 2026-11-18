@@ -50,7 +50,8 @@ gets both factors), ready for its `ab ... --overrides-b DIR/whatif.yaml` command
 | `bridgesim ab A.SLDPRT B.SLDPRT [-n 3] [--overrides-a a.yaml] [--overrides-b b.yaml] [--fidelity standard] --json` | Is B better than A? Both crushed with the same seeds: change of F_u and efficiency with a 90 % interval, `significant`, `verdict`, what governed each run (`runs_a/b[].governing`, the most frequent in `governing_a/b`) and `failure_moved`: the seeds where B failed somewhere else than A (strengthening one part often moves the failure to the next). B may be A with other overrides: a what-if (`section_scale`, `glue_factor`) before changing the CAD | 2n x crush / processes |
 | `bridgesim diagnose BRIDGE.SLDPRT [-o overrides.yaml] [-n 2] [--fidelity quick] [--candidates 3] [--out DIR] --json` | What really limits the bridge, measured: crushes it with seeds 1..n, strengthens each part that broke near the peak in turn (glue x1.5 for a joint, section x1.25 for a member or plate, on every copy) on the same seeds, and ranks them by the paired rise of F_u (`candidates`, `limiting`, `verdict`; `governing_after`: where the failure moves). The `governing` label of one crush names the first part in a cascade; diagnose says which one the load depends on, or that no single change helps (then strengthen them together). `DIR/whatif.yaml`: the what-if to confirm with `ab` | (1 + candidates) x n x crush / processes |
 | `bridgesim montecarlo BRIDGE.SLDPRT -n 8 [--fidelity standard] [--processes 4] [--sample-placeholders] [--out DIR] --json` | Spread of F_u over imperfections and material scatter (`min_kgf`, `max_kgf`, p05/p50/p95: below 20 runs read min and max); `recommended_prediction_kgf` for the Load Prediction Form (the 1/F-weighted median, which minimises the §12.7 error, over the runs times the mesh and model-form error, which pulls it below the runs' own `recommended_prediction_runs_kgf`), with `recommended_interval_kgf` (how far other runs could move it: wide with few runs, run more) and `prediction_by_model_cov` (the same at a model-form error of 0.15, the shipped 0.40 and 0.76: how much that judgement moves it) and `prediction_if_biased_kgf` (if the model read this bridge as it reads the published white-glue tests, `uncertainty.published_bias` 0.43 since round 27, over the published tests not set by a stand-in, C and D; 0.93 in round 26 over B and C: shown, not applied); `provenance` (the sha256 of the CAD, the overrides and the material values, the code, the fidelity and the time: kept with a date the test cannot have influenced, a commit or an e-mail to the organisers, it shows the prediction was made before the test); `published_check` (how far a prediction like this one missed on the published tests: read it before trusting the number); a run flagged only as not quasi-static is crushed again at half the jack speed (`slowed_runs`); other untrustworthy runs are listed apart (`Fu_untrustworthy_kgf`) and left out (when fewer than half are trustworthy all are used and `note` starts with NOT RELIABLE: re-run at the crush's `quality.min_fidelity`). `note` says what the spread leaves out: the placeholder material values, unless `--sample-placeholders` (MCP `sample_placeholders`) draws them per run (lognormal, each with its own prior, 20-50 %, a Latin hypercube over the runs; `sampled_placeholders`) so the range includes them. `total_p05_kgf`/`total_p95_kgf`: that spread times the mesh error and the model-form error (`uncertainty.mesh_cov` 5 %, `uncertainty.model_cov` 40 %: the scatter of the published white-glue truss tests about the model, pooled with how far F_u moved with modelling choices tests have not settled), the range to give before any physical test | n x crush / processes |
-| `uv run python validation/benchmark.py --out DIR` | The fixed benchmark every release reports (Bridge_v10 seeds 0 and 1 at standard when its part file is there, the 6 and 10 mm trusses, the four published tests at fine): each F_u against the releases before (`validation/benchmark_history.json`), so the model's drift is seen | ~1 h |
+| `uv run python validation/benchmark.py --out DIR` | The fixed benchmark every release reports (Bridge_v10 seeds 0 and 1 at standard when its part file is there, the 6 and 10 mm trusses, the five published tests at fine): each F_u against the releases before (`validation/benchmark_history.json`), so the model's drift is seen | ~1 h |
+| `uv run python validation/literature_coupons.py --out DIR [--skip-crush]` | Published coupon tests of craft sticks (`validation/literature/`: 76 sticks in tension, sticks and glued stacks in bending, a lap, buckled sticks; other teams' sticks, not yours) against the model's coupons with the shipped placeholders: how far the placeholders are from measured sticks (round 29: tension 0.98 of the measured mean, bending and the lap 0.6-0.9; 0.4-0.6 with the values until round 28) | ~4 min with `--skip-crush` |
 | `uv run python validation/check_runs.py DIR` | Every crush.json under DIR (single crushes, each montecarlo run) with its `code_sha`, F_u and governing part; exit 1 if any was made on other code than the one checked out: quote evidence only from a folder it passes | seconds |
 | `bridgesim schema inspect\|inspect_brief\|crush\|crush_brief\|screen\|reality_gap\|lab\|montecarlo\|design_comparison\|diagnosis\|sensitivity\|bridge_calibration\|question\|job_status` | JSON Schema of each report (the `_brief` forms are what `--brief` and the MCP tools return by default; every MCP tool but `get_schema` publishes its schema as its output schema) | instant |
 | `bridgesim mcp` | The same as MCP tools (`uv sync --extra mcp`) | - |
@@ -378,7 +379,9 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
   (`kinetic_to_work_max` > 0.05: kinetic energy of the bridge over the jack's work while
   the load rises to 95 % of its peak), F_u moved more than 5 % at half speed
   (`quality.rate_check`, with `--rate-check`), more than 5 % mass was added, the bridge
-  did not fail within the jack travel, the run had to restart, the failure starts as a
+  did not fail within the jack travel, the run had to restart (a step that diverged;
+  since round 29 also a part thrown while the bridge settles under its own weight, which
+  used to read as `instability`, F_u 0), the failure starts as a
   crack in plate elements past the crack band of the mode they cracked in, the mesh is
   too coarse for a light bridge (elements more than 3x the failing members' depth, 1.5x
   below 10 mm: on a light truss of 6 mm members quick read 17.9, standard 34.5 and fine
@@ -396,7 +399,9 @@ names the key, and a layup override must read `N-ply UD`, `N-ply 0-90`, `N-ply +
   until it is acknowledged: they carry no load); `quality.reasons` says which. Re-run with `--rate-check` or a finer `--fidelity` before relying on an
   untrustworthy F_u.
 * `assumed_parameters`: values still not measured. With placeholders the absolute load
-  is uncertain by tens of %: on Bridge_v10 (round 27, `montecarlo -n 12
+  is uncertain by tens of % (and moves with them: round 29's, from published coupons of
+  other teams' sticks, read a team's Bridge_v12 10 % above round 28's on three seeds):
+  on Bridge_v10 (round 27 and its placeholders, `montecarlo -n 12
   --sample-placeholders`) the runs spread 1136-2502 kgf around a median of ~1577, the
   recommended prediction 1278 kgf (1455 / 850 at a model-form error of 0.15 / 0.76,
   2972 if it read this bridge as it reads the published tests C and D), and the total
@@ -422,7 +427,13 @@ far above it (0.22; its rebuild loads the chords where the paper's wire loaded t
 diagonals). A fourth, D (Boon's Basic Warren, ten jig-built white-glue bridges, 45.5 kg,
 CoV 0.10), was rebuilt from its photos before any run (semi-blind): the model reads 0.32
 of it, its single-stick compression diagonals buckling, and spreads 0.088 from seed to
-seed against the builds' 0.101: its scatter right, its level a third. None is a blind validation (A's rebuild and B's putty stand-in were set with
+seed against the builds' 0.101: its scatter right, its level a third. A fifth, E (Boon's
+Short Howe, the same builder: three bridges, 68.8 kg, CoV 0.19), was rebuilt the same way
+in round 29, when the placeholder strengths of the sticks and the glue were raised from
+published coupon tests (`validation/literature/`; E 13 GPa, f_t 70, f_c 45, tau_g 3.0
+MPa, still assumed): on single seeds at fine E reads 0.35-0.61 of its test (0.29-0.49 with
+the values before) and D 0.47-0.54 (0.37); the figures above are round 27's, with the
+values before (`validation/README.md` §3.22). None is a blind validation (A's rebuild and B's putty stand-in were set with
 their comparisons; C chose the end-grain law, so its place is no evidence for it). Only C
 fails where its test did (3 of 9 runs, at a vertical's foot on the bottom chord); A's lateral drift and
 B's diagonal buckling at its butt joints are mechanisms the model cannot form. Small trusses, outside the range of a team's bridge: they inform
@@ -489,7 +500,8 @@ print(crush.model_dump_json(indent=2))
 ## Limits to tell the designer about
 
 Read [ASSUMPTIONS-SIM.md](ASSUMPTIONS-SIM.md). In short: material values are placeholders
-until measured, and the model is verified (the equations are solved right) but not yet
+until measured (since round 29 set from published coupon tests of other teams' craft
+sticks, which the model's coupons had read at about half), and the model is verified (the equations are solved right) but not yet
 validated against a physical crush test, so give F_u with its uncertainty and lean on
 design comparisons; glue lines cover the whole touching area, joint to joint they vary in
 strength and in stiffness alike, and they creep (in physical test time), unless a

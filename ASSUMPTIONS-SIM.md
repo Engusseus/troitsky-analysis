@@ -983,10 +983,11 @@ where the constant-strain element begins to stiffen again past the plateau.
 **Plates in out-of-plane shear** (since round 28; `plate.shear_deformable` 0 gives round
 27's Kirchhoff element back, bit for bit). A stick plate is soft in transverse shear: a
 ply lying across the bending direction shears in rolling shear (`wood.G_rolling_MPa`,
-150 MPa against E_L 10.5 GPa) and the pressed glue lines between plies slip
+150 MPa against E_L 13 GPa) and the pressed glue lines between plies slip
 (`glue.lamination_K_s_N_per_mm3`), so a 6 mm 0/90/0 deck spanning 60 mm between
-stringers shears about half as much as it bends (ratio 12 D / (H L^2) = 0.51 in
-3-point bending), and the Kirchhoff element (DKT) was that much too stiff under the
+stringers shears about 0.6 as much as it bends (ratio 12 D / (H L^2) = 0.60 in
+3-point bending; 0.51 with round 28's 10.5 GPa), and the Kirchhoff element (DKT) was
+that much too stiff under the
 loading plate. The plate element is now the discrete Kirchhoff-Mindlin triangle (DKMT,
 Katili 1993, Int. J. Numer. Meth. Engng 36:1859; `shell.py`): the rotations are linear
 plus a quadratic bubble of the tangential rotation on each side, and each side is an

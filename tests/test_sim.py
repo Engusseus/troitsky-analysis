@@ -880,15 +880,20 @@ def test_bridge_calibration_recovers_known_factors(tmp_path):
                box("Pier R", (540, 0, -40), (550, 150, 40)),
                box("Beam", (-550, 150, -25), (550, 179.4, 25))], tmp_path / "beam.stl",
               names=True)  # named, so the overrides below apply (no butt joints)
-    # the 10 GPa of the material file (the craft-stick placeholder off): at 7.1 GPa x 0.8
-    # this beam reaches the 50 mm deflection limit about when it breaks, and a fit of
-    # the strength would have nothing to go by
+    # the beam's own sticks, 10 GPa and the strengths shipped until round 28 (the
+    # craft-stick placeholder off): at 7.1 GPa x 0.8 this beam reaches the 50 mm
+    # deflection limit about when it breaks, and a fit of the strength would have nothing
+    # to go by; so it has with round 29's placeholders (f_c x1.5 on E x1.3: the limit
+    # comes first and the strength factor reads 0.948)
+    own = {"wood.E_placeholder_MPa": 0, "material.E_MPa": 10000.0, "material.G_MPa": 625.0,
+           "material.f_t_MPa": 40.0, "material.f_c_MPa": 30.0,
+           "material.glue.tau_g_MPa": 2.0}
     ov = {"bodies": {"Pier*": {"kind": "block"},
                      "Beam": {"layup": "14-ply UD", "butt_stagger_mm": 0}},
-          "params": {"wood.E_placeholder_MPa": 0}}
+          "params": dict(own)}
     true = json.loads(json.dumps(ov))
-    true["params"] = {"wood.E_placeholder_MPa": 0} | {k: v * 0.8 for k, v in (
-        ("material.E_MPa", MAT.E_MPa.value), ("material.G_MPa", MAT.G_MPa.value),
+    true["params"] = own | {k: v * 0.8 for k, v in (
+        ("material.E_MPa", own["material.E_MPa"]), ("material.G_MPa", own["material.G_MPa"]),
         ("wood.E_T_MPa", SP["wood.E_T_MPa"]), ("glue.K_n_N_per_mm3", SP["glue.K_n_N_per_mm3"]),
         ("glue.K_s_N_per_mm3", SP["glue.K_s_N_per_mm3"]))}
     rep, _ = study.crush(tmp_path / "beam.stl", true, seed=None, fidelity="quick",
@@ -926,6 +931,12 @@ def test_agent_loop_through_mcp(tmp_path):
     write_stl([box("Pier L", (-550, 0, -40), (-540, 150, 40)),
                box("Pier R", (540, 0, -40), (550, 150, 40)),
                box("Beam", (-550, 150, -25), (550, 192, 25))], cad)  # breaks < 50 mm
+    # ... with the sticks it was sized for, the placeholders until round 28: with round
+    # 29's (f_c x1.5 on E x1.3) it reaches the 50 mm deflection limit unbroken, and a
+    # stronger section then changes nothing (+1.5 %)
+    own = {"wood.E_placeholder_MPa": 10500.0, "material.f_t_MPa": 40.0,
+           "material.f_c_MPa": 30.0, "material.glue.tau_g_MPa": 2.0,
+           "scatter.strength_cov": 0.18}
     srv = build_server()
 
     def call(tool, **kw):
@@ -939,7 +950,8 @@ def test_agent_loop_through_mcp(tmp_path):
     # them, and where each body is, from the full inspect report)
     bodies = {b["name"]: ({"layup": "20-ply UD", "butt_stagger_mm": 0} if b["kind"] == "bar"
                           else {"kind": "block"}) for b in ins["bodies"]}
-    ov = {"bodies": bodies, "acknowledge": ["material:*", "rule:*", "weak_joints"]}
+    ov = {"bodies": bodies, "acknowledge": ["material:*", "rule:*", "weak_joints"],
+          "params": own}
     ov_yaml = yaml.safe_dump(ov)
     ins2 = call("inspect_bridge", cad_path=str(cad), overrides_yaml=ov_yaml, strict=True)
     assert not [q for q in ins2["questions"] if q["severity"] == "important"], \
@@ -1961,7 +1973,10 @@ def test_linear_screen_matches_beam_theory(tmp_path):
     """screen (seconds, linear): a laminated beam on two piers under the plate has the
     stiffness of beam theory with the plate bearing at its two edges (the contacts are
     compression only), and its extreme fibre reaches f_c, then f_t, at the loads beam
-    theory gives; the CLI prints the report as JSON."""
+    theory gives; the CLI prints the report as JSON. The model is a little softer than
+    beam theory's beam on rigid supports, by a share that grows with the stick modulus
+    (2.1 % at 10.5 GPa, 3.1 % at 13: what holds the beam does not stiffen with it; the
+    contacts' own stiffness x100 takes 0.5 % of it back), so within 4 %."""
     from typer.testing import CliRunner
 
     from bridgesim.cad.synthetic import box
@@ -1990,11 +2005,15 @@ def test_linear_screen_matches_beam_theory(tmp_path):
                                         SP["glue.lamination_K_s_N_per_mm3"], T)
     d = 0.5 * a**2 * (3 * Ls - 4 * a) / (6 * E * I) * 2 / 2 \
         + 0.5 * a / (5 / 6 * G_eff * 50 * T)
-    assert rep.stiffness_kgf_per_mm == pytest.approx(1 / d / 9.80665, rel=0.03)
+    assert rep.stiffness_kgf_per_mm == pytest.approx(1 / d / 9.80665, rel=0.04)
+    assert rep.stiffness_kgf_per_mm < 1 / d / 9.80665
     lim = {lm.mode: lm.load_kgf for lm in rep.limits}
     for mode, f in (("compression", MAT.f_c_MPa.value), ("tension", MAT.f_t_MPa.value)):
         assert lim[mode] == pytest.approx(f * S / (0.5 * a) / 9.80665, rel=0.03)
-    assert rep.first_limit.startswith("compression") and rep.wall_s < 30
+    # the fibres reach f_c before f_t; with round 29's sticks (f_c 45 MPa) the beam's
+    # bearing on its 2 mm knife edges, across the grain, comes before either
+    assert lim["compression"] < lim["tension"] and rep.wall_s < 30
+    assert rep.first_limit.startswith(("compression", "bearing"))
     assert [lm.utilisation for lm in rep.limits] == sorted(
         (lm.utilisation for lm in rep.limits), reverse=True)
     import yaml
@@ -3599,7 +3618,11 @@ def test_large_hand_made_laps_are_weaker_on_average():
     tau_g, a gusset lap 6.6x as large about 0.83 of it at m = 10; a smaller lap is not
     stronger than the coupon, and the law is not carried past glue.size_cap_mm2 (3000:
     pressed crossings of 1600-29,000 mm^2 showed no size effect, Flaig & Blass 2013);
-    the simulated coupon still reproduces tau_g."""
+    the simulated coupon still reproduces tau_g, within 5 %: at 3.0 MPa it reads 2.86
+    (2.002 at the 2.0 MPa of the placeholders until round 28), since the peel at the
+    lap's ends, 0.66 of the glue's peak shear, is then capped by the wood across its
+    grain (wood.f_t90_MPa 1.5 MPa: 2.06 against 1.37 before) and the lap lets go a
+    little earlier, as the stronger published laps did in the wood."""
     from bridgesim.sim.idealize import lap_size_factor
 
     assert SP["glue.weibull_m"] == 10.0 and SP["glue.size_cap_mm2"] == 3000.0
@@ -3613,7 +3636,8 @@ def test_large_hand_made_laps_are_weaker_on_average():
 
     rep = study.lab()
     lap = next(t for t in rep.tests if "lap" in t["test"])
-    assert lap["tau_avg_MPa"] == pytest.approx(MAT.glue.tau_g_MPa.value, rel=0.03)
+    assert lap["tau_avg_MPa"] == pytest.approx(MAT.glue.tau_g_MPa.value, rel=0.05)
+    assert lap["tau_avg_MPa"] <= MAT.glue.tau_g_MPa.value * 1.005
 
 
 
