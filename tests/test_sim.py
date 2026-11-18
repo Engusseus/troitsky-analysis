@@ -7357,13 +7357,17 @@ def test_uniform_strips_are_as_strong_with_the_nonlocal_onset():
     raisers: 74.9 / 62.6 / 59.4 N locally, 93.1 / 84.1 / 81.8 nonlocal, its average
     across-grain strain lower than a free strip's.)"""
     pytest.importorskip("numba")
-    ply = Ply.from_material(MAT, SP)
+    # the strips' own material, f_t 40 and E_L 10000 as the figures above (the placeholders
+    # until round 28: _r28_inputs), not the YAML's
+    mat, _ = _r28_inputs()
+    ply = Ply.from_material(mat, SP)
     s45 = 2 * ply.f_t90 / ply.E_T / (1 / ply.E_T - ply.nu_LT / ply.E_L)
     assert s45 * 10 * 2 == pytest.approx(61.07, abs=0.05)
     for ang, rollers, want in ((0.0, False, 760.0), (45.0, True, 0.975 * s45 * 20)):
         for h in (5.0, 2.5, 1.25):
             pk = [lab.shell_strip_tension(h, angles=(ang,), rollers=rollers,
-                                          sim_params=_sp_nl(on)).peak for on in (0.0, 1.0)]
+                                          sim_params=_sp_nl(on), material=mat).peak
+                  for on in (0.0, 1.0)]
             assert pk[1] == pytest.approx(pk[0], rel=0.05), (ang, h)
             assert pk[1] == pytest.approx(want, rel=0.04), (ang, h)
 
@@ -7379,10 +7383,13 @@ def test_a_notched_strip_dissipates_the_fracture_energy_with_the_nonlocal_onset(
     until then, soften from the stress they hold: the peak 1.07-1.09 x the net section
     (local 0.96)."""
     pytest.importorskip("numba")
+    # the strip's own material, f_t 40 as the figures above (the placeholders until round
+    # 28: _r28_inputs), not the YAML's
+    mat, _ = _r28_inputs()
     peaks = []
     for h in (2.5, 1.25):
         r = lab.shell_strip_tension(h, angles=(0.0,), weak=1.0, notch=5.0, max_disp=2.0,
-                                    sim_params=_sp_nl(1.0))
+                                    sim_params=_sp_nl(1.0), material=mat)
         work = float(np.trapezoid(r.force, r.disp))
         assert work == pytest.approx(80.0, rel=0.1), h
         assert 400.0 < r.peak < 1.12 * 400.0, h
