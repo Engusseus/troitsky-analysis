@@ -3047,8 +3047,9 @@ PUBLISHED_CHECK = (
     "held), all but B low: small trusses outside a team's bridge's range, so a judgement, "
     "not a correction (validation README 3.14). These are round 27's, with the placeholders "
     "before round 29 raised the sticks' and the glue's strengths from published coupons: "
-    "with them D reads 0.47-0.54 and E (Boon's Short Howe, semi-blind) 0.35-0.61 of their "
-    "tests on single seeds (README 3.22); the published tests' montecarlo was not re-run")
+    "with them C reads 1.08 of its test's upper value on seed 0, D 0.47-0.54 and E (Boon's "
+    "Short Howe, semi-blind) 0.35-0.61 of their tests on single seeds (README 3.22); the "
+    "published tests' montecarlo was not re-run")
 # drawn partly from the stick modulus's draw (materials/simulation.yaml,
 # scatter.E_strength_corr: r = 0.6-0.8 between MOE and MOR, USDA Wood Handbook)
 WOOD_STRENGTHS = ("material.f_t_MPa", "material.f_c_MPa", "material.f_v_MPa",

@@ -432,7 +432,9 @@ Short Howe, the same builder: three bridges, 68.8 kg, CoV 0.19), was rebuilt the
 in round 29, when the placeholder strengths of the sticks and the glue were raised from
 published coupon tests (`validation/literature/`; E 13 GPa, f_t 70, f_c 45, tau_g 3.0
 MPa, still assumed): on single seeds at fine E reads 0.35-0.61 of its test (0.29-0.49 with
-the values before) and D 0.47-0.54 (0.37); the figures above are round 27's, with the
+the values before), D 0.47-0.54 (0.37) and C, on seed 0, 1.08 of its test's upper value
+(0.81), failing where the test did; B's putty bond and A's superglue keep their own values
+and read as before; the figures above are round 27's, with the
 values before (`validation/README.md` §3.22). None is a blind validation (A's rebuild and B's putty stand-in were set with
 their comparisons; C chose the end-grain law, so its place is no evidence for it). Only C
 fails where its test did (3 of 9 runs, at a vertical's foot on the bottom chord); A's lateral drift and

@@ -1,5 +1,5 @@
 {
- "_note": "F_u (kgf) of each benchmark case by round, the reference settings of that round (validation/README.md 3.x); null: not run. Bridge_v10 rounds 16-21 from the round reports (round 20 at one jack speed), the published tests' seed 0 at fine from round 22. Round 28 was not run on Bridge_v10 (its part file is not in the repository).",
+ "_note": "F_u (kgf) of each benchmark case by round, the reference settings of that round (validation/README.md 3.x); null: not run. Bridge_v10 rounds 16-21 from the round reports (round 20 at one jack speed), the published tests' seed 0 at fine from round 22. Round 28 was not run on Bridge_v10 (its part file is not in the repository). Round 29 raised the placeholder strengths of the sticks and the glue from published coupon tests (validation/README.md 3.22): its moves are theirs; Bridge_v10 again not run. published_E_fine's 28 is round 28's placeholders on round 29's code (the case was added in round 29).",
  "bridge_v10_s0_standard": {
   "16": 2154,
   "17": 2457,
@@ -28,31 +28,41 @@
   "25": 44.8,
   "26": 30.3,
   "27": 30.3,
-  "28": 26.9
+  "28": 26.9,
+  "29": 46.25
  },
  "truss10_standard": {
   "25": 47.9,
   "26": 46.4,
   "27": 46.4,
-  "28": 45.8
+  "28": 45.8,
+  "29": 75.31
  },
  "published_A_fine": {
   "22": 33.5,
   "27": 36.7,
-  "28": 37.1
+  "28": 37.1,
+  "29": 37.11
  },
  "published_B_fine": {
   "22": 85.6,
   "27": 116.6,
-  "28": 114.4
+  "28": 114.4,
+  "29": 114.42
  },
  "published_C_fine": {
   "22": 28.2,
   "27": 37.4,
-  "28": 40.4
+  "28": 40.4,
+  "29": 53.99
  },
  "published_D_fine": {
   "27": 17.9,
-  "28": 16.7
+  "28": 16.7,
+  "29": 21.33
+ },
+ "published_E_fine": {
+  "28": 26.7,
+  "29": 37.15
  }
 }
