@@ -1,0 +1,36 @@
+specimen,sticks,glued,orientation,span_mm,peak_load_N,in_table_1,cure,failure_observed,source,notes
+1F-1,1,n/a,flat,100,29,yes,n/a,"broke at mid-span; 2.2 cm deflection at failure for the test of Fig. 3-4","edu_14235 section 1.3 p. 3; Table 1 p. 13","also in ../stick_bending.csv (read by lab and calibrate)"
+1F-2,1,n/a,flat,100,50,yes,n/a,as 1F-1,"edu_14235 section 1.3 p. 3; Table 1 p. 13",
+1F-3,1,n/a,flat,100,32,yes,n/a,as 1F-1,"edu_14235 section 1.3 p. 3; Table 1 p. 13",
+1E-1,1,n/a,edge,100,79,yes,n/a,"'le bâtonnet déverse avant que l'on puisse aller au bout de l'essai' (lateral-torsional buckling before the end of the test)","edu_14235 section 2 p. 4; Table 1 p. 13",
+1E-2,1,n/a,edge,100,81,yes,n/a,as 1E-1,"edu_14235 section 2 p. 4; Table 1 p. 13",
+1E-3,1,n/a,edge,100,81,yes,n/a,as 1E-1,"edu_14235 section 2 p. 4; Table 1 p. 13",
+2UF-1,2,no,flat,100,66,yes,n/a,not described,"edu_14235 section 3 p. 5; Table 1 p. 13","two sticks laid on each other, not glued"
+2UF-2,2,no,flat,100,65,yes,n/a,not described,"edu_14235 section 3 p. 5; Table 1 p. 13",
+2UF-3,2,no,flat,100,65,yes,n/a,not described,"edu_14235 section 3 p. 5; Table 1 p. 13",
+2UE-1,2,no,edge,100,165,yes,n/a,"'déversent avant que l'on puisse aller au bout de l'essai, souvent non simultanément'","edu_14235 section 4 pp. 5-6; Table 1 p. 13","Fig. 10, this series' example curve, is captioned 'axe faible' (a slip of the source)"
+2UE-2,2,no,edge,100,132,yes,n/a,as 2UE-1,"edu_14235 section 4 pp. 5-6; Table 1 p. 13",
+2UE-3,2,no,edge,100,184,yes,n/a,as 2UE-1,"edu_14235 section 4 pp. 5-6; Table 1 p. 13",
+2GF-1,2,yes,flat,100,149,yes,21 days,not described for these three,"edu_14235 section 5.2 p. 8; Table 1 p. 13","glue not named in the source"
+2GF-2,2,yes,flat,100,156,yes,21 days,not described for these three,"edu_14235 section 5.2 p. 8; Table 1 p. 13","Fig. 15, the example curve, peaks at about 156 N (read from the figure)"
+2GF-3,2,yes,flat,100,113,yes,21 days,not described for these three,"edu_14235 section 5.2 p. 8; Table 1 p. 13",
+2GF-x50min,2,yes,flat,100,127,no,50 min,not described,"edu_14235 section 5.1 p. 6","left out of Table 1: glued 50 minutes before the test ('recommandation minimale du fournisseur')"
+2GF-xstick,2,yes,flat,100,106,no,21 days,"the faulty stick broke away from the loading point (Fig. 11)","edu_14235 section 5.1 pp. 6-7","left out of Table 1: one stick had a defect ('bois non homogène')"
+2GF-xglue,2,yes,flat,100,81,no,21 days,"the two sticks slipped at about 74 N (a jump in the curve), then broke at 81 N (Fig. 12-13)","edu_14235 section 5.1 p. 7","left out of Table 1: the bowed sticks were not glued over the whole face"
+2GE-1,2,yes,edge,100,231,yes,21 days,"'il y a déversement avant rupture' (lateral-torsional buckling before failure)","edu_14235 section 6 p. 8; Table 1 p. 13",
+2GE-2,2,yes,edge,100,222,yes,21 days,as 2GE-1,"edu_14235 section 6 p. 8; Table 1 p. 13",
+2GE-3,2,yes,edge,100,210,yes,21 days,as 2GE-1,"edu_14235 section 6 p. 8; Table 1 p. 13",
+3UF-1,3,no,flat,100,109,yes,n/a,not described,"edu_14235 section 7 p. 9; Table 1 p. 13","three sticks laid on each other, not glued"
+3UF-2,3,no,flat,100,100,yes,n/a,not described,"edu_14235 section 7 p. 9; Table 1 p. 13",
+3UF-3,3,no,flat,100,113,yes,n/a,not described,"edu_14235 section 7 p. 9; Table 1 p. 13",
+3UE-1,3,no,edge,100,228,yes,n/a,"'déversent avant que l'on puisse aller au bout de l'essai, pas nécessairement simultanément'","edu_14235 section 8 p. 10; Table 1 p. 13",
+3UE-2,3,no,edge,100,156,yes,n/a,as 3UE-1,"edu_14235 section 8 p. 10; Table 1 p. 13",
+3UE-3,3,no,edge,100,130,yes,n/a,as 3UE-1,"edu_14235 section 8 p. 10; Table 1 p. 13",
+3UE-4,3,no,edge,100,241,no,n/a,as 3UE-1,"edu_14235 section 8 p. 10","the text lists four results (228, 156, 130 and 241 N); Table 1 lists the first three only"
+3GF-1,3,yes,flat,100,256,yes,7 days,"'matriçage au point d'appui du vérin' (the wood dented under the loading nose); the sticks stay together when well glued; Fig. 22: folded at mid-span, the stick on the tension face broken across","edu_14235 section 9 pp. 11-12; Table 1 p. 13",
+3GF-2,3,yes,flat,100,221,yes,7 days,as 3GF-1,"edu_14235 section 9 pp. 11-12; Table 1 p. 13",
+3GF-3,3,yes,flat,100,233,yes,7 days,as 3GF-1,"edu_14235 section 9 pp. 11-12; Table 1 p. 13",
+3GF-4,3,yes,flat,100,267,yes,7 days,as 3GF-1,"edu_14235 section 9 pp. 11-12; Table 1 p. 13",
+3GE-1,3,yes,edge,100,365,yes,7 days,"'fort matriçage au point d'appui du vérin' (the wood deeply dented under the loading nose); 'Il n'y a pas de déversement'; Fig. 25: folded at mid-span, the tension edge splintered across the three sticks","edu_14235 section 10 pp. 12-13; Table 1 p. 13",
+3GE-2,3,yes,edge,100,379,yes,7 days,as 3GE-1,"edu_14235 section 10 pp. 12-13; Table 1 p. 13",
+3GE-3,3,yes,edge,100,395,yes,7 days,as 3GE-1,"edu_14235 section 10 pp. 12-13; Table 1 p. 13","Fig. 26, the example curve (peak about 395 N), is captioned 'axe faible' (a slip of the source)"

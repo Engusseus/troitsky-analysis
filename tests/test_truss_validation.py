@@ -17,7 +17,17 @@ import math
 import pytest
 
 from bridgesim.analysis import AnalysisResult, analyze
-from bridgesim.schema import Bridge, Deck, Material, Member, Node, PlateLoad, Section, Supports
+from bridgesim.schema import (
+    Bridge,
+    Deck,
+    Material,
+    Member,
+    Node,
+    PlateLoad,
+    Prop,
+    Section,
+    Supports,
+)
 
 SPAN = 1200.0
 N_PANELS = 6
@@ -100,8 +110,16 @@ def expected_forces() -> dict[str, float]:
 
 
 @pytest.fixture(scope="module")
-def truss_result(material: Material) -> AnalysisResult:
-    return analyze(warren_truss(), material)
+def mat_e10k(material: Material) -> Material:
+    """The bundled material with E = 10000 MPa (G = E/16 = 625), the hand calculation's,
+    independent of the YAML's placeholders."""
+    return material.model_copy(update={"E_MPa": Prop(value=10000.0),
+                                       "G_MPa": Prop(value=625.0)})
+
+
+@pytest.fixture(scope="module")
+def truss_result(mat_e10k: Material) -> AnalysisResult:
+    return analyze(warren_truss(), mat_e10k)
 
 
 def test_hand_values_are_as_derived() -> None:
@@ -167,7 +185,7 @@ def test_reactions(truss_result: AnalysisResult) -> None:
 
 
 def test_midspan_deflection_by_unit_load_method(truss_result: AnalysisResult,
-                                                material: Material) -> None:
+                                                mat_e10k: Material) -> None:
     """Virtual work (unit-load method) with the hand member forces N_i:
 
         delta = sum_i N_i n_i L_i / (E A),   n_i = N_i / P
@@ -177,7 +195,7 @@ def test_midspan_deflection_by_unit_load_method(truss_result: AnalysisResult,
         delta = 2.6635e9 / (P E A = 1000 * 10000 * 100) = 2.664 mm
     Tolerance 1 %.
     """
-    E = material.E_MPa.value
+    E = mat_e10k.E_MPa.value
     A = SIDE * SIDE
     exp = expected_forces()
     L_diag = math.hypot(PANEL / 2, H)

@@ -1685,3 +1685,148 @@ section, holes 7-11 % above the average-stress criterion) and has no bound at a 
 corner; the wood's creep is linear in stress and its time laws do not reach the wood's
 bearing strength across the grain; `screen` reads nominal strengths at coupon time and
 local plate limits.
+
+### 3.22 Round 29: published coupons, a fifth published test, a team's Rev Q
+
+Not a review round: a search for published tests of craft-stick structures with numbers,
+and what they change.
+
+* **Published coupon tests** (`validation/literature/`, its README has every source,
+  page and caveat): ENS Paris-Saclay's teaching resources (Eduscol) give 76 sticks pulled
+  to failure (mean 1389 N, CoV 0.245: 71.6 MPa on the 9.6 x 2.02 mm mean section of
+  another batch), single sticks and glued stacks of 2 and 3 sticks bent on a 100 mm span,
+  flat and on edge, one lap whose glue line failed (1700 N on a 38 or 50 mm overlap: the
+  text and the figure disagree), buckled sticks, and six teams' own means; Fredette &
+  Kennedy (ASEE 2022) give 10 sticks in tension (84.8 MPa, 8.4 GPa) and 24 laps (3.41 MPa
+  unsanded, 5.40 sanded). `validation/literature_coupons.py` simulates the same coupons.
+  With the placeholders shipped until round 28 the model read them at about half:
+
+  | Coupon | Measured | Round 28's values | Round 29's |
+  |---|---|---|---|
+  | 76 sticks in tension | 1389 N | 0.56 | 0.98 |
+  | single stick bent flat (3) | 37 N | 0.37 | 0.59 |
+  | glued lap, read as 38 / 50 mm | 1700 N | 0.41 / 0.52 | 0.59 / 0.76 |
+  | 2 sticks glued, flat (3) | 139 N | 0.39 (0.41) | 0.61 |
+  | 3 sticks glued, flat (4) | 244 N | 0.50 (0.52) | 0.79 |
+  | 2 sticks glued, on edge (3) | 221 N | 0.58 (0.64) | 0.92 |
+  | 3 sticks glued, on edge (3) | 380 N | 0.51 (0.54) | 0.80 |
+  | pin-ended stick, 109 / 114 mm | 110 / 90 N | 0.50 / 0.56 | 0.63 / 0.70 |
+
+  (simulated / measured mean; the bent coupons by the lab's fibre beam, in brackets the
+  same coupon through the whole crush pipeline, seed -1, round 28's values only; a single
+  stick cannot be crushed by the pipeline: the nose topples off it and its peak is under
+  the 50 N the failure call needs.) The simulated stacks fail by their compression face
+  crushing at f_c; the tests' photos show the tension face broken across and the wood
+  dented under the loading nose.
+* **Placeholders from them** (still `source: assumed`: other teams' sticks, not yours):
+  E 10 (10.5 in the crush) -> 13 GPa, G E/16, f_t 40 -> 70 MPa, f_c 30 -> 45, f_b 50 -> 80,
+  tau_g 2.0 -> 3.0 MPa, `scatter.strength_cov` 0.18 -> 0.22, and montecarlo's priors
+  narrowed where there is now data (E and f_t 0.30 -> 0.25, tau_g 0.50 -> 0.45: 8.6-19.6
+  GPa, 46-106 MPa, 1.4-6.3 MPa at 90 %). Why not what `calibrate` fits to the ENS folder
+  (f_t 71.6, f_c 81, f_b 142, tau_g 6.2, CoV 0.31): one brand of sticks and one lap; f_c
+  above f_t comes from fitting single sticks that bent 22 mm before they broke; nothing
+  measures f_c on craft sticks (45 is toward the low side of what the glued stacks ask
+  for, 45-60); tau_g 3.0 sits below the unsanded laps, whose glue and size are not
+  stated. The simulated 20 x 10 mm lap now reads 0.954 of tau_g (2.86 MPa): at 3.0 the
+  peel at its ends is capped by the wood across the grain (`wood.f_t90_MPa`), as the
+  stronger published laps broke in the wood; `glue.tau_peak_over_avg` was not refitted.
+  What a ratio to a placeholder follows moved with it: an end-grain glue line pulled
+  apart holds 7 MPa (0.1 f_t; 4), a plate's fibre-tension critical length is 6.8 mm
+  (16.7).
+* **A fifth published test, semi-blind** (`published_tests.py` case E, its geometry
+  committed before any run, 5fb33a7): Boon's "Short Howe Truss Popsicle Bridge"
+  (garrettsbridges.com), the builder, jigs and glue of case D: 13.5 in long, sticks 4.5 x
+  3/8 x 1/16 in, three sets of three bridges. The rebuild is Set 2 (57 sticks stated, 56 counted in
+  the photo, 52 placed), which held 61.2, 61.2 and 83.9 kg
+  (mean 68.8, CoV 0.19; first failures at 61.2, 39.9 and 59.9 kg); Set 1 (49 sticks)
+  41.3-54.4 kg and Set 3 (Set 1 with sanded faces) 64.4-71.7 kg are in the reference.
+  At fine, seeds 0-4:
+
+  | | Test | Round 28's values | Round 29's |
+  |---|---|---|---|
+  | E (seeds 0-4) | 68.8 kgf | 26.7, 26.2, 19.7, 33.7, 32.0 (0.29-0.49) | 37.2, 36.1, 24.0, 42.1, 42.0 (0.35-0.61) |
+  | D (seeds 0-2) | 45.5 kgf | 16.7 (seed 0: 0.37) | 21.3, 24.5, 23.0 (0.47-0.54) |
+
+  E fails in the top chord and its joints to the end posts and in the top bracing, and
+  with round 29's values also in a vertical, a diagonal and a bottom-chord joint. Every run of E with round 29's values is flagged not
+  quasi-static (kinetic energy 0.08-0.16 of the jack's work; four of five with round
+  28's, 0.14-5.2): read E's range as indicative until `montecarlo` has run it at half
+  speed. The model still reads Boon's trusses at about half, up from a good third.
+* **The benchmark** (seed 0, `validation/benchmark.py`; a case that moves more than 10 %
+  says why):
+
+  | Case | Test | Round 28 | Round 29 | Why |
+  |---|---|---|---|---|
+  | 6 mm truss, fine | - | 26.9 | 46.3 | the placeholders (floor beam 1 splits; flagged not trustworthy) |
+  | 10 mm truss, standard | - | 45.8 | 75.3 | the placeholders (a diagonal's lap on the top chord) |
+  | A, fine | 140-160 | 37.1 | 37.1 | its own glue value (cyanoacrylate, 8 MPa) governs |
+  | B, fine | 72.4 | 114.4 | 114.4 | its putty bond keeps its 2.0 MPa (below) |
+  | C, fine | 42.9-50.0 | 40.4 | 54.0 | white glue 2.0 -> 3.0 MPa; a vertical's foot on the bottom chord, where the test failed |
+  | D, fine | 45.5 | 16.7 | 21.3 | the placeholders |
+  | E, fine | 68.8 | 26.7 | 37.2 | the placeholders |
+
+  B's joints are epoxy putty on wood, and their strength was the white-glue placeholder
+  (x5 at the diagonals' ends, a stand-in): raised with it, B read 161.6 kgf, 2.23 of its
+  test, with no data about putty behind the rise. The case now sets its 2.0 MPa itself
+  and reads as before, so the sticks' strengths do not reach B's result at all: its
+  putty joints set it. C went from 6 % under its tests' range to 8 % over it. Bridge_v10
+  was not run (no part file).
+* **A team's Rev Q** (Bridge_v12: piers, a centre node with a floor beam, tenons and
+  node blocks; its part file is not in the repository): at standard, seeds 1, 2 and 3
+  came back as a bridge that collapses under its own weight, F_u 0 and trustworthy (its
+  drawing quotes 2169 and 2021 kgf from round 27's code). Two faults:
+  - *contact*: the inner elements of a member have open ends that reach on past them (no
+    face between two elements of one member), by the section's radius. The floor beam at
+    the centre node is 200 x 30 mm and 162 mm long, its radius 101 mm, its elements 20
+    mm: its inner elements reached 80 mm past the member's real ends, and the node
+    blocks, gusset plates and stubs glued there stood inside its box at the start (1232
+    points allowed up to 15 mm of penetration, each then pushed with the full penalty as
+    soon as it moved). The contact forces at that node rose to 250 N while the 76 N
+    bridge settled, then ran away. The reach is now no farther than the member goes on
+    from that end (26 points allowed; `tests/test_contact_ends.py`). A slender member is
+    unchanged: case E's five runs are the same to the last digit.
+  - *the reading*: the part thrown off flew on at ~390 m/s, below the 1 km/s at which a
+    step is called diverged, so the run was read as a collapse. While the bridge settles
+    under its own weight, a node faster than 3x free fall from its top now restarts the
+    run with a smaller time step, as any divergence does
+    (`tests/test_settle_guard.py`).
+
+  With both, at standard (`ab -n 3`, with `bridge_v10.overrides.yaml`, which applies to
+  it under `--strict`): round 28's values 2080, 1854
+  and 2219 kgf on seeds 1-3 (the drawing's 2021 on seed 1), round 29's 2167, 2078 and
+  2526: +10.0 % (90 % interval +1.3 to +18.7 %), the failure at the end posts' gusset
+  laps at the knee nodes on four of the six runs, and moved on two seeds. Sticks 1.5-1.75x as
+  strong and glue 1.5x as strong raise this bridge by a tenth: its laps and the bearing
+  at its knees also hang on values no published coupon touches (the glue's toughness,
+  the wood across the grain, rolling shear).
+
+Tests: 700 passed, 2 skipped (the two part files that are not in the repository) on
+the merged code. The new placeholders moved 26 tests: one pinned the shipped E; 20 were
+hand calculations that read the shipped material (Euler loads, beam deflections, strips
+of a stated strength, arrays of round 27's code): they now state their own values; five
+asserted a relation that hangs on the placeholders' proportions. Of those, more glue on
+the linear analysis's truss now raises F_u by 10 % to a top chord's buckling (16 %, to
+floor-beam bending, before); the screen is 3.1 % softer than beam theory at 13 GPa (2.1 %
+at 10.5; its contacts' own stiffness x100 takes back 0.5 %), and a beam's bearing on a
+knife edge comes before its fibres reach f_c; the lap coupon is within 5 % of tau_g
+(above); and the beams of the calibrate-bridge and agent-loop tests, sized to break
+before the 50 mm deflection limit, keep the sticks they were sized with (with round 29's
+they reach the limit unbroken).
+
+Not done, and why. **Nothing was measured on a team's own sticks**: the new values are
+other people's sticks and glue, and section 5's experiments stand. The published tests'
+Monte Carlo (section 3.14) was not re-run: `published_check` and
+`uncertainty.published_bias` (0.43) are round 27's and now too strong a correction (on single seeds C reads 1.08 of
+its test's upper value, D 0.47-0.54 and E 0.35-0.61), so `prediction_if_biased_kgf` overstates; the note
+says so. `uncertainty.model_cov` (0.40) was left. The fidelity table was not re-run, nor
+Bridge_v10 (no part file). The coupons through the whole crush pipeline were not re-run
+with round 29's values. The six ENS bridges and the Move Your Bridge 2.0 ones (50 cm,
+their loads published) could not be rebuilt: no dimensions are published. The licence of
+the Eduscol resources was not verified (only numbers are reproduced). Open points found
+on the way: why the contact's allowance ratchet let a few hundred pushed points run away
+rather than hold (the phantom overlaps are gone, the mechanism is not understood); a
+crush that ends at the deflection limit still offers a `strengthen` what-if (a stronger
+section changes nothing there), and `calibrate-bridge` fits a strength factor to such a
+test without saying it has little to go by (0.948 on a beam that never broke); the
+screen is 2-3 % softer than beam theory, more for a stiffer beam; Bridge_v12's right
+heel gusset splits between its plies at 126-147 kgf on seed 1 (a strict judge's reading).

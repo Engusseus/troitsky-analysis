@@ -12,8 +12,10 @@ diagonal pressing on its neighbour, a member that seats on a part it was drawn c
   frame's arm has its own per element) swept along its chord in the element's current
   frame (built as the beam kernel builds it); its ends are faces only where the member
   ends (an end shared with the next element of the same body is open, the box reaching
-  on past it, so a point near a joint between elements is pushed out through the
-  member's side, not along its axis). A shell element is a slab: its triangle times
+  on past it by the section's radius, no farther than the member itself goes on, so a
+  point near a joint between elements is pushed out through the member's side, not
+  along its axis, and a point beyond the member's end is outside it). A shell element is
+  a slab: its triangle times
   the plate's thickness, square-edged. Until round 27 a beam was a capsule of the radius
   of the circle with the section's area (a 21 x 47 mm chord 6 mm too slim one way and 7
   mm too fat the other) and a slab's edges were rounded by half its thickness (a 50 mm
@@ -90,7 +92,10 @@ class SelfContact:
     el_h: np.ndarray  # (ne, 2) half width (e2) and half depth (e3) of a beam's section
     el_c: np.ndarray  # (ne, 2) centre of a beam's section from its chord (e2, e3)
     el_q0: np.ndarray  # (ne, 3) a beam's e2 at the start (the frame's reference)
-    el_cap: np.ndarray  # (ne, 2) the beam's end at node i / j is the member's end
+    # (ne, 2) the beam's end at node i / j: 0 where the member ends (a face), else how
+    # far the element's box reaches past it, mm (as far as the member goes on, at most
+    # its section's radius)
+    el_cap: np.ndarray
     k: np.ndarray  # penalty per slave
     c: np.ndarray  # normal damping per slave
     mu: float  # friction between parts (contact.friction_parts)
@@ -316,8 +321,14 @@ def _gap(p, e, x, R, el_nodes, el_kind, el_r, el_h, el_c, el_q0, el_cap):
         s = r0 * a0 + r1 * a1 + r2 * a2
         yy = r0 * b0 + r1 * b1 + r2 * b2 - el_c[e, 0]
         zz = r0 * c0 + r1 * c1 + r2 * c2 - el_c[e, 1]
-        g, m0, m1, m2 = box_sdf(s - 0.5 * ll, yy, zz, 0.5 * ll, el_h[e, 0], el_h[e, 1],
-                                el_cap[e, 0], el_cap[e, 1], el_r[e])
+        # an open end reaches past the element by its own length (el_cap: as far as the
+        # member goes on, at most its section's radius): the box of the element and its
+        # two reaches, no end of it a face unless the member ends there
+        e0 = el_cap[e, 0]
+        e1 = el_cap[e, 1]
+        g, m0, m1, m2 = box_sdf(s - 0.5 * ll - 0.5 * (e1 - e0), yy, zz,
+                                0.5 * ll + 0.5 * (e0 + e1), el_h[e, 0], el_h[e, 1],
+                                e0 <= 0.0, e1 <= 0.0, 0.0)
         nx = m0 * a0 + m1 * b0 + m2 * c0
         ny = m0 * a1 + m1 * b1 + m2 * c1
         nz = m0 * a2 + m1 * b2 + m2 * c2
@@ -793,6 +804,57 @@ def _depths(m: Model, half: np.ndarray) -> np.ndarray:
     return out
 
 
+def _reaches(m: Model, r_b: np.ndarray) -> np.ndarray:
+    """How far each beam element's box reaches past its two ends (nb, 2), mm: 0 at an end
+    where the member ends (a face); at an end shared with another element of the same
+    body (no face: a point near the joint between elements is pushed out through the
+    member's side) the section's radius, but no farther than the member goes on from
+    there to its end. Until round 28 the radius alone: the inner elements of a member
+    wider than it is long (a 200 x 30 mm floor beam 162 mm long, 20 mm elements) reached
+    80 mm past its ends, and the parts glued beyond them (node blocks, gusset plates)
+    stood inside that box, hundreds of points pushed apart as soon as anything moved."""
+    import heapq
+
+    nb_ = len(m.b_i)
+    L = np.asarray(m.b_L0, float)
+    reach = np.zeros((nb_, 2))
+    by_body: dict[int, list[int]] = {}
+    for e in range(nb_):
+        by_body.setdefault(int(m.b_body[e]), []).append(e)
+    for els in by_body.values():
+        adj: dict[int, list[tuple[int, int]]] = {}
+        for e in els:
+            i, j = int(m.b_i[e]), int(m.b_j[e])
+            adj.setdefault(i, []).append((e, j))
+            adj.setdefault(j, []).append((e, i))
+        ends = {nd for nd, a in adj.items() if len(a) <= 1}
+        for e in els:
+            for side, nd in enumerate((int(m.b_i[e]), int(m.b_j[e]))):
+                if nd in ends:
+                    continue  # the member ends here: a face
+                # the way on from nd, not back through e, to the nearest end of the body
+                # (a closed frame has none: the radius)
+                far = math.inf
+                dist = {nd: 0.0}
+                heap = [(0.0, nd)]
+                while heap:
+                    d, u = heapq.heappop(heap)
+                    if d > dist.get(u, math.inf) or d >= r_b[e]:
+                        continue
+                    if u in ends:
+                        far = d
+                        break
+                    for e2, w in adj[u]:
+                        if e2 == e:
+                            continue
+                        d2 = d + L[e2]
+                        if d2 < dist.get(w, math.inf):
+                            dist[w] = d2
+                            heapq.heappush(heap, (d2, w))
+                reach[e, side] = max(min(float(r_b[e]), far), 1e-9)
+    return reach
+
+
 def setup(m: Model, x: np.ndarray, mass: np.ndarray, dt: float, k_nom: float = 2000.0
           ) -> SelfContact | None:
     """Slave points, master elements, and each point's start state: the bodies it is
@@ -819,18 +881,10 @@ def setup(m: Model, x: np.ndarray, mass: np.ndarray, dt: float, k_nom: float = 2
     el_h = np.r_[half, np.zeros((ns_, 2))] if ns_ else half.copy()
     el_c = np.r_[cen, np.zeros((ns_, 2))] if ns_ else cen.copy()
     el_q0 = np.zeros((nb_ + ns_, 3))
-    el_cap = np.ones((nb_ + ns_, 2), np.bool_)
+    el_cap = np.zeros((nb_ + ns_, 2))
     if nb_:
         el_q0[:nb_] = np.asarray(m.b_E0)[:, :, 1]
-        # an end shared with another element of the same body is not a face
-        deg: dict[tuple[int, int], int] = {}
-        for e in range(nb_):
-            for nd in (int(m.b_i[e]), int(m.b_j[e])):
-                deg[(nd, int(m.b_body[e]))] = deg.get((nd, int(m.b_body[e])), 0) + 1
-        for e in range(nb_):
-            bd = int(m.b_body[e])
-            el_cap[e, 0] = deg[(int(m.b_i[e]), bd)] <= 1
-            el_cap[e, 1] = deg[(int(m.b_j[e]), bd)] <= 1
+        el_cap[:nb_] = _reaches(m, r_b)
     # slaves: each member's section outline at each beam node (from its first element
     # there) and at each element's mid-point; shell nodes (half the thickness); block
     # corners

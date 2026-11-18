@@ -36,6 +36,7 @@ CASES = [
     ("published_B_fine", "B", "fine", 0),
     ("published_C_fine", "C", "fine", 0),
     ("published_D_fine", "D", "fine", 0),
+    ("published_E_fine", "E", "fine", 0),
 ]
 
 

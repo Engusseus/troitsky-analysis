@@ -21,6 +21,20 @@ C  Moraes, Freitas, Moraes, Freire Jr, Silva & Goncalves Filho (2019), "Procedim
    text also gives 0.421 kN for the rupture), broken at the bottom chord and the foot of
    a vertical.
 
+Two semi-blind cases, their geometry set from the builder's photos and figures before any
+run (no failure place published):
+D  Boon (2025), "Basic Warren Truss Popsicle Bridge (Short)", garrettsbridges.com: ten
+   jig-built bridges of 44 uncut sticks, Elmer's Glue-All, loaded on top: 37.7-53.6 kg.
+E  Boon (2024), "Short Howe Truss Popsicle Bridge", garrettsbridges.com: Howe, 13.5 x 4 x
+   3.5 in, node positions from the author's truss diagrams, members from his photo;
+   nine bridges in three sets of three, Elmer's Glue-All, a Pitsco bridge tester. By
+   stick count the photo, which this rebuilds, is Set 2's reinforced version (57 sticks):
+   61.2-83.9 kg peak (the reference); Set 1 (49 sticks, 41.3-54.4 kg) and Set 3 (Set 1
+   sanded) are stored beside it (see boon_howe_2024).
+Considered and not rebuilt (round 29): the six 50 cm deck models of ENS Paris-Saclay's
+"Move Your Bridge" (2019) and violet's 25 cm one: their reports give no dimensions of
+these models (height, panels, layers, width, supports, load block), only small photos.
+
 Geometry from the papers' drawings and photos (tags in the comments: S stated, D from a
 drawing, P from a photo, A assumed), as extracted for this repository (round 21). The
 loads were hung from a node or pressed on a bar, not on a 200 x 90 mm plate: a rigid
@@ -220,7 +234,12 @@ def silva_2026(width: float = 150.0):
         # the putty wraps round each diagonal's end (P): the end face glued to the lump
         # stands for that, x5 (its four sides, ~4 x 9 x 10 mm against the 85 mm^2 end)
         "glue": {"Diag* | Putty*": 5.0},
+        # every joint here is epoxy putty on wood, not white glue: the bond keeps the 2.0
+        # MPa the stand-in above was set with (the white-glue placeholder until round 28;
+        # with round 29's 3.0 the x5 would stand for 15 MPa, and B read 161.6 kgf, 2.23
+        # of its test, on seed 0 at fine)
         "params": {"material.E_MPa": 13000.0, "material.f_c_MPa": 31.5,
+                   "material.glue.tau_g_MPa": 2.0,
                    "material.density_kg_m3": 500.0,
                    # a load hung from the nodes: the softest loading there is (a crack
                    # lets the load drive on), the press stiffness's low end (round 25)
@@ -380,7 +399,249 @@ def boon_2025():
     return bodies, ov, ref
 
 
-CASES = {"A": lamberti_2025, "B": silva_2026, "C": moraes_2019, "D": boon_2025}
+def _round_stick_xy(x0: float, x1: float, rising: bool, length: float, width: float,
+                    y_lo: float, y_hi: float, bottom: float | None = None):
+    """(x, y) outline of a whole craft stick (semicircular ends of radius width / 2)
+    standing in the truss plane, its horizontal extent exactly x0..x1, rising to the right
+    if ``rising``: a web member laid whole between its neighbours, across the chords. Its
+    angle follows from (length - width) cos(angle) + width = x1 - x0. Centred on
+    y_lo..y_hi, or its lowest point at ``bottom``; clipped to y_lo..y_hi. The ends' arcs
+    have a corner at every 22.5 degrees, so no facet next to a neighbour's face lies
+    parallel to it."""
+    from shapely.geometry import Polygon
+    from shapely.geometry import box as sbox
+
+    r, a_len = width / 2, length - width
+    c = (x1 - x0 - width) / a_len
+    sn = float(np.sqrt(1.0 - c * c))
+    d = np.array([c, sn if rising else -sn])
+    yc = 0.5 * (y_lo + y_hi) if bottom is None else bottom + 0.5 * (a_len * sn + width)
+    m = np.array([0.5 * (x0 + x1), yc])
+    phi = float(np.degrees(np.arctan2(d[1], d[0])))
+    pts = []
+    for end, lo in ((m + d * a_len / 2, phi - 90), (m - d * a_len / 2, phi + 90)):
+        angs = [lo] + [22.5 * k for k in range(-16, 17) if lo < 22.5 * k < lo + 180]
+        for g in angs + [lo + 180]:
+            pts.append(end + r * np.array([np.cos(np.radians(g)), np.sin(np.radians(g))]))
+    poly = Polygon(pts).intersection(sbox(x0 - 1.0, y_lo, x1 + 1.0, y_hi))
+    return [tuple(v) for v in np.asarray(poly.exterior.coords)[:-1]]
+
+
+def _stick_plan(p, q, length: float, width: float):
+    """(x, z) outline of a stick of ``length`` x ``width`` lying flat, centred between
+    the plan points p and q."""
+    p, q = np.asarray(p, float), np.asarray(q, float)
+    c, d = 0.5 * (p + q), (q - p) / np.linalg.norm(q - p)
+    a, b = c - d * length / 2, c + d * length / 2
+    n = np.array([-d[1], d[0]]) * width / 2
+    return [tuple(a - n), tuple(b - n), tuple(b + n), tuple(a + n)]
+
+
+def _brace_plan(x0: float, x1: float, z0: float, z1: float, length: float, width: float):
+    """(x, z) outline of a whole flat stick laid from the line z = z0 to the line z = z1
+    (centred between them, its ends running past them) that fills x0..x1 exactly, its z0
+    end at x0: a lateral brace fitted between the sticks beside it. The stick's x extent
+    for a run D between the lines, (D length + |z1 - z0| width) / hypot(D, z1 - z0),
+    grows with D, so D is found by bisection."""
+    dz = abs(z1 - z0)
+    lo, hi = 0.0, x1 - x0
+    for _ in range(60):
+        D = 0.5 * (lo + hi)
+        if (D * length + dz * width) / np.hypot(D, dz) < x1 - x0:
+            lo = D
+        else:
+            hi = D
+    xa = 0.5 * (x0 + x1 - D)
+    return _stick_plan((xa, z0), (xa + D, z1), length, width)
+
+
+def boon_howe_2024():
+    """E: Boon, "Short Howe Truss Popsicle Bridge", garrettsbridges.com, last modified 1
+    Apr 2024 (https://garrettsbridges.com/photos/popsicle-bridges/short-howe-truss-
+    popsicle-bridge/), the same builder, jigs and glue as D. Stated (S): 13.5 in long, 4 in
+    high, 3.5 in wide; in 2024 nine bridges in three sets of three, Elmer's Glue-All, 48 h
+    of drying, the author's assembly jigs, tested on "the Pitsco Bridge tester machine";
+    first failure / peak in lb: Set 1 (the base design of the store's blueprints, 49
+    unmodified sticks) 120/120, 88/98, 91/91; Set 2 (57 sticks: "additional lateral
+    bracing and more sticks to reinforce the top chord") 135/135, 88/135, 132/185; Set 3
+    (Set 1 with the glued faces sanded flat) 158/158, 118/146, 142/142. A first failure is
+    "the first joint popped loose" (S: no other kind in any set); Set 2's were "a tension
+    member joint, mostly along the top chord near the bridge ends" (S); Set 1's and Set
+    3's places, and every peak's, are not given. A semi-blind case (round 29): geometry set
+    from the page's figures before any run, no crush made while setting it.
+
+    The truss (D: the page's three 'Average Peak Load' figures, the author's 2-D truss
+    diagrams of this bridge, drawn on a 1 in grid whose node 0 to node 5 spans the stated
+    13.5 in and whose height is the stated 4 in): six bottom nodes at 0, 2.5, 5.25, 8.25,
+    11, 13.5 in, four top nodes over the inner four, inclined end posts 0-6 and 5-9,
+    verticals 1-6, 2-7, 3-8, 4-9 and the diagonals 1-7, 4-8 (Howe) and 2-8 in the middle
+    panel; supports at nodes 0 and 5, the load at the top nodes 7 and 8. The chords lie
+    inside the stated 4 in, the stated 3.5 in over the web members' outer faces (as D; the
+    end posts' second sticks stand outside it, A). How each member is made (P: the page's
+    studio photo, Howe-Truss-Popsicle-Stick-Bridge.jpg): verticals and diagonals single
+    sticks, end posts two sticks face to face (a glue seam along each), the bottom chord
+    and the top chord two layers (two top edges seen; the bottom chord's outer layer butted
+    between nodes 1 and 2 and between 3 and 4, i.e. three full sticks), web members on the
+    chords' outer faces, the verticals running past the bottom chord (their lower ends
+    below it; A: flush with the top chord's top, the stick's extra 12.7 mm below), the
+    diagonals and end posts whole round-ended sticks lying across the chords' depth, a
+    diagonal's ends against the verticals beside it (P), so each is laid here whole between
+    its neighbours, 0.25 mm clear of them (A), its angle set by the gap (the end panels'
+    diagonals then span the chords' full depth, their tips trimmed by ~1 mm; the middle one
+    stops 2 mm short of each chord's edge), the end posts from the bridge's end (their feet
+    on its underside) to the verticals 1 and 4. Two sticks cannot share node 6 in one
+    layer: the verticals 1 and 4 stand beside the end posts' tops, their outer faces on the
+    nodes 6 and 9 (4.8 mm inside the diagram's node; P: V1 stands inside the end post's top
+    in the photo; A: where exactly). Where a layer's sticks lie when the photo does not
+    show it (A): the bottom chord's inner layer two sticks from 0.5 to 2.5 stick lengths
+    (as D's, the same builder's), each top-chord layer two uncut sticks centred on mid-span
+    (the page: 'unmodified' sticks; two of them span the 8.5 in between nodes 6 and 9 only
+    with their joint within 6 mm of mid-span; the photo seems to show one layer's end near
+    node 8 and a chord end beyond the end post's top, which two uncut sticks a layer cannot
+    do: how the end posts' tops lap on the top chord is not resolved by the photo, here
+    over 6 mm of the chord's ends). The middle diagonal runs from node 7 to node 3 on the
+    near side of the photo (N, P) and from node 2 to node 8 on the far side (F, A: both
+    sides built alike on the blueprint and turned to face each other, which puts it the
+    other way, as the X in the 2011 test photo's middle panel shows). Floor: cross sticks
+    lying on the bottom chords at the two ends and beside the verticals 2 and 3 on their
+    end sides (P; 3 and 4 mm clear, A), under the optional card deck, which was not on the
+    test bridges (the same builder's D page: "did not have the optional cardstock roadbed";
+    here A). Top (P): a cross stick on the chords at each top node and a Warren of four
+    flat sticks between them (far node 6 - near node 7 - far mid-span - near node 8 - far
+    node 9), all on one level, each whole stick fitted beside the next (A: 1.5 mm apart).
+    The end portals' braces (two crossed sticks in each, P) are left out (A, as D's).
+    Sticks 4.5 x 3/8 x 1/16 in (S: the builder's store page for this bridge's plans,
+    gb_howe.html: "Standard Popsicle Sticks (4.5 in long, 3/8 in wide, 1/16 in thick)"; D
+    assumed 2.0 mm).
+
+    52 sticks placed (per side: bottom chord 3 + 2, top chord 2 + 2, end posts 2 x 2,
+    verticals 4, diagonals 3; floor 4; top 8); with the 4 portal braces the photo shows
+    56, against 49 stated for Set 1 and 57 for Set 2: by count the photographed bridge is
+    the reinforced Set 2 (one stick unseen), and Set 1 lacks 8 of its sticks, 'more sticks
+    ... in the top chord' and 'additional lateral bracing' which the page does not show.
+    The reference below is therefore Set 2 (decided on the stick count alone, before any
+    run); ``set1_*`` and ``set3_*`` hold the other sets', whose bridge this is not.
+
+    Loading (A): the photos of a test on the page are video stills of the 2011 first
+    version (50 sticks, Weldbond, a barbell plate on the top chords, the ends on wooden
+    planks), not the 2024 tester. The author's diagrams load the top nodes 7 and 8, and
+    the same builder's D page: "my testing machine which applies a load to the top of the
+    bridge". So a rigid 4 x 3 in block (D's size, its 4 in along the span to reach both
+    nodes) lies dry on the top sticks between nodes 7 and 8. Pitsco's Structures Testing
+    Instrument manual (not this page) loads a bridge through a roadbed block inside it, on
+    its floor, ~2 in shorter than the roadbed, pulled down by a rod: not modelled. The
+    ends rest on blocks under the bottom chords, 12 in between their inner edges (A: D's
+    stated span on the same builder's machine; Pitsco's manual: the ends overlap the
+    supports 1/2-1 in), 70 mm tall so that the verticals' lower ends hang clear (the
+    tester has no floor under the span). Glue: Elmer's Glue-All (S), the shipped PVA
+    placeholder values; Set 3's sanding is not modelled."""
+    from shapely.geometry import Polygon
+    from shapely.geometry import box as sbox
+
+    s, w, t = 114.3, 9.525, 1.5875
+    H, W = 101.6, 88.9
+    L = 13.5 * 25.4
+    xt = [2.5 * 25.4, 5.25 * 25.4, 8.25 * 25.4, 11.0 * 25.4]  # nodes 6-9 (and 1-4 below)
+    # the verticals: on the nodes 7 and 8; at the nodes 6 and 9 beside the end posts' tops
+    xv = [xt[0] + w / 2, xt[1], xt[2], xt[3] - w / 2]
+    vl = [x - w / 2 for x in xv]  # the verticals' faces
+    vr = [x + w / 2 for x in xv]
+    c = 0.25  # a web member's rounded ends this close to the verticals beside it
+    bodies = []
+    for side, sg in (("N", 1.0), ("F", -1.0)):
+        def zr(a, b, sg=sg):
+            return (min(sg * a, sg * b), max(sg * a, sg * b))
+        zw = zr(W / 2 - t, W / 2)            # web members, on the chords' outer face
+        zo = zr(W / 2, W / 2 + t)            # the end posts' second stick
+        zc = zr(W / 2 - 2 * t, W / 2 - t)    # chords, outer layer
+        zi = zr(W / 2 - 3 * t, W / 2 - 2 * t)  # chords, inner layer
+        for k in range(3):
+            bodies.append(box(f"BotChord {side} {k + 1} (1-ply UD)", (k * s, 0, zc[0]),
+                              ((k + 1) * s, w, zc[1])))
+        x0 = 0.5 * L - s  # two uncut sticks centred on mid-span
+        for k in range(2):
+            bodies.append(box(f"BotSplice {side} {k + 1} (1-ply UD)",
+                              ((k + 0.5) * s, 0, zi[0]), ((k + 1.5) * s, w, zi[1])))
+            bodies.append(box(f"TopChord {side} {k + 1} (1-ply UD)",
+                              (x0 + k * s, H - w, zc[0]), (x0 + (k + 1) * s, H, zc[1])))
+            bodies.append(box(f"TopChord {side} {k + 1} inner (1-ply UD)",
+                              (x0 + k * s, H - w, zi[0]), (x0 + (k + 1) * s, H, zi[1])))
+        # end posts: from the bridge's end, their feet on its underside, to the verticals 1
+        # and 4; each two sticks of one outline face to face
+        ends = (("L", 0.0, vl[0] - c, True), ("R", vr[3] + c, L, False))
+        for name, xa, xe, up in ends:
+            outline = _round_stick_xy(xa, xe, up, s, w, 0.0, H, bottom=0.0)
+            bodies.append(upright(f"EndPost {side} {name} (1-ply UD)", outline, *zw))
+            bodies.append(upright(f"EndPost {side} {name} outer (1-ply UD)", outline, *zo))
+        for k, x in enumerate(xv):
+            bodies.append(box(f"Vertical {side} {k + 1} (1-ply UD)", (x - w / 2, H - s, zw[0]),
+                              (x + w / 2, H, zw[1])))
+        # diagonals, each whole between two verticals: 1-7 rising, 7-3 falling (N) or 2-8
+        # rising (F), 8-4 falling
+        for k, up in enumerate((True, side == "F", False)):
+            bodies.append(upright(f"Diag {side} {k + 1} (1-ply UD)",
+                                  _round_stick_xy(vr[k] + c, vl[k + 1] - c, up, s, w, 0.0, H),
+                                  *zw))
+    # floor: cross sticks lying on the bottom chords, at the ends 3 mm clear of the end
+    # posts' feet, and beside the verticals 2 and 3 on their end sides, 4 mm clear
+    foot = Polygon(_round_stick_xy(0.0, vl[0] - c, True, s, w, 0.0, H, bottom=0.0))
+    xf = foot.intersection(sbox(-1.0, 0.0, L, w + t)).bounds[2] + 3.0
+    for k, xa in enumerate((xf, vl[1] - 4.0 - w, vr[2] + 4.0, L - xf - w)):
+        bodies.append(box(f"BotX {k + 1} (1-ply UD)", (xa, w, -s / 2), (xa + w, w + t, s / 2)))
+    # top: a cross stick at each top node (on the verticals' tops), and a Warren of whole
+    # flat sticks between them (far F at -z, near N at +z), each 1.5 mm clear of the next
+    for k, x in enumerate(xv):
+        bodies.append(box(f"TopX {k + 1} (1-ply UD)", (x - w / 2, H, -s / 2),
+                          (x + w / 2, H + t, s / 2)))
+    za, g, xm = W / 2 - 2 * t, 1.5, 0.5 * L
+    for k, (xa, xe, z0, z1) in enumerate(((vr[0] + g, vl[1] - g, -za, za),
+                                          (vr[1] + g, xm - g / 2, za, -za),
+                                          (xm + g / 2, vl[2] - g, -za, za),
+                                          (vr[2] + g, vl[3] - g, za, -za))):
+        bodies.append(prism(f"TopBrace {k + 1} (1-ply UD)",
+                            _brace_plan(xa, xe, z0, z1, s, w), H, H + t))
+    bodies += [box("Support L", (-25, -70, -60), (L / 2 - 6 * 25.4, 0, 60)),
+               box("Support R", (L / 2 + 6 * 25.4, -70, -60), (L + 25, 0, 60))]
+    bodies.append(box("Load hanger", (xm - 50.8, H + t, -38.1),
+                      (xm + 50.8, H + t + 20, 38.1)))
+    ov = _merge(COMMON_OVERRIDES, {"glue": {"Load hanger | *": 0}, "params": {
+        # no mass stated for this bridge: D's 54.56 g for 44 of the same builder's sticks
+        # with the glue (S there), 1.24 g a stick of 1728 mm^3 (4.5 x 3/8 x 1/16 in)
+        "material.density_kg_m3": 718.0}})
+
+    def kgf(lb):
+        return [round(v * 0.45359237, 2) for v in lb]
+
+    peak, first = kgf([135, 135, 185]), kgf([135, 88, 132])
+    mean = float(np.mean(peak))
+    ref = {"case": "E", "source": "Boon 2024, garrettsbridges.com, Short Howe Truss "
+           "Popsicle Bridge, Set 2",
+           "Fu_kgf": mean, "Fu_range_kgf": [mean, mean], "replicates_kgf": peak,
+           "replicate_cov": round(float(np.std(peak, ddof=1) / mean), 3),
+           "first_failure_kgf": first,
+           "failure": "the first failure a joint popping loose (every set); Set 2's a "
+                      "tension member joint, mostly along the top chord near the bridge "
+                      "ends; where the peak's failure was, not given",
+           "parts": [], "place": None, "mass_g": None,
+           "load": "the Pitsco bridge tester; a block on the top nodes 7 and 8 assumed "
+                   "(the author's truss diagrams load those nodes)",
+           "glue": "Elmer's Glue-All (PVAc)", "semi_blind": True,
+           "sticks_stated": 57, "sticks_placed": 52, "sticks_in_photo": 56,
+           "version_note": "by stick count the photographed bridge, which this rebuilds, is "
+                           "Set 2's reinforced version (57 stated, 56 seen, the 4 portal "
+                           "braces left out); Set 1 (49) differs in its top chord and "
+                           "lateral bracing, not shown",
+           "set1_replicates_kgf": kgf([120, 98, 91]),
+           "set1_first_failure_kgf": kgf([120, 88, 91]),
+           "set1_note": "the base design, 49 sticks: not this geometry",
+           "set3_replicates_kgf": kgf([158, 146, 142]),
+           "set3_first_failure_kgf": kgf([158, 118, 142]),
+           "set3_note": "Set 1's design with the glued faces sanded flat"}
+    return bodies, ov, ref
+
+
+CASES = {"A": lamberti_2025, "B": silva_2026, "C": moraes_2019, "D": boon_2025,
+         "E": boon_howe_2024}
 
 
 def summarize(out: Path, case: str, mc: str = "mc10") -> dict:

@@ -9,7 +9,7 @@ from bridgesim.analysis import analyze
 from bridgesim.checks import capacities
 from bridgesim.generators import generate_warren
 from bridgesim.report import model_assumptions, to_markdown
-from bridgesim.schema import Bridge, Section
+from bridgesim.schema import Bridge, Prop, Section
 
 PLATE = {"E_MPa": 5000.0, "G_MPa": 100.0, "f_t_MPa": 20.0, "f_c_MPa": 15.0,
          "f_b_MPa": 25.0, "f_v_MPa": 3.0}
@@ -35,7 +35,10 @@ def _beam(**own) -> Bridge:
 def test_section_E_sets_the_stiffness(material) -> None:
     """Same beam as test_beam_validation: delta = P L^3 / (48 E I) = 312.5 mm at E = 10000;
     a section with E = 5000 (about a 0/90 stick plate along the bridge) bends twice as much,
-    625 mm. Other sections keep the bridge material."""
+    625 mm. Other sections keep the bridge material (E = 10000, G = 625 set here,
+    independent of the YAML's placeholders)."""
+    material = material.model_copy(update={"E_MPa": Prop(value=10000.0),
+                                           "G_MPa": Prop(value=625.0)})
     base = analyze(_beam(), material)
     soft = analyze(_beam(E_MPa=5000.0), material)
     assert base.delta_ref_mm == pytest.approx(312.5, rel=5e-3)

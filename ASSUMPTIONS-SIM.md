@@ -63,8 +63,9 @@ parabolic stress through the depth, K the glue line's stiffness
 (`glue.lamination_K_s_N_per_mm3`, 350) and t the ply's thickness; the n - 1 glue lines
 add (1 - n^-4) / (K t), exact for the parabolic stress (Euler-Maclaurin), so G_eff = 1 /
 (1 / G + 1 / (K t)) for many plies (`materials.through_stack_shear_modulus`). A UD stack
-of 2 mm sticks: ~340 MPa against the 656 used until round 27 both ways; a 0/90/90/0
-stack 142 MPa, its cross plies in rolling shear. A part without plies (a block, a
+of 2 mm sticks: ~376 MPa against 812 in the plane of its plies (~340 against 656 with the
+10.5 GPa sticks of round 28; round 27 used 656 both ways); a 0/90/90/0 stack 144 MPa
+(142), its cross plies in rolling shear. A part without plies (a block, a
 toothpick) keeps one G both ways. The material damping, the Timoshenko split and the
 stable time step (from the kernels' forces) use each direction's own value. Tested: a 50
 mm deep beam bent through its 25 plies is as stiff as Timoshenko's beam with G_eff, and
@@ -741,25 +742,39 @@ not by buckling (the diagnosis of round 28).
 Wood along the grain: E, f_t, f_c, f_v from `materials/popsicle_birch.yaml`. For scale,
 the USDA *Wood Handbook* (FPL-GTR-190, Table 5-3a, clear wood at 12 % moisture) gives
 paper birch E = 11.0 GPa, modulus of rupture 85 MPa, compression parallel to grain 39 MPa,
-shear 8.3 MPa (yellow birch: 13.9 GPa, 114, 56, 13 MPa). Craft sticks are thin, cut across
-growth rings and have defects: one craft stick broke at 0.52 of a solid birch strip of
-its size in 3-point bending (Karplus 1996, ASEE, "Craft Stick Beams"), so the strengths
-are about half of clear birch: f_b 50, f_t 40, f_c 30 MPa. The across-grain values
+shear 8.3 MPa (yellow birch: 13.9 GPa, 114, 56, 13 MPa). Published coupon tests of
+craft sticks (`validation/literature/`) put them near 2 mm birch veneer along the grain,
+not at half of clear birch: 76 unsorted sticks pulled to failure averaged 71.6 MPa (CoV
+0.245, on the mean section of another batch), the ENS teams' own tension tests 83-100
+MPa, ten sticks at Cedarville 84.8 MPa (veneer: 81); single sticks bent 74 MPa (one team)
+and glued 2- and 3-stick laminates 89-133 MPa by the elastic formula. So f_t 70, f_b 80
+and f_c 45 MPa (40, 50 and 30 until round 28, from one craft stick that broke at 0.52 of
+a solid birch strip of its size in 3-point bending, Karplus 1996, ASEE, "Craft Stick
+Beams", whose loads the round-19 literature review found to be no simple 3-point failure
+loads). Nothing measures f_c on sticks: with f_t 70 and E 13 GPa the glued laminates'
+bending coupons, through the lab solver, read 0.61-0.92 of their measured loads at f_c 45
+and 0.71-1.06 at 60 (`validation/literature_coupons.py`); 45 leans low, since those
+coupons are one brand of sticks (clear birch 39-59 MPa, veneer 60). The across-grain values
 follow 2 mm birch veneer data (Krüger et al. 2025, doi:10.5281/zenodo.17201843) and the
 Wood Handbook: f_v 8 MPa (veneer 9.2), f_t90 1.5 MPa (veneer 1.1-2.0), f_c90 6 MPa
 (veneer 6.9, clear birch 4.1-7.4), rolling shear 4 MPa since round 23 (birch veneer 4.6,
 Wang et al. 2024; silver birch ~3.5, Collins & Fink 2025). The stick modulus is about as high as clear birch's: dry craft sticks are 11-15 GPa
 (the wave speed of 2.2 mm birch sticks measured by vibration, 4600 m/s, Sautel et al.,
 Am. J. Phys. 85, 783 (2017), Table I: E = rho c0^2 = 11.6-14.8 GPa at 550-700 kg/m^3;
-2 mm veneer 14.6 GPa). The crush uses 10.5 GPa (the low end, less 5 % for a modulus from vibration against a static one) and G = E/16, while the
-material's E is a placeholder (`wood.E_placeholder_MPa`; the material file's 10 GPa is the
-linear analysis's; a measured E from `calibrate` or `material.E_MPa` in the overrides
+2 mm veneer 14.6 GPa); craft sticks pulled in tension read 14.2-15.3 GPa for five of the
+six ENS 2018-19 teams, 10.8 for the sixth, 6.7-15 for the Move Your Bridge 2.0
+groups, 8.4 at Cedarville (method not stated; `validation/literature/`; the teams'
+bending moduli, 5-7 GPa, include the fixture). The crush uses 13 GPa, the middle of the
+tension tests (10.5 GPa until round 28: the low end of the vibration data, less 5 % for a
+modulus from vibration against a static one), and G = E/16, while the material's E is a
+placeholder (`wood.E_placeholder_MPa`, the same 13 GPa as the material file's, which the
+linear analysis uses; a measured E from `calibrate` or `material.E_MPa` in the overrides
 replaces it). Until round 17 the crush used 7.1 GPa, from a stick weighted at a table edge
 (*Emergent Scientist* 1, 3 (2017)), which reads low because the edge lets the stick turn,
 and cited Sautel's 5.0 GPa, which was for sticks soaked in water for three weeks (the
 literature review of round 17). Stiffness, buckling and deflections scale with E, so
-measure your own sticks: a free tap test (simulation.yaml) or 3-point bending. f_t (40
-MPa) is below f_b on purpose: a stick in tension fails at its weakest cross-section (slope
+measure your own sticks: a free tap test (simulation.yaml) or 3-point bending. f_t (70
+MPa) is below f_b (80) on purpose: a stick in tension fails at its weakest cross-section (slope
 of grain, defects), which bending loads only at one face, so graded timber has f_t,0 = 0.6
 f_m (EN 338), while clear wood has the opposite. `bridgesim sensitivity` shows how much each
 placeholder moves F_u for your design. Your own stick tests replace them
@@ -968,10 +983,11 @@ where the constant-strain element begins to stiffen again past the plateau.
 **Plates in out-of-plane shear** (since round 28; `plate.shear_deformable` 0 gives round
 27's Kirchhoff element back, bit for bit). A stick plate is soft in transverse shear: a
 ply lying across the bending direction shears in rolling shear (`wood.G_rolling_MPa`,
-150 MPa against E_L 10.5 GPa) and the pressed glue lines between plies slip
+150 MPa against E_L 13 GPa) and the pressed glue lines between plies slip
 (`glue.lamination_K_s_N_per_mm3`), so a 6 mm 0/90/0 deck spanning 60 mm between
-stringers shears about half as much as it bends (ratio 12 D / (H L^2) = 0.51 in
-3-point bending), and the Kirchhoff element (DKT) was that much too stiff under the
+stringers shears about 0.6 as much as it bends (ratio 12 D / (H L^2) = 0.60 in
+3-point bending; 0.51 with round 28's 10.5 GPa), and the Kirchhoff element (DKT) was
+that much too stiff under the
 loading plate. The plate element is now the discrete Kirchhoff-Mindlin triangle (DKMT,
 Katili 1993, Int. J. Numer. Meth. Engng 36:1859; `shell.py`): the rotations are linear
 plus a quadratic bubble of the tangential rotation on each side, and each side is an
@@ -1580,17 +1596,20 @@ assumed values (judgements, nothing measured on stick bridges), drawn by `montec
   1720 / 2095 / 2317 kgf at p05 / p50 / p95 (-18 % / +11 %; round 14, every value drawn
   at 20 %); `sensitivity` ranks the lap joints' glue strength and toughness and the
   sticks' shear strength first. Each placeholder is drawn with its own prior, about the
-  half-width of the literature or craft-stick range at 90 %: the stick modulus 30 % (dry
-  craft sticks 11-15 GPa by vibration; until round 18 the draws were centred on the
-  material file's 10 GPa while each crush used 7.1, now on the crush's own 10.5), f_t 30 %,
+  half-width of the literature or craft-stick range at 90 %: the stick modulus 25 % (dry
+  craft sticks 11-15 GPa by vibration, 6.7-15.3 GPa in tension, most 14-15; 30 % until
+  round 28; until round 18 the draws were centred on the material file's 10 GPa while each
+  crush used 7.1, then on the crush's own 10.5, now on 13), f_t 25 % (craft sticks 72-100
+  MPa on average in tension; 30 % until round 28),
   f_c, f_v, f_c90, f_t90, rolling shear (4 MPa since round 23: birch veneer 4.6, Wang
   et al. 2024; silver birch 3.5) and peel 25 %, the pressed bond line 30 %, the
   glue's shear toughness, the plies' shear fracture energy and the end-grain factor
   45 %, the across-grain fracture energy 35 %, the wood's fracture energy 40 %, the
-  fit-up gap 50 %, the lap joints' glue strength 50 % (hand-made PVA laps on craft
-  sticks: nothing published; pressed craft-stick laminates failed at 3.7 MPa (Karplus
-  1996), hand pressure costs 5-10 % and unsanded faces ~30 % (Boon 2024): ~2.3 MPa; the
-  placeholder 2.0 with its 90 % range 0.9-4.5 MPa). Since round 18 the draws include the values that set where a
+  fit-up gap 50 %, the lap joints' glue strength 45 % (craft-stick laps that failed in
+  the glue: 3.41 MPa unsanded and 5.40 sanded, Fredette & Kennedy 2022, glue and lap size
+  not stated; one in wood glue 3.5-4.7 MPa, ENS; pressed craft-stick laminates 3.7 MPa,
+  Karplus 1996: the placeholder 3.0 with its 90 % range 1.4-6.3 MPa; 50 % around 2.0,
+  0.9-4.5 MPa, until round 28). Since round 18 the draws include the values that set where a
   bridge fails (f_t90, the bond line, G_v, peel, the fit-up gap: the adversarial review
   found f_v draws inert in members, whose glue lines split first). Since round 19 the
   draws are a Latin hypercube over the runs: each value falls once in each of n

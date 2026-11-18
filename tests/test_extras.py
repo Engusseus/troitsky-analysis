@@ -88,7 +88,9 @@ def test_glue_area_replaces_the_placeholder_joint_area(material) -> None:
 def test_larger_glue_area_raises_a_joint_governed_failure_load(material) -> None:
     """The default design fails in the diagonal joints (2 x 20 x 10 x 2 = 800 N each). With
     100x that area on every diagonal the joints no longer govern, so F_u rises to the next
-    limit (floor-beam bending)."""
+    limit: a top chord's buckling, 10 % above the joints with the shipped placeholders
+    (floor-beam bending, 16 % above, with those until round 28: the glue and the bending
+    strength rose x1.5 and x1.6, the stick modulus the chord buckles by x1.3)."""
     b = generate_warren()
     r0 = analyze(b, material, include_buckling=False)
     assert r0.governing_mode == "joint" and r0.member(r0.governing_member).group == "diagonal"
@@ -97,7 +99,7 @@ def test_larger_glue_area_raises_a_joint_governed_failure_load(material) -> None
         if m["group"] == "diagonal":
             m["glue_area_mm2"] = 40_000.0
     r1 = analyze(Bridge.model_validate(data), material, include_buckling=False)
-    assert r1.Fu_pred_N > 1.1 * r0.Fu_pred_N
+    assert r1.Fu_pred_N > 1.05 * r0.Fu_pred_N
     assert r1.governing_mode != "joint"
 
 
