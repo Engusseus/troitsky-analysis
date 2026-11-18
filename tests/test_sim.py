@@ -7395,9 +7395,11 @@ def test_the_nonlocal_onset_switch_and_kernel(monkeypatch):
     peaks at its 71.38 N); with it on, a plate whose elements are all longer than their
     lines (the half-length set tiny) takes no average and gives the local curve bit for
     bit; and the compiled kernel and onset pass give the NumPy reference's curve and
-    onset ratios."""
+    onset ratios. (The plate of round 27's placeholders, _r28_inputs: its 71.38 N is round
+    27's.)"""
     pytest.importorskip("numba")
-    kw = dict(L=40, W=30, angles=(90,), weak=1, grip=1 / 3)
+    mat27, _ = _r28_inputs()
+    kw = dict(L=40, W=30, angles=(90,), weak=1, grip=1 / 3, material=mat27)
     off = lab.shell_strip_tension(5.0, sim_params=_sp_nl(0.0), max_disp=0.3, **kw)
     assert off.peak == pytest.approx(71.38, abs=0.01)
     replay = _same_time_step(monkeypatch)
@@ -7447,8 +7449,11 @@ def test_a_plate_crushing_along_its_grain_takes_the_same_shortening_on_any_mesh(
     old = np.where(rr > 1.0, 1.0 - (1.0 - (1.0 - 0.7) * u) / np.maximum(rr, 1.0), 0.0)
     assert np.array_equal(S._plateau(rr, 0.7), old)
     E, fc, A, L = 10000.0, 30.0, 20.0, 40.0
+    # the strip's own material: E 10000 and f_c 30 as above (and the rest as shipped until
+    # round 28: _r28_inputs), not the YAML's placeholders
+    mat, _ = _r28_inputs()
     fp = 0.95 * fc * A
-    ply = Ply.from_material(MAT, SP)
+    ply = Ply.from_material(mat, SP)
     q11 = ply.Q()[0, 0]
     rc = 1.0 - SP["wood.crush_softening"]
     w = 5 * 0.95 * fc / E * 12.5
@@ -7459,7 +7464,7 @@ def test_a_plate_crushing_along_its_grain_takes_the_same_shortening_on_any_mesh(
         sp = SimParams.load()
         sp.values["wood.crush_band_mm"] = band
         return lab.shell_strip_tension(h, L=L, sim_params=sp, sign=-1.0, flat=True,
-                                       weak_cells=True, max_disp=0.3, **kw)
+                                       weak_cells=True, max_disp=0.3, material=mat, **kw)
 
     def column_work(r, h):
         i0 = int(np.argmax(r.force))
