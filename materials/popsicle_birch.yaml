@@ -86,8 +86,9 @@ f_b_MPa:
   source: assumed
   note: >-
     Bending strength (modulus of rupture). Single craft sticks 74 MPa (14 tests, sd 16, span
-    not stated: an ENS team, bleu; validation/literature/ens_paris_saclay/other/
-    team_summaries.yaml); 2 and 3 sticks glued face to face, flat and on edge, 89-133 MPa
+    not stated: an ENS team, bleu;
+    validation/literature/ens_paris_saclay/other/team_summaries.yaml); 2 and 3 sticks glued
+    face to face, flat and on edge, 89-133 MPa
     by the elastic formula 1.5 F L / (b h^2) on their mean peak loads (edu_14235 Table 1,
     other/laminated_bending.csv; single sticks flat read 111-192 MPa, but one bent 22 mm
     before it broke: no strength); clear paper birch 85 MPa (USDA Wood Handbook 2010, table
