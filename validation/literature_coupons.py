@@ -67,6 +67,20 @@ MAX_STEPS = 4_000_000
 # the coupons crushed: (key, sticks, glued in the source table, orientation)
 CONFIGS = [("1F", 1, "n/a", "flat"), ("2GF", 2, "yes", "flat"), ("3GF", 3, "yes", "flat"),
            ("2GE", 2, "yes", "edge"), ("3GE", 3, "yes", "edge")]
+# coupons the pipeline cannot stand for (found in the runs; the lab solver is reported
+# for them instead): one stick flat. The rigid nose and the free press plate on it stand
+# 50 mm tall on the stick's 9.6 mm face, while the bench's nose is guided by its
+# actuator: in seed 4 they toppled before the jack reached the plate, which never loaded
+# the stick. And its peak (13-17 N) is under the 50 N below which the crush does not
+# call a failure at a 30 % load fall (sim/crush.py, `below = peak > 50 and ...`): the
+# failure is called only when the broken stick reaches the fixture's base, and a
+# dynamic spike in that fall can be read as F_u (seed 2: 46 N at a kinetic/work ratio of
+# 11.5, its peak before breaking 14 N). The source's stick bent 22 mm before it broke;
+# the model's yields in compression at about 4.5 mm
+NOT_A_BRIDGE = {"1F": "the nose and plate topple off a single stick (seed 4: never "
+                      "loaded); peak under the crush's 50 N load-drop threshold, so the "
+                      "failure is called at contact with the base and a collapse spike "
+                      "can be read as F_u (seed 2: 46 N, kinetic/work 11.5)"}
 # unglued stacks against n times one stick
 UNGLUED = [("2UF", 2, "flat"), ("3UF", 3, "flat"), ("2UE", 2, "edge"), ("3UE", 3, "edge")]
 
@@ -430,12 +444,15 @@ def part_b(out: Path, user: dict, seeds: list[int], fidelity: str, jobs: int,
         for s in seeds:
             tasks.append((key, (str(stl), str(ovf), s, fidelity, str(d / f"seed_{s}"), False,
                                 threads)))
-    if reuse:  # the crushes already on disk (their own files: nothing is recomputed)
+    missing: list[str] = []
+    if reuse:  # only the crushes already on disk: nothing is crushed again
         done = [(k, _load_run(t)) for k, t in tasks]
-        for k, r in done:
-            if r is not None:
+        for (k, t), (_k, r) in zip(tasks, done, strict=True):
+            if r is None:
+                missing.append(f"{k} seed {t[2]}")
+            else:
                 res[k]["runs"].append(r)
-        tasks = [kt for kt, (_k, r) in zip(tasks, done, strict=True) if r is None]
+        tasks = []
     ctx = mp.get_context("spawn")
     with cf.ProcessPoolExecutor(max_workers=jobs, mp_context=ctx) as ex:
         futs = {ex.submit(_crush_one, t): k for k, t in tasks}
@@ -446,6 +463,7 @@ def part_b(out: Path, user: dict, seeds: list[int], fidelity: str, jobs: int,
             print(f"  {k} seed {r['seed']}: F_u {r['Fu_N']:.1f} N, {r['governing']}, "
                   f"{r['wall_s']:.0f} s{_flag(r)}", flush=True)
         # a run flagged only as not quasi-static is crushed again at half the jack speed
+        # (as montecarlo does); with reuse, only if that run is already on disk
         again = [(k, (str(out / k / "coupon.stl"), str(out / k / "coupon.overrides.yaml"),
                       r["seed"], fidelity, str(out / k / f"seed_{r['seed']}_slow"), True,
                       threads))
@@ -458,14 +476,18 @@ def part_b(out: Path, user: dict, seeds: list[int], fidelity: str, jobs: int,
                   f"{r['governing']}, {r['wall_s']:.0f} s{_flag(r)}", flush=True)
 
         if reuse:
-            done = [(k, _load_run(t)) for k, t in again]
-            for k, r in done:
-                if r is not None:
+            for k, t in again:
+                r = _load_run(t)
+                if r is None:
+                    missing.append(f"{k} seed {t[2]} at half speed (not re-run)")
+                else:
                     replace(k, r)
-            again = [kt for kt, (_k, r) in zip(again, done, strict=True) if r is None]
+            again = []
         futs = {ex.submit(_crush_one, t): k for k, t in again}
         for fu in cf.as_completed(futs):
             replace(futs[fu], fu.result())
+    for k in res:
+        res[k]["missing_runs"] = [x for x in missing if x.startswith(k + " ")]
     for key, *_ in CONFIGS:
         runs = sorted(res[key]["runs"], key=lambda r: r["seed"])
         res[key]["runs"] = runs
@@ -494,6 +516,17 @@ def part_b(out: Path, user: dict, seeds: list[int], fidelity: str, jobs: int,
             gov[r["governing"]] = gov.get(r["governing"], 0) + 1
         res[key]["governing_counts"] = gov
         res[key]["untrustworthy"] = [r["seed"] for r in runs if not r["trustworthy"]]
+        if key in NOT_A_BRIDGE:
+            res[key]["pipeline_usable"] = False
+            res[key]["pipeline_not_usable_because"] = NOT_A_BRIDGE[key]
+            res[key]["reported_N"] = res[key].get("lab_solid_beam_N")
+            res[key]["reported_from"] = "lab.three_point_bending (fallback)"
+        else:
+            res[key]["pipeline_usable"] = True
+            res[key]["reported_N"] = res[key]["sim_perfect_N"]
+            res[key]["reported_from"] = "study.crush, seed -1"
+        if res[key].get("reported_N"):
+            res[key]["ratio_reported"] = round(res[key]["reported_N"] / m, 3)
     return res
 
 
@@ -638,6 +671,14 @@ def print_b(pb: dict) -> None:
                      " PLATE NEVER LOADED THE COUPON: not counted"))
         if v.get("sim_seeds_N"):
             print(f"       seeds counted: {v['sim_seeds_N'].get('seeds')}")
+        if v.get("missing_runs"):
+            print(f"       missing: {', '.join(v['missing_runs'])}")
+        if v.get("pipeline_usable") is False:
+            print(f"       PIPELINE NOT USABLE for this coupon: "
+                  f"{v['pipeline_not_usable_because']}")
+        if v.get("reported_N"):
+            print(f"       reported: {v['reported_N']} N from {v['reported_from']}, "
+                  f"ratio {v['ratio_reported']}")
         print(f"       observed: {v['observed_failure']}")
 
 
