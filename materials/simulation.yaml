@@ -166,7 +166,7 @@ crusher:
 
 scatter:
   E_cov: {value: 0.12, source: assumed, note: "Stick-to-stick coefficient of variation of E (from your bending tests)."}
-  strength_cov: {value: 0.22, source: assumed, note: "Coefficient of variation of stick strength, stick to stick: 76 unsorted craft sticks pulled to failure 0.245, where each broke not stated, so breaks at the grips may be among them (validation/literature/ens_paris_saclay/stick_tension.csv); the ENS teams' tension and bending series 0.07-0.27 (other/team_summaries.yaml: rouge 0.07 over about thirty sticks, the others 0.12-0.27). 0.22 (0.18 until round 28). From your tension or bending tests to failure (calibrate)."}
+  strength_cov: {value: 0.22, source: assumed, note: "Coefficient of variation of stick strength, stick to stick: 76 unsorted craft sticks pulled to failure 0.245, where each broke not stated, so breaks at the grips may be among them (validation/literature/ens_paris_saclay/stick_tension.csv); the ENS teams' tension and bending series 0.07-0.27 (other/team_summaries.yaml: rouge 0.07 over about thirty sticks, the others 0.12-0.27). 0.22 (0.18 until round 28). From 3 or more sticks bent to failure (calibrate: stick_bending_template.csv)."}
   E_strength_corr: {value: 0.7, source: assumed,
                     note: "Correlation of a stick's strength with its stiffness (in log terms): stiffer wood is stronger, which is why machine stress grading predicts strength from E (USDA Wood Handbook ch. 6-7: r = 0.6-0.8 between MOE and MOR). Each body's strength factor has the CoV strength_cov and this correlation with its E factor. From paired bending tests (E and strength of each stick: calibrate)."}
   ply_corr: {value: 0.3, source: assumed,
