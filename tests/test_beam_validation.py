@@ -15,7 +15,17 @@ import pytest
 
 from bridgesim.analysis import DEFLECTION_LIMIT_MM, AnalysisResult, analyze
 from bridgesim.loads import plate_nodal_loads
-from bridgesim.schema import Bridge, Deck, Material, Member, Node, PlateLoad, Section, Supports
+from bridgesim.schema import (
+    Bridge,
+    Deck,
+    Material,
+    Member,
+    Node,
+    PlateLoad,
+    Prop,
+    Section,
+    Supports,
+)
 
 L = 1000.0  # mm
 B, D = 10.0, 20.0  # mm, d vertical (local y)
@@ -50,8 +60,17 @@ def beam() -> Bridge:
 
 
 @pytest.fixture(scope="module")
-def beam_result(beam: Bridge, material: Material) -> AnalysisResult:
-    return analyze(beam, material)
+def hand_material(material: Material) -> Material:
+    """The bundled material with the values the hand calculations below use, E = 10000
+    MPa (G = E/16 = 625) and f_b = 50 MPa, independent of the YAML's placeholders."""
+    return material.model_copy(update={"E_MPa": Prop(value=10000.0),
+                                       "G_MPa": Prop(value=625.0),
+                                       "f_b_MPa": Prop(value=50.0)})
+
+
+@pytest.fixture(scope="module")
+def beam_result(beam: Bridge, hand_material: Material) -> AnalysisResult:
+    return analyze(beam, hand_material)
 
 
 def _Iz() -> float:
@@ -70,7 +89,7 @@ def test_whole_load_goes_to_mid_node(beam: Bridge) -> None:
 
 
 def test_midspan_deflection_matches_closed_form(beam_result: AnalysisResult,
-                                                material: Material) -> None:
+                                                hand_material: Material) -> None:
     """Mid-span deflection of a simply supported beam under a central point load.
 
         I = b d^3 / 12 = 10 * 20^3 / 12 = 6666.67 mm^4
@@ -79,7 +98,7 @@ def test_midspan_deflection_matches_closed_form(beam_result: AnalysisResult,
     (Euler-Bernoulli, no shear deformation, which is what Pynite's frame element models.)
     Tolerance 0.5 %.
     """
-    E = material.E_MPa.value
+    E = hand_material.E_MPa.value
     delta = P * L**3 / (48.0 * E * _Iz())
     assert delta == pytest.approx(312.5, rel=1e-9)  # hand value with E = 10000 MPa
     assert beam_result.delta_node == "N1"
@@ -121,14 +140,15 @@ def test_member_forces(beam_result: AnalysisResult) -> None:
         assert m.Vz_N == pytest.approx(0.0, abs=1e-6)
 
 
-def test_bending_governs_strength(beam_result: AnalysisResult, material: Material) -> None:
+def test_bending_governs_strength(beam_result: AnalysisResult,
+                                  hand_material: Material) -> None:
     """Load-factor method on the beam: bending about local z governs.
 
         S_z = b d^2 / 6 = 10 * 400 / 6 = 666.67 mm^3,  M_R = f_b S_z = 50 * 666.67 = 33333 N mm
         U = M_max / M_R = 250000 / 33333 = 7.5  ->  F_u,strength = P_ref / U = 133.3 N
         (= 4 f_b S_z / L). The deflection limit gives 160 N, so F_u,p = 133.3 N.
     """
-    f_b = material.f_b_MPa.value
+    f_b = hand_material.f_b_MPa.value
     Sz = B * D**2 / 6.0
     Fu_strength = 4.0 * f_b * Sz / L
     assert Fu_strength == pytest.approx(133.333, rel=1e-4)

@@ -28,6 +28,19 @@ E_SIM = SP["wood.E_placeholder_MPa"] if MAT.E_MPa.source == "assumed" else MAT.E
 G_SIM = E_SIM / 16 if MAT.E_MPa.source == "assumed" else MAT.G_MPa.value
 
 
+def _r28_inputs(sp: SimParams = SP) -> tuple[Material, SimParams]:
+    """The placeholders shipped until round 28 (E 10000 / 10.5 GPa in the crush, G 625, f_t
+    40, f_c 30, f_b 50, tau_g 2.0 MPa, strength CoV 0.18), on ``sp``: a test comparing
+    with arrays round 27's code built from them takes them as its own inputs."""
+    mat = MAT.model_copy(deep=True)
+    for k, v in (("E_MPa", 10000.0), ("G_MPa", 625.0), ("f_t_MPa", 40.0),
+                 ("f_c_MPa", 30.0), ("f_b_MPa", 50.0)):
+        getattr(mat, k).value = v
+    mat.glue.tau_g_MPa.value = 2.0
+    return mat, sp.updated({"wood.E_placeholder_MPa": 10500.0, "scatter.strength_cov": 0.18},
+                           source="assumed")
+
+
 # ------------------------------------------------------------------ materials
 
 
@@ -4644,7 +4657,8 @@ def test_a_long_member_is_as_strong_as_its_weakest_section():
 
     Ls, rho = MAT.stick.length_mm, SP["scatter.ply_corr"]
     sE = sf.log_sd(SP["scatter.E_cov"], 1 - rho, 1.0)
-    sS = sf.log_sd(SP["scatter.strength_cov"], 1 - rho, 1.0)
+    # the strength CoV these figures are for, 0.18 (the placeholder until round 28)
+    sS = sf.log_sd(0.18, 1 - rho, 1.0)
 
     def strength(k, i, stagger=0.0, n=3):
         L = k * Ls
@@ -4693,7 +4707,8 @@ def test_with_the_stick_field_off_the_model_is_round_27s():
     r27 = {"plate.shear_deformable": 0}
     for sp_, seed in ((SP.updated({"scatter.stick_field": 0, **r27, **BUILT_OFF}), 0),
                       (SP.updated(r27), None)):
-        m = build_model(simple_beam_bridge(), MAT, sp_, seed=seed)
+        mat, sp_ = _r28_inputs(sp_)  # round 27's arrays came from the placeholders of then
+        m = build_model(simple_beam_bridge(), mat, sp_, seed=seed)
         for k, v in want[seed].items():
             assert float(np.sum(getattr(m, k))) == pytest.approx(v, rel=1e-14), k
         assert (m.b_fs == 1.0).all()
@@ -4947,12 +4962,13 @@ def test_pressure_coefficient_zero_is_round_27():
     sp0 = SP.updated({"glue.pressure_coeff": 0.0, "glue.tau_peak_over_avg": 1.065,
                       "scatter.glue_point_cov": 0.0, "glue.fillet_mm": 0.0,
                       "block.cell_mm": 0.0})
+    mat0, sp0 = _r28_inputs(sp0)  # round 27's arrays came from the placeholders of then
     pins = {0: (18414.203755357616, 12153.374478536029, 238.57515707865358,
                 9703.113322084113),
             None: (23898.503428797623, 15773.01226300643, 309.59999999999997,
                    12591.372479092268)}
     for seed, want in pins.items():
-        m = build_model(simple_beam_bridge(), MAT, sp0, seed=seed)
+        m = build_model(simple_beam_bridge(), mat0, sp0, seed=seed)
         got = (float(np.sum(m.c_tau * m.c_area)), float(np.sum(m.c_sig * m.c_area)),
                float(np.sum(m.c_GIIc)), float(np.sum(m.c_Ks)))
         assert got == pytest.approx(want, rel=1e-9), seed
@@ -6479,9 +6495,11 @@ def test_the_built_bridge_is_stress_free_seeded_per_body_and_off_at_zero():
             "s_lay": [6.497625127017404, 4266.049999999988],
             "a_r0": [-3706.8731248705303, 1382141.4668170507]}
     # (recorded before this round's blocks of cells and shear-deformable plates: the piers
-    # one rigid body each and the plates Kirchhoff elements, as that code had them)
-    m0 = build_model(simple_beam_bridge(), MAT, _built_sp().updated(
-        {"block.cell_mm": 0.0, "plate.shear_deformable": 0}), seed=0)
+    # one rigid body each and the plates Kirchhoff elements, as that code had them; and
+    # from the placeholders of then: _r28_inputs)
+    mat0, sp0 = _r28_inputs(_built_sp().updated(
+        {"block.cell_mm": 0.0, "plate.shear_deformable": 0}))
+    m0 = build_model(simple_beam_bridge(), mat0, sp0, seed=0)
     for k, (s1, s2) in want.items():
         a_ = getattr(m0, k)
         assert float(np.sum(a_)) == pytest.approx(s1, rel=1e-14, abs=1e-9), k
@@ -7339,13 +7357,17 @@ def test_uniform_strips_are_as_strong_with_the_nonlocal_onset():
     raisers: 74.9 / 62.6 / 59.4 N locally, 93.1 / 84.1 / 81.8 nonlocal, its average
     across-grain strain lower than a free strip's.)"""
     pytest.importorskip("numba")
-    ply = Ply.from_material(MAT, SP)
+    # the strips' own material, f_t 40 and E_L 10000 as the figures above (the placeholders
+    # until round 28: _r28_inputs), not the YAML's
+    mat, _ = _r28_inputs()
+    ply = Ply.from_material(mat, SP)
     s45 = 2 * ply.f_t90 / ply.E_T / (1 / ply.E_T - ply.nu_LT / ply.E_L)
     assert s45 * 10 * 2 == pytest.approx(61.07, abs=0.05)
     for ang, rollers, want in ((0.0, False, 760.0), (45.0, True, 0.975 * s45 * 20)):
         for h in (5.0, 2.5, 1.25):
             pk = [lab.shell_strip_tension(h, angles=(ang,), rollers=rollers,
-                                          sim_params=_sp_nl(on)).peak for on in (0.0, 1.0)]
+                                          sim_params=_sp_nl(on), material=mat).peak
+                  for on in (0.0, 1.0)]
             assert pk[1] == pytest.approx(pk[0], rel=0.05), (ang, h)
             assert pk[1] == pytest.approx(want, rel=0.04), (ang, h)
 
@@ -7361,10 +7383,13 @@ def test_a_notched_strip_dissipates_the_fracture_energy_with_the_nonlocal_onset(
     until then, soften from the stress they hold: the peak 1.07-1.09 x the net section
     (local 0.96)."""
     pytest.importorskip("numba")
+    # the strip's own material, f_t 40 as the figures above (the placeholders until round
+    # 28: _r28_inputs), not the YAML's
+    mat, _ = _r28_inputs()
     peaks = []
     for h in (2.5, 1.25):
         r = lab.shell_strip_tension(h, angles=(0.0,), weak=1.0, notch=5.0, max_disp=2.0,
-                                    sim_params=_sp_nl(1.0))
+                                    sim_params=_sp_nl(1.0), material=mat)
         work = float(np.trapezoid(r.force, r.disp))
         assert work == pytest.approx(80.0, rel=0.1), h
         assert 400.0 < r.peak < 1.12 * 400.0, h
@@ -7377,9 +7402,11 @@ def test_the_nonlocal_onset_switch_and_kernel(monkeypatch):
     peaks at its 71.38 N); with it on, a plate whose elements are all longer than their
     lines (the half-length set tiny) takes no average and gives the local curve bit for
     bit; and the compiled kernel and onset pass give the NumPy reference's curve and
-    onset ratios."""
+    onset ratios. (The plate of round 27's placeholders, _r28_inputs: its 71.38 N is round
+    27's.)"""
     pytest.importorskip("numba")
-    kw = dict(L=40, W=30, angles=(90,), weak=1, grip=1 / 3)
+    mat27, _ = _r28_inputs()
+    kw = dict(L=40, W=30, angles=(90,), weak=1, grip=1 / 3, material=mat27)
     off = lab.shell_strip_tension(5.0, sim_params=_sp_nl(0.0), max_disp=0.3, **kw)
     assert off.peak == pytest.approx(71.38, abs=0.01)
     replay = _same_time_step(monkeypatch)
@@ -7429,8 +7456,11 @@ def test_a_plate_crushing_along_its_grain_takes_the_same_shortening_on_any_mesh(
     old = np.where(rr > 1.0, 1.0 - (1.0 - (1.0 - 0.7) * u) / np.maximum(rr, 1.0), 0.0)
     assert np.array_equal(S._plateau(rr, 0.7), old)
     E, fc, A, L = 10000.0, 30.0, 20.0, 40.0
+    # the strip's own material: E 10000 and f_c 30 as above (and the rest as shipped until
+    # round 28: _r28_inputs), not the YAML's placeholders
+    mat, _ = _r28_inputs()
     fp = 0.95 * fc * A
-    ply = Ply.from_material(MAT, SP)
+    ply = Ply.from_material(mat, SP)
     q11 = ply.Q()[0, 0]
     rc = 1.0 - SP["wood.crush_softening"]
     w = 5 * 0.95 * fc / E * 12.5
@@ -7441,7 +7471,7 @@ def test_a_plate_crushing_along_its_grain_takes_the_same_shortening_on_any_mesh(
         sp = SimParams.load()
         sp.values["wood.crush_band_mm"] = band
         return lab.shell_strip_tension(h, L=L, sim_params=sp, sign=-1.0, flat=True,
-                                       weak_cells=True, max_disp=0.3, **kw)
+                                       weak_cells=True, max_disp=0.3, material=mat, **kw)
 
     def column_work(r, h):
         i0 = int(np.argmax(r.force))

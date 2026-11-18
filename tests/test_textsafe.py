@@ -857,7 +857,11 @@ def test_unstable_structure_is_an_analysis_error(tmp_path) -> None:
 
 
 def test_user_node_named_like_an_interior_node_is_fine() -> None:
-    from bridgesim.schema import Deck, Member, Node, PlateLoad, Section, Supports
+    """A pin-ended stick, its base node named like an interior split node, buckles at
+    Euler's pi^2 E I / L^2 = 49.75 N (E = 10000 MPa, G = 625 set here, independent of the
+    YAML's placeholders)."""
+    from bridgesim.materials import load_material
+    from bridgesim.schema import Deck, Member, Node, PlateLoad, Prop, Section, Supports
 
     col = Bridge(
         name="column", nodes=[Node(id="~mid M", x_mm=0, y_mm=0, z_mm=0),
@@ -869,7 +873,9 @@ def test_user_node_named_like_an_interior_node_is_fine() -> None:
                                                                "T": ["DX", "DZ"]}),
         load=PlateLoad(P_ref_N=1, plate_length_mm=1e-3, x_center_mm=0,
                        deck_support_nodes=["T"]))
-    r = analyze(col)
+    mat = load_material("popsicle_birch").model_copy(
+        update={"E_MPa": Prop(value=10000.0), "G_MPa": Prop(value=625.0)})
+    r = analyze(col, mat)
     assert r.buckling.lambda_cr == pytest.approx(49.75, rel=0.01)
 
 

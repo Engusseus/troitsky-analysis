@@ -1842,13 +1842,13 @@ def _same_part(observed: str, simulated: str) -> bool:
 # --------------------------------------------------------------------------- lab tests
 
 
-SHIPPED_E = 10000.0  # materials/popsicle_birch.yaml's E_MPa as shipped
+SHIPPED_E = 13000.0  # materials/popsicle_birch.yaml's E_MPa as shipped
 
 
 def _crush_material(mat: Material, sp: SimParams) -> Material:
     """The material the crush (and its coupon models) uses: while the stick modulus is a
-    placeholder, the crush's own value (wood.E_placeholder_MPa, 10.5 GPa: dry craft sticks
-    by vibration), not the material file's."""
+    placeholder, the crush's own value (wood.E_placeholder_MPa, 13 GPa: craft sticks in
+    tension), not the material file's."""
     e_ph = sp.values.get("wood.E_placeholder_MPa", 0.0)
     # only while the material file still holds its shipped value: a team that typed its
     # own (assumed) E there gets its own
@@ -1926,7 +1926,7 @@ def glue_law(sp: SimParams) -> dict:
 def lab(material=None, sim_params=None, csv_dir: str | Path | None = None) -> LabReport:
     """Simulate the standard coupon tests with the current material (and, where the CSVs
     in ``csv_dir`` hold data, the team's own specimens) and report the reality gap. The
-    sticks are those of the crush: while E is a placeholder, the crush's (10.5 GPa)."""
+    sticks are those of the crush: while E is a placeholder, the crush's (13 GPa)."""
     mat = material if isinstance(material, Material) else load_material(
         material or "popsicle_birch")
     sp = sim_params if isinstance(sim_params, SimParams) else SimParams.load(sim_params)
@@ -3053,16 +3053,18 @@ WOOD_STRENGTHS = ("material.f_t_MPa", "material.f_c_MPa", "material.f_v_MPa",
 E_STRENGTH_CORR = 0.7
 # how far each placeholder may be from the truth for a team's own sticks and glue
 # (lognormal sigma around the placeholder, ~ the half-width of the literature or
-# craft-stick range at 90 %): hand-made PVA laps on birch sticks ~0.9-4.5 MPa (nothing
-# published; ~2.3 from pressed craft-stick laminates' 3.7 less hand pressure and unsanded
-# faces; materials/popsicle_birch.yaml), glue toughness 0.5-2.5 N/mm, craft-stick E
-# 7-16 GPa (dry sticks by vibration 11.6-14.8, veneer 14.6, a table-edge test 7.1), f_t
-# 25-80 MPa, f_v 5-12 MPa, f_c90
-# 4-7.5 MPa, the end-grain factor 0.2-0.6 (USDA Wood Handbook ch. 10: end-grain butt
+# craft-stick range at 90 %): hand-made PVA laps on birch sticks ~1.4-6.3 MPa (craft-stick
+# laps failing in the glue 3.41 MPa unsanded, 5.40 sanded, Fredette & Kennedy 2022; one
+# in wood glue 3.5-4.7; pressed craft-stick laminates 3.7; materials/popsicle_birch.yaml;
+# 0.50 around 2.0, 0.9-4.5, until round 28), glue toughness 0.5-2.5 N/mm, craft-stick E
+# 8.6-19.6 GPa (in tension 6.7-15.3, most teams 14-15, validation/literature/; dry sticks
+# by vibration 11.6-14.8, veneer 14.6; 0.30 around 10.5 until round 28), f_t 46-106 MPa
+# (craft sticks in tension 53-100 on average; 0.30 around 40 until round 28), f_v 5-12
+# MPa, f_c90 4-7.5 MPa, the end-grain factor 0.2-0.6 (USDA Wood Handbook ch. 10: end-grain butt
 # joints reach about a quarter of the wood's strength)
 PLACEHOLDER_PRIORS = {
-    "material.E_MPa": 0.30, "material.f_t_MPa": 0.30, "material.f_c_MPa": 0.25,
-    "material.f_v_MPa": 0.25, "material.glue.tau_g_MPa": 0.50,
+    "material.E_MPa": 0.25, "material.f_t_MPa": 0.25, "material.f_c_MPa": 0.25,
+    "material.f_v_MPa": 0.25, "material.glue.tau_g_MPa": 0.45,
     "glue.G_IIc_N_per_mm": 0.45, "wood.f_c90_MPa": 0.25, "wood.G_f_N_per_mm": 0.40,
     "glue.end_grain_factor": 0.35,
     # round 18 (the adversarial review: these set where Bridge_v10 fails, and f_v draws

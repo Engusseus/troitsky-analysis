@@ -37,13 +37,15 @@ def slack_straps():
     return analyze(_warren(flag=frozenset({"top_brace"})))
 
 
-def test_thin_straps_govern_by_buckling_and_the_results_say_why(straps) -> None:
+def test_thin_straps_govern_by_buckling_and_the_results_say_why(straps, material) -> None:
     """Strap 19 x 4.1 mm over L = sqrt(143.75^2 + 182^2) = 231.9 mm:
-    I_min = 19 x 4.1^3 / 12 = 109.1 mm^4, P_cr = pi^2 x 10000 x 109.1 / 231.9^2 = 200.2 N.
+    I_min = 19 x 4.1^3 / 12 = 109.1 mm^4, P_cr = pi^2 E 109.1 / 231.9^2 = 0.02002 E N (E in
+    MPa, the bundled material's: 200.2 N at 10000 MPa).
     The chords shortening squeeze it, so it fails long before anything that carries load."""
     gov = straps.member(straps.governing_member)
     assert gov.group == "top_brace" and gov.mode == "buckling"
-    assert gov.cap.P_cr == pytest.approx(math.pi**2 * 1e4 * 19 * 4.1**3 / 12 / 231.92**2,
+    E = material.E_MPa.value
+    assert gov.cap.P_cr == pytest.approx(math.pi**2 * E * 19 * 4.1**3 / 12 / 231.92**2,
                                          rel=1e-3)
     assert any(f"{gov.id} (top_brace) buckles" in w and "tension_only: true" in w
                for w in straps.warnings)
@@ -142,7 +144,7 @@ def test_half_stiffness_pair_equals_one_strap_working_in_racking(slack_straps, m
     """Rack the first X: T1n and T1f move Delta = 1 mm across. tb0a (T0n -> T1f) stretches
     and tb0b (T0f -> T1n) shortens, each by Delta s / L (s = 182 mm across, L = 231.9 mm).
     One strap working stores 1/2 (E A / L) (Delta s / L)^2; both at half stiffness store
-    the same, with E = 10000 MPa and A = 19 x 4.1 = 77.9 mm^2."""
+    the same, with E the bundled material's and A = 19 x 4.1 = 77.9 mm^2."""
     terms, ids = braces_working_terms(slack_straps.fe_model, slack_straps.bridge,
                                       slack_straps.slack_members, material.stick)
     assert ids == sorted(slack_straps.slack_members, key=lambda m: (m[2], m[3]))
@@ -152,7 +154,7 @@ def test_half_stiffness_pair_equals_one_strap_working_in_racking(slack_straps, m
         u = np.concatenate([move.get(n, np.zeros(3)) for n in nodes])
         energy += 0.5 * u @ k @ u
     L, s = math.hypot(143.75, 182.0), 182.0
-    assert energy == pytest.approx(0.5 * 1e4 * 19 * 4.1 / L * (s / L) ** 2)
+    assert energy == pytest.approx(0.5 * material.E_MPa.value * 19 * 4.1 / L * (s / L) ** 2)
 
 
 def test_buckling_is_bracketed_when_slack_straps_cross(slack_straps) -> None:
