@@ -172,7 +172,7 @@ def test_material_yaml_loads(material: Material) -> None:
     assert material_from_yaml_str(text) == material
     assert Material.from_yaml(MATERIAL_PATH) == material
     assert load_material(material) is material
-    assert material.E_MPa.value == 10000
+    assert material.E_MPa.value == 13000
     assert material.density_kg_m3.value == 650
     assert material.glue.exclude_groups == ["top_chord", "bottom_chord"]
     assert (material.stick.length_mm, material.stick.width_mm, material.stick.thickness_mm) \

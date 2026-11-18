@@ -22,7 +22,7 @@ EXAMPLE_PATH = REPO_ROOT / "examples" / "warren_2027.yaml"
 
 @pytest.fixture(scope="session")
 def material() -> Material:
-    """The bundled placeholder birch material (E = 10000 MPa)."""
+    """The bundled placeholder birch material (E = 13000 MPa)."""
     return load_material("popsicle_birch")
 
 

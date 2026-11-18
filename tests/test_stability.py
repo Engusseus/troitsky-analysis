@@ -7,9 +7,9 @@ import pytest
 from bridgesim.analysis import analyze
 from bridgesim.generators.warren import WarrenParams, generate_warren
 from bridgesim.materials import load_material
-from bridgesim.schema import Bridge, Deck, Member, Node, PlateLoad, Section, Supports
+from bridgesim.schema import Bridge, Deck, Member, Node, PlateLoad, Prop, Section, Supports
 
-E = 10_000.0  # MPa (placeholder material)
+E = 10_000.0  # MPa, the Euler checks' own (mat_e10k), not the YAML's placeholder
 B, D = 10.0, 2.0  # one popsicle stick
 L = 115.0
 I_MIN = B * D**3 / 12.0  # 6.667 mm^4
@@ -35,24 +35,31 @@ def material():
     return load_material("popsicle_birch")
 
 
-def test_pinned_column_matches_euler(material):
+@pytest.fixture(scope="module")
+def mat_e10k(material):
+    """The bundled material with E = 10000 MPa (G = E/16 = 625) for the Euler checks,
+    independent of the YAML's placeholders."""
+    return material.model_copy(update={"E_MPa": Prop(value=E), "G_MPa": Prop(value=E / 16)})
+
+
+def test_pinned_column_matches_euler(mat_e10k):
     """Pinned-pinned stick: P_cr = pi^2 E I / L^2 = pi^2 (10000)(6.667) / 115^2 = 49.75 N.
 
     Base pinned (DX, DY, DZ) with torsion held; top guided laterally (DX, DZ free in
     rotation). With P_ref = 1 N the critical load factor equals P_cr in newtons.
     """
     col = _column(Supports(pinned=["N0"], extra_restraints={"N0": ["RY"], "N8": ["DX", "DZ"]}))
-    r = analyze(col, material)
+    r = analyze(col, mat_e10k)
     euler = math.pi**2 * E * I_MIN / L**2
     assert euler == pytest.approx(49.75, abs=0.01)
     assert r.buckling.lambda_cr == pytest.approx(euler, rel=5e-3)
     assert r.Fu_buckling_N == pytest.approx(euler, rel=5e-3)
 
 
-def test_cantilever_column_matches_euler(material):
+def test_cantilever_column_matches_euler(mat_e10k):
     """Fixed-free stick (flagpole): P_cr = pi^2 E I / (2L)^2 = 12.44 N."""
     col = _column(Supports(pinned=["N0"], extra_restraints={"N0": ["RX", "RY", "RZ"]}))
-    r = analyze(col, material)
+    r = analyze(col, mat_e10k)
     euler = math.pi**2 * E * I_MIN / (2 * L) ** 2
     assert r.buckling.lambda_cr == pytest.approx(euler, rel=5e-3)
 
@@ -99,12 +106,12 @@ def test_slender_piers_govern_by_sway(material):
     assert r.Fu_pred_N == pytest.approx(r.Fu_buckling_N)
 
 
-def test_single_member_column_is_split_for_buckling(material):
+def test_single_member_column_is_split_for_buckling(mat_e10k):
     """A column drawn as ONE member is split into two elements internally, so the global
     eigen-solver is within ~1 % of Euler (one cubic element alone gives 12EI/L^2, +22 %)."""
     col = _column(Supports(pinned=["N0"], extra_restraints={"N0": ["RY"], "N1": ["DX", "DZ"]}),
                   n_el=1)
-    r = analyze(col, material)
+    r = analyze(col, mat_e10k)
     euler = math.pi**2 * E * I_MIN / L**2
     assert r.buckling.lambda_cr == pytest.approx(euler, rel=0.01)
     assert set(r.displacements_mm) == {"N0", "N1"}  # interior nodes stay internal

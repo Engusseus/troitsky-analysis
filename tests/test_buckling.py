@@ -97,10 +97,12 @@ def test_short_stocky_member_crushes(mat_e10k: Material) -> None:
 
         I_min = min(b d^3, d b^3) / 12 = 12 * 10^3 / 12 = 1000 mm^4
         P_cr = pi^2 * 10000 * 1000 / 20^2 = 246740 N  >>  f_c A = 30 * 120 = 3600 N
-    so crushing governs: N_c,R = 3600 N and the compression mode is "crushing".
+    so crushing governs: N_c,R = 3600 N and the compression mode is "crushing" (f_c = 30
+    MPa set here, independent of the YAML's placeholder).
     """
     sec = Section(id="pier", sticks=6, layout="on_edge")
-    cap = capacities(sec, mat_e10k, 20.0, 1.0)
+    mat = mat_e10k.model_copy(update={"f_c_MPa": Prop(value=30.0)})
+    cap = capacities(sec, mat, 20.0, 1.0)
     assert cap.P_cr == pytest.approx(math.pi**2 * E * 1000.0 / 20.0**2, rel=1e-12)
     assert cap.N_c_R == pytest.approx(3600.0)
     assert utilisation(cap, -1800.0, 0, 0, 0, None).mode == "crushing"
