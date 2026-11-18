@@ -28,6 +28,7 @@ Unglued stacks need no simulation (n sticks carry n times one stick): tabulated.
 
     uv run python validation/literature_coupons.py --out DIR [-o overrides.yaml]
         [--seeds=-1,0,1,2,3,4] [--fidelity fine] [--jobs 2] [--skip-crush]
+        [--reuse-crushes]
     uv run python validation/literature_coupons.py --summarize --out DIR
 
 writes DIR/summary.json and, per coupon, DIR/<coupon>/coupon.stl, coupon.overrides.yaml,
@@ -332,7 +333,23 @@ def _crush_one(task: tuple) -> dict:
     rep, _ = study.crush(stl, overrides=str(ovf), seed=None if seed < 0 else seed,
                          fidelity=fidelity, options=opt, out_dir=out_dir, replay=False,
                          stop_at_failure=True)
-    return {"seed": seed, "slowed": slow, "wall_s": round(time.time() - t0, 1),
+    return _run_dict(rep, seed, slow, time.time() - t0)
+
+
+def _load_run(task: tuple) -> dict | None:
+    """A crush already on disk for this task (--reuse-crushes), or None."""
+    from bridgesim.sim.report import CrushReport
+
+    _stl, _ovf, seed, _fid, out_dir, slow, _th = task
+    f = Path(out_dir) / "crush.json"
+    if not f.exists():
+        return None
+    rep = CrushReport.model_validate_json(f.read_text(encoding="utf-8"))
+    return _run_dict(rep, seed, slow, rep.quality.wall_s)
+
+
+def _run_dict(rep, seed: int, slow: bool, wall_s: float) -> dict:
+    return {"seed": seed, "slowed": slow, "wall_s": round(wall_s, 1),
             "Fu_N": rep.Fu_N, "Fu_kgf": rep.Fu_kgf, "failure_mode": rep.failure_mode,
             "governing": rep.governing, "competing": rep.competing,
             "deflection_at_Fu_mm": rep.deflection_at_Fu_mm,
@@ -356,8 +373,27 @@ def _not_quasi_static_only(r: dict) -> bool:
             and all(x.startswith("loading not quasi-static") for x in r["reasons"]))
 
 
+def lab_beam(mat, sp, n: int, edge: bool) -> float:
+    """The lab solver's 3-point bending (lab.three_point_bending, as study.lab runs it) of
+    a solid beam with the coupon's section: no glue lines, no nose or supports (the load
+    and the reactions on nodes), no lateral buckling. Beam theory with the fibre law: the
+    cross-check of the pipeline, and its fallback where the pipeline cannot stand for the
+    coupon."""
+    from bridgesim.sim import lab as labmod
+    from bridgesim.sim import study
+
+    cm = study._crush_material(mat, sp)
+    b, t = (n * STICK_T, STICK_B) if edge else (STICK_B, n * STICK_T)
+    r = labmod.three_point_bending(cm.E_MPa.value, cm.f_t_MPa.value, cm.f_c_MPa.value,
+                                   span=SPAN, b=b, t=t, Gf=sp["wood.G_f_N_per_mm"],
+                                   **study._wood_law(sp))
+    return round(r.peak, 1)
+
+
 def part_b(out: Path, user: dict, seeds: list[int], fidelity: str, jobs: int,
-           threads: int) -> dict:
+           threads: int, mat=None, sp=None, reuse: bool = False) -> dict:
+    """The coupons crushed (or, with ``reuse``, the crushes already in ``out`` read back),
+    and the lab solver's solid beam of each section beside them (with ``mat``, ``sp``)."""
     import concurrent.futures as cf
     import multiprocessing as mp
 
@@ -387,11 +423,19 @@ def part_b(out: Path, user: dict, seeds: list[int], fidelity: str, jobs: int,
                               "joints": [f"{j.a} | {j.b}: {j.kind}, {j.shear_capacity_N} N"
                                          for j in ins.joints]},
                     "runs": []}
+        if mat is not None:
+            res[key]["lab_solid_beam_N"] = lab_beam(mat, sp, n, orient == "edge")
         print(f"inspect {key}: {res[key]['model']['beam']}, section {beam.section_mm} mm; "
               + ("OK" if not problems else "PROBLEMS: " + "; ".join(problems)), flush=True)
         for s in seeds:
             tasks.append((key, (str(stl), str(ovf), s, fidelity, str(d / f"seed_{s}"), False,
                                 threads)))
+    if reuse:  # the crushes already on disk (their own files: nothing is recomputed)
+        done = [(k, _load_run(t)) for k, t in tasks]
+        for k, r in done:
+            if r is not None:
+                res[k]["runs"].append(r)
+        tasks = [kt for kt, (_k, r) in zip(tasks, done, strict=True) if r is None]
     ctx = mp.get_context("spawn")
     with cf.ProcessPoolExecutor(max_workers=jobs, mp_context=ctx) as ex:
         futs = {ex.submit(_crush_one, t): k for k, t in tasks}
@@ -402,16 +446,26 @@ def part_b(out: Path, user: dict, seeds: list[int], fidelity: str, jobs: int,
             print(f"  {k} seed {r['seed']}: F_u {r['Fu_N']:.1f} N, {r['governing']}, "
                   f"{r['wall_s']:.0f} s{_flag(r)}", flush=True)
         # a run flagged only as not quasi-static is crushed again at half the jack speed
-        again = [(k, (t[0], t[1], t[2], t[3], t[4] + "_slow", True, t[6])) for k, t in tasks
-                 if any(r["seed"] == t[2] and _not_quasi_static_only(r) for r in res[k]["runs"])]
-        futs = {ex.submit(_crush_one, t): k for k, t in again}
-        for fu in cf.as_completed(futs):
-            r = fu.result()
-            k = futs[fu]
-            res[k]["runs"] = [({**r, "slowed_from_N": x["Fu_N"]} if x["seed"] == r["seed"] else x)
-                              for x in res[k]["runs"]]
+        again = [(k, (str(out / k / "coupon.stl"), str(out / k / "coupon.overrides.yaml"),
+                      r["seed"], fidelity, str(out / k / f"seed_{r['seed']}_slow"), True,
+                      threads))
+                 for k in res for r in res[k]["runs"] if _not_quasi_static_only(r)]
+
+        def replace(k: str, r: dict) -> None:
+            res[k]["runs"] = [({**r, "slowed_from_N": x["Fu_N"]} if x["seed"] == r["seed"]
+                               else x) for x in res[k]["runs"]]
             print(f"  {k} seed {r['seed']} at half speed: F_u {r['Fu_N']:.1f} N, "
                   f"{r['governing']}, {r['wall_s']:.0f} s{_flag(r)}", flush=True)
+
+        if reuse:
+            done = [(k, _load_run(t)) for k, t in again]
+            for k, r in done:
+                if r is not None:
+                    replace(k, r)
+            again = [kt for kt, (_k, r) in zip(again, done, strict=True) if r is None]
+        futs = {ex.submit(_crush_one, t): k for k, t in again}
+        for fu in cf.as_completed(futs):
+            replace(futs[fu], fu.result())
     for key, *_ in CONFIGS:
         runs = sorted(res[key]["runs"], key=lambda r: r["seed"])
         res[key]["runs"] = runs
@@ -433,6 +487,8 @@ def part_b(out: Path, user: dict, seeds: list[int], fidelity: str, jobs: int,
                                        "min": min(sc), "max": max(sc), "n": len(sc),
                                        "seeds": [r["seed"] for r in use]}
             res[key]["ratio_median"] = round(float(np.median(sc)) / m, 3)
+        if res[key].get("lab_solid_beam_N"):
+            res[key]["ratio_lab_solid_beam"] = round(res[key]["lab_solid_beam_N"] / m, 3)
         gov: dict[str, int] = {}
         for r in runs:
             gov[r["governing"]] = gov.get(r["governing"], 0) + 1
@@ -559,14 +615,16 @@ def print_b(pb: dict) -> None:
     the model recorded (at or near the peak; for a coupon whose peak is under 50 N the
     crush calls the failure only at a criterion, so its label can name that criterion)."""
     print(f"{'coupon':6s} {'measured N':>16s} {'seed -1':>8s} {'seeds 0-4 N':>18s} "
-          f"{'-1/meas':>7s} {'med/meas':>8s}")
+          f"{'-1/meas':>7s} {'med/meas':>8s} {'lab beam':>8s} {'lab/meas':>8s}")
     for key, v in pb.items():
         sd = v.get("sim_seeds_N")
         ss = f"{sd['median']:.0f} [{sd['min']:.0f}-{sd['max']:.0f}]" if sd else "-"
         print(f"{key:6s} {_fmt_range(v['measured_N']):>16s} "
               f"{(v['sim_perfect_N'] or float('nan')):8.1f} {ss:>18s} "
               f"{(v['ratio_perfect'] or float('nan')):7.3f} "
-              f"{v.get('ratio_median', float('nan')):8.3f}")
+              f"{v.get('ratio_median', float('nan')):8.3f} "
+              f"{v.get('lab_solid_beam_N', float('nan')):8.1f} "
+              f"{v.get('ratio_lab_solid_beam', float('nan')):8.3f}")
         for r in v["runs"]:
             f0 = r["failures"][0] if r["failures"] else None
             first = (f"{f0['kind']} at {f0['load_N']:.0f} N, {f0['jack_travel_mm']:.1f} mm"
@@ -621,6 +679,8 @@ def main() -> None:
     ap.add_argument("--jobs", type=int, default=2, help="crushes run at once")
     ap.add_argument("--threads", type=int, default=1, help="CPU threads per crush")
     ap.add_argument("--skip-crush", action="store_true", help="only (a) and (c)")
+    ap.add_argument("--reuse-crushes", action="store_true",
+                    help="read the crushes already in DIR instead of running them again")
     ap.add_argument("--summarize", action="store_true",
                     help="print the tables of DIR/summary.json again, run nothing")
     a = ap.parse_args()
@@ -637,7 +697,8 @@ def main() -> None:
     if not a.skip_crush:
         seeds = [int(s) for s in a.seeds.split(",")]
         print(f"== (b) crushing ({a.fidelity}, seeds {seeds})", flush=True)
-        summary["b"] = part_b(out, raw, seeds, a.fidelity, a.jobs, a.threads)
+        summary["b"] = part_b(out, raw, seeds, a.fidelity, a.jobs, a.threads, mat, sp,
+                              reuse=a.reuse_crushes)
         walls = [r["wall_s"] for v in summary["b"].values() for r in v["runs"]]
         summary["crush_wall_s"] = {"min": min(walls), "max": max(walls),
                                    "median": float(np.median(walls))}
