@@ -1164,12 +1164,26 @@ def _run_crush_once(m: Model, opt: CrushOptions, dt_target: float) -> CrushResul
     # locked-in stress released at once would ring the bridge (solver.fit_ramp)
     y_ref = st.x[:, 1].copy()
     n_ramp = max(1, int(opt.settle_s / dt))
+    # under its own weight nothing moves faster than it would fall from the bridge's top
+    # to the platform (3.2 m/s from 535 mm): a node at 3x that was thrown by the
+    # integration, not by gravity. do_step's own check (1 km/s) misses it when the part
+    # tears off and flies on at a few hundred m/s, and the run then read as a bridge
+    # that collapses under its own weight, F_u 0 and trustworthy (Bridge_v12 at standard)
+    v_settle = 3.0 * math.sqrt(2.0 * s.gravity * max(
+        float(st.x[:-1, 1].max()) - m.table_y, 100.0))
     k = 0
     while True:
         g = min(1.0, (k + 1) / n_ramp)
         S.fit_ramp(m, st, g)
         do_step(g, max(opt.alpha, 150.0))
         k += 1
+        if k % 200 == 0 and float(np.abs(st.v).max()) > v_settle:
+            m.mass = phys_mass
+            iv = int(np.argmax(np.abs(st.v).max(1)))
+            bid = int(m.node_body[iv])
+            where = m.bodies[bid].name if bid >= 0 else "loading plate"
+            raise _Unstable(f"speed {float(np.abs(st.v).max()):.3g} mm/s under self-weight "
+                            f"at t = {st.t:.4f} s in {where} [{_node_diag(m, st, iv)}]")
         if k > n_ramp and k % 200 == 0:
             vmax_s = float(np.abs(st.v).max())
             # at rest: mass-weighted RMS speed below 0.5 mm/s (a light toggle still
